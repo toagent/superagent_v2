@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
+import * as pluginProcess from '@archon/paths/plugin-process';
 import { runStreamingSubprocess, type StreamedSubprocessError } from './subprocess-output';
 
 describe('runStreamingSubprocess', () => {
@@ -52,12 +53,19 @@ describe('runStreamingSubprocess', () => {
     expect(result.stdout.preview).toBe('[REDACTED]');
   });
 
-  it('kills timed-out subprocesses and retains their partial output', async () => {
+  it('ends a timed-out subprocess tree before a grandchild can write', async () => {
+    const grandchild =
+      "require('fs').writeFileSync('started', ''); " +
+      "setTimeout(() => require('fs').writeFileSync('leaked', ''), 1_000)";
     let failure: StreamedSubprocessError;
+    const startedAt = Date.now();
     try {
-      await run(`process.stdout.write('before-timeout', () => setTimeout(() => {}, 10_000))`, {
-        timeout: 1_000,
-      });
+      await run(
+        `const { spawn } = require('node:child_process'); ` +
+          `spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'inherit' }); ` +
+          `process.stdout.write('before-timeout'); setTimeout(() => {}, 10_000)`,
+        { timeout: 200 }
+      );
       throw new Error('expected subprocess timeout');
     } catch (error) {
       failure = error as StreamedSubprocessError;
@@ -66,5 +74,27 @@ describe('runStreamingSubprocess', () => {
     expect(failure.killed).toBe(true);
     expect(failure.code).toBeNull();
     expect(failure.stdout).toBe('before-timeout');
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    await stat(join(roots.at(-1)!, 'started'));
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    await expect(stat(join(roots.at(-1)!, 'leaked'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports tree termination failure instead of an ordinary timeout', async () => {
+    const terminate = spyOn(pluginProcess, 'terminateTree').mockRejectedValue(
+      new Error('group refused the signal')
+    );
+    try {
+      const failure = await run(`setTimeout(() => {}, 10_000)`, { timeout: 50 }).then(
+        () => undefined,
+        error => error as StreamedSubprocessError
+      );
+      expect(failure?.treeSurvived).toBe(true);
+      expect(failure?.message).toContain(
+        'could not terminate subprocess tree: group refused the signal'
+      );
+    } finally {
+      terminate.mockRestore();
+    }
   });
 });

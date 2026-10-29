@@ -3,10 +3,12 @@ import { mkdir, open } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
 import { redactCredentialValues } from '@archon/paths/credential-redaction';
+import * as pluginProcess from '@archon/paths/plugin-process';
 import { buildTruncationMarker } from './utils/output-truncation';
 const PREVIEW_BYTES = 32 * 1024;
 const TAIL_BYTES = 8 * 1024;
 const REDACTION = Buffer.from('[REDACTED]');
+const OWNER_LIFELINE = 'IFS= read -r line || kill -s KILL -- "-$1"';
 export interface StreamedOutput {
   preview: string;
   tail: string;
@@ -23,6 +25,7 @@ export type StreamedSubprocessError = Error & {
   code?: number | string | null;
   killed?: boolean;
   signal?: NodeJS.Signals | null;
+  treeSurvived?: true;
 };
 class ByteRedactor {
   private pending = Buffer.alloc(0);
@@ -122,35 +125,74 @@ export async function runStreamingSubprocess(options: {
   stdoutPath: string;
   stderrPath: string;
   retainRawStdout?: boolean;
+  endTreeOnTimeout?: boolean;
 }): Promise<{ stdout: StreamedOutput; stderr: StreamedOutput }> {
+  const endTreeOnTimeout = options.endTreeOnTimeout !== false;
   const child = spawn(options.cmd, options.args, {
     cwd: options.cwd,
     env: options.env,
+    detached: endTreeOnTimeout && process.platform !== 'win32',
+    windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let lifelineError: StreamedSubprocessError | undefined;
+  // A detached node group would otherwise escape Ctrl-C, detached-run cancellation, or
+  // an owner crash. This watcher lives outside both groups and kills the node on pipe EOF.
+  const lifeline =
+    endTreeOnTimeout && process.platform !== 'win32' && child.pid !== undefined
+      ? spawn('/bin/sh', ['-c', OWNER_LIFELINE, 'archon-node-lifeline', String(child.pid)], {
+          detached: true,
+          stdio: ['pipe', 'ignore', 'ignore'],
+        })
+      : undefined;
+  lifeline?.once('error', error => {
+    lifelineError = new Error(`Could not start node owner-death watcher: ${error.message}`);
+    child.kill('SIGKILL');
+  });
+  const disarmLifeline = (): void => {
+    lifeline?.stdin?.end('\n');
+    lifeline?.unref();
+  };
+  let spawnError: StreamedSubprocessError | undefined;
+  let timedOut = false;
+  let exited = false;
+  let termination: Promise<void> | undefined;
+  let terminationError: Error | undefined;
   const streams = Promise.all([
     capture(child.stdout, options.stdoutPath, options.credentialValues, options.retainRawStdout),
     capture(child.stderr, options.stderrPath, options.credentialValues),
   ]).catch(error => {
-    if (spawnError)
+    if (spawnError || terminationError)
       return [
         { preview: '', tail: '', bytes: 0 },
         { preview: '', tail: '', bytes: 0 },
       ];
     throw error;
   });
-  let killed = false;
   const timer = setTimeout(() => {
-    killed = child.kill();
+    timedOut = true;
+    if (child.pid === undefined || exited) return;
+    if (!endTreeOnTimeout) {
+      child.kill('SIGTERM');
+      return;
+    }
+    termination = pluginProcess.terminateTree(child.pid, 'SIGTERM').catch((error: unknown) => {
+      terminationError = error instanceof Error ? error : new Error(String(error));
+      if (!exited) child.kill('SIGKILL');
+      // Tree termination failed, so a surviving descendant may keep either pipe open.
+      child.stdout.destroy();
+      child.stderr.destroy();
+    });
   }, options.timeout);
   timer.unref();
-  let spawnError: StreamedSubprocessError | undefined;
   const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
     resolve => {
       child.once('error', error => {
         spawnError = error as StreamedSubprocessError;
       });
       child.once('close', (code, signal) => {
+        exited = true;
+        disarmLifeline();
         resolve({ code, signal });
       });
     }
@@ -167,13 +209,21 @@ export async function runStreamingSubprocess(options: {
   } finally {
     clearTimeout(timer);
   }
+  await termination;
   const [stdout, stderr] = await streams;
-  if (!spawnError && outcome.code === 0 && !killed) return { stdout, stderr };
+  if (!spawnError && !lifelineError && outcome.code === 0 && !timedOut) return { stdout, stderr };
   const command = redactCredentialValues(
     [options.cmd, ...options.args].join(' '),
     options.credentialValues
   );
-  const error = spawnError ?? new Error(`Command failed: ${command}`);
+  const error =
+    spawnError ??
+    lifelineError ??
+    new Error(
+      terminationError
+        ? `Command timed out after ${String(options.timeout)} ms; could not terminate subprocess tree: ${terminationError.message}`
+        : `Command failed: ${command}`
+    );
   error.message = redactCredentialValues(error.message, options.credentialValues);
   if (error.stack) error.stack = redactCredentialValues(error.stack, options.credentialValues);
   Object.assign(error, {
@@ -183,9 +233,10 @@ export async function runStreamingSubprocess(options: {
     stderrTail: stderr.tail,
     cmd: command,
     spawnargs: options.args.map(arg => redactCredentialValues(arg, options.credentialValues)),
-    code: killed ? null : (spawnError?.code ?? outcome.code),
-    killed,
-    signal: outcome.signal,
+    code: timedOut ? null : (spawnError?.code ?? outcome.code),
+    killed: timedOut,
+    signal: timedOut && process.platform === 'win32' ? 'SIGTERM' : outcome.signal,
+    ...(terminationError ? { treeSurvived: true as const } : {}),
   });
   throw error;
 }
