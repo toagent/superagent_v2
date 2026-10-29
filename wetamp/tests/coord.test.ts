@@ -512,6 +512,14 @@ test('surfaced resolves owners outside the registry lock and caches batch status
   runCalls = batchCalls = 0;
   expect(c.inbox(a).every(message => message.state === 'surfaced')).toBe(true);
   expect([runCalls, batchCalls]).toEqual([1, 1]);
+  const receipt = { ...c.messages()[0]!, type: 'receipt' as const, recipient: a };
+  rmSync(join(s.sa, 'coord/inbox'), { recursive: true });
+  mkdirSync(join(s.sa, 'coord/inbox'));
+  writeFileSync(join(s.sa, 'coord/inbox', `${receipt.id}.json`), JSON.stringify(receipt));
+  c.d.statuses = () => {
+    throw new Error('typed messages do not resolve owners');
+  };
+  expect(c.inbox(a)).toEqual([receipt]);
 });
 test('surfaced skips a message changed after its lock-free projection', () => {
   const s = setup();

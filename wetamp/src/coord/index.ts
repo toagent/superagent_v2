@@ -682,8 +682,8 @@ export class Coordination {
     who: Identity,
     all: boolean
   ): { message: Message; owner?: ReturnType<Coordination['ownerWithStatuses']> }[] {
-    const statuses = this.d.statuses(),
-      owners = new Map<string, ReturnType<Coordination['ownerWithStatuses']>>(),
+    let statuses: ReturnType<Deps['statuses']> | false = false;
+    const owners = new Map<string, ReturnType<Coordination['ownerWithStatuses']>>(),
       routed: { message: Message; owner?: ReturnType<Coordination['ownerWithStatuses']> }[] = [];
     for (const message of this.messages()) {
       if (!all && ['done', 'rejected'].includes(message.state)) continue;
@@ -693,6 +693,7 @@ export class Coordination {
         const key = shared.hash(message.scope);
         let owner = owners.get(key);
         if (!owner) {
+          if (statuses === false) statuses = this.d.statuses();
           owner = this.ownerWithStatuses(message.scope, statuses);
           owners.set(key, owner);
         }
