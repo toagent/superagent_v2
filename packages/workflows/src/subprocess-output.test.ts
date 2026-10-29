@@ -17,7 +17,10 @@ describe('runStreamingSubprocess', () => {
   const roots: string[] = [];
   afterEach(async () => Promise.all(roots.splice(0).map(root => removeTempTree(root))));
 
-  async function run(script: string, options: { timeout?: number; secrets?: string[] } = {}) {
+  async function run(
+    script: string,
+    options: { timeout?: number; secrets?: string[]; endTreeOnTimeout?: boolean } = {}
+  ) {
     const root = await mkdtemp(join(tmpdir(), 'archon-subprocess-output-'));
     roots.push(root);
     const stdoutPath = join(root, 'stdout');
@@ -31,6 +34,7 @@ describe('runStreamingSubprocess', () => {
       credentialValues: options.secrets ?? [],
       stdoutPath,
       stderrPath,
+      endTreeOnTimeout: options.endTreeOnTimeout,
     });
     return { root, stdoutPath, stderrPath, result };
   }
@@ -118,15 +122,18 @@ describe('runStreamingSubprocess', () => {
     await expect(stat(join(roots.at(-1)!, 'leaked'))).rejects.toMatchObject({ code: 'ENOENT' });
 
     if (process.platform !== 'win32') {
+      const rootOnlyTrees = recordNodeProcessTrees();
       const rootOnly = await run(
         `const { spawn } = require('node:child_process'); ` +
           `spawn(process.execPath, ['-e', ${JSON.stringify("setTimeout(() => require('fs').writeFileSync('root-only-leaked', ''), 300)")}], ` +
           `{ stdio: 'ignore' }); setTimeout(() => {}, 10_000)`,
-        { timeout: 50 }
-      ).then(
-        () => undefined,
-        error => error as StreamedSubprocessError
-      );
+        { timeout: 50, endTreeOnTimeout: false }
+      )
+        .then(
+          () => undefined,
+          error => error as StreamedSubprocessError
+        )
+        .finally(() => rootOnlyTrees.release());
       expect(rootOnly?.killed).toBe(true);
       await new Promise(resolve => setTimeout(resolve, 400));
       await stat(join(roots.at(-1)!, 'root-only-leaked'));
