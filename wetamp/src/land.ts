@@ -48,17 +48,12 @@ export interface DeliveryAuthorization {
 // prettier-ignore
 interface ReclaimWait { read: () => unknown; now: () => number; sleep: (ms: number) => void }
 // prettier-ignore
+const reclaimJournal = (): unknown => { const path = join(home().sa, 'reclaim', 'journal.json'); return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : []; }, reclaimPending = (run: string, value: unknown): boolean => ['transferring', 'transferred'].includes((Object.values(value ?? {}) as { run?: string; state?: string }[]).filter(entry => entry.run === run).at(-1)?.state ?? '');
+// prettier-ignore
 export function waitForReclaim(run: string, d?: ReclaimWait): void {
-  if (!d) {
-    const journal = join(home().sa, 'reclaim', 'journal.json'); d = {
-      read: (): unknown => (existsSync(journal) ? JSON.parse(readFileSync(journal, 'utf8')) : []),
-      now: Date.now,
-      sleep: ms => { Bun.sleepSync(ms); },
-    };
-  }
+  d ??= { read: reclaimJournal, now: Date.now, sleep: ms => { Bun.sleepSync(ms); } };
   const deadline = d.now() + 600_000; for (;;) {
-    const entries = Object.values(d.read() ?? {}) as { run?: string; state?: string }[], state = entries.filter(entry => entry.run === run).at(-1)?.state;
-    if (state !== 'transferring' && state !== 'transferred') return;
+    if (!reclaimPending(run, d.read())) return;
     if (d.now() >= deadline)
       throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
     d.sleep(Math.min(15_000, deadline - d.now()));
@@ -66,7 +61,9 @@ export function waitForReclaim(run: string, d?: ReclaimWait): void {
 }
 
 // prettier-ignore
-export const generationAdvanced = (captured: readonly number[], current: readonly number[]): boolean => current.some((generation, index) => generation > (captured[index] ?? 0));
+export function retryAdvancedFence(retry: boolean, captured: readonly number[], current: () => readonly number[], attempt: () => void, refresh: () => void): void {
+  try { attempt(); } catch (error) { if (!retry || !current().some((generation, index) => generation > (captured[index] ?? 0))) throw error; refresh(); }
+}
 
 export function deliveryAuthorized(
   who: Identity,
@@ -237,15 +234,16 @@ const authorized = (retry = true) => {
   // prettier-ignore
   const fence = (): void => {
     try {
-      coord().mutate(repoScope(ledger.repo), who, () => {
-        control(ledger, () => undefined, who, authorization.run.generation);
-      }, authorization.repo.generation);
+      retryAdvancedFence(retry, [authorization.run.generation, authorization.repo.generation],
+        () => [coord().owner(runScope(ledger)).generation, coord().owner(repoScope(ledger.repo)).generation],
+        () => { coord().mutate(repoScope(ledger.repo), who, () => {
+          if (reclaimPending(runId, reclaimJournal())) throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
+          control(ledger, () => undefined, who, authorization.run.generation);
+        }, authorization.repo.generation); },
+        () => { authorized(false).fence(); });
     } catch (error) {
-      const advanced = generationAdvanced(
-        [authorization.run.generation, authorization.repo.generation],
-        [coord().owner(runScope(ledger)).generation, coord().owner(repoScope(ledger.repo)).generation]
-      );
-      if (!retry || !advanced) throw error;
+      if (!retry || !(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error;
+      waitForReclaim(runId);
       authorized(false).fence();
     }
   };

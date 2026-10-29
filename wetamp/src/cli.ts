@@ -841,7 +841,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
         : undefined;
       if (publish?.reason === 'reclaim_pending')
-        return { ...c, state: 'held:gate', exit: EXIT.held };
+        return { ...c, state: 'held:reclaim_pending', exit: EXIT.held };
       if (publish?.reason === 'target_dirty') return { ...c, state: 'target_dirty' };
       if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
       if (publish?.reason === 'review_stale') return { ...c, state: 'review_stale' };
@@ -3478,7 +3478,7 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
   if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
-    c.state === 'held:gate'
+    c.state === 'held:gate' || c.state === 'held:reclaim_pending'
       ? reasonHold(nodeReason(l, run, c))
       : c.state === 'held:environment'
         ? 'environment'

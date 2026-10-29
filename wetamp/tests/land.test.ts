@@ -5,7 +5,7 @@ import {
   gateHashes,
   IntegrationError,
   landEvidence,
-  generationAdvanced,
+  retryAdvancedFence,
   runDeliveryEntry,
   waitForReclaim,
   type DeliveryReceipt,
@@ -62,9 +62,39 @@ test('reclaim admission waits through transfer, passes without a journal, and ti
 });
 
 test('generation fencing refreshes only for a newer owner and retries once', () => {
-  expect(generationAdvanced([1, 1], [1, 1])).toBeFalse();
-  expect(generationAdvanced([1, 1], [2, 1])).toBeTrue();
-  expect(generationAdvanced([2, 2], [1, 3])).toBeTrue();
+  let attempts = 0,
+    refreshes = 0;
+  const reject = () => {
+    attempts++;
+    throw new Error('stale');
+  };
+  expect(() =>
+    retryAdvancedFence(
+      true,
+      [1, 1],
+      () => [1, 1],
+      reject,
+      () => refreshes++
+    )
+  ).toThrow('stale');
+  retryAdvancedFence(
+    true,
+    [1, 1],
+    () => [2, 1],
+    reject,
+    () => refreshes++
+  );
+  expect([attempts, refreshes]).toEqual([2, 1]);
+  expect(() =>
+    retryAdvancedFence(
+      false,
+      [1, 1],
+      () => [2, 2],
+      reject,
+      () => refreshes++
+    )
+  ).toThrow('stale');
+  expect(refreshes).toBe(1);
 });
 
 test('completed legacy land evidence remains readable', () => {
