@@ -47,6 +47,15 @@ describe('runStreamingSubprocess', () => {
     }
   }
 
+  function processExists(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
+  }
+
   it('streams output larger than 2 MiB while retaining a bounded preview', async () => {
     const { stdoutPath, result } = await run(`process.stdout.write('x'.repeat(2_100_000))`);
     expect(result.stdout.bytes).toBe(2_100_000);
@@ -72,16 +81,45 @@ describe('runStreamingSubprocess', () => {
     expect(result.stdout.preview).toBe('[REDACTED]');
   });
 
-  it('captures every short-lived subprocess while recorded nodes start concurrently', async () => {
+  it('keeps detached-owner jobs cancellable while recording foreground nodes', async () => {
     if (process.platform !== 'win32') {
-      const ownerPgid = childProcess
-        .execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' })
-        .trim();
-      const unrecorded = await run(
-        `const { execFileSync } = require('node:child_process'); ` +
-          `process.stdout.write(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim())`
-      );
-      expect(unrecorded.result.stdout.preview).toBe(ownerPgid);
+      const ownerRoot = await mkdtemp(join(tmpdir(), 'archon-detached-owner-'));
+      roots.push(ownerRoot);
+      const moduleUrl = pathToFileURL(join(import.meta.dir, 'subprocess-output.ts')).href;
+      const job =
+        "const { spawn } = require('node:child_process'); " +
+        "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' }); " +
+        "require('fs').writeFileSync('job-pid', String(child.pid)); child.unref();";
+      const ownerScript =
+        `import { runStreamingSubprocess } from ${JSON.stringify(moduleUrl)}; ` +
+        `await runStreamingSubprocess({cmd:process.execPath,args:['-e',${JSON.stringify(job)}],cwd:process.cwd(),env:process.env,timeout:5000,credentialValues:[],stdoutPath:'owner-out',stderrPath:'owner-err'}); ` +
+        `require('fs').writeFileSync('node-complete', ''); await Bun.sleep(30_000);`;
+      const owner = childProcess.spawn(process.execPath, ['-e', ownerScript], {
+        cwd: ownerRoot,
+        detached: true,
+        stdio: 'ignore',
+      });
+      let jobPid: number | undefined;
+      try {
+        await waitUntil('unrecorded node completion', async () =>
+          stat(join(ownerRoot, 'node-complete')).then(
+            () => true,
+            () => false
+          )
+        );
+        jobPid = Number(await readFile(join(ownerRoot, 'job-pid'), 'utf8'));
+        expect(processExists(jobPid)).toBe(true);
+        process.kill(-owner.pid!, 'SIGTERM');
+        await waitUntil('detached owner job cancellation', async () => !processExists(jobPid!));
+      } finally {
+        if (owner.exitCode === null) {
+          try {
+            process.kill(-owner.pid!, 'SIGKILL');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          }
+        }
+      }
     }
 
     const trees = recordNodeProcessTrees();
