@@ -1341,7 +1341,6 @@ const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
   const effective = Math.min(timeoutS, HEARTBEAT_INTERVAL_MS / 1000);
   const deadline = waitClock.now() + effective * 1000;
-  let attention = false;
   for (;;) {
     const inbox = coord()
       .surfaced(who)
@@ -1351,12 +1350,23 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost')
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
-    if (attention && c.exit === EXIT.running) waitClock.sleep(1000);
     const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running) return summary(l, run, c);
     // prettier-ignore
     if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who), ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}) };
-    attention = waitNotification(l.archon_run_id, l.repo, left) === 'attention';
+    const notification = waitNotification(l.archon_run_id, l.repo, left);
+    if (notification.kind !== 'attention') continue;
+    const refreshed = getRun(l.archon_run_id, l.repo);
+    const refreshedClass = classifyRun(l, refreshed);
+    if (refreshedClass.state === 'owner_lost')
+      return { ...summary(l, refreshed, refreshedClass), action: `superagent recover ${l.run_id}` };
+    if (refreshedClass.exit !== EXIT.running) return summary(l, refreshed, refreshedClass);
+    return {
+      ...summary(l, refreshed, refreshedClass),
+      attention: notification.attention,
+      heartbeat: waitHeartbeat(who),
+      ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}),
+    };
   }
 }
 

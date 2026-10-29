@@ -1350,19 +1350,37 @@ describe('waitRun (archon stub)', () => {
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
     }
   });
-  test('wait backs off after attention while still running but not after terminal refresh', () => {
-    const wait = spyOn(archonMod, 'waitNotification').mockReturnValue('attention');
+  test('wait returns persistent attention after one refresh without rescanning inbox', () => {
+    const attention = {
+      kind: 'stalled_tool_calls' as const,
+      runId: 'r',
+      status: 'running' as const,
+      calls: [],
+    };
+    const wait = spyOn(archonMod, 'waitNotification').mockReturnValue({
+      kind: 'attention',
+      attention,
+    });
+    const running = stub([run('running')]);
+    const inbox = spyOn(coordModule.coord(), 'surfaced');
     try {
-      const running = stub([run('running')]);
-      expect(waitRun(running.ledger, 3)).toMatchObject({ state: 'running', exit: EXIT.running });
-      expect(wait).toHaveBeenCalledTimes(3);
-      expect(cliMod.waitClock.sleep).toHaveBeenCalledTimes(3);
+      expect(waitRun(running.ledger, 3)).toMatchObject({
+        state: 'running',
+        exit: EXIT.running,
+        attention,
+      });
+      expect(wait).toHaveBeenCalledTimes(1);
+      expect(inbox).toHaveBeenCalledTimes(1);
+      expect(
+        running.calls().filter(c => c.startsWith('workflow get') && !c.includes('--events'))
+      ).toHaveLength(2);
+      expect(cliMod.waitClock.sleep).not.toHaveBeenCalled();
       wait.mockClear();
       const terminal = stub([run('running'), run('completed')]);
       expect(waitRun(terminal.ledger, 3).state).toBe('completed');
       expect(wait).toHaveBeenCalledTimes(1);
-      expect(cliMod.waitClock.sleep).not.toHaveBeenCalled();
     } finally {
+      inbox.mockRestore();
       wait.mockRestore();
     }
   });
