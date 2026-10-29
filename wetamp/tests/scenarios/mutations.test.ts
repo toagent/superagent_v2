@@ -34,6 +34,14 @@ const mutations: Mutation[] = [
     ],
   },
   {
+    file: 'src/land.ts',
+    from: 'const result = reclaimAdmission(run, action, d), deadline = d.now() + 600_000;',
+    to: 'const result = action(), deadline = d.now() + 600_000;',
+    test: 'tests/land.test.ts',
+    name: 'post-publish reclaim',
+    expectedError: 'expected',
+  },
+  {
     file: 'templates/.archon/scripts/sa-check.ts',
     from: 'artifact_sha256: sha(serialized)',
     to: "artifact_sha256: ''",

@@ -29,12 +29,7 @@ import type { Controller, DeliveryReauthorization, Identity } from './coord';
 import { home } from './config';
 import { IntegrationError, publish, sync } from './integration';
 import type { DeliveryReceipt } from './integration';
-import {
-  gateHashInput,
-  type PublishReceipt,
-  type PublishResult,
-  type SyncOutput,
-} from './contract';
+import { gateHashInput, type PublishReceipt, type SyncOutput } from './contract';
 import type { RunView } from './archon';
 import type { Ledger } from './cli';
 
@@ -68,6 +63,13 @@ export function retryAdvancedFence(retry: boolean, captured: readonly number[], 
 export function reclaimAdmission<T>(run: string, action: () => T, d = reclaimWait()): T {
   const deadline = d.now() + 600_000, wait = (): void => { waitForReclaim(run, d, deadline); }; wait();
   try { return action(); } catch (error) { if (!(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error; wait(); return action(); }
+}
+
+// prettier-ignore
+export function reclaimPublish<T>(run: string, action: () => T, fence: (result: T) => void, d = reclaimWait()): T {
+  const result = reclaimAdmission(run, action, d), deadline = d.now() + 600_000;
+  try { fence(result); } catch (error) { if (!(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error; waitForReclaim(run, d, deadline); fence(result); }
+  return result;
 }
 
 export function deliveryAuthorized(
@@ -214,7 +216,7 @@ const emit = (name: string, value: unknown, write = true): void => {
   process.stdout.write(JSON.stringify(value));
 };
 
-const authorized = (retry = true) => {
+export const authorized = (retry = true) => {
   const runId = process.env.INPUTS_RUN;
   if (!runId) throw new Error('integration: missing run id');
   const { loadLedger, readJson } = operator();
@@ -311,7 +313,7 @@ const lastGate = (milestone: string): Record<string, unknown> => {
 };
 
 // prettier-ignore
-const integrationPublish = (): void => { reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
+const integrationPublish = (): void => { const run = process.env.INPUTS_RUN ?? '', result = reclaimPublish(run, () => {
     const { ledger, fence } = authorized();
     if (!ledger.delivery) throw new Error('integration: missing delivery target');
     const milestone = process.env.INPUTS_MILESTONE ?? 'run';
@@ -321,7 +323,7 @@ const integrationPublish = (): void => { reclaimAdmission(process.env.INPUTS_RUN
       typeof value[key] === 'string' ? value[key] : '';
     const reviewRequired = process.env.INPUTS_REVIEW_REQUIRED === '1';
     const receipt = evidencePath(tag);
-    const result: PublishResult = publish(
+    return publish(
       {
         worktree: process.cwd(),
         target: ledger.delivery,
@@ -342,6 +344,9 @@ const integrationPublish = (): void => { reclaimAdmission(process.env.INPUTS_RUN
       },
       { target_tip: process.env.INPUTS_TARGET_TIP ?? '' }
     );
+  }, published => { if (published.status === 'published') authorized().fence(); });
+    const milestone = process.env.INPUTS_MILESTONE ?? 'run';
+    const tag = process.env.INPUTS_OUTPUT ?? `publish-${milestone}`;
     if (result.status === 'advanced' && nextCounter(`advanced-${milestone}`) >= 3) {
       const exhausted = {
         status: 'rejected',
@@ -359,7 +364,7 @@ const integrationPublish = (): void => { reclaimAdmission(process.env.INPUTS_RUN
     }
     emit(tag, result, result.status !== 'published');
     if (result.status === 'rejected') process.exitCode = 1;
-}); };
+};
 
 export function runIntegrationMain(action: string): void {
   queueMicrotask(() => {
