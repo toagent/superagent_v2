@@ -431,7 +431,7 @@ async function queryRuns(
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -453,14 +453,14 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       }))
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
     // prettier-ignore
-    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : readLedger(id)] as const; }));
-    const archonIds = [...initialLedgers.values()].flatMap(l => typeof l === 'string' ? [] : [l.archon_run_id]);
+    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : ledgerReader(id)] as const; }));
+    const archonIds = [...initialLedgers.entries()].flatMap(([id, l]) => typeof l === 'string' || FINAL.has(cache.get(id)?.run.status ?? 'pending') ? [] : [l.archon_run_id]);
     let revisions: Map<string, string> | null = null;
     try { revisions = revisionsOf(archonIds); } catch { /* Revision cache unavailable: keep mutable runs live. */ }
     // prettier-ignore
     const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id, revision = archonId ? revisions?.get(archonId) : undefined; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (!!hit.revision && hit.revision === revision)) ? [[id, hit] as const] : []; }));
     // A mutable run may rewrite its ledger while preserving mtime, so only reusable rows keep the saved parse.
-    const ledgers = new Map(ids.map(({ id }) => [id, reusable.has(id) ? (initialLedgers.get(id) ?? readLedger(id)) : readLedger(id)] as const));
+    const ledgers = new Map(ids.map(({ id }) => { const hit = cache.get(id); return [id, reusable.has(id) || !hit || FINAL.has(hit.run.status) ? (initialLedgers.get(id) ?? ledgerReader(id)) : ledgerReader(id)] as const; }));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
     const presenceCache = new Map<string, Presence>();

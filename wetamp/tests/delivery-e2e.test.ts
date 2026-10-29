@@ -277,25 +277,47 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
 test.each(['sync', 'publish'] as const)(
   '%s entry rejects missing authorization and mismatched workflow under worker role',
   action => {
-    const f = setup('normal');
+    const saved = { ...process.env };
+    const root = tmp(),
+      home = join(root, 'home'),
+      gen = join(root, 'gen'),
+      artifact = join(root, 'artifact'),
+      runId = 'de1e-0001';
     try {
-      const node = f.nodes.find(candidate => candidate.id === `${action}-m1`)!;
-      const command =
-        action === 'publish'
-          ? `INPUTS_TARGET_TIP=unused INPUTS_REVIEW_REQUIRED=1 bun -e '${node.script!.replaceAll("'", "'\\''")}'`
-          : node.bash!;
+      mkdirSync(join(home, 'runs'), { recursive: true });
+      mkdirSync(gen, { recursive: true });
+      mkdirSync(artifact, { recursive: true });
+      Object.assign(process.env, { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+      const who = coordination.caller();
+      const authorization = join(gen, 'delivery-authorization.json');
+      writeFileSync(authorization, JSON.stringify({ run: who, repo: who }));
+      writeFileSync(
+        ledgerPath(runId),
+        JSON.stringify({
+          run_id: runId,
+          archon_run_id: runId,
+          gen_dir: gen,
+          repo: root,
+          branch: 'sa/test',
+          workflow: 'test',
+        })
+      );
       const env = fixtureEnv({
-        SUPERAGENT_HOME: process.env.SUPERAGENT_HOME!,
-        ARCHON_HOME: process.env.ARCHON_HOME!,
+        SUPERAGENT_HOME: home,
+        ARCHON_HOME: join(home, 'archon'),
         WORKFLOW_ID: 'other-run',
-        ARTIFACTS_DIR: f.artifact,
+        INPUTS_ACTION: action,
+        INPUTS_RUN: runId,
+        INPUTS_MILESTONE: 'm1',
+        INPUTS_OUTPUT: `${action}-m1`,
+        ARTIFACTS_DIR: artifact,
         NODE_ENV: 'test',
         SUPERAGENT_ROLE: 'worker',
         SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
       });
       const invoke = () =>
-        Bun.spawnSync(['bash', '-c', command], {
-          cwd: f.worker,
+        Bun.spawnSync([process.execPath, join(import.meta.dir, '../src/land.ts')], {
+          cwd: root,
           env,
           stdout: 'pipe',
           stderr: 'pipe',
@@ -305,13 +327,13 @@ test.each(['sync', 'publish'] as const)(
       expect(result.exitCode).toBe(1);
       expect(result.stderr.toString()).toContain('integration: authorization/run mismatch');
 
-      env.WORKFLOW_ID = f.runId;
-      unlinkSync(f.authorization);
+      env.WORKFLOW_ID = runId;
+      unlinkSync(authorization);
       result = invoke();
       expect(result.exitCode).toBe(1);
       expect(result.stderr.toString()).toContain('integration: authorization/run mismatch');
     } finally {
-      restoreEnv(f.saved);
+      restoreEnv(saved);
     }
   }
 );

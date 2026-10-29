@@ -465,10 +465,21 @@ describe('data rows', () => {
     const revisions = new Map(
       Array.from({ length: 2000 }, (_, i) => [`a-scale-${String(i)}`, 'same'])
     );
-    const load = createLoader(undefined, undefined, undefined, ids => {
-      expect(ids).toHaveLength(2000);
-      return revisions;
-    });
+    const revisionRequests: number[] = [];
+    let ledgerReads = 0;
+    const load = createLoader(
+      undefined,
+      undefined,
+      undefined,
+      ids => {
+        revisionRequests.push(ids.length);
+        return revisions;
+      },
+      id => {
+        ledgerReads++;
+        return readLedger(id);
+      }
+    );
     const started = performance.now();
     expect((await load(2000)).rows).toHaveLength(2000);
     const firstMs = performance.now() - started;
@@ -476,14 +487,19 @@ describe('data rows', () => {
     const batch = callLines()[0] ?? '';
     expect(batch).toContain('workflow runs --ids ');
     expect(batch).not.toContain('extra-');
-    const stable: number[] = [];
-    for (let i = 0; i < 20; i++) {
-      const at = performance.now();
-      await load(2000);
-      stable.push(performance.now() - at);
-    }
-    expect(stable.sort((a, b) => a - b)[18]).toBeLessThan(300);
+    expect(ledgerReads).toBe(2000);
+    ledgerReads = 0;
+    const stableAt = performance.now();
+    await load(2000);
+    console.log(`board stable refresh: ${(performance.now() - stableAt).toFixed(1)}ms`);
+    expect(ledgerReads).toBe(0);
+    expect(revisionRequests).toEqual([2000, 0]);
     expect(calls()).toBe(1);
+    const changed = ledgerFile('scale-0');
+    const next = new Date(Date.now() + 2000);
+    utimesSync(changed, next, next);
+    await load(2000);
+    expect(ledgerReads).toBe(1);
   }, 60_000);
 
   test('batch failure falls back per run with bounded concurrency and isolates one failure', async () => {
