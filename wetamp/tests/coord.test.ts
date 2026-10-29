@@ -44,6 +44,7 @@ const ids = req('../hooks/identity.cjs') as {
 const hooks = req('../hooks/coord.cjs') as {
   hash: (v: unknown) => string;
   repoScope: typeof repoScope;
+  isRunOwnershipEvidence: (run: RunRef, status?: string) => boolean;
   unread: (sa: string, who: Identity, seen: string[]) => Message[];
 };
 const a: Identity = {
@@ -444,7 +445,8 @@ test('9: old ledger controller falls back to launcher; linked worktrees share re
 test('run scope keeps terminal ledger ownership while repo scope excludes terminal runs', () => {
   const s = setup(),
     run = (run_id: string, state?: string): RunRef => ({ run_id, archon_run_id: run_id, repo: s.repo, controller: { ...(['completed', 'cancelled'].includes(run_id) ? b : a), generation: 1 }, state }),
-    runs = [run('held'), run('ledger-failed', 'failed'), run('completed'), run('cancelled'), run('unknown')],
+    abandoned = { ...run('abandoned'), rejected: 'abandoned', intervention_events: [{ action: 'abandon', ok: true }] },
+    runs = [run('held'), run('ledger-failed', 'failed'), abandoned, run('completed'), run('cancelled'), run('unknown')],
     c = new Coordination({
       sa: s.sa,
       runs: () => runs,
@@ -454,7 +456,8 @@ test('run scope keeps terminal ledger ownership while repo scope excludes termin
       },
       presence: () => online,
     });
-  expect(runs.map(l => c.owner(runScope(l)).owner?.session_id ?? null)).toEqual(['A', 'A', 'B', 'B', 'A']);
+  expect(runs.map(l => c.owner(runScope(l)).owner?.session_id ?? null)).toEqual(['A', 'A', 'A', 'B', 'B', 'A']);
+  expect(runs.map(l => c.isRunOwnershipEvidence(l))).toEqual(runs.map(l => hooks.isRunOwnershipEvidence(l, l.run_id === 'held' ? 'failed' : l.run_id)));
   expect(c.owner(s.scope).owner).toMatchObject(a);
   expect(c.ownedNonterminalRuns('codex').map(l => l.run_id)).toEqual(['held', 'unknown']);
   expect(c.unfinishedRuns('A')).toEqual([

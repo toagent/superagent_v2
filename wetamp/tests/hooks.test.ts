@@ -11,6 +11,9 @@ await (
 ).init();
 
 const HOOKS = join(import.meta.dir, '..', 'hooks');
+const coord = createRequire(import.meta.url)('../hooks/coord.cjs') as {
+  isRunOwnershipEvidence: (run: object, status?: string) => boolean;
+};
 // 子进程 env 只保留与判定无关的键，判定相关的由每个用例显式给出。
 const ROLE_KEYS = [
   'SUPERAGENT_ROLE',
@@ -27,6 +30,23 @@ const ROLE_KEYS = [
 const baseEnv = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !ROLE_KEYS.includes(k))
 ) as Record<string, string>;
+
+test('ownership evidence excludes failed, abandoned and terminal runs but keeps unknown status', () => {
+  const run = (state?: string) => ({ archon_run_id: 'a', state });
+  const abandoned = {
+    ...run(),
+    rejected: 'a',
+    intervention_events: [{ action: 'abandon', ok: true }],
+  };
+  expect([
+    coord.isRunOwnershipEvidence(run('failed'), 'running'),
+    coord.isRunOwnershipEvidence(abandoned, 'running'),
+    coord.isRunOwnershipEvidence(run(), 'completed'),
+    coord.isRunOwnershipEvidence(run(), 'cancelled'),
+    coord.isRunOwnershipEvidence(run(), 'held'),
+    coord.isRunOwnershipEvidence(run()),
+  ]).toEqual([false, false, false, false, true, true]);
+});
 
 type Out = {
   decision?: string;

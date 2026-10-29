@@ -1,5 +1,6 @@
 import { confined, OUTSIDE } from './board/workflow';
 // Ledger-derived measurements shared by report, board and cockpit.
+import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
 import { WETAMP } from './config';
 import { join, resolve } from 'node:path';
@@ -33,9 +34,9 @@ export const ms = (a?: string, b?: string): number | null => {
 export const interventionCount = (l: Ledger): number | undefined =>
   l.intervention_events?.filter(e => !(e.action === 'land' && e.origin === 'engine')).length;
 
-export const abandoned = (l: Ledger): boolean =>
-  l.rejected === l.archon_run_id &&
-  !!l.intervention_events?.some(event => event.action === 'abandon' && event.ok);
+export const abandoned = (
+  createRequire(import.meta.url)('../hooks/coord.cjs') as { abandoned: (l: Ledger) => boolean }
+).abandoned;
 
 export const cwdOf = (l: Ledger): string => (existsSync(l.repo) ? l.repo : WETAMP);
 const precisionOf = (value?: string): number => (value?.includes(' ') ? 1000 : 0);

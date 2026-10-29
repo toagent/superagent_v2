@@ -40,6 +40,8 @@ export interface RunRef {
   controller?: Controller;
   launcher?: Launcher;
   state?: string;
+  rejected?: string;
+  intervention_events?: { action: string; ok: boolean }[];
   gen_dir?: string;
 }
 export interface DeliveryReauthorization {
@@ -80,6 +82,7 @@ const shared = createRequire(import.meta.url)('../../hooks/coord.cjs') as {
   runScope: (run: Pick<RunRef, 'run_id' | 'repo'>) => Extract<Scope, { kind: 'run' }>;
   resolveRun: (home: string, target: string) => RunRef | undefined;
   archonMutation: (args: string[]) => boolean;
+  isRunOwnershipEvidence: (run: RunRef, status?: string) => boolean;
   admission: (
     home: string,
     scope: Scope,
@@ -353,17 +356,18 @@ export class Coordination {
     run: RunRef,
     statuses: ReturnType<Deps['statuses']> | false = false
   ): boolean {
-    if (run.state === 'failed') return false;
+    if (!shared.isRunOwnershipEvidence(run)) return false;
+    let status: string | undefined;
     try {
-      const status = statuses
+      status = statuses
         ? statuses.get(run.archon_run_id)
         : statuses === null
           ? undefined
           : this.d.status(run);
-      return !['completed', 'cancelled'].includes(status ?? 'unknown');
     } catch {
-      return true; // Unverifiable ownership remains evidence.
+      // Unreadable engine state remains ownership evidence.
     }
+    return shared.isRunOwnershipEvidence(run, status);
   }
   private ownerWithStatuses(
     scope: Scope,

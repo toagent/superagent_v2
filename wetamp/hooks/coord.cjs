@@ -56,6 +56,19 @@ function refusal(action, owner, state = 'unknown', scope) {
   const status = { online: '在线', offline: '离线', unknown: '状态未知' }[state];
   return `已拒绝：${action}\n原因：这个${scope?.kind === 'run' ? '运行' : '仓库'}由 ${label(owner)} 负责（${status}）\n可以：superagent handoff --to <path|run> … 或经用户同意 superagent claim --takeover --reason "<原话>"`;
 }
+function abandoned(run) {
+  return (
+    run.rejected === run.archon_run_id &&
+    !!run.intervention_events?.some(event => event.action === 'abandon' && event.ok)
+  );
+}
+function isRunOwnershipEvidence(run, status) {
+  return (
+    run.state !== 'failed' &&
+    !abandoned(run) &&
+    !['completed', 'cancelled'].includes(status)
+  );
+}
 // The CLI supplies verified run states; hooks use a read-only database snapshot, never a subprocess.
 function candidates(home, archon = path.join(home, 'archon'), scope) {
   let db;
@@ -73,7 +86,6 @@ function candidates(home, archon = path.join(home, 'archon'), scope) {
       .map(n => read(path.join(dir, n)))
       .filter(l => {
         if (scope?.kind === 'run') return l.run_id === scope.id;
-        if (l.state === 'failed') return false;
         let status;
         try {
           const sql = 'select status from remote_agent_workflow_runs where id=?';
@@ -81,7 +93,7 @@ function candidates(home, archon = path.join(home, 'archon'), scope) {
             l.archon_run_id
           )?.status;
         } catch {}
-        return !['completed', 'cancelled'].includes(status);
+        return isRunOwnershipEvidence(l, status);
       })
       .map(l => ({
         scope: runScope(l),
@@ -219,6 +231,8 @@ module.exports = {
   archonMutation,
   label,
   refusal,
+  abandoned,
+  isRunOwnershipEvidence,
   unread,
   notifications,
 };

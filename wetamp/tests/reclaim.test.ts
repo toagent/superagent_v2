@@ -76,6 +76,10 @@ test('reclaim leaves historically offline owners untouched and batch statuses pr
       ['cancelled', 'cancelled'],
     ] as const),
     c = reclaimCoord(statuses, s.c);
+  c.d.runs = () => [
+    { ...s.run, rejected: 'engine', intervention_events: [{ action: 'abandon', ok: true }] },
+  ];
+  expect(new Reclaimer(c).observe()).toEqual([]);
   const evidence = (id: string): boolean =>
     c.isRunOwnershipEvidence({ ...s.run, run_id: id, archon_run_id: id });
   expect(['failed', 'done', 'cancelled', 'missing'].map(evidence)).toEqual([
