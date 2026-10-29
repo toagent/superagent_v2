@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { same, type Identity, type Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
 import { roleTag, type Cockpit } from './board/cockpit';
@@ -11,6 +12,7 @@ interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; 
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; waiting_for: string; waited_s: number }[]; line: string }
 // prettier-ignore
 export interface Heartbeat { at: string; reclaim_pending: number; marshals: Marshal[] }
+export const HEARTBEAT_INTERVAL_MS = 900_000;
 // prettier-ignore
 export type HeartbeatSummary = { available: true; line: string; running: Item[]; waiting: Marshal['waiting']; warnings?: string[] } | { available: false; reason: string };
 const age = (at: string | null | undefined, now: number): number | null => {
@@ -68,7 +70,9 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
 // prettier-ignore
 const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line'].includes(key) ? undefined : item)) as unknown;
 // prettier-ignore
-export const shouldWriteHeartbeat = (previous: Heartbeat | undefined, next: Heartbeat, now: number): boolean => !previous || JSON.stringify(semantic(previous)) !== JSON.stringify(semantic(next)) || now - Date.parse(previous.at) >= 900_000;
+export const heartbeatBatch = (value: Heartbeat): string => createHash('sha256').update(JSON.stringify(semantic(value))).digest('hex');
+// prettier-ignore
+export const shouldWriteHeartbeat = (previous: Heartbeat | undefined, next: Heartbeat, now: number): boolean => !previous || heartbeatBatch(previous) !== heartbeatBatch(next) || now - Date.parse(previous.at) >= HEARTBEAT_INTERVAL_MS;
 
 // prettier-ignore
 export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): HeartbeatSummary {
