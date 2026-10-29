@@ -90,13 +90,14 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
   sh('git add range.ts long.ts large.ts overflow.ts && git commit -qm candidate', repo);
   expect(attempts.map(n => runAttempt(n, repo, gen).stdout.toString())).toEqual(before);
   const calls = join(gen, 'calls'),
+    starts = join(gen, 'starts'),
     input = join(gen, 'input');
   fs.writeFileSync(input, 'initial');
   const workflow = {
     name: 'stable-pack',
     description: 'Native resume invalidation',
     nodes: [
-      { id: 'input', bash: `cat '${input}'`, always_run: true },
+      { id: 'input', bash: `echo start >> '${starts}'; cat '${input}'`, always_run: true },
       ...attempts.flatMap((n, i) => [
         { ...n, depends_on: [i ? 'code-core' : 'input'] },
         {
@@ -130,19 +131,33 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
   const counter = attemptPath(gen, 'pkg/api');
   fs.mkdirSync(join(counter, '..'), { recursive: true });
   let resumed = false;
-  for (const [change, expected] of [
-    [() => {}, ['core', 'api']],
-    [() => sh('git commit --allow-empty -qm resume', repo), ['core', 'api']],
-    [() => fs.writeFileSync(counter, '1'), ['core', 'api', 'api']],
+  for (const [index, [change, expected]] of (
     [
-      () => fs.writeFileSync(input, 'changed upstream candidate'),
-      ['core', 'api', 'api', 'core', 'api'],
-    ],
-  ] as const) {
+      [() => {}, ['core', 'api']],
+      [() => sh('git commit --allow-empty -qm resume', repo), ['core', 'api']],
+      [() => fs.writeFileSync(counter, '1'), ['core', 'api', 'api']],
+      [
+        () => fs.writeFileSync(input, 'changed upstream candidate'),
+        ['core', 'api', 'api', 'core', 'api'],
+      ],
+    ] as const
+  ).entries()) {
     change();
-    if (resumed) invoke('resume', runId, '--detach');
+    if (resumed) {
+      invoke('resume', runId, '--detach');
+      const deadline = Date.now() + 20_000;
+      while (
+        (!existsSync(starts) ||
+          readFileSync(starts, 'utf8').trim().split('\n').length < index + 1) &&
+        Date.now() < deadline
+      )
+        Bun.sleepSync(10);
+      expect(readFileSync(starts, 'utf8').trim().split('\n')).toHaveLength(index + 1);
+    }
     resumed = true;
-    invoke('wait', runId, '--timeout', '20');
+    expect(invoke('wait', runId, '--timeout', '20')).toMatchObject({
+      attention: { kind: 'terminal', status: 'failed' },
+    });
     expect(count()).toEqual([...expected]);
   }
   const code = prompt('code-core', 'package-attempt-core');
