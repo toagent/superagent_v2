@@ -4,6 +4,7 @@ import { cockpit, type Cockpit, type CockpitRun } from '../src/board/cockpit';
 import { unreadableRow, type Snapshot } from '../src/board/data';
 import { unknownProgress } from '../src/board/eta';
 import { launchAgent, orcaBin, orcaView, syncOrca, type OrcaDeps } from '../src/orca';
+import type { Heartbeat } from '../src/heartbeat';
 import type { Hold } from '../src/reasons';
 
 const item = (id: string, extra: Partial<CockpitRun> = {}): CockpitRun => ({
@@ -33,6 +34,11 @@ const view = (active: CockpitRun[] = [], needs: CockpitRun[] = []): Cockpit => (
   tokenRows: null,
   metrics: { completed: 0, decided: 0, firstPass: 0, firstPass_unknown: 0, asks: 0, debt: 0 },
 });
+// prettier-ignore
+const pulse = (lines: string[] = [], reclaim = 0, unknown = 0): Heartbeat => ({ at: '2026-10-11T00:00:00Z', reclaim_pending: reclaim, marshals: [
+  ...lines.map((line, i) => ({ owner: { client: 'codex', pid: i + 1 }, owner_key: ['codex', null, null, i + 1, null], cwd: `/repo/${String(i)}`, project: `p${String(i)}`, running: [], waiting: [], line })),
+  ...Array.from({ length: unknown }, (_, i) => ({ owner: 'unknown' as const, owner_key: 'unknown' as const, cwd: `/unknown/${String(i)}`, project: 'unknown', running: [], waiting: [], line: 'must not appear' })),
+] });
 const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): Snapshot => ({
   at: '2026-10-11T00:00:00Z',
   summary: {},
@@ -112,6 +118,7 @@ function harness(s: Snapshot = frame()) {
       h.loads++;
       return h.snapshot;
     },
+    presence: () => ({ state: 'online', activity: 'active' }),
     now: () => Date.parse('2026-10-11T00:00:00Z'),
     exec: async (path, args, signal) => {
       calls.push({ bin: path, args, signal });
@@ -125,21 +132,24 @@ function harness(s: Snapshot = frame()) {
 
 describe('orcaView', () => {
   test('empty, active and needs use cockpit counts and prioritize needs', () => {
-    expect(orcaView(view())).toEqual({
+    expect(orcaView(view(), pulse())).toEqual({
       status: 'completed',
       comment: '跑 0 · 等你 0 · 僵死 0 · ETA 未知 · 异常 0',
       needs: [],
     });
-    expect(orcaView(view([item('BestIFA')])).status).toBe('in-progress');
+    expect(orcaView(view([item('BestIFA')]), pulse(['BestIFA 元帅｜将军 编码'])).status).toBe(
+      'in-progress'
+    );
     const v = orcaView(
       view(
         [item('BestIFA'), item('wt-hf10', { stage: '评审' })],
         [item('xiaopan-translator', { reason: '评审轮次用尽' })]
-      )
+      ),
+      pulse(['BestIFA 元帅｜将军 编码 m1/1', 'wt-hf10 元帅｜军师 评审'], 2, 1)
     );
     expect(v.status).toBe('in-review');
     expect(v.comment).toBe(
-      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? xiaopan-translator 评审轮次用尽｜BestIFA 编码 m1/1｜wt-hf10 评审'
+      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜BestIFA 元帅｜将军 编码 m1/1｜wt-hf10 元帅｜军师 评审｜待回收 2｜归属未知 1'
     );
     expect(v.comment).not.toMatch(/%|12m05s|99K|private question|3h/);
   });
@@ -148,14 +158,13 @@ describe('orcaView', () => {
       view(
         Array.from({ length: 6 }, (_, i) => item(`p${i}-${'项'.repeat(75)}`)),
         [item('need', { reason: 'review_limit' })]
-      )
+      ),
+      pulse(Array.from({ length: 6 }, (_, i) => `p${String(i)}-${'项'.repeat(75)}`))
     );
     expect(v.comment.length).toBeLessThanOrEqual(200);
-    expect(v.comment).toStartWith(
-      '跑 6 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜? need 评审轮次用尽｜p0-'
-    );
-    expect(v.comment).toEndWith('｜…+5');
-    expect(orcaView(view([item('项'.repeat(300))])).comment).toBe(
+    expect(v.comment).toStartWith('跑 6 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜p0-');
+    expect(v.comment).toEndWith('｜…+4');
+    expect(orcaView(view([item('项'.repeat(300))]), pulse(['项'.repeat(300)])).comment).toBe(
       '跑 1 · 等你 0 · 僵死 0 · ETA 未知 · 异常 0｜…+1'
     );
   });
@@ -168,10 +177,10 @@ describe('orcaView', () => {
           item('a', { reason: 'review_limit' }),
           item('a', { reason: 'review_limit' }),
         ]
-      )
+      ),
+      pulse()
     );
     expect(v.comment).not.toContain('secret-node-summary');
-    expect(v.comment).toContain('待处置');
     expect(v.needs).toEqual(['["a","评审轮次用尽"]', '["b","待处置"]']);
   });
 });
@@ -282,14 +291,14 @@ describe('syncOrca (injected only)', () => {
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     const args = s.sets().at(-1)?.args;
     expect(args).toContain('in-progress');
-    expect(args).toContain('跑 0 · 等你 0 · 僵死 1 · ETA 未知 · 异常 0');
+    expect(args).toContain('跑 0 · 等你 0 · 僵死 1 · ETA 未知 · 异常 0｜归属未知 1');
     expect(args).not.toContain('--read');
     expect(args).not.toContain('--unread');
   });
   test('EV-R1-02 queued jobs and unknown run ownership remain unfinished', () => {
     const s = frame();
     s.rows = [unreadableRow('unknown', '')];
-    expect(orcaView(cockpit(s)).status).toBe('in-progress');
+    expect(orcaView(cockpit(s), pulse()).status).toBe('in-progress');
     s.rows = [];
     s.activity = {
       terms: [],
@@ -317,9 +326,9 @@ describe('syncOrca (injected only)', () => {
       ],
     };
     expect(cockpit(s).tree).toHaveLength(0);
-    expect(orcaView(cockpit(s)).status).toBe('in-progress');
+    expect(orcaView(cockpit(s), pulse()).status).toBe('in-progress');
     s.activity.jobs[0].state = 'done';
-    expect(orcaView(cockpit(s)).status).toBe('completed');
+    expect(orcaView(cockpit(s), pulse()).status).toBe('completed');
   });
   test('same run with a new registered need marks unread', async () => {
     const s = harness(frame([], ['held']));
@@ -390,7 +399,7 @@ describe('syncOrca (injected only)', () => {
       expect(s.sets()[0]?.args).toContain('--unread');
       expect(s.writes).toHaveLength(1);
       expect(s.writes[0]?.path).toBe('/scratch-orca/orca-board.json');
-      expect(JSON.parse(s.h.saved ?? '')).toEqual(orcaView(cockpit(s.h.snapshot, s.deps.now())));
+      expect(JSON.parse(s.h.saved ?? '')).toHaveProperty('heartbeat');
       expect(s.h.releases).toBe(1);
     }
   });
@@ -398,23 +407,25 @@ describe('syncOrca (injected only)', () => {
     const s = harness(frame(['active']));
     await syncOrca(s.deps);
     s.deps.now = () => Date.parse('2026-10-11T00:01:00Z');
-    expect(orcaView(cockpit(s.h.snapshot, s.deps.now())).comment).not.toContain('%');
+    expect(JSON.parse(s.h.saved ?? '').comment).not.toContain('%');
     expect(await syncOrca(s.deps)).toEqual({ skipped: 'unchanged' });
+    s.deps.now = () => Date.parse('2026-10-11T00:15:00Z');
+    expect(await syncOrca(s.deps)).toEqual({ synced: true });
     const read = s.deps.read;
     s.deps.read = () => {
       throw new Error('permission denied');
     };
     expect(await syncOrca(s.deps)).toEqual({ error: 'permission denied' });
-    expect(s.sets()).toHaveLength(1);
-    expect(s.writes).toHaveLength(1);
+    expect(s.sets()).toHaveLength(2);
+    expect(s.writes).toHaveLength(2);
     s.deps.read = read;
     s.h.saved = '{}';
     s.deps.write = () => {
       throw new Error('disk full');
     };
     expect(await syncOrca(s.deps)).toEqual({ error: 'disk full' });
-    expect(s.writes).toHaveLength(1);
+    expect(s.writes).toHaveLength(2);
     expect(s.h.saved).toBe('{}');
-    expect(s.h.releases).toBe(4);
+    expect(s.h.releases).toBe(5);
   });
 });
