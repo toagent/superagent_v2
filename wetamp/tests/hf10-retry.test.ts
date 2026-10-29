@@ -252,7 +252,7 @@ for (const scope of ['package', 'milestone'] as const)
       'code-W3',
       ...(scope === 'package' ? [] : ['code-W4']),
     ]);
-    expect(sa('supervise-tick').out).toMatchObject({ actions: [] });
+    expect(sa('supervise-tick').out).toMatchObject({ action_count: 0, error_count: 0 });
     expect(sa('decide', id, 'retry').code).toBe(1);
     expect(readFileSync(join(scratchRoot, 'codex-sentinel', 'keep'), 'utf8')).toBe('isolated');
     const ledger = JSON.parse(readFileSync(join(env.SUPERAGENT_HOME, `runs/${id}.json`), 'utf8'));
