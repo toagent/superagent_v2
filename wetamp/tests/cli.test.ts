@@ -206,9 +206,9 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   const failures = join(s.root, 'home', 'launch-failures');
   mkdirSync(failures, { recursive: true });
   writeFileSync(join(failures, 'existing.json'), '{}');
-  const invoke = () =>
+  const invoke = (args: string[] = []) =>
     Bun.spawnSync(
-      [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'plan', 'check', path],
+      [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'plan', 'check', path, ...args],
       {
         env: { ...process.env, SUPERAGENT_WRITE_ROOTS: s.root },
         stdout: 'pipe',
@@ -220,6 +220,21 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   expect(JSON.parse(valid.stdout.toString())).toMatchObject({
     ok: true,
     plan_lint: { rejected: false },
+  });
+  mkdirSync(join(repo, '.superagent'));
+  writeFileSync(
+    join(repo, '.superagent/rules.json'),
+    JSON.stringify({
+      frozen: ['core.txt'],
+      required_checks: [{ when: ['core.txt'], check: { cmd: 'required', timeout_s: 1 } }],
+    })
+  );
+  expect(invoke().stderr.toString()).toContain('intersects frozen path');
+  const overridden = invoke(['--lint-override', 'approved exception']);
+  expect(overridden.exitCode).toBe(0);
+  expect(JSON.parse(overridden.stdout.toString())).toMatchObject({
+    rules_added: 1,
+    plan_lint: { rejected: false, override: 'approved exception' },
   });
   const plan = JSON.parse(readFileSync(path, 'utf8'));
   plan.packages[0].goal = 'x'.repeat(2001);

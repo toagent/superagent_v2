@@ -52,6 +52,7 @@ import {
   type Pkg,
   type Plan,
 } from './plan';
+import { freezePlanRules } from './plan-rules';
 import {
   acceptOutputFormat,
   attemptOutputFormat,
@@ -1333,6 +1334,7 @@ export function generate(
   writeFileSync(join(dir, '.archon', 'principles.md'), principles);
   if (!existsSync(join(dir, 'plan.json')))
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
+  freezePlanRules(plan, dir, join(home().sa, 'gen', run));
   writeFileSync(
     join(dir, 'execution.json'),
     JSON.stringify(executionTable(plan, tiers), null, 2) + '\n'

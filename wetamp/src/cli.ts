@@ -128,6 +128,7 @@ import { launchAgent, orcaBin, type AgentLaunch } from './orca';
 import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
+import { applyPlanRules } from './plan-rules';
 import { redact } from './redact';
 import { buildReport, consolidationMetrics, reportSummary } from './report';
 import { abandoned } from './ledger-metrics';
@@ -1454,6 +1455,15 @@ export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; er
   }
 }
 
+function checkedPlan(planPath: string, override?: string) {
+  const rules = applyPlanRules(loadPlan(planPath), override);
+  const plan_lint = lintPlan(rules.plan, override);
+  plan_lint.warnings.push(...rules.warnings, ...planPrecheck(rules.plan, rules.plan.repo));
+  plan_lint.rejected ||= rules.rejected;
+  if (override?.trim()) plan_lint.override = redact(override).slice(0, 240);
+  return { plan: rules.plan, plan_lint, rules_added: rules.added };
+}
+
 function startRun(planPath: string, a: Args): number {
   const allow_overlap = a.flags['allow-overlap']?.trim();
   if (a.flags['allow-overlap'] !== undefined && !allow_overlap)
@@ -1466,7 +1476,8 @@ function startRun(planPath: string, a: Args): number {
   try {
     mode = installMode();
     preflight();
-    const plan = loadPlan(planPath),
+    const rulesChecked = checkedPlan(planPath, a.flags['lint-override']),
+      plan = rulesChecked.plan,
       adoptId = a.flags.adopt?.trim();
     const health = refreshClaudeHealth().health,
       admissionHealth = claudeAdmission(plan.mode, health);
@@ -1488,8 +1499,7 @@ function startRun(planPath: string, a: Args): number {
     return coord().scoped(scope, () => {
       const controller = coord().claim(scope, who).controller;
       return coord().mutate(scope, who, () => {
-        plan_lint = lintPlan(plan, a.flags['lint-override']);
-        plan_lint.warnings.push(...planPrecheck(plan, plan.repo));
+        plan_lint = rulesChecked.plan_lint;
         const syntaxErrors = checkSyntaxErrors(plan);
         if (syntaxErrors.length)
           throw new Error(`preflight: check syntax: ${syntaxErrors.join('; ')}`);
@@ -4312,12 +4322,10 @@ export function main(argv: string[]): number {
     case 'plan': {
       if (target !== 'check' || a._.length !== 3)
         throw new Error('usage: superagent plan check <file>');
-      const plan = loadPlan(a._[2]);
-      const plan_lint = lintPlan(plan, a.flags['lint-override']);
-      plan_lint.warnings.push(...planPrecheck(plan, plan.repo));
+      const { plan_lint, rules_added } = checkedPlan(a._[2], a.flags['lint-override']);
       if (plan_lint.rejected)
         throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
-      print({ ok: true, plan_lint });
+      print({ ok: true, plan_lint, rules_added });
       return 0;
     }
     case 'run':
