@@ -11,7 +11,7 @@ const a: Identity = { client: 'codex', session_id: 'old', host: hostname(), pid:
 const b: Identity = { ...a, session_id: 'new', pid: 11, pid_start: 'b' };
 
 // prettier-ignore
-function fixture(section = true) {
+function fixture(section = true, status: (run: RunRef) => string = () => 'running') {
   const root = tmp(), repo = gitRepo(root), sa = join(root, 'sa');
   mkdirSync(join(sa, 'runs'), { recursive: true });
   const task = join(repo, '.context/sessions/session/task-stack.md'), transcript = join(root, 'rollout.jsonl');
@@ -26,7 +26,7 @@ function fixture(section = true) {
   ].map(row => JSON.stringify(row)).join('\n') + '\n');
   writeFileSync(join(sa, 'live/a.json'), JSON.stringify({ ...a, transcript_path: transcript }));
   let who = a, now = 0;
-  const runs: RunRef[] = [], c = new Coordination({ sa, runs: () => runs, status: () => 'running', presence: () => ({ state: 'online', activity: 'idle' }) });
+  const runs: RunRef[] = [], c = new Coordination({ sa, runs: () => runs, status, presence: () => ({ state: 'online', activity: 'idle' }) });
   const taskCalls: string[][] = [],
     launchCalls: string[][] = [],
     scratchCalls: unknown[][] = [],
@@ -51,19 +51,23 @@ function fixture(section = true) {
 
 // prettier-ignore
 test('start and accept transfer run/repo, reauthorize delivery and fence the old owner', async () => {
-  const s = fixture(), gen = join(s.root, 'gen');
+  const s = fixture(true, run => run.run_id === 'run1' ? 'failed' : 'completed'), gen = join(s.root, 'gen');
   mkdirSync(gen);
   writeFileSync(join(gen, 'delivery-authorization.json'), '{}');
   const run: RunRef = { run_id: 'run1', archon_run_id: 'engine', repo: s.repo, gen_dir: gen };
   s.runs.push(run);
   s.c.claimRun(runScope(run), a);
   writeFileSync(join(s.sa, 'runs/run1.json'), JSON.stringify(run));
+  const completed: RunRef = { run_id: 'done', archon_run_id: 'done', repo: s.repo, controller: { ...a, generation: 1 } };
+  s.runs.push(completed);
+  writeFileSync(join(s.sa, 'runs/done.json'), JSON.stringify(completed));
   const started = await s.r.start();
   expect(started.token).toBe('a'.repeat(32));
   expect(s.taskCalls[1]).toEqual(['handoff', 'session']);
   expect(s.launchCalls[0]).toContain('gpt-test');
   expect(s.launchCalls[0].join(' ')).toContain(`path:${s.repo}`);
   expect(s.launchCalls[0].join(' ')).toContain(`accept ${started.token}`);
+  expect(JSON.parse(readFileSync(join(s.sa, `coord/rollovers/${started.token}.json`), 'utf8')).runs).toEqual(['run1']);
   expect(await s.r.start()).toEqual(started);
   expect(s.launchCalls).toHaveLength(1);
   const generation = s.c.owner(runScope(run)).generation,
@@ -76,6 +80,7 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(s.scratchCalls).toHaveLength(1);
   expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);
   expect(s.c.owner(runScope(run)).owner?.session_id).toBe('new');
+  expect(s.c.owner(runScope(completed)).owner).toBeNull();
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
   expect(s.c.owner(runScope(run)).generation).toBe(generation + 1);
   expect(s.c.owner(repoScope(s.repo)).generation).toBe(repoGeneration + 1);
