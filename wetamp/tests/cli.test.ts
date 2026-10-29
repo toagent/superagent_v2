@@ -16,6 +16,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -25,6 +26,7 @@ import {
 } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as archonMod from '../src/archon';
 import * as cliMod from '../src/cli';
@@ -62,6 +64,8 @@ import { nativeSpawnSync } from './preload';
 import { continuationOnCurrent } from '../src/engine';
 import { Reclaimer, reclaimTick } from '../src/reclaim';
 
+const req = createRequire(import.meta.url);
+const generatorModule = req('../src/generate.ts') as typeof import('../src/generate');
 const engineRecoverLock = () => {
   const root = join(process.env.ARCHON_HOME ?? '', 'execution-admissions');
   mkdirSync(root, { recursive: true });
@@ -734,8 +738,51 @@ test('legacy deferred_deliveries is ignored without rewriting the ledger', () =>
 });
 
 describe('HF3 latest-engine recovery', () => {
-  const setup = (hash?: string) => {
+  const realGenerate = generate;
+  const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof generate> => {
+    const [plan, run, fake = false, previousHash, carried, delivery, engineSnapshot, routingState] =
+      args;
+    const dir = join(process.env.SUPERAGENT_HOME!, 'gen', run);
+    const workflow = `sa-${run}`;
+    const archon = join(dir, '.archon');
+    if (previousHash !== undefined && existsSync(archon)) renameSync(archon, `${archon}.old`);
+    const workflowDir = join(archon, 'workflows', workflow);
+    mkdirSync(workflowDir, { recursive: true });
+    writeFileSync(
+      join(workflowDir, `${workflow}.yaml`),
+      Bun.YAML.stringify(
+        buildWorkflow(
+          plan,
+          milestones(plan),
+          run,
+          dir,
+          fake,
+          Date.now(),
+          loadTiers(),
+          carried,
+          delivery,
+          engineSnapshot,
+          routingState
+        )
+      )
+    );
+    writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan));
+    writeFileSync(join(dir, 'engine.json'), JSON.stringify({ fake }));
+    return {
+      dir,
+      workflow,
+      config: join(dir, 'run-config.yaml'),
+      engine_hash: engineHash(),
+      engine_commit: 'a'.repeat(40),
+    };
+  };
+  const setup = (hash?: string, fastRecovery = true) => {
     const s = stub([run('failed')]);
+    fixtureSpies.push(
+      spyOn(generatorModule, 'generate').mockImplementation((...args) =>
+        args[3] === undefined || fastRecovery ? fastGenerate(...args) : realGenerate(...args)
+      )
+    );
     const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
     plan.deadline = new Date(Date.now() + 3600_000).toISOString();
     const gen = generate(plan, 'sa1', true);
@@ -767,7 +814,7 @@ describe('HF3 latest-engine recovery', () => {
       ['failed', 'code-core'],
       ['cancelled', 'fix-m1-r2'],
     ] as const) {
-      const s = setup('old');
+      const s = setup('old', true);
       writeFileSync(
         join(s.dir, 'get-000.json'),
         JSON.stringify(run(status, { nodes: [{ nodeId, state: 'completed' }] }))
@@ -1033,7 +1080,7 @@ describe('HF3 latest-engine recovery', () => {
     ).toEqual({ 'gate-m1-r1': 'a'.repeat(64), 'diff-m1-r1': 'b'.repeat(64) });
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
-    const s = setup();
+    const s = setup(undefined, false);
     const engine = gitRepo(tmp());
     engineBoundary!.mockImplementation(() => cleanEngine(engine));
     const commit = gitHead(engine);
@@ -1085,7 +1132,7 @@ describe('HF3 latest-engine recovery', () => {
   });
   test('stale failed/cancelled adopt; stale paused owner keeps its snapshot', () => {
     for (const status of ['cancelled', 'paused'] as const) {
-      const s = setup('old');
+      const s = setup('old', true);
       writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run(status)));
       expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
       expect(

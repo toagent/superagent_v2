@@ -29,9 +29,8 @@
   },
   "testGroups": [
     [
-      "tests/"
-    ],
-    [
+      "--parallel",
+      "tests/",
       "scripts/"
     ]
   ]

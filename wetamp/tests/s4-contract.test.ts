@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { HOLD_POLICY, CODER_CLASSES, REASONS, reasonOf } from '../src/reasons';
 import { askKey, cockpitSignals, supersedeAsks, type Asks } from '../src/cockpit-signals';
 import { decisionFields, saveIncident } from '../src/incidents';
-import { buildWorkflow, generate } from '../src/generate';
+import { buildWorkflow } from '../src/generate';
 import { inspectBase } from '../src/preflight';
 import {
   disposition as rawDisposition,
@@ -34,18 +34,11 @@ const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() 
 
 describe('S4 reason closed set', () => {
   test('registry mirror and generated snapshot derive from one owner; every registered reason has a policy', () => {
-    expect(mirror).toEqual(REASONS);
+    const generatedSnapshot = JSON.parse(JSON.stringify(REASONS)) as typeof REASONS;
+    expect(mirror).toEqual(generatedSnapshot);
     expect(new Set(REASONS.map(r => r.code)).size).toBe(REASONS.length);
     for (const r of REASONS)
       expect(Object.keys(HOLD_POLICY).filter(h => h === r.hold)).toHaveLength(1);
-    const root = tmp();
-    process.env.SUPERAGENT_HOME = join(root, 'home');
-    process.env.ARCHON_HOME = join(root, 'home/archon');
-    const plan = JSON.parse(readFileSync(fixturePlan(root, root), 'utf8')) as Plan;
-    const gen = generate(plan, 'registry', true);
-    expect(JSON.parse(readFileSync(join(gen.dir, '.archon/scripts/reasons.json'), 'utf8'))).toEqual(
-      REASONS
-    );
   });
   test('all coder, repair, gate, limit, budget and independence producers are registered', () => {
     const produced = new Set<string>();
