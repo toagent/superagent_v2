@@ -261,8 +261,8 @@ export const gateHashes = (round: string, env: NodeJS.ProcessEnv = process.env):
     .map(carried => env[gateHashInput(round, carried).env])
     .filter((value): value is string => Boolean(value));
 
-const integrationSync = (): void => {
-  reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
+// prettier-ignore
+const integrationSync = (): void => { reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
     const { ledger, fence } = authorized();
     if (!ledger.delivery) throw new Error('integration: missing delivery target');
     fence();
@@ -279,8 +279,7 @@ const integrationSync = (): void => {
     emit(`sync-${process.env.INPUTS_MILESTONE ?? 'run'}-${String(generation)}`, result);
     if (process.env.INPUTS_FAIL_CONFLICT === '1' && result.status === 'conflict')
       process.exitCode = 1;
-  });
-};
+}); };
 
 const lastGate = (milestone: string): Record<string, unknown> => {
   const artifacts = process.env.ARTIFACTS_DIR ?? '';
@@ -311,8 +310,8 @@ const lastGate = (milestone: string): Record<string, unknown> => {
   return selected.value;
 };
 
-const integrationPublish = (): void => {
-  reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
+// prettier-ignore
+const integrationPublish = (): void => { reclaimAdmission(process.env.INPUTS_RUN ?? '', () => {
     const { ledger, fence } = authorized();
     if (!ledger.delivery) throw new Error('integration: missing delivery target');
     const milestone = process.env.INPUTS_MILESTONE ?? 'run';
@@ -360,8 +359,7 @@ const integrationPublish = (): void => {
     }
     emit(tag, result, result.status !== 'published');
     if (result.status === 'rejected') process.exitCode = 1;
-  });
-};
+}); };
 
 export function runIntegrationMain(action: string): void {
   queueMicrotask(() => {
