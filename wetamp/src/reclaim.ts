@@ -2,16 +2,16 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 // prettier-ignore
-import { coord, identityKey, runScope, same, type Coordination, type Identity, type RunRef } from './coord';
-import { getRun } from './archon';
+import { Coordination, coord, identityKey, runScope, same, type Identity, type RunRef } from './coord';
+import { getRun, runStatuses } from './archon';
 import { writeAtomic } from './config';
 
 // prettier-ignore
-interface Observation { run: string; repo: string; first_offline_at: number; last_offline_at: number; count: number; owner: Identity; generation: number }
+interface Observation { run: string; repo: string; first_offline_at?: number; last_offline_at?: number; last_online_at?: number; count: number; owner: Identity; generation: number }
 // prettier-ignore
 interface Entry { id: string; run: string; from: Identity; to: Identity; expected_generation: number; observation?: Pick<Observation, 'first_offline_at' | 'last_offline_at' | 'count'>; state: 'transferring' | 'transferred' | 'reauthorized' | 'abandoned_attempt'; at: string }
 // prettier-ignore
-export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; pending: string[] }
+export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; pending: string[]; historical: string[] }
 const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
 // prettier-ignore
 const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
@@ -33,9 +33,10 @@ export class Reclaimer {
     for (const run of this.c.d.runs()) {
       if (!this.c.isRunOwnershipEvidence(run)) continue;
       const scope = runScope(run), view = this.c.owner(scope);
-      if (!view.owner || view.presence.state !== 'offline') continue;
+      if (!view.owner) continue;
       const key = this.key(scope, view.owner, view.generation), old = prior.get(key);
-      next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 });
+      if (view.presence.state === 'online') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: at, count: 0 });
+      else if (view.presence.state === 'offline') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: old?.last_online_at, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 });
     }
     this.write(this.observations, next); return next;
   }
@@ -57,7 +58,7 @@ export class Reclaimer {
     }, 0);
   }
   complete(): ReclaimResult {
-    const out: ReclaimResult = { transferred: [], unclaimed: [], skipped: [], pending: [] };
+    const out: ReclaimResult = { transferred: [], unclaimed: [], skipped: [], pending: [], historical: [] };
     for (const entry of this.latest().values()) if (['transferring', 'transferred'].includes(entry.state)) {
       const run = this.c.resolveRun(entry.run); if (!run) { out.pending.push(entry.run); continue; }
       try { const state = this.finish(run, entry); out[state === 'transferred' ? 'transferred' : state === 'pending' ? 'pending' : 'skipped'].push(entry.run); } catch { out.pending.push(entry.run); }
@@ -65,9 +66,10 @@ export class Reclaimer {
     return out;
   }
   reclaim(observations = values<Observation>(this.observations)): ReclaimResult {
-    const out: ReclaimResult = { transferred: [], unclaimed: [], skipped: [], pending: [] }, pending = this.latest();
+    const out: ReclaimResult = { transferred: [], unclaimed: [], skipped: [], pending: [], historical: [] }, pending = this.latest();
     for (const o of observations) {
-      if (o.count < 2 || o.last_offline_at - o.first_offline_at < 120_000) continue;
+      if (o.count < 2 || o.first_offline_at === undefined || o.last_offline_at === undefined || o.last_offline_at - o.first_offline_at < 120_000) continue;
+      if (o.last_online_at === undefined) { out.historical.push(o.run); continue; }
       if (['transferring', 'transferred'].includes(pending.get(o.run)?.state ?? '')) { out.pending.push(o.run); continue; }
       const run = this.c.resolveRun(o.run); if (!run) { out.skipped.push(o.run); continue; }
       const scope = runScope(run), target = this.c.owner({ kind: 'repo', id: scope.repo });
@@ -79,13 +81,41 @@ export class Reclaimer {
     }
     return out;
   }
+  tick(): void {
+    this.complete(); const observed = this.observe(), now = this.now(), path = join(this.root, 'schedule.json');
+    const state = values<number>(path);
+    if (!state.length || now - state[0] >= 300_000) { this.reclaim(observed); this.write(path, { last_reclaim_at: now }); }
+  }
 }
 
 // prettier-ignore
-export function reclaimOnce(): ReclaimResult { const r = new Reclaimer(), completed = r.complete(), observed = r.observe(), reclaimed = r.reclaim(observed); return { transferred: [...completed.transferred, ...reclaimed.transferred], unclaimed: reclaimed.unclaimed, skipped: [...completed.skipped, ...reclaimed.skipped], pending: [...completed.pending, ...reclaimed.pending] }; }
+export const reclaimCoord = (statuses = runStatuses(), base = coord()): Coordination => {
+  if (!statuses) return base;
+  const presences = new Map<string, ReturnType<typeof base.d.presence>>();
+  return new Coordination({ ...base.d,
+    status: run => run.state === 'failed' ? 'failed' : statuses.get(run.archon_run_id) ?? 'unknown',
+    presence: who => { const key = JSON.stringify(identityKey(who)), found = presences.get(key); if (found) return found; const value = base.d.presence(who); presences.set(key, value); return value; },
+  });
+};
+export function reclaimOnce(): ReclaimResult {
+  const r = new Reclaimer(reclaimCoord()),
+    completed = r.complete(),
+    observed = r.observe(),
+    reclaimed = r.reclaim(observed);
+  return {
+    transferred: [...completed.transferred, ...reclaimed.transferred],
+    unclaimed: reclaimed.unclaimed,
+    skipped: [...completed.skipped, ...reclaimed.skipped],
+    pending: [...completed.pending, ...reclaimed.pending],
+    historical: reclaimed.historical,
+  };
+}
+export function reclaimTick(now = Date.now(), r = new Reclaimer(reclaimCoord(), () => now)): void {
+  r.tick();
+}
 export const observe = (now = Date.now()): Observation[] =>
-  new Reclaimer(coord(), () => now).observe();
+  new Reclaimer(reclaimCoord(), () => now).observe();
 export const complete = (now = Date.now()): ReclaimResult =>
-  new Reclaimer(coord(), () => now).complete();
+  new Reclaimer(reclaimCoord(), () => now).complete();
 export const reclaim = (now = Date.now()): ReclaimResult =>
-  new Reclaimer(coord(), () => now).reclaim();
+  new Reclaimer(reclaimCoord(), () => now).reclaim();

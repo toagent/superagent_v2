@@ -84,6 +84,7 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     at: new Date(now - 4 * 60_000).toISOString(),
     collect: { ok: true },
     publish: { ok: true },
+    reclaim: { ok: true },
     orca: { ok: false, error: 'down' },
     console: { ok: true },
     failover: { ok: true },
@@ -96,9 +97,10 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
         ...tick,
         at: new Date(now).toISOString(),
         collect: { ok: false, error: 'bad ledger' },
+        reclaim: { ok: false, error: 'broken' },
         orca: { ok: true },
       },
       now
     ).messages
-  ).toEqual(['巡检采集失败：bad ledger']);
+  ).toEqual(['巡检采集失败：bad ledger', 'reclaim异常：broken']);
 });
