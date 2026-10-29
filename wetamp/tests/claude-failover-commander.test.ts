@@ -2,9 +2,8 @@ import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { claudeCommanderFailover } from '../src/cli';
-import * as cliModule from '../src/cli';
 import { type Controller, type RunRef } from '../src/coord';
-import { answerDecision, failoverDecisions } from '../src/decisions';
+import { answerDecision, applyCoordIntents, failoverDecisions } from '../src/decisions';
 import { DeviceStore, operatorGrant } from '../src/web/device-store';
 import { tmp } from './helpers';
 
@@ -161,7 +160,13 @@ test('PWA inbox answers yes/no and rejects takeover when Claude recovered', asyn
     expect(
       (await answerDecision(store, device, decision.id, outcome === 'no' ? 'no' : 'yes')).stage
     ).toBe('intent');
-    cliModule.superviseTick();
+    const asksPath = join(process.env.SUPERAGENT_HOME!, 'asks.json'),
+      asks = JSON.parse(readFileSync(asksPath, 'utf8')) as Record<
+        string,
+        { status: string; context?: unknown }
+      >;
+    applyCoordIntents(asks);
+    writeFileSync(asksPath, JSON.stringify(asks, null, 2) + '\n');
     expect(store.transaction(state => state.receipts[0].stage)).toBe('accepted');
     await execute(
       f,
