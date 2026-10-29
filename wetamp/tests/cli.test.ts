@@ -1296,7 +1296,9 @@ describe('waitRun (archon stub)', () => {
       .mockReturnValueOnce([accepted])
       .mockReturnValue([message]);
     try {
-      expect(waitRun(s.ledger, 60)).toMatchObject({ state: 'inbox', exit: EXIT.held });
+      const result = waitRun(s.ledger, 60);
+      expect(result).toMatchObject({ state: 'inbox', exit: EXIT.held });
+      expect(result.heartbeat).toBeUndefined();
       expect(s.calls().filter(c => c.startsWith('workflow get'))).toHaveLength(1);
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
     } finally {
@@ -1384,9 +1386,25 @@ describe('waitRun (archon stub)', () => {
     });
     expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
   });
+  // prettier-ignore
   test('timeout while running returns 4 without blocking past deadline', () => {
-    const s = stub([run('running')]);
-    expect(waitRun(s.ledger, 0)).toMatchObject({ state: 'running', exit: EXIT.running });
+    const s = stub([run('running')]), who = { client: 'codex', host: 'host', pid: 7, pid_start: 'start-7' };
+    writeFileSync(join(s.root, 'home/heartbeat.json'), JSON.stringify({
+      at: new Date(Date.now() - 19 * 60_000).toISOString(), reclaim_pending: 0,
+      marshals: [
+        { owner: who, owner_key: [], cwd: '/a', project: 'a', line: 'mine', running: [{ id: 'mine' }], waiting: [{ id: 'wait' }] },
+        { owner: { ...who, pid: 8 }, owner_key: [], cwd: '/b', project: 'b', line: 'other', running: [{ id: 'other' }], waiting: [] },
+      ],
+    }));
+    writeFileSync(join(s.root, 'home/tick.json'), JSON.stringify({
+      at: new Date(Date.now() - 4 * 60_000).toISOString(), collect: { ok: true }, publish: { ok: true }, orca: { ok: true }, console: { ok: true }, failover: { ok: true }, actions: { ok: true },
+    }));
+    expect(waitRun(s.ledger, 0, who)).toMatchObject({ state: 'running', exit: EXIT.running,
+      heartbeat: { available: true, line: 'mine', running: [{ id: 'mine' }], waiting: [{ id: 'wait' }], warnings: ['心跳过期 19m', '未收到巡检心跳 4m'] },
+    });
+    const missing = stub([run('running')]);
+    expect(waitRun(missing.ledger, 0, who)).toMatchObject({ state: 'running', exit: EXIT.running, heartbeat: { available: false } });
+    expect(waitRun(stub([run('completed')]).ledger, 0, who).heartbeat).toBeUndefined();
   });
   test('wait transport failure is reported without changing the run or retrying execution', () => {
     const s = stub([run('running')]);

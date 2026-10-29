@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test';
 import { cockpit } from '../src/board/cockpit';
 import type { BoardRow, Snapshot } from '../src/board/data';
-import { heartbeat, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
+// prettier-ignore
+import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
 const now = Date.parse('2026-10-29T10:00:00Z');
 // prettier-ignore
@@ -56,6 +57,16 @@ test('heartbeat groups complete identities, isolates pid-only sessions, and excl
   expect(result.marshals[0]?.running.map(item => item.role)).toEqual(['将军·gpt', '军师·opus']);
   expect(result.reclaim_pending).toBe(1);
   expect(JSON.stringify(result)).not.toContain('dead');
+  const selected = heartbeatSummary(result, b, now + 19 * 60_000);
+  expect(selected).toMatchObject({
+    available: true,
+    warnings: ['心跳过期 19m'],
+  });
+  expect(selected.available && selected.running.map(item => item.id)).toEqual(['b', 'b']);
+  expect(heartbeatSummary(result, owner(9), now)).toEqual({
+    available: false,
+    reason: 'caller heartbeat unavailable',
+  });
 });
 
 test('heartbeat persistence ignores clocks, refreshes at 900s, and health classifies stages', () => {

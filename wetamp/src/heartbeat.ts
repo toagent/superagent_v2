@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import { createRequire } from 'node:module';
-import type { Identity, Presence } from './coord';
+import { same, type Identity, type Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
 import { roleTag, type Cockpit } from './board/cockpit';
 import { unknownProgress, type Progress } from './board/eta';
@@ -11,6 +11,8 @@ interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; 
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; waiting_for: string; waited_s: number }[]; line: string }
 // prettier-ignore
 export interface Heartbeat { at: string; reclaim_pending: number; marshals: Marshal[] }
+// prettier-ignore
+export type HeartbeatSummary = { available: true; line: string; running: Item[]; waiting: Marshal['waiting']; warnings?: string[] } | { available: false; reason: string };
 const age = (at: string | null | undefined, now: number): number | null => {
   const value = Date.parse(at ?? '');
   return Number.isFinite(value) ? Math.max(0, Math.floor((now - value) / 1000)) : null;
@@ -67,6 +69,14 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
 const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line'].includes(key) ? undefined : item)) as unknown;
 // prettier-ignore
 export const shouldWriteHeartbeat = (previous: Heartbeat | undefined, next: Heartbeat, now: number): boolean => !previous || JSON.stringify(semantic(previous)) !== JSON.stringify(semantic(next)) || now - Date.parse(previous.at) >= 900_000;
+
+// prettier-ignore
+export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): HeartbeatSummary {
+  const marshal = value.marshals.find(item => item.owner !== 'unknown' && same(who, item.owner));
+  if (!marshal) return { available: false, reason: 'caller heartbeat unavailable' };
+  const minutes = Math.floor((now - Date.parse(value.at)) / 60_000), warnings = minutes > 18 ? [`心跳过期 ${String(minutes)}m`] : [];
+  return { available: true, line: marshal.line, running: marshal.running, waiting: marshal.waiting, ...(warnings.length ? { warnings } : {}) };
+}
 
 // prettier-ignore
 export interface TickStage { ok: boolean; error?: string; skipped?: string }
