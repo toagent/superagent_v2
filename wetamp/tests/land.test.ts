@@ -60,40 +60,14 @@ test('reclaim admission waits through transfer, passes without a journal, and ti
   expect(await Bun.file(join(artifacts, 'publish-m1.json')).json())
     .toMatchObject({ reason: 'reclaim_pending' });
 });
-
+// prettier-ignore
 test('generation fencing refreshes only for a newer owner and retries once', () => {
-  let attempts = 0,
-    refreshes = 0;
-  const reject = () => {
-    attempts++;
-    throw new Error('stale');
-  };
-  expect(() =>
-    retryAdvancedFence(
-      true,
-      [1, 1],
-      () => [1, 1],
-      reject,
-      () => refreshes++
-    )
-  ).toThrow('stale');
-  retryAdvancedFence(
-    true,
-    [1, 1],
-    () => [2, 1],
-    reject,
-    () => refreshes++
-  );
+  let attempts = 0, refreshes = 0;
+  const reject = () => { attempts++; throw new Error('stale'); };
+  expect(() => retryAdvancedFence(true, [1, 1], () => [1, 1], reject, () => refreshes++)).toThrow('stale');
+  retryAdvancedFence(true, [1, 1], () => [2, 1], reject, () => refreshes++);
   expect([attempts, refreshes]).toEqual([2, 1]);
-  expect(() =>
-    retryAdvancedFence(
-      false,
-      [1, 1],
-      () => [2, 2],
-      reject,
-      () => refreshes++
-    )
-  ).toThrow('stale');
+  expect(() => retryAdvancedFence(false, [1, 1], () => [2, 2], reject, () => refreshes++)).toThrow('stale');
   expect(refreshes).toBe(1);
 });
 
