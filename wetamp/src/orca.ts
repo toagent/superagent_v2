@@ -5,6 +5,8 @@ import { home, writeAtomic } from './config';
 import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit, decisionHeader, REASONS, type Cockpit } from './board/cockpit';
+import { presence, type Identity, type Presence } from './coord';
+import { heartbeat, shouldWriteHeartbeat, type Heartbeat } from './heartbeat';
 
 export interface OrcaView {
   status: 'in-review' | 'in-progress' | 'completed';
@@ -13,7 +15,7 @@ export interface OrcaView {
 }
 
 /** Reasons can originate in node outcomes: only registered phrases cross into Orca. */
-export function orcaView(c: Cockpit): OrcaView {
+export function orcaView(c: Cockpit, pulse: Heartbeat): OrcaView {
   const phrases = new Set<string>(Object.values(REASONS));
   const reason = (s: string): string =>
     s
@@ -27,18 +29,22 @@ export function orcaView(c: Cockpit): OrcaView {
       )
       .join('、');
   const head = decisionHeader(c);
-  const parts = [
-    ...c.needs.map(
-      r => `? ${r.project} ${reason(r.reason || (r.state === 'held:human' ? 'signoff' : ''))}`
-    ),
-    ...c.active.map(r => `${r.project} ${r.stage}`),
-  ].map(s => s.replace(/[\r\n]+/g, ' '));
+  const parts = pulse.marshals
+    .filter(m => m.owner !== 'unknown')
+    .map(m => m.line.replace(/[\r\n]+/g, ' '));
+  const suffix = [
+    ...(pulse.reclaim_pending ? [`待回收 ${String(pulse.reclaim_pending)}`] : []),
+    ...(pulse.marshals.some(m => m.owner === 'unknown')
+      ? [`归属未知 ${String(pulse.marshals.filter(m => m.owner === 'unknown').length)}`]
+      : []),
+  ];
   let kept = parts.length;
   const comment = (): string =>
     [
       head,
       ...parts.slice(0, kept),
       ...(kept < parts.length ? [`…+${String(parts.length - kept)}`] : []),
+      ...suffix,
     ].join('｜');
   while (comment().length > 200 && kept > 0) kept--;
   return {
@@ -66,6 +72,7 @@ export interface OrcaDeps {
   write: (path: string, text: string) => void;
   lock: typeof lock;
   load: (signal: AbortSignal) => Promise<Snapshot>;
+  presence: (owner: Identity) => Presence;
   now: () => number;
   exec: (bin: string, args: string[], signal: AbortSignal) => Promise<string>;
   timeoutMs: number;
@@ -128,6 +135,7 @@ const defaults: OrcaDeps = {
   write: writeAtomic,
   lock,
   load: signal => createLoader(signal)(20),
+  presence: owner => presence(owner, home().sa),
   now: Date.now,
   exec: (bin, args, signal) =>
     new Promise((resolve, reject) => {
@@ -198,12 +206,14 @@ export async function syncOrca(
       probe.result.runtime.reachable !== true
     )
       return { skipped: 'unavailable' };
-    const next = orcaView(
-      cockpit(snapshot ?? (await bounded(signal, () => d.load(signal))), d.now())
-    );
+    const now = d.now(),
+      source = snapshot ?? (await bounded(signal, () => d.load(signal))),
+      c = cockpit(source, now);
+    const pulse = heartbeat(source, c, now, d.presence),
+      next = orcaView(c, pulse);
     signal.throwIfAborted();
     const saved = d.read(state);
-    let previous: OrcaView | undefined;
+    let previous: (OrcaView & { heartbeat: Heartbeat }) | undefined;
     if (saved !== undefined) {
       let p: unknown;
       try {
@@ -216,13 +226,23 @@ export async function syncOrca(
         (p.status === 'in-review' || p.status === 'in-progress' || p.status === 'completed') &&
         typeof p.comment === 'string' &&
         Array.isArray(p.needs) &&
-        p.needs.every((s: unknown) => typeof s === 'string')
+        p.needs.every((s: unknown) => typeof s === 'string') &&
+        record(p.heartbeat) &&
+        typeof p.heartbeat.at === 'string' &&
+        typeof p.heartbeat.reclaim_pending === 'number' &&
+        Array.isArray(p.heartbeat.marshals)
       )
-        previous = { status: p.status, comment: p.comment, needs: p.needs };
+        previous = {
+          status: p.status,
+          comment: p.comment,
+          needs: p.needs,
+          heartbeat: p.heartbeat as unknown as Heartbeat,
+        };
     }
     if (
+      !shouldWriteHeartbeat(previous?.heartbeat, pulse, now) &&
       previous?.status === next.status &&
-      previous.comment === next.comment &&
+      previous.comment.split('｜', 1)[0] === next.comment.split('｜', 1)[0] &&
       JSON.stringify(previous.needs) === JSON.stringify(next.needs)
     )
       return { skipped: 'unchanged' };
@@ -250,7 +270,7 @@ export async function syncOrca(
       );
     }
     signal.throwIfAborted();
-    d.write(state, JSON.stringify(next) + '\n');
+    d.write(state, JSON.stringify({ ...next, heartbeat: pulse }) + '\n');
     return { synced: true };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
