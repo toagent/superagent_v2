@@ -130,6 +130,7 @@
         "pass": { "type": ["boolean", "null"] },
         "evidence": { "type": "string" },
         "exit": { "type": ["number", "string"] },
+        "flaky": { "type": "boolean" },
         "structured": { "$ref": "#/$defs/StructuredCases" }
       },
       "required": ["check", "pass", "evidence"]

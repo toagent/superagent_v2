@@ -19,6 +19,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
@@ -359,7 +360,6 @@ const acceptanceCachePath = (
     )
   );
 
-/** Read-only landing probe: preparation is unnecessary only when every check has usable evidence. */
 export function acceptanceCacheReady(cwd = process.cwd()): boolean {
   const p = plan(),
     ids = env('PKGS').split(',').filter(Boolean);
@@ -403,10 +403,75 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
   });
 }
 
-/**
- * 逐条执行；超时由 spawnSync 杀进程。返回失败条目。检查默认在同一 tree、命令、超时与环境下
- * 复用本 run 的结果；身份仅证明传入环境，外部可变资源须声明 cache:false，每次实跑。
- */
+function recordFlaky(check: Check, structured: StructuredCases | undefined, log: string): void {
+  const home = process.env.SUPERAGENT_HOME;
+  if (!home) return;
+  const file = join(home, 'flaky-acceptance.jsonl'),
+    command_hash = sha(check.cmd),
+    repo = plan().repo,
+    test_ids = structured?.failures.map(f => f.id) ?? [],
+    identities = test_ids.length ? test_ids : [command_hash];
+  let previous: { repo?: string; command_hash?: string; test_ids?: string[] }[] = [];
+  try {
+    previous = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line) as (typeof previous)[number]);
+  } catch {
+    /* A new ledger has no prior occurrences. */
+  }
+  const repeated = identities.find(
+    id =>
+      previous.filter(
+        row =>
+          row.repo === repo &&
+          (row.test_ids?.length ? row.test_ids.includes(id) : row.command_hash === id)
+      ).length === 1
+  );
+  const identity = repeated ?? identities[0];
+  let debt: string | undefined;
+  if (repeated)
+    try {
+      const run = basename(dirname(env('PLAN')));
+      const local = resolve(import.meta.dir, '../../../src/coord/index.ts');
+      const module = existsSync(local)
+        ? local
+        : join(home, 'engine/current/wetamp/src/coord/index.ts');
+      const coordination = createRequire(import.meta.url)(
+        module
+      ) as typeof import('../../../src/coord');
+      coordination.coord().handoff(
+        coordination.repoScope(repo),
+        coordination.caller(true),
+        {
+          kind: 'bug',
+          title: `验收偶发x2: ${identity}`,
+          body: `repo: ${repo}\ntest: ${identity}\nrun: ${run}\ntag: ${env('TAG')}`,
+          evidence: [file, log],
+          severity: 'normal',
+        },
+        0,
+        false
+      );
+    } catch (error) {
+      debt = String(error);
+    }
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(
+    file,
+    JSON.stringify({
+      repo,
+      command_hash,
+      test_ids,
+      run: basename(dirname(env('PLAN'))),
+      tag: env('TAG'),
+      at: new Date().toISOString(),
+      ...(debt ? { debt } : {}),
+    }) + '\n'
+  );
+}
+
 function run(
   checks: Check[],
   log: string,
@@ -416,8 +481,6 @@ function run(
   results: CommandResult[] = []
 ): string[] {
   const failed: string[] = [];
-  // These variables belong to the engine node, not the project acceptance command (including probes).
-  // Environment nodes keep their existing inherited environment.
   const commandEnv = env('KIND') === 'env' ? process.env : projectEnvironment(process.env);
   const treeResult =
     artifacts && envKey
@@ -441,13 +504,11 @@ function run(
         structured?: StructuredCases;
       };
       if (
-        saved.failure ||
-        saved.pass === false ||
-        (saved.exit !== undefined && saved.exit !== 0) ||
-        (c.report && saved.structured?.complete !== true)
+        !saved.failure &&
+        saved.pass !== false &&
+        (saved.exit === undefined || saved.exit === 0) &&
+        (!c.report || saved.structured?.complete === true)
       ) {
-        // Older or incomplete adapter output cannot prove structured acceptance.
-      } else {
         appendFileSync(
           log,
           `$ ${c.cmd}\n# reused pass from ${saved.tag}\n${saved.stdout ?? ''}${
@@ -464,7 +525,8 @@ function run(
         continue;
       }
     }
-    const t0 = Date.now();
+    const t0 = Date.now(),
+      deadline = t0 + c.timeout_s * 1000;
     let reportPath = '';
     let expected: string[] = [];
     if (c.report) {
@@ -472,14 +534,13 @@ function run(
       const rel = relative(cwd ?? process.cwd(), reportPath);
       if (rel === '..' || rel.startsWith('../') || rel === '')
         throw new Error('junit report path escapes cwd');
-      rmSync(reportPath, { force: true });
-      if (c.report.collect) {
+      if (c.report.collect && deadline > Date.now()) {
         const collected = Bun.spawnSync(['bash', '-c', c.report.collect], {
           cwd,
           env: commandEnv,
           stdout: 'pipe',
           stderr: 'pipe',
-          timeout: c.timeout_s * 1000,
+          timeout: deadline - Date.now(),
         });
         if (collected.exitCode === 0 && !collected.signalCode)
           expected = collected.stdout
@@ -489,43 +550,63 @@ function run(
             .filter(Boolean);
       }
     }
-    const p = Bun.spawnSync(['bash', '-c', c.cmd], {
-      cwd,
-      env: commandEnv,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: c.timeout_s * 1000,
-    });
-    const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
-    const structured = reportPath ? junitCases(reportPath, expected, t0) : undefined;
-    const consistent =
-      !structured ||
-      (!p.signalCode &&
-        (code === 0) === (structured.failures.length === 0) &&
-        (code === 0 || structured.failures.length > 0));
-    if (structured && !consistent) structured.complete = false;
-    const passed = code === 0 && (!c.report || structured?.complete === true);
+    const execute = () => {
+      if (reportPath) rmSync(reportPath, { force: true });
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return [undefined, 'timeout', undefined, false] as const;
+      const p = Bun.spawnSync(['bash', '-c', c.cmd], {
+        cwd,
+        env: commandEnv,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: remaining,
+      });
+      const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
+      const structured = reportPath ? junitCases(reportPath, expected, t0) : undefined;
+      const consistent =
+        !structured ||
+        (!p.signalCode &&
+          (code === 0) === (structured.failures.length === 0) &&
+          (code === 0 || structured.failures.length > 0));
+      if (structured && !consistent) structured.complete = false;
+      appendFileSync(
+        log,
+        `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(Date.now() - t0)}\n\n`
+      );
+      return [
+        p,
+        code,
+        structured,
+        code === 0 && (!c.report || structured?.complete === true),
+      ] as const;
+    };
+    const first = execute();
+    const attempt =
+      !first[3] &&
+      !first[0]?.signalCode &&
+      c.cache !== false &&
+      env('KIND') !== 'env' &&
+      deadline > Date.now()
+        ? execute()
+        : first;
+    const [p, code, structured, passed] = attempt;
+    const flaky = !first[3] && passed;
     results.push({
       check: c,
       pass: passed,
       evidence: log,
       exit: code,
+      ...(flaky ? { flaky: true } : {}),
       ...(structured ? { structured } : {}),
     });
-    appendFileSync(
-      log,
-      `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(
-        Date.now() - t0
-      )}\n\n`
-    );
+    if (flaky) recordFlaky(c, first[2], log);
     if (!passed) {
       failed.push(c.cmd);
-      // A validation command may emit one JSON object. Prose and coder reports never classify failures.
       let classification: unknown;
       try {
-        const output: unknown = JSON.parse(p.stdout.toString());
+        const output: unknown = JSON.parse(p?.stdout.toString() ?? '');
         if (
-          !p.signalCode &&
+          !p?.signalCode &&
           output &&
           typeof output === 'object' &&
           'evidence' in output &&
@@ -551,7 +632,7 @@ function run(
       if (structured?.complete) failure.failure_class = 'unknown';
       failures.push(failure);
     }
-    if (hit && passed) {
+    if (hit && passed && !flaky) {
       mkdirSync(dirname(hit), { recursive: true });
       writeFileSync(
         hit,
@@ -748,7 +829,6 @@ export function scopeRisk(
   return { risk: maxRisk(declared, ...inferred), out_of_scope };
 }
 
-/** Shared with land's read-only reuse probe; a commit binds the accepted tree. */
 // prettier-ignore
 export function acceptanceContractHash(): string {
   return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('SYNC_GENERATION'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
@@ -756,10 +836,9 @@ export function acceptanceContractHash(): string {
 // prettier-ignore
 export function reusableAcceptance(prior: Accept | undefined, head: string): boolean {
   const checks = plan().packages.filter(k => env('PKGS').split(',').includes(k.id)).flatMap(k => k.accept);
-  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) && prior.command_results?.every(r => r.pass === true) === true;
+  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) && prior.command_results?.every(r => r.pass === true && !r.flaky) === true;
 }
 
-/** Node-bound evidence may cover cache:false checks; it is not a cross-execution cache. */
 function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolean {
   const checks = plan()
     .packages.filter(k => env('PKGS').split(',').includes(k.id))
@@ -770,7 +849,7 @@ function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolea
     prior.head === head &&
     prior.contract_hash === acceptanceContractHash() &&
     JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) &&
-    prior.command_results?.every(r => r.pass === true) === true
+    prior.command_results?.every(r => r.pass === true && !r.flaky) === true
   );
 }
 
