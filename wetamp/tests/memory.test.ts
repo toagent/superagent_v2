@@ -382,6 +382,23 @@ describe('EV1 incident replay', () => {
     deliverEngineDefects();
     expect(coordination.coord().messages()).toHaveLength(0);
   });
+  test('engine handoff excludes a recovered job and snapshots a live defect hash', () => {
+    mkdirSync(join(sa, 'jobs'));
+    for (const [id, state] of [
+      ['recovered', 'running'],
+      ['live', 'lost'],
+    ] as const) {
+      saveEpisode(engineEpisode({ id: `job-${id}`, source: 'job', status: 'lost' }));
+      writeFileSync(
+        join(sa, `jobs/${id}.json`),
+        `{"id":"${id}","state":"${state}","started_at":"${new Date(NOW).toISOString()}","wrapper_pid":${process.pid},"pid":${process.pid}}`
+      );
+    }
+    deliverEngineDefects({});
+    const body = coordination.coord().messages()[0].body;
+    expect(body).toContain('job-live sha256=');
+    expect(body).not.toContain('job-recovered sha256=');
+  });
   test('engine mechanisms queue once, accumulate, and reopen after done', () => {
     const first = engineEpisode({ id: 'defect-a' });
     saveEpisode(first);
@@ -1442,6 +1459,20 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
     expect(readFileSync(errors, 'utf8')).toContain('"reason":"fold_failed"');
     memoryTick({}, NOW + 86400000, false);
     expect(statSync(join(sa, 'memory/priors.json')).mtimeMs).toBeGreaterThanOrEqual(priorsAt);
+    saveEpisode(
+      engineEpisode({
+        id: 'good',
+        signature: 'unregistered_reason',
+        reasons: ['definitely_unknown_reason'],
+        signals: zeros,
+      })
+    );
+    writeFileSync(
+      join(responses, 'good-native.json'),
+      JSON.stringify({ ...good, status: 'running' })
+    );
+    deliverEngineDefects({});
+    expect(coordination.coord().messages()[0]?.title ?? '').not.toMatch(/unregistered_reason/);
   });
   test('native revision invalidates live cache while clock-only holds still trigger without queries', () => {
     const nativeHome = join(sa, 'archon');
@@ -1489,7 +1520,12 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       memoryTick({}, NOW, false);
       const aged = memoryTick({}, NOW + 610000, false);
       expect(aged.episodes[0]).toMatchObject({ category: 'engine', signature: 'orphan_hold' });
-      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(1);
+      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(2);
+      const handoff = coordination.coord().messages()[0],
+        owner = { ...handoff.sender, client: 'engine-owner' };
+      expect(handoff.body).toContain('incident sha256=');
+      coordination.coord().claim(handoff.scope, owner);
+      coordination.coord().ack(handoff.id, owner, 'done', 'fixed');
       writeFileSync(
         join(sa, 'runs/incident.json'),
         JSON.stringify({
@@ -1505,12 +1541,13 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
         })
       );
       expect(memoryTick({}, NOW + 615000, false).episodes[0].signals.orphan_hold).toBe(0);
+      expect(coordination.coord().messages().at(-1)?.title ?? '').not.toMatch(/regression.*orphan/);
       db.query('INSERT INTO remote_agent_workflow_events VALUES (?)').run(raw.id);
       writeFileSync(file, JSON.stringify({ ...raw, events: [] }));
       memoryTick({}, NOW + 620000, false);
-      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(3);
+      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(4);
       memoryTick({}, NOW + 630000, false);
-      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(3);
+      expect(readFileSync(queries, 'utf8').trim().split('\n')).toHaveLength(4);
     } finally {
       db.close();
     }
