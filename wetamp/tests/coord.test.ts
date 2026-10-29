@@ -409,9 +409,9 @@ test('9: old ledger controller falls back to launcher; linked worktrees share re
   expect(c.handoff(s.scope, b, input).delivery).toBe('queued');
 });
 // prettier-ignore
-test('held and unreadable runs remain ownership evidence while ledger failures and engine terminals do not', () => {
+test('run scope keeps terminal ledger ownership while repo scope excludes terminal runs', () => {
   const s = setup(),
-    run = (run_id: string, state?: string): RunRef => ({ run_id, archon_run_id: run_id, repo: s.repo, controller: { ...a, generation: 1 }, state }),
+    run = (run_id: string, state?: string): RunRef => ({ run_id, archon_run_id: run_id, repo: s.repo, controller: { ...(['completed', 'cancelled'].includes(run_id) ? b : a), generation: 1 }, state }),
     runs = [run('held'), run('ledger-failed', 'failed'), run('completed'), run('cancelled'), run('unknown')],
     c = new Coordination({
       sa: s.sa,
@@ -422,7 +422,8 @@ test('held and unreadable runs remain ownership evidence while ledger failures a
       },
       presence: () => online,
     });
-  expect(runs.map(l => c.owner(runScope(l)).owner?.session_id ?? null)).toEqual(['A', null, null, null, 'A']);
+  expect(runs.map(l => c.owner(runScope(l)).owner?.session_id ?? null)).toEqual(['A', 'A', 'B', 'B', 'A']);
+  expect(c.owner(s.scope).owner).toMatchObject(a);
   expect(c.ownedNonterminalRuns('codex').map(l => l.run_id)).toEqual(['held', 'unknown']);
   expect(c.unfinishedRuns('A')).toEqual([
     { run_id: 'held', status: 'failed' },

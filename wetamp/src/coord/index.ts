@@ -362,11 +362,9 @@ export class Coordination {
       : this.d
           .runs(scope.kind === 'run' ? scope.id : undefined)
           .filter(l => {
+            if (scope.kind === 'run') return l.run_id === scope.id;
             // A ledger whose repository no longer resolves cannot share a live repository's scope.
-            if (!this.isRunOwnershipEvidence(l)) return false;
-            return scope.kind === 'run'
-              ? l.run_id === scope.id
-              : shared.repoScope(l.repo)?.id === repo.id;
+            return this.isRunOwnershipEvidence(l) && shared.repoScope(l.repo)?.id === repo.id;
           })
           .map(l => ({
             scope: runScope(l),
