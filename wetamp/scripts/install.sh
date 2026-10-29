@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 幂等安装：$ARCHON_HOME/.env 两行、config.yaml 只写 aliases/workflows/concurrency.providers（先备份）、建 gen/runs；
-# 断言 @sa-coder ≠ @sa-reviewer；装 hooks/board 的自有依赖（wetamp/package.json，按 root workspace bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份；只打印 bootstrap 命令，不执行）；
+# 断言 @sa-coder ≠ @sa-reviewer；装 hooks/board 的自有依赖（wetamp/package.json，按 root workspace bun.lock 冻结，失败只警告）；渲染 supervise-tick 的 launchd plist（相同不动，不同先备份并重载）；
 # 末尾 doctor 摘要。可重复跑。plist 目录默认 ~/Library/LaunchAgents，SA_LAUNCHD_DIR 可改（测试与 selftest 用）。
 # config.yaml 另写 assistants.codex.codexBinaryPath=wetamp/bin/codex-worker（worker 禁嵌套，见 docs/04-hooks-and-nesting.md）。
 # 单独步骤（互斥，不走上面的默认安装）：
@@ -103,8 +103,19 @@ if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
   [ -f "$plist" ] && cp "$plist" "$plist.bak-$(date +%Y%m%d%H%M%S)"
   printf '%s\n' "$new" >"$plist"
   echo "updated ${plist/#$HOME/~}"
-  echo "  load (manual):   launchctl bootout gui/$(id -u)/$label 2>/dev/null; launchctl bootstrap gui/$(id -u) $plist"
-  echo "  unload (manual): launchctl bootout gui/$(id -u)/$label"
+  if [ "${SA_SKIP_LAUNCHD_RELOAD:-}" != 1 ]; then
+    domain="gui/$(id -u)"
+    if launchctl print "$domain/$label" >/dev/null 2>&1; then
+      launchctl bootout "$domain/$label" || {
+        echo "install.sh: launchd bootout failed: $domain/$label" >&2
+        exit 1
+      }
+    fi
+    launchctl bootstrap "$domain" "$plist" || {
+      echo "install.sh: launchd bootstrap failed: $domain $plist" >&2
+      exit 1
+    }
+  fi
 fi
 publish_mode controller
 [ "${SA_SKIP_DOCTOR:-}" = 1 ] && exit 0

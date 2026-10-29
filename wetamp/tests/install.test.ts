@@ -32,7 +32,9 @@ function runInstall(
   home: string,
   launchd = join(home, 'LaunchAgents'),
   archonHome = join(home, 'archon'),
-  path = process.env.PATH
+  path = process.env.PATH,
+  env: Record<string, string> = {},
+  expectedExit = 0
 ): string {
   const p = Bun.spawnSync([join(import.meta.dir, '..', 'scripts', 'install.sh')], {
     env: {
@@ -42,15 +44,17 @@ function runInstall(
       SUPERAGENT_HOME: home,
       ARCHON_HOME: archonHome,
       SA_LAUNCHD_DIR: launchd,
+      SA_SKIP_LAUNCHD_RELOAD: '1',
       SA_SKIP_DOCTOR: '1',
       XDG_STATE_HOME: join(home, 'state'),
       PATH: path,
+      ...env,
     },
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  expect(p.exitCode).toBe(0);
-  return p.stdout.toString();
+  expect(p.exitCode).toBe(expectedExit);
+  return p.stdout.toString() + p.stderr.toString();
 }
 
 describe('install.sh', () => {
@@ -91,12 +95,20 @@ describe('install.sh', () => {
     const home = join(tmp(), 'a&b');
     const la = join(home, '..', 'LA');
     const plist = join(la, 'com.wetamp.superagent.supervise-tick.plist');
+    const bin = join(home, 'bin'),
+      log = join(home, 'launchctl.log');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'launchctl'),
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SA_LAUNCHCTL_LOG"\n[ "$1" != print ] || exit "${SA_LAUNCHCTL_LOADED:-1}"\n[ "$1" != bootstrap ] || exit "${SA_LAUNCHCTL_FAIL:-0}"\n',
+      { mode: 0o755 }
+    );
     const bunDir = dirname(Bun.which('bun') ?? ''),
       nodeDir = dirname(Bun.which('node') ?? ''),
-      callerPath = `${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`;
+      callerPath = `${bin}:${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`,
+      reload = { SA_SKIP_LAUNCHD_RELOAD: '', SA_LAUNCHCTL_LOG: log };
     mkdirSync(join(home, '.nvm/current/bin'), { recursive: true });
-    const first = runInstall(home, la, undefined, callerPath);
-    expect(first).toContain('launchctl bootstrap gui/');
+    runInstall(home, la, undefined, callerPath, reload);
     const xml = readFileSync(plist, 'utf8');
     for (const s of [
       '<integer>60</integer>',
@@ -104,19 +116,33 @@ describe('install.sh', () => {
       `<string>${home.replace('&', '&amp;')}</string>`,
       `<string>${home.replace('&', '&amp;')}/supervise-tick.log</string>`,
       `<string>${dirname(Bun.which('bun') ?? '')}:`,
-      '/wetamp/bin/superagent</string>',
+      '/wetamp/bin/superagent-shim</string>',
     ])
       expect(xml).toContain(s);
     expect(xml).not.toContain('__');
     expect(xml).toContain(`${home.replace('&', '&amp;')}/.nvm/current/bin`);
     expect(xml).not.toContain('.nvm/versions/');
     expect(xml).not.toContain('.codex/tmp/');
-    expect(runInstall(home, la, undefined, callerPath).trim()).toBe('install: mode=controller');
+    const firstCalls = readFileSync(log, 'utf8');
+    expect(firstCalls).toMatch(
+      /^print gui\/\d+\/com\.wetamp\.superagent\.supervise-tick\nbootstrap gui\/\d+ /
+    );
+    expect(runInstall(home, la, undefined, callerPath, reload).trim()).toBe(
+      'install: mode=controller'
+    );
+    expect(readFileSync(log, 'utf8')).toBe(firstCalls);
     writeFileSync(plist, 'stale');
-    expect(runInstall(home, la, undefined, callerPath)).toContain('launchctl bootstrap');
+    runInstall(home, la, undefined, callerPath, { ...reload, SA_LAUNCHCTL_LOADED: '0' });
+    expect(readFileSync(log, 'utf8').slice(firstCalls.length)).toMatch(
+      /^print .+\nbootout .+\nbootstrap .+\n$/
+    );
     expect(readFileSync(plist, 'utf8')).toBe(xml);
     const baks = readdirSync(la).filter(f => f.includes('.plist.bak-'));
     expect(baks.map(f => readFileSync(join(la, f), 'utf8'))).toEqual(['stale']);
+    writeFileSync(plist, 'stale again');
+    expect(
+      runInstall(home, la, undefined, callerPath, { ...reload, SA_LAUNCHCTL_FAIL: '1' }, 1)
+    ).toContain('launchd bootstrap failed');
   });
 
   test('launchd plist: ARCHON_HOME is rendered only when set explicitly at install', () => {
