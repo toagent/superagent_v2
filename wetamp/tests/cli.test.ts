@@ -1350,7 +1350,7 @@ describe('waitRun (archon stub)', () => {
       expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
     }
   });
-  test('wait returns persistent attention after one refresh without rescanning inbox', () => {
+  test('wait returns persistent attention after one full refresh', () => {
     const attention = {
       kind: 'stalled_tool_calls' as const,
       runId: 'r',
@@ -1370,7 +1370,7 @@ describe('waitRun (archon stub)', () => {
         attention,
       });
       expect(wait).toHaveBeenCalledTimes(1);
-      expect(inbox).toHaveBeenCalledTimes(1);
+      expect(inbox).toHaveBeenCalledTimes(2);
       expect(
         running.calls().filter(c => c.startsWith('workflow get') && !c.includes('--events'))
       ).toHaveLength(2);

@@ -621,6 +621,7 @@ spyOn(native,'waitNotification').mockImplementation(() => {
   while(!existsSync(${file('resume')}) && Date.now()<deadline) Bun.sleepSync(10);
   if(!existsSync(${file('resume')})) throw new Error('controller did not resume wait');
   observed=true;
+  return {kind:'attention',attention:{kind:'stalled_tool_calls',runId:'engine',status:'running',calls:[]}};
 });
 spyOn(console,'log').mockImplementation(x=>output.push(JSON.parse(x)));
 try {
@@ -989,7 +990,7 @@ test('wait already blocking returns inbox after a new message arrives, before ti
   // The wait boundary itself is the subject: its stub deposits mail during the first wait slice.
   writeFileSync(
     bin,
-    `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[2]=='get': print(json.dumps({'id':'p','status':'running','metadata':{'execution_owner':{'host':${JSON.stringify(hostname())},'pid':${String(process.pid)}}}}))\nelse:\n open(${JSON.stringify(file)},'w').write(${JSON.stringify(JSON.stringify(message))})\n print(json.dumps({'ok':True,'action':'wait','runId':'p','result':'deadline'}))\n`
+    `#!/usr/bin/env python3\nimport sys,json\nif sys.argv[2]=='get': print(json.dumps({'id':'p','status':'running','metadata':{'execution_owner':{'host':${JSON.stringify(hostname())},'pid':${String(process.pid)}}}}))\nelse:\n open(${JSON.stringify(file)},'w').write(${JSON.stringify(JSON.stringify(message))})\n print(json.dumps({'ok':True,'action':'wait','runId':'p','result':'deadline','observedStatus':'running'}))\n`
   );
   sh(`chmod +x '${bin}'`, s.root);
   process.env.SA_ARCHON_BIN = bin;

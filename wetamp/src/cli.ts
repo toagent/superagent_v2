@@ -1356,6 +1356,11 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who), ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}) };
     const notification = waitNotification(l.archon_run_id, l.repo, left);
     if (notification.kind !== 'attention') continue;
+    const refreshedInbox = coord()
+      .surfaced(who)
+      .filter(message => ['queued', 'surfaced', 'escalated'].includes(message.state));
+    if (refreshedInbox.length)
+      return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox: refreshedInbox };
     const refreshed = getRun(l.archon_run_id, l.repo);
     const refreshedClass = classifyRun(l, refreshed);
     if (refreshedClass.state === 'owner_lost')
