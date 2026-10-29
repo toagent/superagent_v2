@@ -373,6 +373,14 @@ Examples:
   it('renders --full in workflow list --help', () => {
     expect(scopedHelpOptions(['workflow', 'list'])).toContain('--full');
   });
+
+  it('aligns codebase env descriptions in global and scoped help', () => {
+    const line =
+      '  codebase env <action>      List, set, or unset environment variables for a registered codebase';
+    expect(renderHelp()).toContain(line);
+    expect(renderHelp('codebase', 'env')).toContain(line);
+    expect(scopedHelpOptions(['codebase', 'env'])).toContain('--cwd <path>');
+  });
 });
 
 it('workflow run help distinguishes initial registration from the dispatch override', () => {
