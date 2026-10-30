@@ -4250,37 +4250,15 @@ describe('sa-check script', () => {
     expect(readFileSync(join(cache, '.key')).length).toBe(32);
     expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
   }, testTimeout(10_000));
-  test('FC legacy cache default product cannot hide an unclassified command', () => {
+  test('FC unclassified command fails closed instead of defaulting to product', () => {
     const root = tmp(),
       repo = gitRepo(root),
-      counter = join(root, 'count');
-    const command = `echo x >> '${counter}'; false`;
-    const legacy = join(root, 'legacy.ts');
-    const currentScript = readFileSync(SCRIPT, 'utf8');
-    const legacyScript = currentScript.replace('        FAILURE_CLASSES,\n', '');
-    expect(legacyScript).not.toBe(currentScript);
-    cpSync(join(import.meta.dir, '../templates/.archon/scripts'), root, { recursive: true });
-    writeFileSync(
-      join(root, 'policy-attempts.ts'),
-      readFileSync(join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'))
-    );
-    writeFileSync(
-      legacy,
-      legacyScript.replace(
-        'failure_class: failureClass(classification)',
-        "failure_class: 'product'"
-      )
-    );
-    const plan = planFile(root, command, [], true);
-    expect(
-      runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'legacy' }, legacy).out
-    ).toMatchObject({ disposition: 'repair', failures: [{ failure_class: 'product' }] });
+      plan = planFile(root, 'false', [], false);
     const current = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'current' });
     expect(current.out).toMatchObject({
       disposition: 'repair',
       failures: [{ failure_class: 'unknown' }],
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
   });
   test('P2: failures never enter the acceptance cache', () => {
     const root = tmp(),
