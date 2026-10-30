@@ -2,6 +2,7 @@ import { Box, Text, useStdout, type TextProps } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import {
   panelDuration,
+  shortRunId,
   type PanelAttention,
   type PanelGeneralState,
   type PanelModel,
@@ -9,7 +10,6 @@ import {
 } from '../panel';
 import { ProgressBar } from './ProgressBar';
 
-const shortRunId = (id: string): string => id.replace(/^\d{8}-/, '');
 const driftAt = (model: PanelModel, now: number): number =>
   Math.max(0, Math.floor((now - Date.parse(model.heartbeatAt)) / 1000));
 const age = (seconds: number | null, drift: number, recent = false): string => {
@@ -120,12 +120,14 @@ function RunCard({
   const body = (
     <>
       <Box height={1}>
-        <StateIcon state={run.general} now={now} />
-        <Text> </Text>
-        <Text bold color="cyan">
-          {shortRunId(run.id)}
-        </Text>
-        <Text wrap="truncate">
+        <Box flexShrink={0}>
+          <StateIcon state={run.general} now={now} />
+          <Text> </Text>
+          <Text bold color="cyan">
+            {shortRunId(run.id)}
+          </Text>
+        </Box>
+        <Text wrap="truncate-end">
           {' '}
           · {run.project} · {run.title}
         </Text>
@@ -138,7 +140,9 @@ function RunCard({
           </Text>
         ))}
       </Box>
-      <ProgressBar progress={run.estimate} width={Math.max(10, width - (compact ? 0 : 4))} />
+      {run.estimate.pct !== null && (
+        <ProgressBar progress={run.estimate} width={Math.max(10, width - (compact ? 0 : 4))} />
+      )}
       <Text wrap="truncate">
         已用 {age(run.elapsed_s, drift)} · 最近活动 {age(run.last_activity_s, drift, true)} · 执行者{' '}
         {run.roles.join('、')}

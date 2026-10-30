@@ -28,6 +28,7 @@ export const panelDuration = (seconds: number): string => {
     ? `${String(minutes)}m`
     : `${String(Math.floor(minutes / 60))}h ${String(minutes % 60)}m`;
 };
+export const shortRunId = (id: string): string => id.replace(/^\d{8}-/, '');
 const fit = (text: string, width: number): string => {
   if (Bun.stringWidth(text) <= width) return text;
   if (width <= 1) return width === 1 ? '…' : '';
@@ -218,4 +219,3 @@ export function renderPanel(
         .join('\n')
     : output.join('\n');
 }
-const shortRunId = (id: string): string => id.replace(/^\d{8}-/, '');

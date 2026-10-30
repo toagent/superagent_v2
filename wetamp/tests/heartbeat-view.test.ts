@@ -82,6 +82,25 @@ test('状态图标完整且宽屏双列、普通宽度单列', () => {
   ).toBe(false);
 });
 
+test('长标题只截标题且未知进度不渲染进度条', () => {
+  const value = heartbeat(['idle']);
+  const run = value.marshals[0]!.running[0]!;
+  run.id = '20261030-131700-aa87';
+  run.title = '长'.repeat(80);
+  for (const width of [140, 90]) {
+    expect(
+      frame(value, width, 40)
+        .split('\n')
+        .some(line => line.includes('◐ 131700-aa87'))
+    ).toBe(true);
+  }
+  expect(frame(value, 90, 40)).toContain('▕');
+  run.estimate = unknownProgress();
+  const unknown = frame(value, 90, 40);
+  expect(unknown).not.toContain('▕');
+  expect(unknown).not.toContain('剩—');
+});
+
 test('行数不足裁剪卡片且窄屏去掉边框，状态栏仍在末尾', () => {
   const value = heartbeat(['working', 'working', 'working']);
   const short = frame(value, 100, 12, 'quota');
