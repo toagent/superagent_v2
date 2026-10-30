@@ -12,7 +12,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import { Database } from 'bun:sqlite';
 import * as archon from '../src/archon';
@@ -38,9 +38,64 @@ const keys = [
 const originalEnv = keys.map(k => process.env[k]);
 const gc = (dryRun = false, ruleVersion?: string) =>
   collect(dryRun, [process.env.TMPDIR!], ruleVersion);
-const realTrees = () => Bun.spawnSync(['git', 'worktree', 'list', '--porcelain']).stdout.toString();
-const initialTrees = realTrees();
-afterAll(() => expect(realTrees()).toBe(initialTrees));
+interface GitCall {
+  command: string[];
+  cwd: string;
+}
+const originalSpawnSync = Bun.spawnSync;
+const realRepo = originalSpawnSync(['git', 'rev-parse', '--show-toplevel']);
+if (realRepo.exitCode !== 0)
+  throw new Error(`Cannot identify the real repository: ${realRepo.stderr.toString().trim()}`);
+const realRepoRoot = realRepo.stdout.toString().trim();
+const gitCalls: GitCall[] = [];
+function recordingSpawnSync(
+  calls: GitCall[],
+  delegate: typeof Bun.spawnSync
+): typeof Bun.spawnSync {
+  return function recorded<
+    const In extends Bun.SpawnOptions.Writable = 'ignore',
+    const Out extends Bun.SpawnOptions.Readable = 'pipe',
+    const Err extends Bun.SpawnOptions.Readable = 'pipe',
+  >(
+    command:
+      | string[]
+      | (Bun.SpawnOptions.SpawnSyncOptions<In, Out, Err> & { cmd: string[]; onExit?: undefined }),
+    options?: Bun.SpawnOptions.SpawnSyncOptions<In, Out, Err>
+  ): Bun.SyncSubprocess<Out, Err> {
+    const cmd = Array.isArray(command) ? command : command.cmd;
+    calls.push({
+      command: [...cmd],
+      cwd: (Array.isArray(command) ? options?.cwd : command.cwd) ?? process.cwd(),
+    });
+    return Array.isArray(command) ? delegate(command, options) : delegate(command);
+  };
+}
+function mutatesRepo(call: GitCall, root: string): boolean {
+  const { command } = call;
+  if (command[0]?.split('/').at(-1) !== 'git') return false;
+  const worktree = command.indexOf('worktree'),
+    branch = command.indexOf('branch'),
+    mutation =
+      (worktree >= 0 &&
+        command
+          .slice(worktree + 1)
+          .some(part => ['add', 'remove', 'prune', 'move'].includes(part))) ||
+      (branch >= 0 && command.slice(branch + 1).includes('-D'));
+  if (!mutation) return false;
+  let target = call.cwd;
+  for (let i = 1; i < command.length - 1; i++)
+    if (command[i] === '-C') target = resolve(target, command[++i]);
+  const gitDir = command.indexOf('--git-dir');
+  if (gitDir >= 0 && command[gitDir + 1]) target = resolve(call.cwd, command[gitDir + 1]);
+  const absolute = resolve(target),
+    repository = resolve(root);
+  return absolute === repository || absolute.startsWith(repository + sep);
+}
+Bun.spawnSync = recordingSpawnSync(gitCalls, originalSpawnSync);
+afterAll(() => {
+  Bun.spawnSync = originalSpawnSync;
+  expect(gitCalls.filter(call => mutatesRepo(call, realRepoRoot))).toEqual([]);
+});
 const views = new Map<string, archon.RunView>();
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
 let revisions: ReturnType<typeof spyOn<typeof archon, 'reportRunRevisions'>> | undefined;
@@ -71,6 +126,26 @@ test('batch status avoids getRun and null or missing entries fall back', () => {
   statuses.mockReturnValue(new Map());
   gc(false, 'missing');
   expect(query).toHaveBeenCalledTimes(2);
+});
+
+test('real repository worktree mutations are identified without executing them', () => {
+  const calls: GitCall[] = [],
+    result = originalSpawnSync(['git', '--version']),
+    spawn = recordingSpawnSync(calls, (() => result) as typeof Bun.spawnSync);
+  spawn(['git', '-C', realRepoRoot, 'worktree', 'add', join(realRepoRoot, 'not-created')]);
+  expect(calls.some(call => mutatesRepo(call, realRepoRoot))).toBe(true);
+});
+
+test('fixture worktree mutations do not implicate the real repository', () => {
+  expect(
+    mutatesRepo(
+      {
+        command: ['git', '-C', join(realRepoRoot, '..', 'fixture'), 'worktree', 'add', 'tree'],
+        cwd: realRepoRoot,
+      },
+      realRepoRoot
+    )
+  ).toBe(false);
 });
 
 function fixture(
