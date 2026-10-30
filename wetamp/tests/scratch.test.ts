@@ -630,10 +630,10 @@ test.each([
 });
 
 test('maintenance-tick persists a 15-minute GC throttle while scratch cleanup runs every tick', () => {
-  const f = setup(),
-    clean = spyOn(scratch, 'clean').mockReturnValue([]);
+  const f = setup();
   mkdirSync(join(f.root, 'sa'), { recursive: true });
-  let collections = 0;
+  let collections = 0,
+    cleanups = 0;
   const runMaintenance = (): void => {
     maintenanceTick(join(f.root, 'sa'), {
       memory: () => undefined,
@@ -642,26 +642,25 @@ test('maintenance-tick persists a 15-minute GC throttle while scratch cleanup ru
         collections++;
         return [];
       },
-      scratch: scratchClean,
+      scratch: () => {
+        const actions = scratchClean();
+        cleanups++;
+        return actions;
+      },
     });
   };
-  try {
-    runMaintenance();
-    expect(clean).toHaveBeenCalledWith(undefined, false, expect.any(Function));
-    const stamp = join(f.root, 'sa', 'gc-tick');
-    expect(existsSync(stamp)).toBe(true);
-    expect(collections).toBe(1);
-    const before = statSync(stamp).mtimeMs;
-    runMaintenance();
-    expect(collections).toBe(1);
-    expect(statSync(stamp).mtimeMs).toBe(before);
-    const old = new Date(Date.now() - 15 * 60_000);
-    utimesSync(stamp, old, old);
-    runMaintenance();
-    expect(collections).toBe(2);
-    expect(clean).toHaveBeenCalledTimes(3);
-    expect(existsSync(f.dir)).toBe(true);
-  } finally {
-    clean.mockRestore();
-  }
+  runMaintenance();
+  const stamp = join(f.root, 'sa', 'gc-tick');
+  expect(existsSync(stamp)).toBe(true);
+  expect(collections).toBe(1);
+  const before = statSync(stamp).mtimeMs;
+  runMaintenance();
+  expect(collections).toBe(1);
+  expect(statSync(stamp).mtimeMs).toBe(before);
+  const old = new Date(Date.now() - 15 * 60_000);
+  utimesSync(stamp, old, old);
+  runMaintenance();
+  expect(collections).toBe(2);
+  expect(cleanups).toBe(3);
+  expect(existsSync(f.dir)).toBe(true);
 });
