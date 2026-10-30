@@ -7,20 +7,5 @@
         "timeout_s": 900
       }
     }
-  ],
-  "required_scope": [
-    {
-      "when": ["wetamp/schemas/plan.schema.json"],
-      "include": ["wetamp/src/plan-types.generated.ts", "wetamp/src/contract/nodes.generated.ts"]
-    },
-    {
-      "when": [
-        "wetamp/src/generate.ts",
-        "wetamp/src/land.ts",
-        "wetamp/templates/.archon/scripts/sa-check.ts",
-        "wetamp/templates/.archon/scripts/sa-context.ts"
-      ],
-      "include": ["wetamp/tests/scenarios/mutations.test.ts"]
-    }
   ]
 }
