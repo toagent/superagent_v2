@@ -18,7 +18,14 @@ import {
   type DeliveryTarget,
 } from './land';
 import { type DeliveryOutcome, type DeliveryReceipt } from './land';
-import { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './ledger';
+import {
+  artifactsOf,
+  evidenceJson,
+  ledgerPath,
+  loadLedger,
+  mutateLedger,
+  readJson,
+} from './ledger';
 export { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './ledger';
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
@@ -63,10 +70,7 @@ import {
 } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
 import { Database } from 'bun:sqlite';
-import {
-  advanceExecutionAttempt,
-  executionAdmissionLock,
-} from '@archon/workflows/execution-lifecycle';
+import { advanceExecutionAttempt } from '@archon/workflows/execution-lifecycle';
 import {
   cpSync,
   existsSync,
@@ -391,25 +395,7 @@ const saveLedger = (l: Ledger, content = serializeLedger(l)): void => {
 
 /** Ledger/GC mutations share Archon's recovery admission lock; reload under the lock. */
 export function updateLedger(l: Ledger, f: (cur: Ledger) => void): void {
-  const id = l.adoptions?.[0]?.from ?? l.archon_run_id;
-  for (let i = 0; ; i++) {
-    const k = executionAdmissionLock(home().archon, id);
-    if (k.ok) {
-      try {
-        const cur = loadLedger(l.run_id);
-        const before = serializeLedger(cur);
-        f(cur);
-        const after = serializeLedger(cur);
-        if (after !== before) saveLedger(cur, after);
-        Object.assign(l, cur);
-        return;
-      } finally {
-        k.release();
-      }
-    }
-    if (i >= 100) throw new Error(`ledger ${l.run_id}: execution admission ${id} busy`);
-    waitClock.sleep(100);
-  }
+  mutateLedger(l, f, waitClock.sleep);
 }
 
 export function intervention<

@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunView } from './archon';
+import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import { confined } from './board/workflow';
-import { home } from './config';
+import { home, writeAtomic } from './config';
 import type { Ledger } from './cli';
 export type { Ledger } from './cli';
 
@@ -30,6 +31,36 @@ export function loadLedger(run: string): Ledger {
   if (o.run_id !== run) bad.push('run_id≠file');
   if (bad.length) throw new Error(`ledger ${p}: bad ${bad.join(',')}`);
   return o as unknown as Ledger;
+}
+
+const serializeLedger = (ledger: Ledger): string => JSON.stringify(ledger, null, 2) + '\n';
+
+/** Mutate a ledger under the same admission lock used by recovery and GC. */
+export function mutateLedger(
+  ledger: Ledger,
+  mutate: (current: Ledger) => void,
+  sleep: (ms: number) => void = Bun.sleepSync
+): void {
+  const admission = ledger.adoptions?.[0]?.from ?? ledger.archon_run_id;
+  for (let attempt = 0; ; attempt++) {
+    const lock = executionAdmissionLock(home().archon, admission);
+    if (lock.ok) {
+      try {
+        const current = loadLedger(ledger.run_id);
+        const before = serializeLedger(current);
+        mutate(current);
+        const after = serializeLedger(current);
+        if (after !== before) writeAtomic(ledgerPath(current.run_id), after);
+        Object.assign(ledger, current);
+        return;
+      } finally {
+        lock.release();
+      }
+    }
+    if (attempt >= 100)
+      throw new Error(`ledger ${ledger.run_id}: execution admission ${admission} busy`);
+    sleep(100);
+  }
 }
 
 export const artifactsOf = (run: RunView): string =>

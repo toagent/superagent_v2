@@ -3898,8 +3898,12 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       '最后一条回复才输出 JSON'
     );
     expect(loadLedger('sa1').auto_retries).toHaveLength(1);
-    expect(tick()[0]).toMatchObject({ action: 'none', held: true });
-    expect(s.calls().filter(call => call.startsWith('workflow resume'))).toHaveLength(1);
+    expect(tick(EXIT.failed)[0]).toMatchObject({
+      action: 'none',
+      held: true,
+      state: 'held:recovery_admission_unknown',
+    });
+    expect(loadLedger('sa1').auto_retries).toHaveLength(1);
   });
 
   test('stale continuation guards reject non-owner, status races, and rejected runs without ledger writes', () => {
