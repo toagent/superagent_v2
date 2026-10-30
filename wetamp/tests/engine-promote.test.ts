@@ -142,10 +142,11 @@ test('engine acceptance script isolates files and stops at the first failure', (
   mkdirSync(join(wetamp, 'scripts'), { recursive: true });
   mkdirSync(join(wetamp, 'tests/scenarios'), { recursive: true });
   mkdirSync(bin);
-  writeFileSync(
-    join(wetamp, 'scripts/engine-acceptance.sh'),
-    readFileSync(join(import.meta.dir, '../scripts/engine-acceptance.sh'))
-  );
+  for (const script of ['engine-acceptance.sh', 'heavy-slot.sh'])
+    writeFileSync(
+      join(wetamp, 'scripts', script),
+      readFileSync(join(import.meta.dir, '../scripts', script))
+    );
   for (const file of [
     'tests/scenarios/a.test.ts',
     'tests/scenarios/b.test.ts',
@@ -160,7 +161,13 @@ test('engine acceptance script isolates files and stops at the first failure', (
   chmodSync(bun, 0o755);
   const result = Bun.spawnSync(['bash', 'scripts/engine-acceptance.sh'], {
     cwd: wetamp,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TRACE: trace },
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      TRACE: trace,
+      SA_HEAVY_LOCK_FILE: join(root, 'heavy.lock'),
+      SA_HEAVY_LOCK_HELD: '',
+    },
   });
   expect(result.exitCode).not.toBe(0);
   expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
