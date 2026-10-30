@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@archon/workflows": "workspace:*",
+    "@inkjs/ui": "2.0.0",
     "ink": "^8.0.0",
     "react": "^19.3.0",
     "tree-sitter-bash": "0.25.1",

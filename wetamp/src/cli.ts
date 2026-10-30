@@ -46,7 +46,7 @@ import { caller, control, coord, identityKey, repoScope, runScope, same, presenc
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
 import { collectGenerals, generalAttention } from './stall';
-import { allMarshals, cwdFilter, renderPanel } from './panel';
+import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
@@ -4810,6 +4810,13 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     }
     filter = cwdFilter(cwd);
   }
+  const readModel = () =>
+    panelModel(
+      readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
+      readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
+      Date.now(),
+      filter
+    );
   const draw = (): string =>
     renderPanel(
       readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
@@ -4821,6 +4828,25 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     );
   if (!a.flags.watch) {
     console.log(draw());
+    return 0;
+  }
+  if (process.stdout.isTTY) {
+    const [{ createElement }, ink, { HeartbeatView }] = await Promise.all([
+      import('react'),
+      import('ink'),
+      import('./board/HeartbeatView'),
+    ]);
+    const quota = (): string | undefined => relayQuota().quota;
+    const app = ink.render(
+      createElement(HeartbeatView, {
+        initial: readModel(),
+        load: readModel,
+        initialQuota: quota(),
+        loadQuota: quota,
+      }),
+      { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
+    );
+    await app.waitUntilExit();
     return 0;
   }
   let resolveStop: (value: 'stop') => void = () => undefined;
