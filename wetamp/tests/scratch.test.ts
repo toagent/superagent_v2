@@ -15,7 +15,6 @@ import {
 import { join } from 'node:path';
 import { removeTempTree, testTimeout } from '@archon/paths/test-utils';
 import * as archon from '../src/archon';
-import * as memory from '../src/memory';
 import type { Ledger } from '../src/cli';
 import type { ScratchAction } from '../src/gc';
 import { loadPlan, writeRoots } from '../src/plan';
@@ -70,9 +69,8 @@ module.exports = {violations: () => violations, restore: () => {
 }};`
 );
 const boundary = require(scratchPreload) as { violations: () => number; restore: () => void };
-const collection = await import('../src/gc');
-const { gc, scratchClean } = collection;
-const { ledgerPath, main, superviseTick } = await import('../src/cli');
+const { gc, scratchClean } = await import('../src/gc');
+const { ledgerPath, main, maintenanceTick } = await import('../src/cli');
 type Context = { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
 interface Owner {
   client: string;
@@ -631,35 +629,39 @@ test.each([
   expect(p.stdout.toString().trim()).toBe(dir === '/tmp/sa-scratch-other/' ? dir : 'unset');
 });
 
-test('supervise-tick persists a 15-minute GC throttle while scratch cleanup runs every tick', () => {
+test('maintenance-tick persists a 15-minute GC throttle while scratch cleanup runs every tick', () => {
   const f = setup(),
     clean = spyOn(scratch, 'clean').mockReturnValue([]);
-  const collect = spyOn(collection, 'gc').mockReturnValue([]);
-  const fold = spyOn(memory, 'memoryTick').mockReturnValue({
-    categories: { engine: 0, plan: 0, project: 0, role: 0, transient: 0 },
-    episodes: [],
-    errors: [],
-  });
+  mkdirSync(join(f.root, 'sa'), { recursive: true });
+  let collections = 0;
+  const runMaintenance = (): void => {
+    maintenanceTick(join(f.root, 'sa'), {
+      memory: () => undefined,
+      reflection: () => undefined,
+      gc: () => {
+        collections++;
+        return [];
+      },
+      scratch: scratchClean,
+    });
+  };
   try {
-    const result = superviseTick();
-    expect(result).toHaveProperty('scratch', []);
+    runMaintenance();
     expect(clean).toHaveBeenCalledWith(undefined, false, expect.any(Function));
     const stamp = join(f.root, 'sa', 'gc-tick');
     expect(existsSync(stamp)).toBe(true);
-    expect(collect).toHaveBeenCalledTimes(1);
+    expect(collections).toBe(1);
     const before = statSync(stamp).mtimeMs;
-    superviseTick();
-    expect(collect).toHaveBeenCalledTimes(1);
+    runMaintenance();
+    expect(collections).toBe(1);
     expect(statSync(stamp).mtimeMs).toBe(before);
     const old = new Date(Date.now() - 15 * 60_000);
     utimesSync(stamp, old, old);
-    superviseTick();
-    expect(collect).toHaveBeenCalledTimes(2);
+    runMaintenance();
+    expect(collections).toBe(2);
     expect(clean).toHaveBeenCalledTimes(3);
     expect(existsSync(f.dir)).toBe(true);
   } finally {
     clean.mockRestore();
-    fold.mockRestore();
-    collect.mockRestore();
   }
 });
