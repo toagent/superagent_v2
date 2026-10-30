@@ -1081,6 +1081,7 @@ async function acceptOnce(
       { length: reviewRounds ?? 0 },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
+  // prettier-ignore
   let baseResults: NonNullable<Accept['base_results']> = [];
   try {
     if (base && failed.length && !resourceWaitTimedOut)
