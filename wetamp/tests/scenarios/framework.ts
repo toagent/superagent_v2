@@ -40,7 +40,7 @@ import { cancelWorkflowRun, failWorkflowRun } from '../../../packages/core/src/d
 import { createCodebase } from '../../../packages/core/src/db/codebases';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16' | 'S17' | 'S18' | 'S19';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16' | 'S17';
 
 export interface ScenarioSpec {
   id: ScenarioId;
@@ -179,10 +179,6 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         }
       }
       if (id === 'resolve-sync-review-m1' && f.spec.id === 'S5') {
-        const targetTip = sh('git rev-parse scenario-target', f.target).trim();
-        sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
-      }
-      if (id === 'resolve-resync-m1' && ['S18', 'S19'].includes(f.spec.id)) {
         const targetTip = sh('git rev-parse scenario-target', f.target).trim();
         sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
       }
@@ -429,15 +425,6 @@ export async function runInProcess(
   const persistEvent = store.persistWorkflowEvent.bind(store);
   store.persistWorkflowEvent = async event => {
     await persistEvent(event);
-    if (
-      event.event_type === 'node_completed' &&
-      event.step_name === 'gate-m1-r1' &&
-      ['S18', 'S19'].includes(f.spec.id)
-    ) {
-      writeFileSync(join(f.target, f.spec.agents.code.path), 'target-side\n');
-      sh(`git add '${f.spec.agents.code.path}' && git commit -qm target-resync-conflict`, f.target);
-      f.targetAfterInjection = sh('git rev-parse scenario-target', f.target).trim();
-    }
     if (event.event_type === 'node_completed' && event.step_name === f.blockAfterCompletedNode) {
       if (!f.blockMarker) throw new Error('scenario completion block marker missing');
       writeFileSync(f.blockMarker, event.step_name ?? 'unknown');

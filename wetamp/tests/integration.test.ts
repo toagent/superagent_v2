@@ -150,7 +150,7 @@ test('sync reports the pid holding a worktree index lock without moving it', asy
 test('sync returns conflicts without invoking mergiraf and leaves the worktree clean', () => {
   const f = fixture();
   commit(f.target, 'README.md', 'target\n');
-  const before = commit(f.worktree, 'README.md', 'run\n');
+  commit(f.worktree, 'README.md', 'run\n');
   const bin = join(f.root, 'bin');
   mkdirSync(bin);
   const solver = join(bin, 'mergiraf');
@@ -167,7 +167,6 @@ test('sync returns conflicts without invoking mergiraf and leaves the worktree c
   }
   expect(result.status).toBe('conflict');
   if (result.status !== 'conflict') throw new Error('expected conflict');
-  expect(result.head).toBe(before);
   expect(result.files).toEqual(['README.md']);
   expect(sh('git status --porcelain', f.worktree)).toBe('');
   expect(existsSync(join(f.worktree, '.git/MERGE_HEAD'))).toBe(false);

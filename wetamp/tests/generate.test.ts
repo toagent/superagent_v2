@@ -1440,6 +1440,7 @@ describe('buildWorkflow', () => {
     expect(integration.loop_group.nodes.some(n => n.approval)).toBe(false);
     expect(integration.loop_group.nodes.some(n => n.id.startsWith('target-dirty-'))).toBe(false);
     expect(integration.loop_group.nodes.map(n => n.id)).toEqual([
+      'resync-base-m1',
       'resync-m1',
       'resync-m1-ready',
       'final-accept-m1',
@@ -1470,6 +1471,7 @@ describe('buildWorkflow', () => {
       loop_group: { nodes: N[] };
     };
     expect(deliveryIntegration.loop_group.nodes.map(n => n.id)).toEqual([
+      'resync-base-m1',
       'resync-m1',
       'resolve-context-resync-m1',
       'resolve-resync-m1',
@@ -1489,8 +1491,18 @@ describe('buildWorkflow', () => {
     expect(
       deliveryIntegration.loop_group.nodes.find(n => n.id === 'final-accept-m1')?.with
     ).toMatchObject({
-      delta_base: '$resync-m1.output.head',
+      delta_base: '$resync-base-m1.output',
+      context_node: 'review-m1-r1',
     });
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'resolve-context-resync-m1')?.with
+    ).toMatchObject({ context_node: 'resolve-sync-m1' });
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-context-resync-m1')?.with
+    ).toMatchObject({ review: 'review-m1-r1' });
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-resync-m1')?.with
+    ).toMatchObject({ context: '$ARTIFACTS_DIR/review-m1-r1.context.json' });
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {
@@ -1502,7 +1514,7 @@ describe('buildWorkflow', () => {
         },
       },
     });
-    expect(executionTable(fixture, loadTiers())['review-resync-m1']).toMatchObject({
+    expect(executionTable(fixture, loadTiers())['review-m1-r1']).toMatchObject({
       role: 'review',
       risk: 'G1',
     });

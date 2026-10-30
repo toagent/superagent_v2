@@ -100,16 +100,6 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
     const resolver = describeExecution(tiers, 'repair', m.risk, 1, m.id, [m.packages[0]], plan);
     table[`resolve-sync-${m.id}`] = resolver;
     table[`resolve-sync-review-${m.id}`] = resolver;
-    table[`resolve-resync-${m.id}`] = resolver;
-    table[`review-resync-${m.id}`] = describeExecution(
-      tiers,
-      'review',
-      m.risk,
-      1,
-      m.id,
-      m.packages,
-      plan
-    );
   }
   for (const [node, descriptor] of Object.entries(table))
     descriptor.scope = [...(scopes.get(node) ?? descriptor.scope)];

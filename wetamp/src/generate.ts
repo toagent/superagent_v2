@@ -436,14 +436,17 @@ export function buildWorkflow(
     gateBindings: { round: number; node: string; carried?: boolean }[]
   ): Node => {
     const reviewRequired = m.review || m.risk === 'G2';
+    const resyncBase = `resync-base-${m.id}`;
     const syncId = `resync-${m.id}`;
     const resolveId = `resolve-${syncId}`;
+    const resolveContract = `resolve-sync-${m.id}`;
     const resolveDecision = `${resolveId}-decision`;
     const syncReady = `${syncId}-ready`;
     const finalAccept = `final-accept-${m.id}`;
     const reviewAttempt = `attempt-review-${syncId}`;
     const reviewContext = `review-context-${syncId}`;
     const reviewId = `review-${syncId}`;
+    const reviewContract = `review-${m.id}-r1`;
     const gateId = `gate-${m.id}-rresync`;
     const integrationReady = `integration-ready-${m.id}`;
     const publishId = `publish-${m.id}`;
@@ -470,7 +473,12 @@ export function buildWorkflow(
     );
     const integrationNodes: Node[] = [
       {
+        id: resyncBase,
+        bash: 'git rev-parse HEAD',
+      },
+      {
         id: syncId,
+        depends_on: [resyncBase],
         bash:
           delivery && !fake
             ? integrationCommand('sync', m.id, '', syncId)
@@ -493,7 +501,7 @@ export function buildWorkflow(
               with: {
                 counter: attemptPath(gen, `sync/${m.id}`),
                 gen,
-                context_node: resolveId,
+                context_node: resolveContract,
                 context_packages: m.packages.map(p => p.id),
               },
               depends_on: [syncId],
@@ -505,7 +513,7 @@ export function buildWorkflow(
               command: 'sa-repair',
               retry: { on_error: 'transient' },
               model: '@sa-coder',
-              ...execution(`resolve-${syncId}`),
+              ...execution(resolveContract),
               with: {
                 pkg: m.packages[0].id,
                 brief: brief(m.packages[0]),
@@ -567,9 +575,9 @@ export function buildWorkflow(
           base: ref.required(readyHandle, 'merge_base'),
           target_tip: ref.required(readyHandle, 'target_tip'),
           sync_generation: ref.required(readyHandle, 'generation'),
-          delta_base: ref.required(syncHandle, 'head'),
+          delta_base: ref.value(output<string>(resyncBase)),
           acceptance_evidence: `$ARTIFACTS_DIR/accepted-${m.id}.json`,
-          context_node: reviewId,
+          context_node: reviewContract,
           context_counter: attemptPath(gen, `review-${syncId}`),
           tag: finalAccept,
           terminal: '1',
@@ -590,7 +598,7 @@ export function buildWorkflow(
               when: `$${syncReady}.output.status == 'resolved'`,
               always_run: true,
               depends_on: [reviewAttempt],
-              ...attemptInputs(attemptPath(gen, `review-${syncId}`), '', reviewId, gateId),
+              ...attemptInputs(attemptPath(gen, `review-${syncId}`), '', reviewContract, gateId),
               output_format: attemptOutputFormat,
             },
           ]
@@ -608,13 +616,13 @@ export function buildWorkflow(
               model: tiers.routing.reviewer.by_risk?.[m.risk]
                 ? `@sa-reviewer-${m.risk}`
                 : '@sa-reviewer',
-              ...execution(reviewId),
+              ...execution(reviewContract),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
                 risk: ref.optional(finalHandle, 'risk', ''),
                 round: 1,
-                context: `$ARTIFACTS_DIR/${reviewId}.context.json`,
+                context: `$ARTIFACTS_DIR/${reviewContract}.context.json`,
                 briefs: m.packages.map(brief).join(' '),
                 accept_log: ref.optional(finalHandle, 'log', ''),
                 diff: ref.optional(finalHandle, 'delta', ''),
