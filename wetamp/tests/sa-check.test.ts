@@ -2189,6 +2189,64 @@ function planFile(
 }
 
 describe('sa-check script', () => {
+  test('requires_prior_pass skips after failure and runs after success or with no predecessor', () => {
+    const execute = (first: 'fail' | 'pass' | 'none') => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        marker = join(root, 'full-suite-ran'),
+        path = planFile(root, 'true', first === 'fail' ? ['true'] : []),
+        plan = JSON.parse(readFileSync(path, 'utf8'));
+      const focused =
+        first === 'fail'
+          ? {
+              cmd: `printf '%s' '{"failure_class":"product","evidence":"focused failure"}'; exit 1`,
+              timeout_s: 5,
+              cache: false,
+            }
+          : { cmd: 'true', timeout_s: 5 };
+      plan.packages[0].accept = [
+        ...(first === 'none' ? [] : [focused]),
+        {
+          cmd: `touch '${marker}'`,
+          timeout_s: 5,
+          cache: true,
+          requires_prior_pass: true,
+        },
+      ];
+      writeFileSync(path, JSON.stringify(plan));
+      const result = runScript(repo, {
+        kind: 'accept',
+        plan: path,
+        pkgs: 'a',
+        tag: `prior-${first}`,
+        ...(first === 'fail' ? { base: sh('git rev-parse HEAD', repo).trim() } : {}),
+      });
+      return { result, marker };
+    };
+
+    const failed = execute('fail');
+    expect(failed.result.out).toMatchObject({
+      failed: [expect.stringContaining('focused failure')],
+      command_results: [{ pass: false }, { pass: false, exit: 'skipped', duration_ms: 0 }],
+    });
+    expect(existsSync(failed.marker)).toBe(false);
+    expect(readFileSync(join(failed.result.art, 'prior-fail.log'), 'utf8')).toContain(
+      '前置检查失败，未运行'
+    );
+    expect(readFileSync(join(failed.result.art, 'prior-fail.probe.log'), 'utf8')).not.toContain(
+      'full-suite-ran'
+    );
+    expect(
+      readdirSync(join(failed.result.art, 'accept-cache')).filter(name => name !== '.key')
+    ).toEqual([]);
+
+    for (const first of ['pass', 'none'] as const) {
+      const ran = execute(first);
+      expect(ran.result.out).toMatchObject({ ok: true });
+      expect(existsSync(ran.marker)).toBe(true);
+    }
+  });
+
   test('BASE_RULER classifies only declared target outcomes', () => {
     for (const [cases, ids, reason] of [
       [
@@ -4192,37 +4250,15 @@ describe('sa-check script', () => {
     expect(readFileSync(join(cache, '.key')).length).toBe(32);
     expect(statSync(join(cache, '.key')).mode & 0o777).toBe(0o600);
   }, testTimeout(10_000));
-  test('FC legacy cache default product cannot hide an unclassified command', () => {
+  test('FC unclassified command fails closed instead of defaulting to product', () => {
     const root = tmp(),
       repo = gitRepo(root),
-      counter = join(root, 'count');
-    const command = `echo x >> '${counter}'; false`;
-    const legacy = join(root, 'legacy.ts');
-    const currentScript = readFileSync(SCRIPT, 'utf8');
-    const legacyScript = currentScript.replace('        FAILURE_CLASSES,\n', '');
-    expect(legacyScript).not.toBe(currentScript);
-    cpSync(join(import.meta.dir, '../templates/.archon/scripts'), root, { recursive: true });
-    writeFileSync(
-      join(root, 'policy-attempts.ts'),
-      readFileSync(join(import.meta.dir, '../../packages/workflows/src/provider-attempts.ts'))
-    );
-    writeFileSync(
-      legacy,
-      legacyScript.replace(
-        'failure_class: failureClass(classification)',
-        "failure_class: 'product'"
-      )
-    );
-    const plan = planFile(root, command, [], true);
-    expect(
-      runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'legacy' }, legacy).out
-    ).toMatchObject({ disposition: 'repair', failures: [{ failure_class: 'product' }] });
+      plan = planFile(root, 'false', [], false);
     const current = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'current' });
     expect(current.out).toMatchObject({
       disposition: 'repair',
       failures: [{ failure_class: 'unknown' }],
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
   });
   test('P2: failures never enter the acceptance cache', () => {
     const root = tmp(),

@@ -157,6 +157,10 @@ export type Check = {
    * Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.
    */
   cache?: boolean;
+  /**
+   * Do not run this check when an earlier check in the same acceptance run failed
+   */
+  requires_prior_pass?: boolean;
   report?: {
     junit: string;
     collect?: string;
@@ -417,6 +421,11 @@ export const acceptOutputFormat = {
           default: true,
           description:
             'Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.',
+        },
+        requires_prior_pass: {
+          type: 'boolean',
+          description:
+            'Do not run this check when an earlier check in the same acceptance run failed',
         },
         report: {
           type: 'object',

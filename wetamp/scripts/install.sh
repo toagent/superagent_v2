@@ -104,23 +104,7 @@ if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
   printf '%s\n' "$new" >"$plist"
   echo "updated ${plist/#$HOME/~}"
   if [ "${SA_SKIP_LAUNCHD_RELOAD:-}" != 1 ]; then
-    # SA_TEST_REAL_HOME only lets tests exercise the guarded reload branch.
-    real_home="${SA_TEST_REAL_HOME:-}"
-    if [ -z "$real_home" ] && command -v dscl >/dev/null 2>&1; then
-      real_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')"
-    fi
-    real_launchd=""
-    [ -z "$real_home" ] || real_launchd="$(cd -P "$real_home/Library/LaunchAgents" 2>/dev/null && pwd || true)"
-    target_launchd="$(cd -P "$dir" && pwd)"
-    if [ -z "$real_launchd" ] || [ "$target_launchd" != "$real_launchd" ]; then
-      echo "install.sh: 跳过 launchd 重载（非真实用户目录）"
-    else
-      domain="gui/$(id -u)"
-      if launchctl print "$domain/$label" >/dev/null 2>&1; then
-        launchctl bootout "$domain/$label" || { echo "install.sh: launchd bootout failed: $domain/$label" >&2; exit 1; }
-      fi
-      launchctl bootstrap "$domain" "$plist" || { echo "install.sh: launchd bootstrap failed: $domain $plist" >&2; exit 1; }
-    fi
+    bun "$WETAMP/src/launchd.ts" reload "$plist"
   fi
 fi
 publish_mode controller

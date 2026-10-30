@@ -122,13 +122,13 @@ test('current console follows only a loaded launchd job', () => {
   writeFileSync(join(root, 'web.json'), JSON.stringify({ label: 'fixture' }));
   followCurrentConsole(
     snapshot,
-    () => ({ exitCode: 1, stderr: '' }),
+    () => ({ status: 1, signal: null, stdout: '', stderr: '', pid: 1 }),
     path => restarted.push(path)
   );
   expect(restarted).toEqual([]);
   followCurrentConsole(
     snapshot,
-    () => ({ exitCode: 0, stderr: '' }),
+    () => ({ status: 0, signal: null, stdout: '', stderr: '', pid: 1 }),
     path => restarted.push(path)
   );
   expect(restarted).toEqual([snapshot]);

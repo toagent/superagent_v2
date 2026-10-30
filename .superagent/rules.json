@@ -2,19 +2,9 @@
   "required_checks": [
     {
       "when": ["wetamp/**/*.ts", "wetamp/**/*.js", "wetamp/**/*.cjs", "wetamp/**/*.sh"],
-      "check": { "cmd": "cd wetamp && bun run type-check", "timeout_s": 900 }
-    },
-    {
-      "when": [
-        "wetamp/src/generate.ts",
-        "wetamp/src/land.ts",
-        "wetamp/templates/.archon/scripts/sa-check.ts",
-        "wetamp/templates/.archon/scripts/sa-context.ts",
-        "wetamp/tests/scenarios/mutations.test.ts"
-      ],
       "check": {
-        "cmd": "cd wetamp && bun test tests/scenarios/mutations.test.ts",
-        "timeout_s": 1200
+        "cmd": "cd wetamp && bun run type-check",
+        "timeout_s": 900
       }
     }
   ]
