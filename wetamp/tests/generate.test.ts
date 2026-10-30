@@ -20,7 +20,12 @@ import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { fixturePlan, fixtureTiers, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
-import { CHECK_AUX_BUDGET_MS, reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
+import {
+  CHECK_AUX_BUDGET_MS,
+  PROCESS_TREE_RECOVERY_MS,
+  RESOURCE_WAIT_BUDGET_S,
+  reviewRoundLimit,
+} from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
@@ -43,6 +48,8 @@ import reasonMirror from '../templates/.archon/scripts/reasons.json';
 import { integrationLockTimeout, integrationNodeTimeout } from '../src/integration';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
+const ACCEPTANCE_FIXED_BUDGET_MS =
+  CHECK_AUX_BUDGET_MS + 5_000 + RESOURCE_WAIT_BUDGET_S * 1000 + PROCESS_TREE_RECOVERY_MS;
 
 test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through stable attempt paths', () => {
   const gen = tmp(),
@@ -1189,7 +1196,7 @@ describe('buildWorkflow', () => {
     for (const fake of [false, true]) {
       const nodes = nodesOf(build(fake, plan));
       for (const n of nodes.filter(n => n.with?.kind === 'accept' || n.with?.kind === 'settle'))
-        expect(n.timeout).toBe(Math.max(ms, 20_000 + CHECK_AUX_BUDGET_MS + 5_000));
+        expect(n.timeout).toBe(Math.max(ms, 20_000 + ACCEPTANCE_FIXED_BUDGET_MS));
       for (const n of nodes.filter(
         n => n.with?.kind !== 'accept' && n.with?.kind !== 'settle' && n.id !== 'environment'
       ))
@@ -1205,7 +1212,7 @@ describe('buildWorkflow', () => {
     for (const fake of [false, true]) {
       const nodes = nodesOf(build(fake, plan));
       for (const id of ['verify-core', 'settle-core', 'diff-m1-r1', 'diff-m1-r2', 'diff-m1-r3'])
-        expect(nodes.find(n => n.id === id)?.timeout).toBe(3_000_000 + CHECK_AUX_BUDGET_MS + 5_000);
+        expect(nodes.find(n => n.id === id)?.timeout).toBe(3_000_000 + ACCEPTANCE_FIXED_BUDGET_MS);
     }
   });
   test('ACCT: milestone totals cover only its own packages, not the cumulative scope', () => {
@@ -1219,15 +1226,15 @@ describe('buildWorkflow', () => {
     });
     const nodes = nodesOf(build(false, plan));
     expect(nodes.find(n => n.id === 'verify-api')?.timeout).toBe(
-      600_000 + CHECK_AUX_BUDGET_MS + 5_000
+      600_000 + ACCEPTANCE_FIXED_BUDGET_MS
     );
     expect(nodes.find(n => n.id === 'settle-web')?.timeout).toBe(
-      1_200_000 + CHECK_AUX_BUDGET_MS + 5_000
+      1_200_000 + ACCEPTANCE_FIXED_BUDGET_MS
     );
     for (const r of [1, 2, 3]) {
       const n = nodes.find(n => n.id === `diff-m2-r${r}`);
       expect(n?.with).toMatchObject({ pkgs: 'api,web', scope_pkgs: 'core,api,web' });
-      expect(n?.timeout).toBe(1_800_000 + CHECK_AUX_BUDGET_MS + 5_000);
+      expect(n?.timeout).toBe(1_800_000 + ACCEPTANCE_FIXED_BUDGET_MS);
     }
   });
   test('RUN_PROVISION: environment budget includes install and prepare even without declared checks', () => {
@@ -1235,7 +1242,7 @@ describe('buildWorkflow', () => {
     plan.environment = [{ cmd: 'plan-env', timeout_s: 200 }];
     plan.packages[0].environment = [{ cmd: 'pkg-env', timeout_s: 300 }];
     expect(nodesOf(build(false, plan)).find(n => n.id === 'environment')?.timeout).toBe(
-      500_000 + CHECK_AUX_BUDGET_MS + 5_000 + 2 * RECOVERY_TIMEOUT_MS
+      500_000 + ACCEPTANCE_FIXED_BUDGET_MS + 2 * RECOVERY_TIMEOUT_MS
     );
     expect(nodesOf(build(false)).find(n => n.id === 'environment')?.timeout).toBe(
       120_000 + 2 * RECOVERY_TIMEOUT_MS
@@ -1247,7 +1254,7 @@ describe('buildWorkflow', () => {
     for (const node of nodesOf(build(false, plan)).filter(
       n => n.with?.kind === 'accept' || n.with?.kind === 'settle'
     ))
-      expect(node.timeout).toBe(500_000 + 60_000 + CHECK_AUX_BUDGET_MS + 5_000);
+      expect(node.timeout).toBe(500_000 + 60_000 + ACCEPTANCE_FIXED_BUDGET_MS);
   });
   test('ACCT: real Archon completes failed acceptance and baseline probe with the generated budget', () => {
     const root = tmp();

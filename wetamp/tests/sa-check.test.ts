@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import type { CommandResult } from '../src/contract';
+import type { Check } from '../src/plan';
 import {
   budgetUsage,
   reviewRoundLimit,
@@ -32,6 +33,7 @@ import {
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
   CHECK_EVENT_QUERY_TIMEOUT_MS,
+  acquireResource,
   projectEnvironment,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
@@ -3294,12 +3296,67 @@ describe('sa-check script', () => {
   test('accept: timeout kills the command and fails it', () => {
     const root = tmp();
     const p = join(root, 'plan.json');
+    const child = join(root, 'child.pid');
     writeFileSync(
       p,
-      JSON.stringify({ packages: [{ id: 'a', accept: [{ cmd: 'sleep 5', timeout_s: 1 }] }] })
+      JSON.stringify({
+        packages: [
+          {
+            id: 'a',
+            accept: [
+              {
+                cmd: `sleep 10 & echo $! > '${child}'; wait`,
+                timeout_s: 1,
+                resource: 'heavy-test',
+              },
+            ],
+          },
+        ],
+      })
     );
-    const r = runScript(gitRepo(root), { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a' });
-    expect(r.out).toMatchObject({ ok: false, failed: ['sleep 5'] });
+    const repo = gitRepo(root);
+    const lock = join(root, 'resource.lock');
+    const r = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a' }, SCRIPT, {
+      SA_HEAVY_LOCK_FILE: lock,
+    });
+    expect(r.out, r.err).toMatchObject({ ok: false });
+    expect(() => process.kill(Number(readFileSync(child, 'utf8')), 0)).toThrow();
+    writeFileSync(
+      p,
+      JSON.stringify({
+        packages: [{ id: 'a', accept: [{ cmd: 'true', timeout_s: 1, resource: 'heavy-test' }] }],
+      })
+    );
+    const next = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'next' }, SCRIPT, {
+      SA_HEAVY_LOCK_FILE: lock,
+    });
+    expect(next.out, next.err).toMatchObject({ ok: true });
+  });
+
+  test('accept: exhausted cumulative resource wait emits its typed reason', async () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      lock = join(root, 'held.lock');
+    const lease = await acquireResource('heavy-test', 500, [lock]);
+    try {
+      const p = planFile(root, 'true');
+      const value = JSON.parse(readFileSync(p, 'utf8'));
+      value.packages[0].accept[0].resource = 'heavy-test';
+      writeFileSync(p, JSON.stringify(value));
+      const result = runScript(
+        repo,
+        { kind: 'accept', plan: p, pkgs: 'a', tag: 'wait-timeout' },
+        SCRIPT,
+        {
+          NODE_ENV: 'test',
+          SA_TEST_RESOURCE_WAIT_BUDGET_MS: '30',
+          SA_HEAVY_LOCK_FILE: lock,
+        }
+      );
+      expect(result.out, result.err).toMatchObject({ ok: false, reason: 'resource_wait_timeout' });
+    } finally {
+      await lease!.release();
+    }
   });
   test('accept with base: writes patch and stable diff hash', () => {
     const root = tmp();
@@ -4141,7 +4198,7 @@ describe('sa-check script', () => {
       art = join(root, 'art');
     const counter = join(root, 'executions'),
       p = join(root, 'plan.json');
-    const check = {
+    const check: Check = {
       cmd: `echo executed >> '${counter}'; echo original-stdout; echo original-stderr >&2`,
       timeout_s: 5,
       cache: true,
@@ -4167,6 +4224,12 @@ describe('sa-check script', () => {
     const replay = readFileSync(join(art, 'diff-m1-r1.log'), 'utf8');
     expect(replay).toContain('# reused pass from verify-a');
     expect(replay).toContain('original-stdout\noriginal-stderr\n');
+    check.resource = 'heavy-test';
+    go('resource-added');
+    check.resource = 'browser';
+    go('resource-changed');
+    expect(count()).toBe(1);
+    delete check.resource;
     for (const [tag, path] of [
       ['tracked', 'README.md'],
       ['untracked', 'new.txt'],

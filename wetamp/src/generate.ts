@@ -23,6 +23,8 @@ import { injectMemory } from './memory';
 import {
   attemptPath,
   CHECK_AUX_BUDGET_MS,
+  PROCESS_TREE_RECOVERY_MS,
+  RESOURCE_WAIT_BUDGET_S,
   environmentChecks,
   reviewRoundLimit,
   type RecoveryEvidence,
@@ -157,7 +159,9 @@ const commandTimeout = (checks: Pkg['accept'], passes: number, setup: Pkg['accep
           checks.reduce((n, c) => n + c.timeout_s, 0) * passes * 1000 +
             setup.reduce((n, c) => n + c.timeout_s, 0) * 1000 +
             CHECK_AUX_BUDGET_MS +
-            CHECK_OVERHEAD_MS
+            CHECK_OVERHEAD_MS +
+            RESOURCE_WAIT_BUDGET_S * 1000 +
+            PROCESS_TREE_RECOVERY_MS
         ),
       }
     : {};

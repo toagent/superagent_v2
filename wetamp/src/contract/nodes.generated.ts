@@ -154,6 +154,10 @@ export type Check = {
   cmd: string;
   timeout_s: number;
   /**
+   * Machine-wide admission group; queue time does not consume timeout_s
+   */
+  resource?: 'heavy-test' | 'browser';
+  /**
    * Acceptance checks reuse pass or failure results by default for the same tree, command, timeout and environment within the run (F-21); set false for commands with external writes or time/randomness dependencies. Environment checks are never reused.
    */
   cache?: boolean;
@@ -416,6 +420,10 @@ export const acceptOutputFormat = {
       properties: {
         cmd: { type: 'string', minLength: 1 },
         timeout_s: { type: 'integer', minimum: 1 },
+        resource: {
+          enum: ['heavy-test', 'browser'],
+          description: 'Machine-wide admission group; queue time does not consume timeout_s',
+        },
         cache: {
           type: 'boolean',
           default: true,

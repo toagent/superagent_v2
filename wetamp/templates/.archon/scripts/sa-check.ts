@@ -19,8 +19,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
 import type {
@@ -43,6 +45,7 @@ import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-clas
 import { nativeEvidence } from './native-models';
 import type { OwnedWorktree } from '@archon/workflows/schemas/workflow-run';
 import { envPrecheck, provisionEnvironment } from './env-precheck';
+import type { StreamedSubprocessError } from '@archon/workflows/subprocess-output';
 
 type ContractFinding = ReviewerOutput['findings'][number];
 export type Finding = Omit<ContractFinding, 'failure_class' | 'command'> &
@@ -79,8 +82,98 @@ export function reviewRoundLimit(policy: ReviewEffortPolicy): number {
 }
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
+let subprocessOutputModule:
+  | Promise<typeof import('@archon/workflows/subprocess-output')>
+  | undefined;
+// Generated resource checks resolve the frozen engine copy; ordinary checks never load it.
+const subprocessOutput = async (): Promise<
+  typeof import('@archon/workflows/subprocess-output')
+> => {
+  if (subprocessOutputModule) return subprocessOutputModule;
+  // prettier-ignore
+  const path = [resolve(import.meta.dir, '../../../../packages/workflows/src/subprocess-output.ts'), process.env.SUPERAGENT_HOME ? join(process.env.SUPERAGENT_HOME, 'engine/current/packages/workflows/src/subprocess-output.ts') : '', (() => { try { return resolve(dirname(dirname(realpathSync(join(dirname(env('PLAN')), 'archon')))), '../packages/workflows/src/subprocess-output.ts'); } catch { return ''; } })()].find(candidate => candidate && existsSync(candidate));
+  if (!path) throw new Error('engine subprocess-output.ts unavailable');
+  subprocessOutputModule = import(pathToFileURL(path).href) as Promise<
+    typeof import('@archon/workflows/subprocess-output')
+  >;
+  return subprocessOutputModule;
+};
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
 export const CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000;
+export const RESOURCE_WAIT_BUDGET_S = 1_800;
+export const PROCESS_TREE_RECOVERY_MS = 10_000;
+// prettier-ignore
+export const RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
+let resourceWaitElapsedMs = 0,
+  resourceOutputSequence = 0;
+// Test-only override makes exhausted-wait coverage deterministic without changing the engine contract.
+// prettier-ignore
+const resourceWaitBudgetMs = (): number =>
+  process.env.NODE_ENV === 'test' && process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS ? Number(process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS) : RESOURCE_WAIT_BUDGET_S * 1000;
+
+class ResourceWaitTimeout extends Error {
+  constructor(readonly command: string) {
+    super(`resource wait budget exhausted before: ${command}`);
+  }
+}
+interface ResourceLease {
+  waitedMs: number;
+  release(): Promise<void>;
+}
+// prettier-ignore
+const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
+  resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE] : RESOURCE_SLOTS[resource];
+
+function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams | undefined> {
+  // prettier-ignore
+  const command = process.platform === 'darwin' ? ['/usr/bin/lockf', '-t', '0', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'] : ['flock', '-n', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'];
+  if (process.platform !== 'darwin' && process.platform !== 'linux')
+    throw new Error(`resource slots: unsupported platform ${process.platform}`);
+  const child = spawn(command[0], command.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    child.once('error', reject);
+    child.once('exit', code => {
+      if (!settled) {
+        settled = true;
+        resolve(code === 0 ? child : undefined);
+      }
+    });
+    child.stdout.once('data', (chunk: Buffer) => {
+      if (settled || !chunk.toString().startsWith('acquired')) return;
+      settled = true;
+      resolve(child);
+    });
+  });
+}
+
+export async function acquireResource(
+  resource: NonNullable<Check['resource']>,
+  budgetMs: number,
+  lockFiles = resourceLockFiles(resource)
+): Promise<ResourceLease | undefined> {
+  const started = Date.now(),
+    deadline = started + budgetMs;
+  while (Date.now() < deadline) {
+    for (const path of lockFiles) {
+      const child = await tryResourceLock(path);
+      if (!child) continue;
+      return {
+        waitedMs: Date.now() - started,
+        release: async () => {
+          child.stdin.end();
+          await new Promise<void>(resolve =>
+            child.once('close', () => {
+              resolve();
+            })
+          );
+        },
+      };
+    }
+    await Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+  }
+  return undefined;
+}
 // Elapsed auxiliary time has one shared cap, independent of subprocess count.
 export const CHECK_AUX_BUDGET_MS = 130_000;
 let auxiliaryElapsed = 0;
@@ -366,13 +459,17 @@ const acceptanceCachePath = (
     )
   );
 
+const cacheCheck = ({ resource, ...check }: Check): Omit<Check, 'resource'> => {
+  void resource;
+  return check;
+};
 export function acceptanceCacheReady(cwd = process.cwd()): boolean {
   const p = plan(),
     ids = env('PKGS').split(',').filter(Boolean);
   const packages = p.packages.filter(pkg => ids.includes(pkg.id));
   const checks = packages.flatMap(pkg => pkg.accept);
   // prettier-ignore
-  const requirements = packages.map(({ id, accept, requirements }) => ({ id, accept, ...(requirements ? { requirements } : {}) }));
+  const requirements = packages.map(({ id, accept, requirements }) => ({ id, accept: accept.map(cacheCheck), ...(requirements ? { requirements } : {}) }));
   // prettier-ignore
   const envKey = sha(JSON.stringify(packages.some(pkg => pkg.requirements) ? [environmentChecks(p), requirements] : environmentChecks(p)));
   const tree = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'], {
@@ -478,7 +575,7 @@ function recordFlaky(check: Check, structured: StructuredCases | undefined, log:
   );
 }
 
-function run(
+async function run(
   checks: Check[],
   log: string,
   cwd?: string,
@@ -486,7 +583,7 @@ function run(
   failures: CheckFailure[] = [],
   results: CommandResult[] = [],
   retryFailure = true
-): string[] {
+): Promise<string[]> {
   const failed: string[] = [];
   const commandEnv = env('KIND') === 'env' ? process.env : projectEnvironment(process.env);
   const treeResult =
@@ -545,6 +642,23 @@ function run(
         continue;
       }
     }
+    let lease: ResourceLease | undefined;
+    if (c.resource) {
+      const remainingWait = resourceWaitBudgetMs() - resourceWaitElapsedMs;
+      lease = remainingWait > 0 ? await acquireResource(c.resource, remainingWait) : undefined;
+      resourceWaitElapsedMs += lease?.waitedMs ?? Math.max(0, remainingWait);
+      if (!lease) {
+        results.push({
+          check: c,
+          pass: false,
+          evidence: log,
+          exit: 'resource_wait_timeout',
+          duration_ms: 0,
+        });
+        failures.push({ command: c.cmd, failure_class: 'test_env', evidence: log });
+        throw new ResourceWaitTimeout(c.cmd);
+      }
+    }
     const t0 = Date.now(),
       deadline = t0 + c.timeout_s * 1000;
     let reportPath = '';
@@ -570,18 +684,63 @@ function run(
             .filter(Boolean);
       }
     }
-    const execute = () => {
+    const execute = async () => {
       if (reportPath) rmSync(reportPath, { force: true });
       const remaining = deadline - Date.now();
       if (remaining <= 0) return [undefined, 'timeout', undefined, false, Date.now() - t0] as const;
-      const p = Bun.spawnSync(['bash', '-c', c.cmd], {
-        cwd,
-        env: commandEnv,
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: remaining,
-      });
-      const code = p.signalCode ? `signal ${p.signalCode}` : p.exitCode;
+      const commandEnvironment =
+        c.resource === 'heavy-test' ? { ...commandEnv, SA_HEAVY_LOCK_HELD: '1' } : commandEnv;
+      let p: { exitCode: number | null; signalCode: string | null; stdout: Buffer; stderr: Buffer };
+      if (c.resource) {
+        const { recordNodeProcessTrees, runStreamingSubprocess } = await subprocessOutput();
+        const recorder = recordNodeProcessTrees();
+        try {
+          const sequence = String(resourceOutputSequence++);
+          const output = await runStreamingSubprocess({
+            cmd: 'bash',
+            args: ['-c', c.cmd],
+            cwd: cwd ?? process.cwd(),
+            env: commandEnvironment,
+            timeout: remaining,
+            credentialValues: [],
+            retainRawStdout: true,
+            stdoutPath: `${log}.${sequence}.stdout`,
+            stderrPath: `${log}.${sequence}.stderr`,
+          });
+          p = {
+            exitCode: 0,
+            signalCode: null,
+            stdout: Buffer.from(output.stdout.raw ?? output.stdout.preview),
+            stderr: Buffer.from(output.stderr.preview),
+          };
+        } catch (error) {
+          const failure = error as StreamedSubprocessError;
+          p = {
+            exitCode: typeof failure.code === 'number' ? failure.code : null,
+            signalCode: failure.signal ?? (failure.killed ? 'SIGTERM' : null),
+            stdout: Buffer.from(failure.stdout ?? ''),
+            stderr: Buffer.from(failure.stderr ?? ''),
+          };
+        } finally {
+          await recorder.end();
+          recorder.release();
+        }
+      } else {
+        const result = Bun.spawnSync(['bash', '-c', c.cmd], {
+          cwd,
+          env: commandEnvironment,
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: remaining,
+        });
+        p = {
+          exitCode: result.exitCode,
+          signalCode: result.signalCode ?? null,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        };
+      }
+      const code = p.signalCode ? `signal ${p.signalCode}` : (p.exitCode ?? 'unknown');
       const structured = reportPath ? junitCases(reportPath, expected, t0) : undefined;
       const consistent =
         !structured ||
@@ -602,16 +761,22 @@ function run(
         duration,
       ] as const;
     };
-    const first = execute();
-    const attempt =
-      !first[3] &&
-      !first[0]?.signalCode &&
-      c.cache !== false &&
-      env('KIND') !== 'env' &&
-      retryFailure &&
-      deadline > Date.now()
-        ? execute()
-        : first;
+    let first;
+    let attempt;
+    try {
+      first = await execute();
+      attempt =
+        !first[3] &&
+        !first[0]?.signalCode &&
+        c.cache !== false &&
+        env('KIND') !== 'env' &&
+        retryFailure &&
+        deadline > Date.now()
+          ? await execute()
+          : first;
+    } finally {
+      if (lease) await lease.release();
+    }
     const [p, code, structured, passed, duration] = attempt;
     const flaky = !first[3] && passed;
     results.push({
@@ -889,10 +1054,10 @@ function nodeAcceptance(path: string, head: string): Accept | undefined {
 }
 
 /** 一次验收：coder 处置 + 命令 + 干净工作区；有 BASE 时另存全量 patch、相对 DELTA_BASE 的增量 patch 与交付范围。 */
-function acceptOnce(
+async function acceptOnce(
   tag: string,
   coder: string
-): Record<string, unknown> & Accept & { patch: string; delta: string } {
+): Promise<Record<string, unknown> & Accept & { patch: string; delta: string }> {
   const log = join(artifacts, `${tag}.log`);
   // retries may reuse this tag; cached failures still reference its original output.
   appendFileSync(log, '');
@@ -905,7 +1070,7 @@ function acceptOnce(
   const checks = pkgs.flatMap(k => k.accept);
   const requirementContract = pkgs.map(({ id, accept, requirements }) => ({
     id,
-    accept,
+    accept: accept.map(cacheCheck),
     ...(requirements ? { requirements } : {}),
   }));
   // 声明环境契约与实际传入环境分别绑定；缓存上下文只属于本 run 的 ARTIFACTS_DIR。
@@ -939,9 +1104,16 @@ function acceptOnce(
   const hash = patch ? diffHash(readFileSync(patch)) : '';
   const head = git('rev-parse', 'HEAD').trim();
   const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
-  const failed = prior
-    ? []
-    : run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+  let resourceWaitTimedOut = false;
+  let failed: string[] = [];
+  if (!prior)
+    try {
+      failed = await run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+    } catch (error) {
+      if (!(error instanceof ResourceWaitTimeout)) throw error;
+      resourceWaitTimedOut = true;
+      failed = [error.command];
+    }
   if (prior?.command_results) {
     commandResults.push(...prior.command_results);
     appendFileSync(log, `# reused stable acceptance from ${env('ACCEPTANCE_EVIDENCE')}\n`);
@@ -966,8 +1138,8 @@ function acceptOnce(
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
   const baseResults =
-    base && failed.length
-      ? probe(
+    base && failed.length && !resourceWaitTimedOut
+      ? await probe(
           base,
           checks.filter(c => failed.includes(c.cmd)),
           tag
@@ -1063,6 +1235,12 @@ function acceptOnce(
     join(artifacts, `${tag}.coder.json`),
     reviewRounds
   );
+  if (resourceWaitTimedOut)
+    Object.assign(result, {
+      disposition: 'fail',
+      reason: 'resource_wait_timeout',
+      decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' },
+    });
   const lines = lineBudget(pkgs, tag);
   if (lines && budgetExceeded(lines.limit, lines.used) && result.disposition === 'advance')
     Object.assign(result, {
@@ -1133,7 +1311,7 @@ function finish(
   tag: string,
   out: Record<string, unknown> &
     Accept &
-    Partial<Pick<ReturnType<typeof acceptOnce>, 'patch' | 'delta'>>
+    Partial<Pick<Awaited<ReturnType<typeof acceptOnce>>, 'patch' | 'delta'>>
 ): void {
   const scopeStart = env('SCOPE_BASE');
   if (scopeStart) writeFileSync(join(artifacts, `${tag}.scope-base`), scopeStart);
@@ -1193,12 +1371,12 @@ function finish(
   }
 }
 
-function accept(): void {
+async function accept(): Promise<void> {
   const tag = env('TAG'),
     carried = env('CARRIED_EVIDENCE'),
     attempt = env('ATTEMPT');
   if (!carried || attempt !== '0') {
-    const out = acceptOnce(tag, env('CODER'));
+    const out = await acceptOnce(tag, env('CODER'));
     if (env('TERMINAL') === '1' && out.disposition === 'repair')
       Object.assign(out, {
         disposition: 'fail',
@@ -1227,7 +1405,7 @@ function accept(): void {
  * 包内修复后的结算：没有修复（verify 已 advance）就沿用 verify 的验收证据；修过则用修复输出重验，
  * 仍未 advance 即失败 repair_exhausted:<原因>——每包只有一次修复机会，不在包级循环烧调用。
  */
-function settle(): void {
+async function settle(): Promise<void> {
   const tag = env('TAG');
   const first = env('FIRST');
   const repaired = env('REPAIRED');
@@ -1243,7 +1421,7 @@ function settle(): void {
     );
     return;
   }
-  const out = acceptOnce(tag, repaired);
+  const out = await acceptOnce(tag, repaired);
   if (out.disposition === 'repair') {
     const exhausted = `repair_exhausted:${out.reason ?? ''}`;
     const reason = reasons.some(r => r.code === exhausted)
@@ -1260,7 +1438,11 @@ function settle(): void {
 }
 
 /** 在 base 的临时 detached 工作树里准备同一环境后重跑失败命令；无法准备时不作基线结论。 */
-function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['base_results']> {
+async function probe(
+  base: string,
+  checks: Check[],
+  tag: string
+): Promise<NonNullable<Accept['base_results']>> {
   const log = join(artifacts, `${tag}.probe.log`),
     setup = environmentChecks(plan());
   writeFileSync(log, setup.length ? '' : '# baseline unknown: no environment commands declared\n');
@@ -1268,22 +1450,24 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
   const dir = mkdtempSync(join(artifacts, `probe-${tag}-`));
   try {
     git('worktree', 'add', '--detach', '-q', dir, base);
-    if (run(setup, log, dir).length) {
+    if ((await run(setup, log, dir)).length) {
       appendFileSync(log, '# baseline unknown: environment preparation failed\n');
       return [];
     }
-    return checks.map(c => {
+    const output: NonNullable<Accept['base_results']> = [];
+    for (const c of checks) {
       const failures: CheckFailure[] = [],
         results: CommandResult[] = [];
       const passed =
-        run([c], log, dir, sha(JSON.stringify(['probe', base])), failures, results).length === 0;
+        (await run([c], log, dir, sha(JSON.stringify(['probe', base])), failures, results))
+          .length === 0;
       // Exit 1 alone cannot distinguish assertions from setup errors. Only a
       // structured non-environment failure proves the baseline actually ran.
       const comparable =
         passed ||
         (results[0]?.exit === 1 &&
           failures.every(f => f.failure_class !== 'unknown' && f.failure_class !== 'test_env'));
-      return {
+      output.push({
         cmd: c.cmd,
         pass: comparable ? passed : null,
         ...(results[0]?.structured ? { structured: results[0].structured } : {}),
@@ -1294,8 +1478,9 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
               }`,
             }
           : {}),
-      };
-    });
+      });
+    }
+    return output;
   } catch (error) {
     appendFileSync(log, `# baseline unknown: ${String(error)}\n`);
     return [];
@@ -1337,7 +1522,7 @@ function probe(base: string, checks: Check[], tag: string): NonNullable<Accept['
 export const environmentChecks = (p: Pick<Plan, 'environment' | 'packages'>): Check[] =>
   (p.environment ?? []).concat(p.packages.flatMap(k => k.environment ?? []));
 
-function ruler(): void {
+async function ruler(): Promise<void> {
   const tag = env('TAG'),
     log = join(artifacts, `${tag}.log`);
   writeFileSync(log, '');
@@ -1353,7 +1538,7 @@ function ruler(): void {
     .flatMap(p => p.accept)
     .filter(c => c.base_expect_fail?.length);
   const results: CommandResult[] = [];
-  run(checks, log, undefined, '', [], results, false);
+  await run(checks, log, undefined, '', [], results, false);
   let invalid = false,
     vacuous = false;
   for (const result of results) {
@@ -1407,7 +1592,9 @@ export async function prepareEnvironment(cwd: string, p: Parameters<typeof envir
   const failures: CheckFailure[] = precheck.failures.map(f => ({
     command: 'env-precheck', failure_class: f.failure_class, evidence: log,
   }));
-  const failed = precheck.ok ? run(environmentChecks(p), log, cwd, '', failures) : ['env-precheck'];
+  const failed = precheck.ok
+    ? await run(environmentChecks(p), log, cwd, '', failures)
+    : ['env-precheck'];
   return { ok: failed.length === 0, failed, failures, precheck, provisioned, log };
 }
 

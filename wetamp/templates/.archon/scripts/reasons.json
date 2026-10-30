@@ -35,6 +35,13 @@
     "description": "等待集成锁超时"
   },
   {
+    "code": "resource_wait_timeout",
+    "hold": "environment",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "节点累计等待检查资源名额超时，请在资源空闲后重试"
+  },
+  {
     "code": "git_lock_held",
     "hold": "environment",
     "determinism": "transient",

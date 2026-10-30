@@ -201,6 +201,13 @@ export const REASONS: Reason[] = [
   entry('reclaim_pending', 'auto_recover', 'transient', 'engine', '回收续授权尚未完成'),
   entry('lock_timeout', 'environment', 'transient', 'env', '等待集成锁超时'),
   entry(
+    'resource_wait_timeout',
+    'environment',
+    'transient',
+    'env',
+    '节点累计等待检查资源名额超时，请在资源空闲后重试'
+  ),
+  entry(
     'git_lock_held',
     'environment',
     'transient',

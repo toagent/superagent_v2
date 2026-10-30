@@ -256,6 +256,10 @@
           "type": "integer",
           "minimum": 1
         },
+        "resource": {
+          "enum": ["heavy-test", "browser"],
+          "description": "Machine-wide admission group; queue time does not consume timeout_s"
+        },
         "cache": {
           "type": "boolean",
           "default": true,

@@ -10,6 +10,7 @@ import {
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
+import { acquireResource, RESOURCE_SLOTS } from '../templates/.archon/scripts/sa-check';
 
 const track = trackTempRoots();
 const wetamp = join(import.meta.dir, '..');
@@ -76,6 +77,21 @@ async function maxFor(extra: Record<string, string>, args: string[] = []): Promi
 
 test('four complete suites share one machine-wide slot', async () => {
   expect(await maxFor({})).toBe(1);
+  expect(readFileSync(slot, 'utf8')).toContain(RESOURCE_SLOTS['heavy-test'][0]);
+});
+
+test('browser admission exposes exactly two machine-wide slots', async () => {
+  const root = track(mkdtempSync(join(tmpdir(), 'browser-slots-')));
+  const locks = [join(root, '0.lock'), join(root, '1.lock')];
+  const first = await acquireResource('browser', 500, locks);
+  const second = await acquireResource('browser', 500, locks);
+  expect(first).toBeDefined();
+  expect(second).toBeDefined();
+  expect(await acquireResource('browser', 40, locks)).toBeUndefined();
+  await first!.release();
+  const next = await acquireResource('browser', 500, locks);
+  expect(next).toBeDefined();
+  await Promise.all([second!.release(), next!.release()]);
 });
 
 test('general worktrees reject only unapproved complete suites before taking a slot', async () => {
