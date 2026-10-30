@@ -881,7 +881,12 @@ describe('HF3 latest-engine recovery', () => {
       )
     );
     writeFileSync(join(s.ledger.gen_dir, 'engine.json'), JSON.stringify({ fake: false }));
-    expect(captured(() => main(['decide', 'sa1', 'retry']))).toMatchObject({ code: 0 });
+    const retry = captured(() => main(['decide', 'sa1', 'retry']));
+    if (sample === 'no-worktree') {
+      expect(retry).toMatchObject({ code: 1, out: expect.stringContaining('environment') });
+      return;
+    }
+    expect(retry).toMatchObject({ code: 0 });
     const l = loadLedger('sa1');
     const nodes = (
       Bun.YAML.parse(

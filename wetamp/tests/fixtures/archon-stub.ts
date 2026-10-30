@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Exec, RunView } from '../../src/archon';
 
 export interface FixtureOptions {
@@ -38,9 +38,9 @@ export function fixtureArchon(dir: string, args: string[]): Exec {
   const reply = (value: unknown): Exec => ({ code: 0, out: JSON.stringify(value), err: '' });
   if (args[1] === 'get') {
     if (!current) throw new Error('fixture has no run response');
-    const out = readFileSync(current, 'utf8');
+    const run = JSON.parse(readFileSync(current, 'utf8')) as RunView;
     if (files.length > 1) renameSync(current, join(dir, 'used', files[0]));
-    return { code: 0, out, err: '' };
+    return reply(run.working_path === undefined ? { ...run, working_path: dirname(dir) } : run);
   }
   if (args[1] === 'run')
     return reply(
