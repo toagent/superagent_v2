@@ -129,6 +129,7 @@ test('engine acceptance waits outside its timeout and reports holder exhaustion'
     writeFileSync(join(scripts, name), readFileSync(join(import.meta.dir, '../scripts', name)));
   process.env.SUPERAGENT_HOME = join(root, 'home');
   process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock');
+  process.env.SA_HEAVY_LOCK_HELD = '';
   const holder = Bun.spawn(
     ['sh', '-c', '. "$1"; heavy_exec sleep 2', '_', join(scripts, 'heavy-slot.sh')],
     { env: { ...process.env, SA_HEAVY_LOCK_HELD: '' } }
@@ -148,6 +149,9 @@ test('engine acceptance waits outside its timeout and reports holder exhaustion'
   );
   for (let i = 0; i < 100 && !existsSync(`${process.env.SA_HEAVY_LOCK_FILE}.holder`); i++)
     await Bun.sleep(10);
+  process.env.SA_HEAVY_LOCK_HELD = '1';
+  expect(runAcceptance(snapshot, 200, 1_000, 1_000).exit).toBe(0);
+  process.env.SA_HEAVY_LOCK_HELD = '';
   expect(() => runAcceptance(snapshot, 200, 1_000, 1_000)).toThrow('heavy_slot_wait_exhausted');
   blocker.kill('SIGKILL');
   await blocker.exited;

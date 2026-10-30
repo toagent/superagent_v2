@@ -343,7 +343,6 @@ export function runAcceptance(
           SA_HISTORICAL_RUN: '',
           SUPERAGENT_HOME: join(scratch, 'sa'),
           ARCHON_HOME: join(scratch, 'sa', 'archon'),
-          SA_HEAVY_LOCK_HELD: '',
           SA_HEAVY_READY_FILE: ready,
           SA_HEAVY_WAIT_EXHAUSTED_FILE: exhausted,
           SA_HEAVY_WAIT_TIMEOUT_SECONDS: String(Math.max(1, Math.ceil(waitTimeoutMs / 1_000))),
