@@ -4846,11 +4846,18 @@ async function heartbeatCli(argv: string[]): Promise<number> {
         load: readModel,
         initialQuota: quota(),
         loadQuota: quota,
-        beforeRefresh: () => (watchExit = heartbeatEngineExitCode(startedEngine)),
       }),
       { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
     );
-    await app.waitUntilExit();
+    const promotionTimer = setInterval(() => {
+      watchExit = heartbeatEngineExitCode(startedEngine);
+      if (watchExit) app.unmount();
+    }, 15_000);
+    try {
+      await app.waitUntilExit();
+    } finally {
+      clearInterval(promotionTimer);
+    }
     return watchExit;
   }
   let resolveStop: (value: 'stop') => void = () => undefined;

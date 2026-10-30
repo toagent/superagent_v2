@@ -1,4 +1,4 @@
-import { Box, Text, useApp, useStdout, type TextProps } from 'ink';
+import { Box, Text, useStdout, type TextProps } from 'ink';
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import {
   panelDuration,
@@ -255,36 +255,27 @@ export interface HeartbeatViewProps {
   load: () => PanelModel;
   initialQuota?: string;
   loadQuota: () => string | undefined;
-  beforeRefresh?: () => number;
 }
 export function HeartbeatView({
   initial,
   load,
   initialQuota,
   loadQuota,
-  beforeRefresh,
 }: HeartbeatViewProps): ReactElement {
-  const { exit } = useApp(),
-    stdout = useStdout().stdout as NodeJS.WriteStream;
+  const stdout = useStdout().stdout as NodeJS.WriteStream;
   const [model, setModel] = useState(initial),
     [quota, setQuota] = useState(initialQuota),
     [now, setNow] = useState(Date.now()),
     [size, setSize] = useState({ width: stdout.columns || 100, rows: stdout.rows || 30 }),
     fingerprint = useRef(JSON.stringify(initial));
   const refresh = useCallback(() => {
-    const exitCode = beforeRefresh?.() ?? 0;
-    if (exitCode) {
-      process.exitCode = exitCode;
-      exit();
-      return;
-    }
     const next = load(),
       serialized = JSON.stringify(next);
     if (serialized !== fingerprint.current) {
       fingerprint.current = serialized;
       setModel(next);
     }
-  }, [beforeRefresh, exit, load]);
+  }, [load]);
   useEffect(() => {
     const dataTimer = setInterval(refresh, 15_000),
       clockTimer = setInterval(() => setNow(Date.now()), 500),
