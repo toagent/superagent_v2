@@ -3903,6 +3903,9 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       held: true,
       state: 'held:recovery_admission_unknown',
     });
+    expect(resumes(s.calls())).toBe(0);
+    expect(s.calls().filter(call => call.startsWith('workflow run '))).toHaveLength(1);
+    expect(s.calls().find(call => call.startsWith('workflow run '))).toContain('--supersedes r');
     expect(loadLedger('sa1').auto_retries).toHaveLength(1);
   });
 
