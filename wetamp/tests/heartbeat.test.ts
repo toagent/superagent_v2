@@ -81,17 +81,20 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   const who = owner(1),
     failed = row('failed', who, 'failed'),
     held = row('held', who, 'held:gate'),
+    needs = row('needs', who, 'held:gate'),
     running = row('running', who);
-  for (const item of [failed, held, running]) item.repo = '/repo/project';
+  for (const item of [failed, held, needs, running]) item.repo = '/repo/project';
   // prettier-ignore
   failed.engine = { title: 'failed', milestones: [], currentMilestone: null, states: [], firstPass: false, reason: 'repair_exhausted:scope_violation', dispositions: [] };
   // prettier-ignore
   held.engine = { title: 'held', milestones: [], currentMilestone: null, states: [], firstPass: false, reason: 'review_limit', dispositions: [] };
+  // prettier-ignore
+  needs.engine = { title: 'needs', milestones: [], currentMilestone: null, states: [], firstPass: false, reason: 'coder_needs', dispositions: [] };
   running.coordination!.pending = 2;
   const snap: Snapshot = {
     at: new Date(now).toISOString(),
     summary: {},
-    rows: [failed, held, running, row('other', who)],
+    rows: [failed, held, needs, running, row('other', who)],
     coordMessages: [
       {
         id: 'run-queued',
@@ -113,7 +116,7 @@ test('heartbeat separates active runs from typed waits and reports coordination 
       },
     ] as Snapshot['coordMessages'],
   };
-  snap.rows[3]!.repo = '/repo/project';
+  snap.rows[4]!.repo = '/repo/project';
   const result = heartbeat(snap, cockpit(snap, now), now, () => ({
     state: 'online',
     activity: 'active',
@@ -123,16 +126,21 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   expect(marshal.waiting.map(item => [item.id, item.waiting_for])).toEqual([
     ['failed', '交付包含 scope.write 之外的路径'],
     ['held', '评审轮次用尽'],
+    ['needs', '编码端需要补充能力'],
     ['running', '1 条协调消息'],
     ['repo:/repo/project', '1 条协调消息'],
   ]);
   expect(marshal.waiting[1]).toMatchObject({
     code: 'review_limit',
-    next: '重新确认遗留blocker和工作包范围',
+    next: '重新确认遗留blocker和工作包范围；superagent decide held retry',
   });
-  expect(marshal.waiting[2]).toMatchObject({ code: 'coordination_pending' });
+  expect(marshal.waiting[2]).toMatchObject({
+    code: 'coder_needs',
+    next: '在brief中检查needs并补齐明确能力或输入；superagent decide needs retry',
+  });
+  expect(marshal.waiting[3]).toMatchObject({ code: 'coordination_pending' });
   expect(marshal.waiting.filter(item => item.id.startsWith('repo:'))).toHaveLength(1);
-  expect(marshal.line).toContain('等待4：交付包含 scope.write 之外的路径、评审轮次用尽');
+  expect(marshal.line).toContain('等待5：交付包含 scope.write 之外的路径、评审轮次用尽');
 });
 
 test('heartbeat persistence ignores clocks, refreshes at 900s, and health classifies stages', () => {

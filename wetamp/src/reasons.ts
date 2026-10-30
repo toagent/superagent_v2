@@ -225,3 +225,11 @@ export const REASONS: Reason[] = [
   })),
 ];
 export const reasonOf = (code: string): Reason | undefined => REASONS.find(r => r.code === code);
+
+/** Return the CLI action accepted by the current hold, including reason codes projected as holds. */
+export function holdAction(run: string, code: string): string {
+  const hold = reasonOf(code)?.hold ?? code;
+  return hold === 'acceptance_adjudication'
+    ? `superagent decide ${run} approve`
+    : `superagent decide ${run} retry`;
+}
