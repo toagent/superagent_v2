@@ -56,7 +56,7 @@ const mutations: Mutation[] = [
     to: 'duration > 120_000',
     test: 'tests/sa-check.test.ts',
     name: 'FALSE_HANDBACK',
-    expectedError: 'expected undefined',
+    expectedError: 'Received: "events:code-a:0"',
   },
   {
     file: 'src/generate.ts',
