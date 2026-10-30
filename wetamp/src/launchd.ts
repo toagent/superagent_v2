@@ -1,6 +1,5 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { userInfo } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 export interface LaunchctlResult {
@@ -15,6 +14,18 @@ interface LaunchdDeps {
 }
 
 const runLaunchctl: LaunchctlRunner = args => spawnSync('launchctl', args, { encoding: 'utf8' });
+
+const systemAccountHome = (): string => {
+  const username = execFileSync('/usr/bin/id', ['-un'], { encoding: 'utf8' }).trim();
+  const record = execFileSync(
+    '/usr/bin/dscl',
+    ['.', '-read', `/Users/${username}`, 'NFSHomeDirectory'],
+    { encoding: 'utf8' }
+  ).trim();
+  const prefix = 'NFSHomeDirectory: ';
+  if (!record.startsWith(prefix)) throw new Error('system account has no NFSHomeDirectory');
+  return record.slice(prefix.length);
+};
 
 const uid = (): number => {
   const value = process.getuid?.();
@@ -33,7 +44,7 @@ const canonicalDirectory = (path: string, role: string): string => {
 const guardMutation = (plist: string): void => {
   const actual = canonicalDirectory(dirname(plist), 'plist parent');
   const allowed = canonicalDirectory(
-    join(userInfo().homedir, 'Library', 'LaunchAgents'),
+    join(systemAccountHome(), 'Library', 'LaunchAgents'),
     'system user LaunchAgents'
   );
   if (actual !== allowed)
