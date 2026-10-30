@@ -24,5 +24,5 @@ case "$(uname -s)" in
   Linux) cpus=$(getconf _NPROCESSORS_ONLN) ;;
   *) echo "wetamp test: unsupported platform $(uname -s)" >&2; exit 1 ;;
 esac
-workers=$((cpus > 2 ? cpus - 2 : 1))
+workers=$((cpus > 1 ? cpus / 2 : 1))
 heavy_exec bun run "$runner" "--parallel=$workers" tests/ scripts/
