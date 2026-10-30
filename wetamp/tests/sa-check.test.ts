@@ -3185,6 +3185,7 @@ describe('sa-check script', () => {
         WORKFLOW_ID: 'node-workflow',
         SA_COORD_ADMISSION: 'fixture-admission',
         SUPERAGENT_ROLE: 'worker',
+        SA_ACCEPTANCE: '1',
       }
     );
     expect(r.code).toBe(0);

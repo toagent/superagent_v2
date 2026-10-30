@@ -552,7 +552,10 @@ async function run(
   retryFailure = true
 ): Promise<string[]> {
   const failed: string[] = [];
-  const commandEnv = env('KIND') === 'env' ? process.env : projectEnvironment(process.env);
+  const commandEnv =
+    env('KIND') === 'env'
+      ? Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'SA_ACCEPTANCE'))
+      : projectEnvironment(process.env);
   const treeResult =
     artifacts && envKey
       ? auxiliary(
