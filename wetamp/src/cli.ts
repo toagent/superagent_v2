@@ -4831,22 +4831,25 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     return 0;
   }
   if (process.stdout.isTTY) {
-    const [{ createElement }, ink, { HeartbeatView }] = await Promise.all([
-      import('react'),
-      import('ink'),
-      import('./board/HeartbeatView'),
-    ]);
+    const [{ createElement }, ink, { HeartbeatView, registerHeartbeatResizeClear }] =
+      await Promise.all([import('react'), import('ink'), import('./board/HeartbeatView')]);
     const quota = (): string | undefined => relayQuota().quota;
-    const app = ink.render(
-      createElement(HeartbeatView, {
-        initial: readModel(),
-        load: readModel,
-        initialQuota: quota(),
-        loadQuota: quota,
-      }),
-      { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
-    );
-    await app.waitUntilExit();
+    let app: ReturnType<typeof ink.render> | undefined;
+    const unregisterResizeClear = registerHeartbeatResizeClear(process.stdout, () => app?.clear());
+    try {
+      app = ink.render(
+        createElement(HeartbeatView, {
+          initial: readModel(),
+          load: readModel,
+          initialQuota: quota(),
+          loadQuota: quota,
+        }),
+        { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
+      );
+      await app.waitUntilExit();
+    } finally {
+      unregisterResizeClear();
+    }
     return 0;
   }
   let resolveStop: (value: 'stop') => void = () => undefined;

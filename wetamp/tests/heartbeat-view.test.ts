@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { HeartbeatFrame } from '../src/board/HeartbeatView';
+import { HeartbeatFrame, registerHeartbeatResizeClear } from '../src/board/HeartbeatView';
 import { unknownProgress } from '../src/board/eta';
 import { panelModel } from '../src/panel';
 import type { Heartbeat, TickRecord } from '../src/heartbeat';
@@ -109,4 +110,34 @@ test('行数不足裁剪卡片且窄屏去掉边框，状态栏仍在末尾', ()
   const narrow = frame(value, 50, 40);
   expect(narrow).not.toContain('╭');
   expect(narrow).not.toContain('╰');
+});
+
+test('长项目名与额度在各尺寸下不超宽高预算', () => {
+  const value = heartbeat(['working', 'idle', 'stalled']);
+  value.marshals[0]!.project = '.bestifa-land-wt-项目'.repeat(8);
+  const quota =
+    '⚠️ Codex 超 $500 · Claude 今日 $423.10 · （2/2 可用） | Codex 今日 $810.46 · 5h 余 100% · 7d 余 36% · （3/4 可用）'.repeat(
+      2
+    );
+  const clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false });
+  for (const columns of [50, 78, 100, 140]) {
+    for (const rows of [16, 30]) {
+      const lines = frame(value, columns, rows, quota).split('\n');
+      expect(lines.every(line => Bun.stringWidth(Bun.stripANSI(line)) <= columns)).toBe(true);
+      expect(lines.length).toBeLessThanOrEqual(rows - 1);
+      expect(lines[0]).toContain(clock);
+      expect(lines[0]).toContain('巡检正常');
+      expect(lines.at(-1)).toContain('额度：');
+    }
+  }
+});
+
+test('resize 先清屏再触发组件重渲染', () => {
+  const stdout = new EventEmitter();
+  const calls: string[] = [];
+  const unregister = registerHeartbeatResizeClear(stdout, () => calls.push('clear'));
+  stdout.on('resize', () => calls.push('render'));
+  stdout.emit('resize');
+  expect(calls).toEqual(['clear', 'render']);
+  unregister();
 });

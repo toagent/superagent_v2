@@ -1,5 +1,5 @@
 import { Box, Text, useStdout, type TextProps } from 'ink';
-import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import {
   panelDuration,
   shortRunId,
@@ -8,6 +8,7 @@ import {
   type PanelModel,
   type PanelRun,
 } from '../panel';
+import { fit } from './cockpit';
 import { ProgressBar } from './ProgressBar';
 
 const driftAt = (model: PanelModel, now: number): number =>
@@ -64,20 +65,6 @@ const pipeline = (run: PanelRun): { icon: string; label: string; color?: string 
   );
 };
 
-function Badge({
-  children,
-  color,
-}: {
-  children: ReactNode;
-  color: TextProps['color'];
-}): ReactElement {
-  return (
-    <Text backgroundColor={color} color="black">
-      {' '}
-      {children}{' '}
-    </Text>
-  );
-}
 function StatusMessage({
   children,
   success = false,
@@ -86,14 +73,18 @@ function StatusMessage({
   success?: boolean;
 }): ReactElement {
   return (
-    <Text color={success ? 'green' : 'yellow'}>
+    <Text color={success ? 'green' : 'yellow'} wrap="truncate-end">
       {success ? '✓' : '⚠'} {children}
     </Text>
   );
 }
 function StateIcon({ state, now }: { state: PanelGeneralState; now: number }): ReactElement {
   if (state === 'working')
-    return <Text color="cyan">{['⠋', '⠙', '⠹', '⠸'][Math.floor(now / 500) % 4]}</Text>;
+    return (
+      <Text color="cyan" wrap="truncate-end">
+        {['⠋', '⠙', '⠹', '⠸'][Math.floor(now / 500) % 4]}
+      </Text>
+    );
   const values: Record<Exclude<PanelGeneralState, 'working'>, [string, TextProps['color']]> = {
     idle: ['◐', 'yellow'],
     stalled: ['■', 'red'],
@@ -101,7 +92,11 @@ function StateIcon({ state, now }: { state: PanelGeneralState; now: number }): R
     unknown: ['○', 'gray'],
   };
   const [icon, color] = values[state];
-  return <Text color={color}>{icon}</Text>;
+  return (
+    <Text color={color} wrap="truncate-end">
+      {icon}
+    </Text>
+  );
 }
 
 function RunCard({
@@ -122,8 +117,8 @@ function RunCard({
       <Box height={1}>
         <Box flexShrink={0}>
           <StateIcon state={run.general} now={now} />
-          <Text> </Text>
-          <Text bold color="cyan">
+          <Text wrap="truncate-end"> </Text>
+          <Text bold color="cyan" wrap="truncate-end">
             {shortRunId(run.id)}
           </Text>
         </Box>
@@ -132,18 +127,18 @@ function RunCard({
           · {run.project} · {run.title}
         </Text>
       </Box>
-      <Box>
+      <Text wrap="truncate-end">
         {pipeline(run).map((step, index) => (
-          <Text key={step.label} color={step.color}>
+          <Text key={step.label} color={step.color} wrap="truncate-end">
             {index ? ' ─ ' : ''}
             {step.icon} {step.label}
           </Text>
         ))}
-      </Box>
+      </Text>
       {run.estimate.pct !== null && (
         <ProgressBar progress={run.estimate} width={Math.max(10, width - (compact ? 0 : 4))} />
       )}
-      <Text wrap="truncate">
+      <Text wrap="truncate-end">
         已用 {age(run.elapsed_s, drift)} · 最近活动 {age(run.last_activity_s, drift, true)} · 执行者{' '}
         {run.roles.join('、')}
       </Text>
@@ -167,6 +162,27 @@ export interface HeartbeatFrameProps {
   width: number;
   rows: number;
 }
+const displayLines = (value: string, width: number, limit: number): string[] => {
+  const lines: string[] = [];
+  let rest = value;
+  while (rest && lines.length < limit) {
+    if (lines.length === limit - 1) return [...lines, fit(rest, width)];
+    let line = '',
+      used = 0,
+      offset = 0;
+    for (const character of rest) {
+      const columns = Bun.stringWidth(character);
+      if (used + columns > width) break;
+      line += character;
+      used += columns;
+      offset += character.length;
+    }
+    if (!line) return [...lines, fit(rest, width)];
+    lines.push(line);
+    rest = rest.slice(offset);
+  }
+  return lines;
+};
 export function HeartbeatFrame({
   model,
   quota,
@@ -177,52 +193,93 @@ export function HeartbeatFrame({
   width = Math.max(1, Math.floor(width));
   rows = Math.max(1, Math.floor(rows));
   const drift = driftAt(model, now),
+    availableRows = Math.max(0, rows - 1),
     compact = width < 60,
     columns = width >= 120 ? 2 : 1,
     cardWidth = columns === 2 ? Math.floor(width / 2) : width,
     attention = model.attention.slice(0, 5),
-    fixedRows =
-      1 + 1 + 1 + Math.max(1, attention.length + (model.attention.length > 5 ? 1 : 0)) + 2,
+    attentionRows = Math.max(1, attention.length + (model.attention.length > 5 ? 1 : 0)),
+    quotaPrefix = '额度：',
+    quotaLines = displayLines(
+      quota ?? '未配置',
+      Math.max(1, width - Bun.stringWidth(quotaPrefix)),
+      Math.min(2, Math.max(0, availableRows - 1))
+    ).map(line => fit(quotaPrefix + line, width)),
+    footerRows = Math.min(availableRows, 1 + quotaLines.length),
+    bodyBudget = Math.max(0, availableRows - footerRows),
+    shownAttentionRows = Math.min(attentionRows, Math.max(0, bodyBudget - 3)),
+    fixedBodyRows = Math.min(bodyBudget, 3 + shownAttentionRows),
     cardRows = compact ? 4 : 6,
-    capacity = Math.max(0, Math.floor((rows - fixedRows - 1) / cardRows) * columns),
+    cardBudget = Math.max(0, bodyBudget - fixedBodyRows - (model.runs.length ? 1 : 0)),
+    capacity = width < 20 ? 0 : Math.floor(cardBudget / cardRows) * columns,
     shown = model.runs.slice(0, capacity),
     hidden = model.runs.length - shown.length,
-    dataAge = Math.max(0, Math.floor((now - Date.parse(model.heartbeatAt)) / 1000));
+    dataAge = Math.max(0, Math.floor((now - Date.parse(model.heartbeatAt)) / 1000)),
+    clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }),
+    health = model.health.ok
+      ? `● 巡检正常 · 数据 ${String(dataAge)}s 前`
+      : `⚠ 巡检可能停了：${model.health.messages.join('；')}`,
+    status = `${clock} · ${health}`,
+    titleWidth = Math.max(0, width - Bun.stringWidth(status) - 1),
+    header = titleWidth
+      ? `${fit(`◆ 心跳 · ${model.projects}`, titleWidth)} ${status}`
+      : fit(status, width),
+    footer = fit(
+      `在跑 ${String(model.stats.running)} · 等待 ${String(model.stats.waiting)} · 待回收 ${String(model.stats.reclaimPending)} · 数据 ${String(dataAge)}s 前`,
+      width
+    );
   return (
     <Box flexDirection="column" width={width}>
-      <Box justifyContent="space-between">
-        <Text bold color="cyan">
-          ◆ 心跳 · {model.projects}
+      {bodyBudget >= 1 && (
+        <Text bold color="cyan" wrap="truncate-end">
+          {header}
         </Text>
-        <Text>
-          {new Date(now).toLocaleTimeString('zh-CN', { hour12: false })} ·{' '}
-          {model.health.ok ? (
-            <Text color="green">● 巡检正常 · 数据 {String(dataAge)}s 前</Text>
-          ) : (
-            <Text color="red">⚠ 巡检可能停了：{model.health.messages.join('；')}</Text>
-          )}
-        </Text>
-      </Box>
-      <Box gap={1}>
-        <Badge color="green">在跑 {String(model.stats.running)}</Badge>
-        <Badge color="blue">等待 {String(model.stats.waiting)}</Badge>
-        <Badge color={model.attention.length ? 'yellow' : 'gray'}>
-          需处理 {String(model.attention.length)}
-        </Badge>
-        <Badge color="gray">待回收 {String(model.stats.reclaimPending)}</Badge>
-      </Box>
-      <Text bold>需要处理</Text>
-      {attention.length ? (
-        attention.map((item, index) => (
-          <StatusMessage key={`${item.project}-${String(index)}`}>
-            {attentionLabel(item, drift)}
-          </StatusMessage>
-        ))
-      ) : (
-        <StatusMessage success>无需处理</StatusMessage>
       )}
-      {model.attention.length > 5 && (
-        <Text color="yellow">+{String(model.attention.length - 5)} 条</Text>
+      {bodyBudget >= 2 && (
+        <Text wrap="truncate-end">
+          <Text backgroundColor="green" color="black" wrap="truncate-end">
+            {' '}
+            在跑 {String(model.stats.running)}{' '}
+          </Text>{' '}
+          <Text backgroundColor="blue" color="black" wrap="truncate-end">
+            {' '}
+            等待 {String(model.stats.waiting)}{' '}
+          </Text>{' '}
+          <Text
+            backgroundColor={model.attention.length ? 'yellow' : 'gray'}
+            color="black"
+            wrap="truncate-end"
+          >
+            {' '}
+            需处理 {String(model.attention.length)}{' '}
+          </Text>{' '}
+          <Text backgroundColor="gray" color="black" wrap="truncate-end">
+            {' '}
+            待回收 {String(model.stats.reclaimPending)}{' '}
+          </Text>
+        </Text>
+      )}
+      {bodyBudget >= 3 && (
+        <Text bold wrap="truncate-end">
+          需要处理
+        </Text>
+      )}
+      {shownAttentionRows > 0 &&
+        (attention.length ? (
+          attention
+            .slice(0, shownAttentionRows)
+            .map((item, index) => (
+              <StatusMessage key={`${item.project}-${String(index)}`}>
+                {attentionLabel(item, drift)}
+              </StatusMessage>
+            ))
+        ) : (
+          <StatusMessage success>无需处理</StatusMessage>
+        ))}
+      {model.attention.length > 5 && shownAttentionRows > attention.length && (
+        <Text color="yellow" wrap="truncate-end">
+          +{String(model.attention.length - 5)} 条
+        </Text>
       )}
       <Box flexWrap="wrap">
         {shown.map(run => (
@@ -236,19 +293,36 @@ export function HeartbeatFrame({
           />
         ))}
       </Box>
-      {hidden > 0 && <Text dimColor>+{String(hidden)} 个 run 未显示</Text>}
-      <Box flexDirection="column">
-        <Text backgroundColor="cyan" color="black">
-          在跑 {String(model.stats.running)} · 等待 {String(model.stats.waiting)} · 待回收{' '}
-          {String(model.stats.reclaimPending)} · 数据 {String(dataAge)}s 前
+      {hidden > 0 && bodyBudget > fixedBodyRows && (
+        <Text dimColor wrap="truncate-end">
+          +{String(hidden)} 个 run 未显示
         </Text>
-        <Text backgroundColor="cyan" color="black">
-          {quota ? `额度：${quota}` : '额度：未配置'}
+      )}
+      {availableRows > 0 && (
+        <Text backgroundColor="cyan" color="black" wrap="truncate-end">
+          {footer}
         </Text>
-      </Box>
+      )}
+      {quotaLines.map((line, index) => (
+        <Text key={index} backgroundColor="cyan" color="black" wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
     </Box>
   );
 }
+
+interface ResizeSource {
+  on(event: 'resize', listener: () => void): unknown;
+  off(event: 'resize', listener: () => void): unknown;
+}
+export const registerHeartbeatResizeClear = (
+  stdout: ResizeSource,
+  clear: () => void
+): (() => void) => {
+  stdout.on('resize', clear);
+  return () => stdout.off('resize', clear);
+};
 
 export interface HeartbeatViewProps {
   initial: PanelModel;
