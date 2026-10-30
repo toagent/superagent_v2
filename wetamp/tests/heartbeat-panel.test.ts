@@ -96,6 +96,8 @@ test('concurrent ensures create once with the right command and failures stay co
   expect(creates[0]).toContain(`path:${fresh.repo}`);
   expect(creates[0]).toContain(`心跳·superagent_v2`);
   expect(creates[0].join(' ')).toContain(`'heartbeat' '--watch' '--cwd' '${fresh.repo}'`);
+  expect(creates[0].join(' ')).toContain(`bin/superagent-shim' 'heartbeat'`);
+  expect(creates[0].join(' ')).toContain('while true; do ');
 
   const failed = fixture('fail');
   expect(run(failed).exitCode).toBe(0);

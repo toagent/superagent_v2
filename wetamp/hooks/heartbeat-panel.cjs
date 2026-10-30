@@ -154,11 +154,15 @@ function ensure(root, env = process.env) {
       atomicWrite(record, { handle: adopted });
       return;
     }
-    const superagent = path.join(WETAMP, 'bin', 'superagent'),
+    // The shim routes to the promoted engine; bin/superagent in this checkout is a candidate
+    // and refuses production state. The loop keeps the tab useful while the engine lacks the
+    // verb (before promotion) or after a crash, instead of leaving a dead terminal.
+    const superagent = path.join(WETAMP, 'bin', 'superagent-shim'),
       scope = root === path.dirname(WETAMP) ? ['--all'] : ['--cwd', root],
-      shellCommand = [superagent, 'heartbeat', '--watch', ...scope]
+      watch = [superagent, 'heartbeat', '--watch', ...scope]
         .map(value => `'${value.replace(/'/g, "'\\''")}'`)
         .join(' '),
+      shellCommand = `while true; do ${watch}; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`,
       created = command(
         orca,
         [
