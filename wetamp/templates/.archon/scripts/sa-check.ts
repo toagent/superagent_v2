@@ -19,7 +19,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
@@ -470,7 +469,11 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
   });
 }
 
-function recordFlaky(check: Check, structured: StructuredCases | undefined, log: string): void {
+async function recordFlaky(
+  check: Check,
+  structured: StructuredCases | undefined,
+  log: string
+): Promise<void> {
   const home = process.env.SUPERAGENT_HOME;
   if (!home) return;
   const file = join(home, 'flaky-acceptance.jsonl'),
@@ -505,9 +508,9 @@ function recordFlaky(check: Check, structured: StructuredCases | undefined, log:
       const module = existsSync(local)
         ? local
         : join(home, 'engine/current/wetamp/src/coord/index.ts');
-      const coordination = createRequire(import.meta.url)(
-        module
-      ) as typeof import('../../../src/coord');
+      const coordination = (await import(
+        pathToFileURL(module).href
+      )) as typeof import('../../../src/coord');
       coordination.coord().handoff(
         coordination.repoScope(repo),
         coordination.caller(true),
@@ -729,7 +732,7 @@ async function run(
       ...(flaky ? { flaky: true } : {}),
       ...(structured ? { structured } : {}),
     });
-    if (flaky) recordFlaky(c, first[2], log);
+    if (flaky) await recordFlaky(c, first[2], log);
     if (!passed) {
       failed.push(c.cmd);
       let classification: unknown;
