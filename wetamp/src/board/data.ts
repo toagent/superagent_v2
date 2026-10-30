@@ -8,6 +8,7 @@ import {
   getRunAsync,
   getRunsAsync,
   reportRunRevisions,
+  runStatuses,
   RunQueryError,
   tail,
   type RunView,
@@ -431,7 +432,7 @@ async function queryRuns(
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger, statusesOf: () => Map<string, RunView['status']> | null = runStatuses): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -454,13 +455,22 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
     // prettier-ignore
     const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : ledgerReader(id)] as const; }));
-    const archonIds = [...initialLedgers.entries()].flatMap(([id, l]) => typeof l === 'string' || FINAL.has(cache.get(id)?.run.status ?? 'pending') ? [] : [l.archon_run_id]);
+    let terminal = 0;
+    const statuses = statusesOf();
+    const visibleIds = statuses ? ids.filter(({ id }) => {
+      const ledger = initialLedgers.get(id);
+      if (typeof ledger === 'string' || !ledger) return true;
+      const status = statuses.get(ledger.archon_run_id);
+      return !status || !FINAL.has(status) || terminal++ < limit;
+    }) : ids;
+    const visible = new Set(visibleIds.map(({ id }) => id));
+    const archonIds = [...initialLedgers.entries()].flatMap(([id, l]) => !visible.has(id) || typeof l === 'string' || FINAL.has(cache.get(id)?.run.status ?? 'pending') ? [] : [l.archon_run_id]);
     let revisions: Map<string, string> | null = null;
     try { revisions = revisionsOf(archonIds); } catch { /* Revision cache unavailable: keep mutable runs live. */ }
     // prettier-ignore
     const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id, revision = archonId ? revisions?.get(archonId) : undefined; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (!!hit.revision && hit.revision === revision)) ? [[id, hit] as const] : []; }));
     // A mutable run may rewrite its ledger while preserving mtime, so only reusable rows keep the saved parse.
-    const ledgers = new Map(ids.map(({ id }) => { const hit = cache.get(id); return [id, reusable.has(id) || !hit || FINAL.has(hit.run.status) ? (initialLedgers.get(id) ?? ledgerReader(id)) : ledgerReader(id)] as const; }));
+    const ledgers = new Map(visibleIds.map(({ id }) => { const hit = cache.get(id); return [id, reusable.has(id) || !hit || FINAL.has(hit.run.status) ? (initialLedgers.get(id) ?? ledgerReader(id)) : ledgerReader(id)] as const; }));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
     const presenceCache = new Map<string, Presence>();
@@ -495,7 +505,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         });
       }
     }
-    const uncached = ids.filter(({ id }) => !reusable.has(id));
+    const uncached = visibleIds.filter(({ id }) => !reusable.has(id));
     let queried = new Map<string, RunView | Error>();
     const queryEntries = uncached.flatMap(({ id }) => { const ledger = ledgers.get(id); return typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
     const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
@@ -519,8 +529,8 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       }
     }
     first = false;
-    let terminal = 0;
-    const results = ids.map(({ id, mtimeMs }) => {
+    terminal = 0;
+    const results = visibleIds.map(({ id, mtimeMs }) => {
       const l = ledgers.get(id);
       if (l === undefined) throw new Error(`ledger ${id}: missing from snapshot`);
       if (typeof l === 'string') return { row: unreadableRow(id, l) };
@@ -541,7 +551,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         const err = e as Error;
         return hit ? { l, run: hit.run, stale: true, err } : { l, err };
       }
-    }).filter(r => !r.run || !FINAL.has(r.run.status) || terminal++ < limit);
+    }).filter(r => statuses !== null || !r.run || !FINAL.has(r.run.status) || terminal++ < limit);
     const coordMessages = coordinator.messages();
     const pending = new Map<string, number>();
     for (const message of coordMessages)
