@@ -225,7 +225,7 @@ export function HeartbeatFrame({
       ? `${fit(`◆ 心跳 · ${model.projects}`, titleWidth)} ${status}`
       : fit(status, width),
     footer = fit(
-      `在跑 ${String(model.stats.running)} · 等待 ${String(model.stats.waiting)} · 待回收 ${String(model.stats.reclaimPending)} · 数据 ${String(dataAge)}s 前`,
+      `在跑 ${String(model.stats.running)} · 等待 ${String(model.stats.waiting)} · 待回收 ${String(model.stats.reclaimPending)} · 历史遗留 ${String(model.stats.legacy)} · 数据 ${String(dataAge)}s 前`,
       width
     );
   return (
@@ -256,6 +256,10 @@ export function HeartbeatFrame({
           <Text backgroundColor="gray" color="black" wrap="truncate-end">
             {' '}
             待回收 {String(model.stats.reclaimPending)}{' '}
+          </Text>{' '}
+          <Text backgroundColor="gray" color="black" wrap="truncate-end">
+            {' '}
+            历史遗留 {String(model.stats.legacy)}{' '}
           </Text>
         </Text>
       )}

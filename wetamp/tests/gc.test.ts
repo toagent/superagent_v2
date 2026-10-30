@@ -245,6 +245,35 @@ test('rejected source is retained until its live adopter completes', () => {
   db.close();
   expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
 });
+test('failed runs finalize only with a successor or collected resources', () => {
+  const superseded = fixture('failed');
+  // prettier-ignore
+  writeFileSync(ledgerPath('successor'), JSON.stringify({ ...superseded.ledger, run_id: 'successor', archon_run_id: 'next', adoptions: [{ at: '', from: superseded.view.id, to: 'next', engine_from: null, engine_to: '', reason: 'retry' }] }));
+  views.set('next', { id: 'next', status: 'failed', working_path: superseded.path });
+  // prettier-ignore
+  expect(gc().filter(e => e.run_id === superseded.id)).toEqual([expect.objectContaining({ action: 'skipped', reason: 'successor next failed remains recoverable' })]);
+  expect([existsSync(superseded.path), superseded.branchExists()]).toEqual([true, true]);
+  // prettier-ignore
+  expect(loadLedger(superseded.id).intervention_events?.at(-1)).toMatchObject({ reason: 'superseded', evidence: { successor: 'next' } });
+  views.get('next')!.status = 'completed';
+  expect(
+    gc()
+      .filter(e => e.run_id === superseded.id)
+      .map(e => e.action)
+  ).toEqual(['removed', 'removed']);
+
+  const collected = fixture('failed');
+  collected.git('worktree', 'remove', '--force', collected.path);
+  collected.git('branch', '-D', `sa/${collected.id}`);
+  expect(gc()).toEqual([]);
+  expect(loadLedger(collected.id).intervention_events?.at(-1)).toMatchObject({
+    reason: 'resources_collected',
+  });
+
+  const recoverable = fixture('failed', false);
+  expect(gc()[0]?.reason).toContain('remains recoverable');
+  expect(loadLedger(recoverable.id).rejected).toBeUndefined();
+});
 test.each(['running', 'completed', 'failed', 'cancelled'] as const)(
   '%s adopter uses batch state over stale SQLite',
   status => {

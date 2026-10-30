@@ -84,7 +84,7 @@ export interface PanelModel {
   projects: string;
   attention: PanelAttention[];
   runs: PanelRun[];
-  stats: { running: number; waiting: number; reclaimPending: number };
+  stats: { running: number; waiting: number; reclaimPending: number; legacy: number };
 }
 
 export function panelModel(
@@ -150,6 +150,7 @@ export function panelModel(
       running: runs.length,
       waiting: selected.reduce((sum, item) => sum + item.waiting.length, 0),
       reclaimPending: heartbeat?.reclaim_pending ?? 0,
+      legacy: heartbeat?.legacy ?? 0,
     },
   };
 }
@@ -204,7 +205,7 @@ export function renderPanel(
   }
   lines.push(
     '',
-    `统计｜在跑 ${String(model.stats.running)}｜等待 ${String(model.stats.waiting)}｜待回收 ${String(model.stats.reclaimPending)}`
+    `统计｜在跑 ${String(model.stats.running)}｜等待 ${String(model.stats.waiting)}｜待回收 ${String(model.stats.reclaimPending)}｜历史遗留 ${String(model.stats.legacy)}（需确认）`
   );
   const output = lines.map(line => fit(line, Math.max(1, width)));
   return color

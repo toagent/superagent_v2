@@ -48,22 +48,22 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
     rows: [
       row('a', a),
       row('b', b),
-      row('dead', dead),
+      row('dead', dead, 'failed'),
       ...Array.from({ length: 100 }, (_, i) => row(`unowned-${String(i)}`, null)),
       ...Array.from({ length: 100 }, (_, i) => row(`unreadable-${String(i)}`, a, 'unreadable')),
     ],
   };
   const presence = (who: Identity): Presence =>
     who.pid === 3 ? { state: 'offline' } : { state: 'online', activity: 'active' };
-  const result = heartbeat(snap, cockpit(snap, now), now, presence);
+  const result = heartbeat(snap, cockpit(snap, now), now, presence, new Set(['dead']));
   expect(result.marshals.map(m => m.owner_key)).toEqual([
     ['codex', null, 'host', 1, 'start-1'],
     ['codex', null, 'host', 2, 'start-2'],
   ]);
-  expect(result).toMatchObject({ unowned: 100, unreadable: 100, reclaim_pending: 1 });
+  expect(result).toMatchObject({ unowned: 100, unreadable: 100, reclaim_pending: 0, legacy: 1 });
   expect(JSON.stringify(result).length).toBeLessThan(3000);
   expect(result.marshals[0]?.running.map(item => item.role)).toEqual(['将军·gpt', '军师·opus']);
-  expect(result.reclaim_pending).toBe(1);
+  expect(result.reclaim_pending).toBe(0);
   expect(JSON.stringify(result)).not.toContain('dead');
   const selected = heartbeatSummary(result, b, now + 19 * 60_000);
   expect(selected).toMatchObject({
