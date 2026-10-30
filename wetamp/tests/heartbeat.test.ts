@@ -104,6 +104,11 @@ test('heartbeat separates active runs from typed waits and reports coordination 
     ['held', '评审轮次用尽'],
     ['running', '2 条协调消息'],
   ]);
+  expect(marshal.waiting[1]).toMatchObject({
+    code: 'review_limit',
+    next: '重新确认遗留blocker和工作包范围',
+  });
+  expect(marshal.waiting[2]).toMatchObject({ code: 'coordination_pending' });
   expect(marshal.line).toContain('等待3：交付包含 scope.write 之外的路径、评审轮次用尽');
 });
 
