@@ -33,7 +33,6 @@ import {
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
   CHECK_EVENT_QUERY_TIMEOUT_MS,
-  acquireResource,
   projectEnvironment,
   type Accept,
 } from '../templates/.archon/scripts/sa-check';
@@ -3333,30 +3332,27 @@ describe('sa-check script', () => {
     expect(next.out, next.err).toMatchObject({ ok: true });
   });
 
-  test('accept: exhausted cumulative resource wait emits its typed reason', async () => {
+  test('accept: exhausted cumulative resource wait emits its typed reason', () => {
     const root = tmp(),
       repo = gitRepo(root),
-      lock = join(root, 'held.lock');
-    const lease = await acquireResource('heavy-test', 500, [lock]);
-    try {
-      const p = planFile(root, 'true');
-      const value = JSON.parse(readFileSync(p, 'utf8'));
-      value.packages[0].accept[0].resource = 'heavy-test';
-      writeFileSync(p, JSON.stringify(value));
-      const result = runScript(
-        repo,
-        { kind: 'accept', plan: p, pkgs: 'a', tag: 'wait-timeout' },
-        SCRIPT,
-        {
-          NODE_ENV: 'test',
-          SA_TEST_RESOURCE_WAIT_BUDGET_MS: '30',
-          SA_HEAVY_LOCK_FILE: lock,
-        }
-      );
-      expect(result.out, result.err).toMatchObject({ ok: false, reason: 'resource_wait_timeout' });
-    } finally {
-      await lease!.release();
-    }
+      lock = join(root, 'slot.lock'),
+      p = planFile(root, 'false', ['true']);
+    const value = JSON.parse(readFileSync(p, 'utf8'));
+    value.packages[0].accept[0].resource = 'heavy-test';
+    writeFileSync(p, JSON.stringify(value));
+    const result = runScript(
+      repo,
+      {
+        kind: 'accept',
+        plan: p,
+        pkgs: 'a',
+        tag: 'wait-timeout',
+        base: sh('git rev-parse HEAD', repo).trim(),
+      },
+      SCRIPT,
+      { NODE_ENV: 'test', SA_TEST_RESOURCE_WAIT_BUDGET_MS: '1', SA_HEAVY_LOCK_FILE: lock }
+    );
+    expect(result.out, result.err).toMatchObject({ ok: false, reason: 'resource_wait_timeout' });
   });
   test('accept with base: writes patch and stable diff hash', () => {
     const root = tmp();
@@ -4225,10 +4221,12 @@ describe('sa-check script', () => {
     expect(replay).toContain('# reused pass from verify-a');
     expect(replay).toContain('original-stdout\noriginal-stderr\n');
     check.resource = 'heavy-test';
-    go('resource-added');
+    const resourceAdded = go('resource-added');
     check.resource = 'browser';
-    go('resource-changed');
+    const resourceChanged = go('resource-changed');
     expect(count()).toBe(1);
+    expect(resourceAdded.contract_hash).toBe(first.contract_hash);
+    expect(resourceChanged.contract_hash).toBe(first.contract_hash);
     delete check.resource;
     for (const [tag, path] of [
       ['tracked', 'README.md'],

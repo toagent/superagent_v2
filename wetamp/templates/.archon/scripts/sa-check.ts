@@ -428,19 +428,17 @@ const acceptanceCachePath = (
     )
   );
 
-const cacheCheck = ({ resource, ...check }: Check): Omit<Check, 'resource'> => {
-  void resource;
-  return check;
-};
+// prettier-ignore
+const cacheJson = (value: unknown): string => JSON.stringify(value, (key: string, item: unknown): unknown => key === 'resource' ? undefined : item);
 export function acceptanceCacheReady(cwd = process.cwd()): boolean {
   const p = plan(),
     ids = env('PKGS').split(',').filter(Boolean);
   const packages = p.packages.filter(pkg => ids.includes(pkg.id));
   const checks = packages.flatMap(pkg => pkg.accept);
   // prettier-ignore
-  const requirements = packages.map(({ id, accept, requirements }) => ({ id, accept: accept.map(cacheCheck), ...(requirements ? { requirements } : {}) }));
+  const requirements = packages.map(({ id, accept, requirements }) => ({ id, accept, ...(requirements ? { requirements } : {}) }));
   // prettier-ignore
-  const envKey = sha(JSON.stringify(packages.some(pkg => pkg.requirements) ? [environmentChecks(p), requirements] : environmentChecks(p)));
+  const envKey = sha(cacheJson(packages.some(pkg => pkg.requirements) ? [environmentChecks(p), requirements] : environmentChecks(p)));
   const tree = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'], {
     stdout: 'pipe',
     stderr: 'pipe',
@@ -966,12 +964,12 @@ export function scopeRisk(
 
 // prettier-ignore
 export function acceptanceContractHash(): string {
-  return sha(JSON.stringify([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
+  return sha(cacheJson([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
 }
 // prettier-ignore
 export function reusableAcceptance(prior: Accept | undefined, head: string): boolean {
   const checks = plan().packages.filter(k => env('PKGS').split(',').includes(k.id)).flatMap(k => k.accept);
-  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) && prior.command_results?.every(r => r.pass === true && !r.flaky) === true;
+  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && cacheJson(prior.command_results?.map(r => r.check)) === cacheJson(checks) && prior.command_results?.every(r => r.pass === true && !r.flaky) === true;
 }
 
 function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolean {
@@ -983,7 +981,7 @@ function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolea
     prior.workspace_clean === true &&
     prior.head === head &&
     prior.contract_hash === acceptanceContractHash() &&
-    JSON.stringify(prior.command_results?.map(r => r.check)) === JSON.stringify(checks) &&
+    cacheJson(prior.command_results?.map(r => r.check)) === cacheJson(checks) &&
     prior.command_results?.every(r => r.pass === true && !r.flaky) === true
   );
 }
@@ -1015,12 +1013,12 @@ async function acceptOnce(
   const checks = pkgs.flatMap(k => k.accept);
   const requirementContract = pkgs.map(({ id, accept, requirements }) => ({
     id,
-    accept: accept.map(cacheCheck),
+    accept,
     ...(requirements ? { requirements } : {}),
   }));
   // 声明环境契约与实际传入环境分别绑定；缓存上下文只属于本 run 的 ARTIFACTS_DIR。
   const envKey = sha(
-    JSON.stringify(
+    cacheJson(
       pkgs.some(k => k.requirements)
         ? [environmentChecks(p), requirementContract]
         : environmentChecks(p)
@@ -1083,14 +1081,19 @@ async function acceptOnce(
       { length: reviewRounds ?? 0 },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
-  const baseResults =
-    base && failed.length && !resourceWaitTimedOut
-      ? await probe(
-          base,
-          checks.filter(c => failed.includes(c.cmd)),
-          tag
-        )
-      : [];
+  let baseResults: NonNullable<Accept['base_results']> = [];
+  try {
+    if (base && failed.length && !resourceWaitTimedOut)
+      baseResults = await probe(
+        base,
+        checks.filter(c => failed.includes(c.cmd)),
+        tag
+      );
+  } catch (error) {
+    if (!(error instanceof ResourceWaitTimeout)) throw error;
+    resourceWaitTimedOut = true;
+    failed = [error.command];
+  }
   const incomparable =
     base && failed.length && (!baseResults.length || baseResults.some(r => r.pass === null));
   const baseline = {
@@ -1421,6 +1424,7 @@ async function probe(base: string, checks: Check[], tag: string): Promise<NonNul
     }
     return output;
   } catch (error) {
+    if (error instanceof ResourceWaitTimeout) throw error;
     appendFileSync(log, `# baseline unknown: ${String(error)}\n`);
     return [];
   } finally {
