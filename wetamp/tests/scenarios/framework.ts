@@ -32,6 +32,7 @@ import type { RunView } from '../../src/archon';
 import * as coordination from '../../src/coord';
 import * as archonModule from '../../src/archon';
 import type { Plan } from '../../src/plan';
+import { untilStatus } from '../../src/contract';
 import { liveSourceRoots } from '../../../packages/workflows/src/workflow-source';
 import { createWorkflowStore } from '../../../packages/core/src/workflows/store-adapter';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
@@ -543,6 +544,13 @@ export async function runInProcess(
   };
   routeAi(raw.nodes);
   if (stopAfter !== undefined) {
+    const integration = raw.nodes.find(node => node.id === 'integrate-m1');
+    const group = integration?.loop_group as Record<string, unknown> | undefined;
+    expect(group).toMatchObject({
+      max_iterations: 3,
+      until_bash: untilStatus({ id: 'publish-m1', conditional: false } as const, 'published'),
+    });
+    expect(group).not.toHaveProperty('interactive');
     const last = raw.nodes.findIndex(node => node.id === stopAfter);
     if (last < 0) throw new Error(`focused scenario missing ${stopAfter}`);
     raw.nodes = raw.nodes.slice(0, last + 1);

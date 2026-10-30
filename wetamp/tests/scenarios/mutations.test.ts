@@ -18,8 +18,8 @@ const mutations: Mutation[] = [
     file: 'src/generate.ts',
     from: 'loop_group: {\n        max_iterations: 3,',
     to: 'loop_group: {\n        interactive: true,\n        max_iterations: 3,',
-    test: 'tests/generate.test.ts',
-    name: 'multi-milestone delivery',
+    test: 'tests/scenarios/scenario-core.test.ts',
+    name: 'S2/S11',
     expectedError: 'interactive',
   },
   {
@@ -62,8 +62,8 @@ const mutations: Mutation[] = [
     file: 'src/generate.ts',
     from: "until_bash: untilStatus(publishHandle, 'published'),",
     to: 'until_bash: `test $${publishId}.output.status = published`,',
-    test: 'tests/generate.test.ts',
-    name: 'multi-milestone delivery',
+    test: 'tests/scenarios/scenario-core.test.ts',
+    name: 'S2/S11',
     expectedError: 'bun -e',
   },
   {
@@ -76,18 +76,18 @@ const mutations: Mutation[] = [
   },
 ];
 
-test('project rules run the full wetamp suite for every mutation target', () => {
+test('project rules type-check every mutation target', () => {
   const repo = join(import.meta.dir, '../../..');
   const rules = JSON.parse(readFileSync(join(repo, '.superagent/rules.json'), 'utf8')) as {
     required_checks?: {
       when: string[];
-      check: { cmd: string; cache?: boolean; requires_prior_pass?: boolean };
+      check: { cmd: string; timeout_s?: number };
     }[];
   };
   const required = rules.required_checks?.find(
-    rule => rule.check.cmd === 'cd wetamp && bun run test'
+    rule => rule.check.cmd === 'cd wetamp && bun run type-check'
   );
-  expect(required?.check).toMatchObject({ cache: true });
+  expect(required?.check).toMatchObject({ timeout_s: 900 });
   for (const file of new Set(mutations.map(mutation => `wetamp/${mutation.file}`)))
     expect(required?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
 });
