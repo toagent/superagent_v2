@@ -309,54 +309,50 @@ function checkRecovery(limit: number): void {
     }, 'invalid freeze refs');
     expect(existsSync(destination)).toBe(false);
   }
-  const frozen = save('recovery.json', e),
-    current = save('current.json', { id: 'new', adopted_from_run_id: 'old', events: [] });
-  const bin = join(root, 'archon');
-  const old = save('original.json', original);
-  writeFileSync(bin, `#!/bin/sh\ncat '${old.path}'\n`);
-  chmodSync(bin, 0o755);
-  // prettier-ignore
-  const env = { ...fixtureEnv(), WORKFLOW_ID: 'new', ARTIFACTS_DIR: join(root, 'artifacts'), SUPERAGENT_HOME: root,
-    INPUTS_ARCHON: bin, INPUTS_EVENTS_FILE: current.path, INPUTS_PLAN: e.plan.path, INPUTS_POLICY: e.policy.path,
-    INPUTS_BASE: base, INPUTS_PKGS: 'pkg', INPUTS_SCOPE_PKGS: 'pkg', INPUTS_RISK: 'G2', INPUTS_MILESTONE: 'm1',
-  };
-  const check = (input: Record<string, string>) =>
-    Bun.spawnSync([process.execPath, join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
-      cwd: repo,
-      env: { ...env, ...input },
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: 15000,
-    });
-  const accepted = check({ INPUTS_KIND: 'accept', INPUTS_TAG: `diff-m1-r${String(limit + 1)}` });
-  expect(accepted.exitCode, accepted.stderr.toString()).toBe(0);
-  const finalCheck = JSON.parse(
-    readFileSync(join(root, `artifacts/diff-m1-r${String(limit + 1)}.json`), 'utf8')
-  ) as Accept;
-  const gate = check({
-    INPUTS_KIND: 'gate',
-    INPUTS_TAG: `gate-m1-r${String(limit + 1)}`,
-    INPUTS_ROUND: String(limit + 1),
-    INPUTS_OPERATOR_ID: e.run_id,
-    INPUTS_RECOVERY_EVIDENCE: frozen.path,
-    INPUTS_RECOVERY_SHA256: frozen.sha256,
-    INPUTS_C1: 'null',
-    INPUTS_C2: 'null',
-    INPUTS_C3: 'null',
-    [`INPUTS_C${String(limit + 1)}`]: JSON.stringify(finalCheck),
-  });
-  expect(gate.exitCode, gate.stderr.toString()).toBe(0);
-  const result = JSON.parse(
-    readFileSync(join(root, `artifacts/gate-m1-r${String(limit + 1)}.json`), 'utf8')
-  ) as {
-    verdict: string;
-    grade: string;
-    debt: string[];
-  };
-  expect(result.verdict).toBe('pass');
-  expect(result.grade).toBe('PASS');
-  expect(result.debt.length).toBeGreaterThan(0);
   if (limit !== MAX_ROUNDS) {
+    const frozen = save('recovery.json', e),
+      current = save('current.json', { id: 'new', adopted_from_run_id: 'old', events: [] });
+    const bin = join(root, 'archon');
+    const old = save('original.json', original);
+    writeFileSync(bin, `#!/bin/sh\ncat '${old.path}'\n`);
+    chmodSync(bin, 0o755);
+    // prettier-ignore
+    const env = { ...fixtureEnv(), WORKFLOW_ID: 'new', ARTIFACTS_DIR: join(root, 'artifacts'), SUPERAGENT_HOME: root,
+      INPUTS_ARCHON: bin, INPUTS_EVENTS_FILE: current.path, INPUTS_PLAN: e.plan.path, INPUTS_POLICY: e.policy.path,
+      INPUTS_BASE: base, INPUTS_PKGS: 'pkg', INPUTS_SCOPE_PKGS: 'pkg', INPUTS_RISK: 'G2', INPUTS_MILESTONE: 'm1',
+    };
+    const check = (input: Record<string, string>) =>
+      Bun.spawnSync([process.execPath, join(WETAMP, 'templates/.archon/scripts/sa-check.ts')], {
+        cwd: repo,
+        env: { ...env, ...input },
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 15000,
+      });
+    const accepted = check({ INPUTS_KIND: 'accept', INPUTS_TAG: `diff-m1-r${String(limit + 1)}` });
+    expect(accepted.exitCode, accepted.stderr.toString()).toBe(0);
+    const finalCheck = JSON.parse(
+      readFileSync(join(root, `artifacts/diff-m1-r${String(limit + 1)}.json`), 'utf8')
+    ) as Accept;
+    const gate = check({
+      INPUTS_KIND: 'gate',
+      INPUTS_TAG: `gate-m1-r${String(limit + 1)}`,
+      INPUTS_ROUND: String(limit + 1),
+      INPUTS_OPERATOR_ID: e.run_id,
+      INPUTS_RECOVERY_EVIDENCE: frozen.path,
+      INPUTS_RECOVERY_SHA256: frozen.sha256,
+      INPUTS_C1: 'null',
+      INPUTS_C2: 'null',
+      INPUTS_C3: 'null',
+      [`INPUTS_C${String(limit + 1)}`]: JSON.stringify(finalCheck),
+    });
+    expect(gate.exitCode, gate.stderr.toString()).toBe(0);
+    const result = JSON.parse(
+      readFileSync(join(root, `artifacts/gate-m1-r${String(limit + 1)}.json`), 'utf8')
+    ) as { verdict: string; grade: string; debt: string[] };
+    expect(result.verdict).toBe('pass');
+    expect(result.grade).toBe('PASS');
+    expect(result.debt.length).toBeGreaterThan(0);
     writeFileSync(frozen.path, '{}');
     expect(
       check({

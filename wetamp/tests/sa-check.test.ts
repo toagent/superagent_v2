@@ -1961,6 +1961,7 @@ function auxiliaryFixture(
   );
   writeFileSync(archon, '#!/bin/sh\necho \'{"events":[]}\'\n', { mode: 0o755 });
   const script = join(root, 'sa-check.ts');
+  const hookScript = `(trap '' TERM; echo $BASHPID > '${trackedPid}'; echo hook-descendant >&2; while :; do sleep 1; done) &\nexit 0\n`;
   // Runtime sibling import of sa-check.ts; type-only imports are erased and need no copy.
   writeFileSync(
     join(root, 'policy-attempts.ts'),
@@ -1968,11 +1969,9 @@ function auxiliaryFixture(
   );
   if (hook) sh(`git config core.hooksPath '${join(repo, '.git/hooks')}'`, repo);
   if (hook)
-    writeFileSync(
-      join(repo, '.git/hooks/post-checkout'),
-      `#!/bin/bash\n(trap '' TERM; echo $BASHPID > '${trackedPid}'; echo hook-descendant >&2; while :; do sleep 1; done) &\nexit 0\n`,
-      { mode: 0o755 }
-    );
+    writeFileSync(join(repo, '.git/hooks/post-checkout'), `#!/bin/bash\n${hookScript}`, {
+      mode: 0o755,
+    });
   const instrument = `
 process.env.WORKFLOW_ID = 'fixture';
 const rawSpawnSync = Bun.spawnSync;
@@ -1990,6 +1989,8 @@ Bun.spawnSync = (actual, opts) => {
         ? `trap '' TERM; echo $$ > '${trackedPid}'; echo auxiliary-stalled >&2; while :; do sleep 1; done`
         : 'echo auxiliary-stalled >&2; exec sleep 2'
     )}], opts);
+  if (wrapped && ${JSON.stringify(hook)} && key === 'worktree add')
+    return rawSpawnSync([...actual.slice(0, 4), 'bash', '-c', ${JSON.stringify(hookScript)}], opts);
   // Only the stalled auxiliary (or the hook-bearing checkout) needs a real
   // process-group watchdog. Keep every production request in the trace.
   if (wrapped && key !== ${JSON.stringify(hang)} && !(${JSON.stringify(

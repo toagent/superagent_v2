@@ -331,45 +331,57 @@ test('BASE_RULER declaration requires a cached JUnit report', () => {
   }
 });
 
-test('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
-  const root = tmp();
-  const repo = gitRepo(join(root, 'repo'));
-  const startup = join(root, 'startup.sh');
-  const marker = join(root, 'rc-loaded');
-  fs.writeFileSync(startup, `touch '${marker}'\nexit 91\n`);
-  const workflows = join(repo, '.archon', 'workflows');
-  fs.mkdirSync(workflows, { recursive: true });
-  fs.writeFileSync(
-    join(workflows, 'no-quota.yaml'),
-    Bun.YAML.stringify({
-      name: 'no-quota',
-      description: 'Bash startup isolation regression',
-      nodes: [{ id: 'probe', bash: 'printf success' }],
-    })
-  );
-  sh('git add .archon && git commit -qm fixture', repo);
-  const env = {
-    ...fixtureEnv(),
-    BASH_ENV: startup,
-    SUPERAGENT_HOME: join(root, 'home'),
-    ARCHON_HOME: join(root, 'home/archon'),
-  };
+describe.serial('NO_QUOTA bash nodes ignore inherited BASH_ENV startup failures', () => {
+  let repo = '',
+    marker = '',
+    runId = '';
+  let env: NodeJS.ProcessEnv = {};
   const invoke = (...args: string[]) => workflowCli(repo, env, ...args);
-  const ack = invoke(
-    'run',
-    'no-quota',
-    '--workflow-source',
-    repo,
-    '--cwd',
-    repo,
-    '--no-worktree',
-    '--detach'
-  );
-  const waited = invoke('wait', String(ack?.runId), '--timeout', '20');
-  expect(waited).toMatchObject({ attention: { status: 'completed' } });
-  const view = invoke('get', String(ack?.runId));
-  expect(view).toMatchObject({ status: 'completed' });
-  expect(existsSync(marker)).toBe(false);
+
+  test('starts the isolated bash workflow', () => {
+    const root = tmp();
+    repo = gitRepo(join(root, 'repo'));
+    const startup = join(root, 'startup.sh');
+    marker = join(root, 'rc-loaded');
+    fs.writeFileSync(startup, `touch '${marker}'\nexit 91\n`);
+    const workflows = join(repo, '.archon', 'workflows');
+    fs.mkdirSync(workflows, { recursive: true });
+    fs.writeFileSync(
+      join(workflows, 'no-quota.yaml'),
+      Bun.YAML.stringify({
+        name: 'no-quota',
+        description: 'Bash startup isolation regression',
+        nodes: [{ id: 'probe', bash: 'printf success' }],
+      })
+    );
+    sh('git add .archon && git commit -qm fixture', repo);
+    env = {
+      ...fixtureEnv(),
+      BASH_ENV: startup,
+      SUPERAGENT_HOME: join(root, 'home'),
+      ARCHON_HOME: join(root, 'home/archon'),
+    };
+    const ack = invoke(
+      'run',
+      'no-quota',
+      '--workflow-source',
+      repo,
+      '--cwd',
+      repo,
+      '--no-worktree',
+      '--detach'
+    );
+    runId = String(ack?.runId);
+    expect(runId).not.toBe('undefined');
+  });
+
+  test('waits for completion without loading BASH_ENV', () => {
+    const waited = invoke('wait', runId, '--timeout', '20');
+    expect(waited).toMatchObject({ attention: { status: 'completed' } });
+    const view = invoke('get', runId);
+    expect(view).toMatchObject({ status: 'completed' });
+    expect(existsSync(marker)).toBe(false);
+  });
 });
 
 const workflowCli = (cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) => {

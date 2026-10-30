@@ -350,7 +350,9 @@ test('publish rejects protected targets and non-descendant history', () => {
     reason: 'not_descendant',
   });
   expect(sh('git rev-parse wetamp', f.target).trim()).toBe(targetTip);
+});
 
+test('publish accepts matching review evidence and rejects drift or a stale owner', () => {
   const review = fixture();
   const reviewHead = commit(review.worktree, 'feature.txt', 'feature\n');
   const reviewBefore = review.expected().target_tip;
@@ -403,7 +405,9 @@ test('publish rejects protected targets and non-descendant history', () => {
   ).toThrow('owner generation changed');
   expect(sh('git rev-parse wetamp', fenced.target).trim()).toBe(fencedBefore);
   expect(existsSync(fenced.run().receipt)).toBe(false);
+});
 
+test('publish rejects a target checkout switched to another branch', () => {
   const switched = fixture();
   commit(switched.worktree, 'feature.txt', 'feature\n');
   const switchedBefore = switched.expected().target_tip;

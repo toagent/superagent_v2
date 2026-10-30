@@ -74,7 +74,10 @@ const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof g
   const dir = join(process.env.SUPERAGENT_HOME!, 'gen', run);
   const workflow = `sa-${run}`;
   const archon = join(dir, '.archon');
-  if (previousHash !== undefined && existsSync(archon)) renameSync(archon, `${archon}.old`);
+  if (previousHash !== undefined) {
+    if (existsSync(archon)) renameSync(archon, `${archon}.old`);
+    rmSync(join(dir, 'review-checkpoints'), { recursive: true, force: true });
+  }
   const workflowDir = join(archon, 'workflows', workflow);
   mkdirSync(workflowDir, { recursive: true });
   writeFileSync(
@@ -929,10 +932,6 @@ describe('HF3 latest-engine recovery', () => {
     );
     writeFileSync(join(s.ledger.gen_dir, 'engine.json'), JSON.stringify({ fake: false }));
     const retry = captured(() => main(['decide', 'sa1', 'retry']));
-    if (sample === 'no-worktree') {
-      expect(retry).toMatchObject({ code: 1, out: expect.stringContaining('environment') });
-      return;
-    }
     expect(retry).toMatchObject({ code: 0 });
     const l = loadLedger('sa1');
     const nodes = (
@@ -3931,7 +3930,9 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         'verify-core.json': { decision: gate('coder_needs').decision },
       }),
       plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
+    fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation(fastGenerate));
     const gen = generate(plan, 'sa1', true);
+    mkdirSync(join(gen.dir, 'hints'), { recursive: true });
     mkdirSync(join(gen.dir, 'approvals'), { recursive: true });
     writeFileSync(join(gen.dir, 'approvals/verify-core.json'), '{"approved":true}\n');
     mkdirSync(join(gen.dir, 'review-checkpoints'), { recursive: true });
@@ -5327,6 +5328,7 @@ describe('launch intents (run + supervise-tick reconcile)', () => {
   test('run writes the intent before starting and removes it once the ledger is saved', () => {
     const s = stub([]);
     const repo = featureRepo(s.root);
+    fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation(fastGenerate));
     process.env.SUPERAGENT_WRITE_ROOTS = s.root;
     const plan = fixturePlan(s.root, repo);
     const dir = join(s.root, 'home', 'intents');
