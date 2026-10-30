@@ -36,6 +36,10 @@ function fixture() {
   const repo = join(root, 'repo');
   mkdirSync(join(repo, 'wetamp', 'scripts'), { recursive: true });
   copyFileSync(SCRIPT, join(repo, 'wetamp', 'scripts', 'verify-local.sh'));
+  copyFileSync(
+    join(import.meta.dir, '..', 'scripts', 'heavy-slot.sh'),
+    join(repo, 'wetamp', 'scripts', 'heavy-slot.sh')
+  );
   writeFileSync(
     join(repo, 'wetamp', 'scripts', 'selftest.sh'),
     writeState + 'echo "selftest $SUPERAGENT_HOME" >> "$CALLS"\n'
@@ -78,7 +82,7 @@ case "$1" in
     if [ -n "$SHARD_SYNC" ]; then
       mkdir -p "$SHARD_SYNC"; : > "$SHARD_SYNC/$$"; tries=0
       while [ "$(find "$SHARD_SYNC" -type f | wc -l | tr -d ' ')" -lt 4 ] && [ "$tries" -lt 100 ]; do sleep 0.05; tries=$((tries + 1)); done
-      [ "$(find "$SHARD_SYNC" -type f | wc -l | tr -d ' ')" = 4 ] || exit 12
+      [ "$(find "$SHARD_SYNC" -type f | wc -l | tr -d ' ')" -ge 4 ] || exit 12
     fi
     case "$*" in *"$SHARD_FAIL"*) [ -z "$SHARD_FAIL" ] || { echo "1 fail"; exit 1; };; esac
     case "$*" in *"$SHARD_SLEEP"*) [ -z "$SHARD_SLEEP" ] || sleep 10;; esac
@@ -176,22 +180,25 @@ git config --global --get core.hooksPath && exit 9
     });
   };
 
-  test('runs four parallel shards with complete, unique and balanced heavy-test assignment', () => {
+  test('runs a serial heavy lane alongside four complete parallel light shards', () => {
     prepareShared();
     expect(sharedResult.code).toBe(0);
     const calls = readFileSync(join(shared.root, 'calls.log'), 'utf8')
       .split('\n')
       .filter(line => line.startsWith('bun test '));
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(8);
     const assigned = calls.flatMap(line => shared.testFiles.filter(file => line.includes(file)));
     expect([...assigned].sort()).toEqual([...shared.testFiles].sort());
     expect(new Set(assigned).size).toBe(shared.testFiles.length);
-    for (const heavy of shared.testFiles.slice(0, 4))
-      expect(calls.filter(line => line.includes(heavy))).toHaveLength(1);
+    for (const heavy of shared.testFiles.slice(0, 4)) {
+      const laneCall = calls.filter(line => line.includes(heavy));
+      expect(laneCall).toHaveLength(1);
+      expect(shared.testFiles.slice(0, 4).filter(file => laneCall[0]?.includes(file))).toEqual([
+        heavy,
+      ]);
+    }
     expect(
-      new Set(
-        shared.testFiles.slice(0, 4).map(file => calls.findIndex(line => line.includes(file)))
-      )
+      calls.filter(line => shared.testFiles.slice(4).some(file => line.includes(file)))
     ).toHaveLength(4);
     expect(sharedResult.v?.steps.find(step => step.name === 'test')).toMatchObject({ exit: 0 });
   }, 60000);

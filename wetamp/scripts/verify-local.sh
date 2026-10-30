@@ -5,6 +5,7 @@
 # 用法：verify-local.sh [--commit <rev>] [--timeout <s>，默认 1500，等锁与跑步骤各用一份]；退出码 0 通过、1 未通过。
 set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
+source "$WETAMP/scripts/heavy-slot.sh"
 SA_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 REV=HEAD TIMEOUT=1500
 ORIGINAL_ARGS=("$@")
@@ -13,14 +14,8 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "${SA_HEAVY_LOCK_HELD:-}" != 1 ]; then
-  HEAVY_LOCK="${SA_HEAVY_LOCK_FILE:-/tmp/superagent-heavy-test.lock}"
-  case "$(uname -s)" in
-    Darwin) exec /usr/bin/lockf -k "$HEAVY_LOCK" env SA_HEAVY_LOCK_HELD=1 "$0" "${ORIGINAL_ARGS[@]}";;
-    Linux)
-      command -v flock >/dev/null 2>&1 || { echo 'verify-local: flock is required on Linux' >&2; exit 1; }
-      exec flock "$HEAVY_LOCK" env SA_HEAVY_LOCK_HELD=1 "$0" "${ORIGINAL_ARGS[@]}";;
-    *) echo "verify-local: unsupported platform $(uname -s)" >&2; exit 1;;
-  esac
+  heavy_exec "$0" "${ORIGINAL_ARGS[@]}"
+  exit
 fi
 REPO="$(git -C "$WETAMP" rev-parse --show-toplevel)"
 MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
@@ -166,22 +161,29 @@ install() { # <rel dir> <step name>
 install . install
 step tsc "$WT/wetamp" "$BUN" x tsc --noEmit
 # 显式单测时限：Bun 1.4.3 不读 bunfig 的 [test] timeout，负载下 hook 子进程用例会撞默认 5s。
-# 四个进程共享 test 步骤的剩余预算；重文件固定分开，其余按文件名轮转。
+# 一条重型串行 lane 与四条轻量 shard 共享 test 步骤的剩余预算。
 test_step() {
   local dir="$WT/wetamp" left rc=0 shard_rc=0 t0 i pid pids="" n=0 file
   [ "$OK" = 1 ] || return 0
   left=$(( DEADLINE - $(date +%s) )); [ "$left" -gt 0 ] || left=1
   for i in 1 2 3 4; do : > "$TMP/test-shard.$i"; done
-  printf '%s\n' tests/scenarios/scenario-rest.test.ts > "$TMP/test-shard.1"
-  printf '%s\n' tests/scenarios/scenario-engine.test.ts > "$TMP/test-shard.2"
-  printf '%s\n' tests/scenarios/mutations.test.ts > "$TMP/test-shard.3"
-  printf '%s\n' tests/engine-promote.test.ts > "$TMP/test-shard.4"
   while IFS= read -r file; do
     case "$file" in *.test.js|*.test.jsx|*.test.ts|*.test.tsx|*_test.js|*_test.jsx|*_test.ts|*_test.tsx|*.spec.js|*.spec.jsx|*.spec.ts|*.spec.tsx|*_spec.js|*_spec.jsx|*_spec.ts|*_spec.tsx) ;; *) continue;; esac
     case "$file" in tests/scenarios/scenario-rest.test.ts|tests/scenarios/scenario-engine.test.ts|tests/scenarios/mutations.test.ts|tests/engine-promote.test.ts) continue;; esac
     i=$(( n % 4 + 1 )); printf '%s\n' "$file" >> "$TMP/test-shard.$i"; n=$(( n + 1 ))
   done < <(cd "$dir" && find tests -type f | LC_ALL=C sort)
-  echo "== test ($dir: 4 shards)" >>"$LOG"; t0="$(ms)"
+  echo "== test ($dir: 1 heavy lane + 4 light shards)" >>"$LOG"; t0="$(ms)"
+  ( cd "$dir"
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$left" bash -c '
+      bun="$1"; shift
+      for file in "$@"; do
+        env SA_VERIFY_LOCAL=1 "$bun" test --timeout 30000 "$file" || exit
+      done
+    ' _ "$BUN" \
+      tests/scenarios/scenario-rest.test.ts tests/scenarios/scenario-engine.test.ts \
+      tests/scenarios/mutations.test.ts tests/engine-promote.test.ts \
+      2>&1 | sed 's/^/[test:heavy] /' >>"$LOG"
+  ) & pids="$pids $!"
   for i in 1 2 3 4; do
     ( cd "$dir"; set --; while IFS= read -r file; do set -- "$@" "$dir/$file"; done < "$TMP/test-shard.$i"
       perl -e 'alarm shift; exec @ARGV or exit 127' "$left" env SA_VERIFY_LOCAL=1 "$BUN" test --timeout 30000 "$@" 2>&1 | sed "s/^/[test:shard$i] /" >>"$LOG" ) & pids="$pids $!"

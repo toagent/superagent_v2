@@ -668,7 +668,13 @@ export async function recoverCarriedScenario(
       );
     await Bun.sleep(25);
   }
-  expect(existsSync(marker)).toBeTrue();
+  if (!existsSync(marker)) {
+    child.kill('SIGKILL');
+    await child.exited;
+    throw new Error(
+      `scenario executor marker timeout: ${(await new Response(child.stdout).text()).slice(-2000)} ${(await new Response(child.stderr).text()).slice(-2000)}`
+    );
+  }
   child.kill('SIGKILL');
   await child.exited;
   const state = JSON.parse(readFileSync(ready, 'utf8')) as Pick<

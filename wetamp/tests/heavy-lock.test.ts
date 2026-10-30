@@ -14,6 +14,7 @@ import { trackTempRoots } from '@archon/paths/test-utils';
 const track = trackTempRoots();
 const wetamp = join(import.meta.dir, '..');
 const script = join(wetamp, 'scripts/test.sh');
+const slot = join(wetamp, 'scripts/heavy-slot.sh');
 
 function fixture(): { root: string; env: Record<string, string> } {
   const root = track(mkdtempSync(join(tmpdir(), 'heavy-lock-')));
@@ -107,4 +108,17 @@ test('killing a lock holder lets the next suite acquire the slot', async () => {
 test('selectors and an inherited heavy slot bypass the lock', async () => {
   expect(await maxFor({}, ['tests/one.test.ts'])).toBeGreaterThan(1);
   expect(await maxFor({ SA_HEAVY_LOCK_HELD: '1' })).toBeGreaterThan(1);
+  const { root, env } = fixture();
+  const nested = Bun.spawn(
+    [
+      'bash',
+      '-c',
+      '. "$1"; heavy_exec env SA_HEAVY_LOCK_HELD=1 bash -c \'. "$1"; heavy_exec "$2"\' _ "$1" "$2"',
+      '_',
+      slot,
+      join(root, 'job.sh'),
+    ],
+    { env: { ...env, JOB_ID: 'nested' }, stdout: 'ignore', stderr: 'pipe' }
+  );
+  expect(await nested.exited).toBe(0);
 });

@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd -P "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/heavy-slot.sh"
+cd "$SCRIPT_DIR/.."
+
+if [[ "${1:-}" == --scenarios ]]; then
+  for f in tests/scenarios/*.test.ts tests/engine-*.test.ts; do
+    bun test --timeout 900000 "$f"
+  done
+  exit
+fi
+
 bun run type-check
-for f in tests/scenarios/*.test.ts tests/engine-*.test.ts; do
-  bun test --timeout 900000 "$f"
-done
+heavy_exec bash "$0" --scenarios
