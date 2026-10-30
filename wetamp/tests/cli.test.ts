@@ -2602,6 +2602,25 @@ describe('brief / land (archon stub)', () => {
     });
     expect(classifyRun(s.ledger, conflict).state).toBe('sync_conflict');
     writeFileSync(
+      join(art, 'resolve-resync-m1-decision.json'),
+      JSON.stringify({
+        decision: { kind: 'block', reason: 'coder_needs', evidence: [], debt: [] },
+      })
+    );
+    mkdirSync(join(s.root, 'gen/.archon/workflows/sa-sa1'), { recursive: true });
+    writeFileSync(
+      join(s.root, 'gen/.archon/workflows/sa-sa1/sa-sa1.yaml'),
+      'nodes:\n  - id: attempt-m1\n  - id: resolve-resync-m1-decision\n'
+    );
+    const blockedResolve = run('failed', {
+      output_root: output,
+      nodes: [{ nodeId: 'integrate-m1.resolve-resync-m1-decision', state: 'failed' }],
+    });
+    expect(classifyRun(s.ledger, blockedResolve)).toMatchObject({
+      state: 'held:gate',
+      node: 'integrate-m1.resolve-resync-m1-decision',
+    });
+    writeFileSync(
       join(art, 'publish-m1.json'),
       JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] })
     );

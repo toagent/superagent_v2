@@ -300,7 +300,7 @@ export function sync(
     const files = conflicts(worktree);
     if (!files.length) throw gitFailure(mergeArgs, merged);
     git(worktree, 'merge', '--abort');
-    return { status: 'conflict', target_tip: targetTip, files };
+    return { status: 'conflict', target_tip: targetTip, head: before, files };
   }
   const head = git(worktree, 'rev-parse', 'HEAD');
   return {

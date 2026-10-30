@@ -437,9 +437,21 @@ export function buildWorkflow(
   ): Node => {
     const reviewRequired = m.review || m.risk === 'G2';
     const syncId = `resync-${m.id}`;
+    const resolveId = `resolve-${syncId}`;
+    const resolveDecision = `${resolveId}-decision`;
+    const syncReady = `${syncId}-ready`;
     const finalAccept = `final-accept-${m.id}`;
+    const reviewAttempt = `attempt-review-${syncId}`;
+    const reviewContext = `review-context-${syncId}`;
+    const reviewId = `review-${syncId}`;
+    const gateId = `gate-${m.id}-rresync`;
+    const integrationReady = `integration-ready-${m.id}`;
     const publishId = `publish-${m.id}`;
     const syncHandle = output<SyncOutput>(syncId);
+    const readyHandle = output<SyncOutput>(syncReady);
+    const resolveHandle = conditionalOutput<CoderOutput>(resolveId);
+    const finalHandle = conditionalOutput<AcceptOutput>(finalAccept);
+    const reviewHandle = conditionalOutput<ReviewerOutput>(reviewId);
     const publishHandle = output<PublishOutput>(publishId);
     const gateHashes = Object.fromEntries(
       gateBindings.map(binding => [
@@ -451,12 +463,17 @@ export function buildWorkflow(
         ),
       ])
     );
+    gateHashes[gateHashInput('resync').workflow] = ref.optional(
+      conditionalOutput<{ artifact_sha256: string }>(gateId),
+      'artifact_sha256',
+      ''
+    );
     const integrationNodes: Node[] = [
       {
         id: syncId,
         bash:
           delivery && !fake
-            ? integrationCommand('sync', m.id, 'INPUTS_FAIL_CONFLICT=1 ', syncId)
+            ? integrationCommand('sync', m.id, '', syncId)
             : [
                 `tip=$(git rev-parse --verify '${plan.base_ref.replaceAll(
                   "'",
@@ -468,31 +485,190 @@ export function buildWorkflow(
         timeout: integrationNodeTimeout(),
         output_format: syncOutputFormat,
       },
+      ...(delivery && !fake
+        ? [
+            {
+              id: `resolve-context-${syncId}`,
+              ...attemptInputs(attemptPath(gen, `sync/${m.id}`)),
+              with: {
+                counter: attemptPath(gen, `sync/${m.id}`),
+                gen,
+                context_node: resolveId,
+                context_packages: m.packages.map(p => p.id),
+              },
+              depends_on: [syncId],
+              when: `$${syncId}.output.status == 'conflict'`,
+              output_format: contextOutputFormat,
+            },
+            {
+              id: resolveId,
+              command: 'sa-repair',
+              retry: { on_error: 'transient' },
+              model: '@sa-coder',
+              ...execution(`resolve-${syncId}`),
+              with: {
+                pkg: m.packages[0].id,
+                brief: brief(m.packages[0]),
+                hint: join(gen, 'hints', `${m.packages[0].id}.md`),
+                context_node: `resolve-context-${syncId}`,
+                prior_work: ref.value(syncHandle),
+                reason: 'sync_conflict',
+                accept_log: `$ARTIFACTS_DIR/${syncId}.json`,
+              },
+              depends_on: [syncId, `resolve-context-${syncId}`],
+              when: `$${syncId}.output.status == 'conflict'`,
+              output_format: coderOutputFormat,
+            },
+            {
+              id: resolveDecision,
+              depends_on: [resolveId],
+              when: `$${syncId}.output.status == 'conflict'`,
+              script: [
+                "const coder = JSON.parse(process.env.INPUTS_CODER ?? '{}');",
+                "const ok = coder.status === 'done' && coder.error_class == null;",
+                "const reason = coder.needs?.length ? 'coder_needs' : 'coder_partial';",
+                "const decision = { kind: ok ? 'advance' : 'block', reason: ok ? null : reason, evidence: [], debt: [], blockers: coder.blockers ?? [], needs: coder.needs ?? [] };",
+                `const out = { decision, disposition: ok ? 'advance' : 'fail', reason: decision.reason };`,
+                `await Bun.write(process.env.ARTIFACTS_DIR + '/${resolveDecision}.json', JSON.stringify(out));`,
+                'process.stdout.write(JSON.stringify(out));',
+                'if (!ok) process.exit(1);',
+              ].join('\n'),
+              runtime: 'bun',
+              with: { coder: ref.optionalValue(resolveHandle, null) },
+            },
+          ]
+        : []),
+      {
+        id: syncReady,
+        depends_on: [syncId, ...(delivery && !fake ? [resolveDecision] : [])],
+        trigger_rule: 'none_failed_min_one_success',
+        script: [
+          "const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };",
+          "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
+          "let status = process.env.INPUTS_STATUS ?? '';",
+          "if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }",
+          "const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };",
+          'process.stdout.write(JSON.stringify(output));',
+        ].join('\n'),
+        runtime: 'bun',
+        with: {
+          target_tip: ref.required(syncHandle, 'target_tip'),
+          status: ref.required(syncHandle, 'status'),
+          generation: ref.required(syncHandle, 'generation'),
+        },
+        output_format: syncOutputFormat,
+      },
       check(
         finalAccept,
-        [syncId],
+        [syncReady],
         {
           ...acceptInputs,
           kind: 'accept',
-          base: ref.required(syncHandle, 'merge_base'),
-          target_tip: ref.required(syncHandle, 'target_tip'),
-          sync_generation: ref.required(syncHandle, 'generation'),
+          base: ref.required(readyHandle, 'merge_base'),
+          target_tip: ref.required(readyHandle, 'target_tip'),
+          sync_generation: ref.required(readyHandle, 'generation'),
+          delta_base: ref.required(syncHandle, 'head'),
           acceptance_evidence: `$ARTIFACTS_DIR/accepted-${m.id}.json`,
+          context_node: reviewId,
+          context_counter: attemptPath(gen, `review-${syncId}`),
           tag: finalAccept,
           terminal: '1',
         },
         { output_format: acceptOutputFormat, ...acceptTimeout(m.packages, plan) }
       ),
       {
-        id: publishId,
+        id: reviewAttempt,
+        when: `$${syncReady}.output.status == 'resolved'`,
         depends_on: [finalAccept],
+        ...attemptInputs(attemptPath(gen, `review-${syncId}`)),
+        output_format: attemptOutputFormat,
+      },
+      ...(!fake
+        ? [
+            {
+              id: reviewContext,
+              when: `$${syncReady}.output.status == 'resolved'`,
+              always_run: true,
+              depends_on: [reviewAttempt],
+              ...attemptInputs(attemptPath(gen, `review-${syncId}`), '', reviewId, gateId),
+              output_format: attemptOutputFormat,
+            },
+          ]
+        : []),
+      {
+        id: reviewId,
+        when: reviewRequired
+          ? `$${syncReady}.output.status == 'resolved'`
+          : `$${syncReady}.output.status == '__never__'`,
+        ...(fake
+          ? { bash: fakeReview(1) }
+          : {
+              command: 'sa-review-delta',
+              retry: { on_error: 'transient' },
+              model: tiers.routing.reviewer.by_risk?.[m.risk]
+                ? `@sa-reviewer-${m.risk}`
+                : '@sa-reviewer',
+              ...execution(reviewId),
+              idle_timeout: REVIEW_IDLE_MS,
+              with: {
+                milestone: m.id,
+                risk: ref.optional(finalHandle, 'risk', ''),
+                round: 1,
+                context: `$ARTIFACTS_DIR/${reviewId}.context.json`,
+                briefs: m.packages.map(brief).join(' '),
+                accept_log: ref.optional(finalHandle, 'log', ''),
+                diff: ref.optional(finalHandle, 'delta', ''),
+                full_diff: ref.optional(finalHandle, 'patch', ''),
+                ledger: '',
+              },
+            }),
+        depends_on: [finalAccept, fake ? reviewAttempt : reviewContext],
+        output_format: reviewerOutputFormat,
+      },
+      check(
+        gateId,
+        [finalAccept, reviewId],
+        {
+          kind: 'gate',
+          review: '1',
+          review_node: reviewId,
+          round: 1,
+          R1: ref.optionalValue(reviewHandle, null),
+          C1: `$ARTIFACTS_DIR/${finalAccept}.json`,
+          C1_HEAD: ref.optional(finalHandle, 'head', ''),
+          C1_DIFF_HASH: ref.optional(finalHandle, 'diff_hash', ''),
+          C1_SHA256: ref.optional(finalHandle, 'artifact_sha256', ''),
+          risk: m.risk,
+          milestone: m.id,
+          pkgs: m.packages.map(p => p.id).join(','),
+          plan: planPath,
+          policy: policyPath,
+          tag: gateId,
+          ...ledger,
+        },
+        {
+          trigger_rule: 'none_failed_min_one_success',
+          when: reviewRequired
+            ? `$${syncReady}.output.status == 'resolved'`
+            : `$${syncReady}.output.status == '__never__'`,
+        }
+      ),
+      {
+        id: integrationReady,
+        depends_on: [finalAccept, gateId],
+        trigger_rule: 'none_failed_min_one_success',
+        bash: 'true',
+      },
+      {
+        id: publishId,
+        depends_on: [integrationReady],
         ...(delivery && !fake
           ? {
               script: integrationScript(m.id, publishId),
               runtime: 'bun',
               with: {
                 ...gateHashes,
-                target_tip: ref.required(syncHandle, 'target_tip'),
+                target_tip: ref.required(readyHandle, 'target_tip'),
                 review_required: reviewRequired ? '1' : '0',
               },
             }
@@ -504,7 +680,7 @@ export function buildWorkflow(
                 'process.stdout.write(JSON.stringify(output));',
               ].join('\n'),
               runtime: 'bun',
-              with: { target_tip: ref.required(syncHandle, 'target_tip') },
+              with: { target_tip: ref.required(readyHandle, 'target_tip') },
             }),
         timeout: integrationNodeTimeout(),
         output_format: publishOutputFormat,

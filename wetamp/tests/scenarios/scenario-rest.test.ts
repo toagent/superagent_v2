@@ -321,6 +321,41 @@ test('S5/S7/S9/S10: generated scenarios use executor facts, never local counters
   }
 }, 300_000);
 
+test.each([
+  ['S18', 'G2', 1],
+  ['S19', 'G1', 0],
+] as const)(
+  '%s: integration resync conflict resolves, rechecks, and publishes',
+  async (id, risk, reviews) => {
+    const f = scenario({
+      id,
+      risk,
+      passRound: 1,
+      plan: { goal: `${id} resync conflict`, accept: `test "$(cat scenario.txt)" = ${id}` },
+      agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
+      expected: { terminal: 'completed', publishCount: 1 },
+    });
+    try {
+      const result = await runInProcess(f);
+      expectOutcome(f, result, {
+        terminal: 'completed',
+        counts: {
+          'integrate-m1.resolve-resync-m1': 1,
+          'integrate-m1.final-accept-m1': 1,
+          'integrate-m1.review-resync-m1': reviews,
+          'integrate-m1.publish-m1': 1,
+        },
+        published: true,
+      });
+      expect(readFileSync(join(f.worker, 'scenario.txt'), 'utf8')).toBe(`${id}\n`);
+      expect(existsSync(join(result.artifactsDir, 'gate-m1-rresync.json'))).toBe(reviews === 1);
+    } finally {
+      restore(f);
+    }
+  },
+  120_000
+);
+
 test('S6/S13: acceptance regression and stale coordination ownership block publish', async () => {
   for (const id of ['S6', 'S13'] as const) {
     const f = fixture(id);

@@ -835,7 +835,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         ? (run.nodes ?? []).filter(n => n.state === 'failed').map(n => n.nodeId)
         : []),
     ].find(node => {
-      const decision = decisionOf(evidenceJson(l, art, `${node}.json`));
+      const decision = decisionOf(evidenceJson(l, art, `${authoredNodeId(node)}.json`));
       return (
         decision?.kind === 'block' &&
         ['coder_partial', 'coder_needs', 'acceptance_adjudication', 'finding_stuck'].includes(
@@ -2130,13 +2130,18 @@ const retryScope = (l: Ledger, node: string): string => {
     : '';
   return pkg && attemptable(l, `pkg/${pkg}`) ? `pkg/${pkg}` : milestoneOf(l, node);
 };
-const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
-const milestoneOf = (l: Ledger, node: string): string =>
-  /^diff-(.+)-r\d+$/.exec(node)?.[1] ??
-  (/^(verify|settle|code|repair)-/.test(node)
-    ? (planOf(l).packages.find(p => node.replace(/^(verify|settle|code|repair)-/, '') === p.id)
-        ?.milestone ?? 'm1')
-    : gateMilestone(node.replace(/^fix-/, 'gate-')));
+const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r(?:\d+|resync)$/, '$1');
+const milestoneOf = (l: Ledger, node: string): string => {
+  const local = node.split('.').at(-1) ?? node;
+  return (
+    /^(?:resolve-context-|resolve-)?resync-(.+?)(?:-decision|-ready)?$/.exec(local)?.[1] ??
+    /^diff-(.+)-r\d+$/.exec(node)?.[1] ??
+    (/^(verify|settle|code|repair)-/.test(node)
+      ? (planOf(l).packages.find(p => node.replace(/^(verify|settle|code|repair)-/, '') === p.id)
+          ?.milestone ?? 'm1')
+      : gateMilestone(node.replace(/^fix-/, 'gate-')))
+  );
+};
 
 /** Bump the generated scope before resume; missing counters fail explicitly. */
 function retryGate(

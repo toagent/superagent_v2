@@ -1441,11 +1441,17 @@ describe('buildWorkflow', () => {
     expect(integration.loop_group.nodes.some(n => n.id.startsWith('target-dirty-'))).toBe(false);
     expect(integration.loop_group.nodes.map(n => n.id)).toEqual([
       'resync-m1',
+      'resync-m1-ready',
       'final-accept-m1',
+      'attempt-review-resync-m1',
+      'review-context-resync-m1',
+      'review-resync-m1',
+      'gate-m1-rresync',
+      'integration-ready-m1',
       'publish-m1',
     ]);
     expect(integration.loop_group.nodes.find(n => n.id === 'publish-m1')?.depends_on).toEqual([
-      'final-accept-m1',
+      'integration-ready-m1',
     ]);
     const deliveryNodes = nodesOf(
       buildWorkflow(
@@ -1463,14 +1469,43 @@ describe('buildWorkflow', () => {
     const deliveryIntegration = deliveryNodes.find(n => n.id === 'integrate-m1') as N & {
       loop_group: { nodes: N[] };
     };
+    expect(deliveryIntegration.loop_group.nodes.map(n => n.id)).toEqual([
+      'resync-m1',
+      'resolve-context-resync-m1',
+      'resolve-resync-m1',
+      'resolve-resync-m1-decision',
+      'resync-m1-ready',
+      'final-accept-m1',
+      'attempt-review-resync-m1',
+      'review-context-resync-m1',
+      'review-resync-m1',
+      'gate-m1-rresync',
+      'integration-ready-m1',
+      'publish-m1',
+    ]);
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'resync-m1')?.bash
+    ).not.toContain('INPUTS_FAIL_CONFLICT=1');
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'final-accept-m1')?.with
+    ).toMatchObject({
+      delta_base: '$resync-m1.output.head',
+    });
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {
         gate_1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
         gate_2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
+        gate_resync_sha256: {
+          from: '$gate-m1-rresync.output.artifact_sha256',
+          if_skipped: '',
+        },
       },
     });
-    expect(executionTable(fixture, loadTiers())['integration-review-m1']).toBeUndefined();
+    expect(executionTable(fixture, loadTiers())['review-resync-m1']).toMatchObject({
+      role: 'review',
+      risk: 'G1',
+    });
     const warnings: string[] = [];
     collectLoopGroupSinkWarnings(nodes as never, warnings);
     expect(warnings.filter(w => w.includes("Node 'target-dirty-m1'"))).toEqual([]);
