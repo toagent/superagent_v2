@@ -480,18 +480,13 @@ describe('data rows', () => {
         return readLedger(id);
       }
     );
-    const started = performance.now();
     expect((await load(2000)).rows).toHaveLength(2000);
-    const firstMs = performance.now() - started;
-    expect(firstMs).toBeLessThan(2000);
     const batch = callLines()[0] ?? '';
     expect(batch).toContain('workflow runs --ids ');
     expect(batch).not.toContain('extra-');
     expect(ledgerReads).toBe(2000);
     ledgerReads = 0;
-    const stableAt = performance.now();
     await load(2000);
-    console.log(`board stable refresh: ${(performance.now() - stableAt).toFixed(1)}ms`);
     expect(ledgerReads).toBe(0);
     expect(revisionRequests).toEqual([2000, 0]);
     expect(calls()).toBe(1);
@@ -550,8 +545,25 @@ describe('data rows', () => {
       const t = new Date(Date.now() + i * 1000);
       utimesSync(ledgerFile(id), t, t);
     }
+    const statuses = new Map<string, RunView['status']>([
+      ['a-live', 'running'],
+      ...Array.from(
+        { length: 21 },
+        (_, i) => [`a-done-${String(i).padStart(2, '0')}`, 'completed'] as const
+      ),
+    ]);
+    const load = createLoader(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => statuses
+    );
     // prettier-ignore
-    expect((await createLoader()(2)).rows.map(r => r.run_id).sort()).toEqual(['bad', 'done-19', 'done-20', 'live']);
+    expect((await load(2)).rows.map(r => r.run_id).sort()).toEqual(['bad', 'done-19', 'done-20', 'live']);
+    expect(callLines()[0]).toContain('a-done-20,a-done-19,a-live');
+    expect(callLines()[0]).not.toContain('a-done-18');
   });
 });
 

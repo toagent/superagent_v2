@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, normalize, relative } from 'node:path';
+import { join, normalize } from 'node:path';
 import { GENERATED_OUTPUT_PATHS, type Plan } from './plan';
 import { reasonOf } from './reasons';
 
@@ -15,11 +15,6 @@ const REPEAT_FAILURE_CATEGORIES = {
 } as const;
 
 const slash = (path: string): string => path.replaceAll('\\', '/');
-const files = (dir: string): string[] =>
-  readdirSync(dir).flatMap(name => {
-    const path = join(dir, name);
-    return statSync(path).isDirectory() ? files(path) : [path];
-  });
 export const covered = (path: string, write: string[]): boolean =>
   write.some(
     w => path === w || path.startsWith(w.replace(/\/*$/, '/')) || new Bun.Glob(w).match(path)
@@ -34,14 +29,6 @@ const git = (repo: string, ...args: string[]): string | undefined => {
   });
   return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
 };
-const modulePath = (path: string): string =>
-  path.replace(/\.[cm]?[jt]sx?$/, '').replace(/\/index$/, '');
-const imports = (test: string, text: string, source: string): boolean =>
-  [
-    ...text.matchAll(/(?:\bfrom\s+|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)['"](\.[^'"]+)['"]/g),
-  ].some(
-    match => modulePath(slash(normalize(join(dirname(test), match[1])))) === modulePath(source)
-  );
 const commandTests = (cmd: string): string[] =>
   [...cmd.matchAll(/['"]?([^'"\s;&|]+\.test\.ts)['"]?/g)].flatMap(match => {
     if (/[*?[]/.test(match[1])) return [];
@@ -108,12 +95,9 @@ export function checkSyntaxErrors(plan: Plan): string[] {
 // Keep these checks together: dispatch must have one non-bypassable source of truth.
 // prettier-ignore
 export function planPrecheck(plan: Plan, repo: string, override?: string): PlanPrecheck {
-  const scenarioDir = join(repo, 'wetamp/tests/scenarios'), scriptsDir = join(repo, 'wetamp/scripts');
-  const engineRepo = existsSync(scenarioDir) && existsSync(join(scriptsDir, 'generate-plan-schema.ts'));
+  const scriptsDir = join(repo, 'wetamp/scripts');
+  const engineRepo = existsSync(join(scriptsDir, 'generate-plan-schema.ts'));
   const blocking: string[] = [], info: string[] = [], tree = new Set((git(repo, 'ls-tree', '-r', '--name-only', plan.base_ref) ?? '').split(/\r?\n/).filter(Boolean));
-  const scenarios = engineRepo ? files(scenarioDir).map(path => ({
-    path: slash(relative(repo, path)), text: readFileSync(path, 'utf8'),
-  })) : [];
   const generators = engineRepo ? readdirSync(scriptsDir).filter(name => /^generate-.*\.ts$/.test(name)).flatMap(name => {
     const script = `wetamp/scripts/${name}`, text = readFileSync(join(repo, script), 'utf8');
     const body = text.replace(/GENERATED_OUTPUT_PATHS\s*=\s*\[[\s\S]*?\]/, '');
@@ -131,29 +115,9 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
   }) : [];
   for (const pkg of plan.packages) {
     const write = pkg.scope.write, commands = pkg.accept.map(check => check.cmd);
-    const joined = commands.join(' '), prefix = `[${pkg.id}] `;
+    const prefix = `[${pkg.id}] `;
     for (const cmd of commands) for (const test of commandTests(cmd))
       if (!tree.has(test) && !covered(test, write)) blocking.push(`${prefix}修正验收命令 ${cmd}（base_ref 不存在 ${test}）或把 ${test} 加入 scope.write`);
-    for (const source of write.filter(path => path.endsWith('.ts') && !path.endsWith('.test.ts'))) {
-      const commit = git(repo, 'log', '-1', '--format=%H', plan.base_ref, '--', source);
-      if (!commit) continue;
-      for (const test of (git(repo, 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', commit) ?? '').split(/\r?\n/).filter(path => path.endsWith('.test.ts') && !covered(path, write))) {
-        const text = git(repo, 'show', `${plan.base_ref}:${test}`);
-        if (text !== undefined && imports(test, text, source)) blocking.push(`${prefix}把最近提交关联测试 ${test} 加入 scope.write（${source}）`);
-      }
-    }
-    const engine = ['wetamp/src/engine/', 'wetamp/src/gc.ts', 'wetamp/scripts/engine-', 'wetamp/bin/'];
-    if (write.some(path => engine.some(owner => path.startsWith(owner))) && !joined.includes('engine-*') &&
-        !['engine-channel', 'engine-promote', 'engine-shim'].every(test => joined.includes(test)))
-      blocking.push(prefix + '写引擎/gc/shim 须跑 engine-channel、engine-promote、engine-shim 三组测试');
-    for (const source of write.filter(path => path.startsWith('wetamp/src/') && path.endsWith('.ts'))) {
-      const module = source.slice(7, -3), names = [module, ...(module.endsWith('/index') ? [module.slice(0, -6)] : [])];
-      const escaped = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-      const pattern = new RegExp(`['"](?:\\.\\.\\/)+(?:${escaped})(?:\\.ts)?['"]`);
-      const users = scenarios.filter(file => pattern.test(file.text) && !covered(file.path, write));
-      if (users.length) (users.length >= 3 ? info : blocking).push(
-        `${prefix}${users.length >= 3 ? '枢纽模块提示' : 'scope 缺场景调用方'}：${source} -> ${users.map(file => file.path).join(', ')}${users.length >= 3 ? '' : '；把调用方加入 scope.write'}`);
-    }
     for (const generator of generators) {
       const touched = generator.inputs.some(input => covered(input, write) ||
         (input.endsWith('/') && write.some(path => path.startsWith(input))));

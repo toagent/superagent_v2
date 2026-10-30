@@ -76,16 +76,20 @@ const mutations: Mutation[] = [
   },
 ];
 
-test('project rules run mutation scenarios for every mutation target', () => {
+test('project rules run the full wetamp suite for every mutation target', () => {
   const repo = join(import.meta.dir, '../../..');
   const rules = JSON.parse(readFileSync(join(repo, '.superagent/rules.json'), 'utf8')) as {
-    required_checks?: { when: string[]; check: { cmd: string } }[];
+    required_checks?: {
+      when: string[];
+      check: { cmd: string; cache?: boolean; requires_prior_pass?: boolean };
+    }[];
   };
-  const required = rules.required_checks?.find(rule =>
-    rule.check.cmd.includes('tests/scenarios/mutations.test.ts')
+  const required = rules.required_checks?.find(
+    rule => rule.check.cmd === 'cd wetamp && bun run test'
   );
+  expect(required?.check).toMatchObject({ cache: true, requires_prior_pass: true });
   for (const file of new Set(mutations.map(mutation => `wetamp/${mutation.file}`)))
-    expect(required?.when).toContain(file);
+    expect(required?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
 });
 
 test('known accident mutations each fail a real generated scenario', () => {

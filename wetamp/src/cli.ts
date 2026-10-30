@@ -3137,6 +3137,85 @@ interface TickMode {
   noGlobal?: boolean;
 }
 
+interface MaintenanceTasks {
+  memory: (asks: Asks) => unknown;
+  reflection: () => unknown;
+  gc: () => GcAction[];
+  scratch: () => ScratchAction[];
+}
+
+export function maintenanceTick(
+  sa = home().sa,
+  tasks: MaintenanceTasks = {
+    memory: memoryTick,
+    reflection: reconcileReflection,
+    gc,
+    scratch: scratchClean,
+  }
+): Record<string, unknown> {
+  const held = lock(join(sa, 'maintenance.lock'));
+  if (!held.ok) {
+    const skipped = {
+      at: new Date().toISOString(),
+      maintenance: { ok: true, duration_ms: 0, skipped: 'maintenance_running' },
+    };
+    writeAtomic(join(sa, 'maintenance.json'), JSON.stringify(skipped, null, 2) + '\n');
+    return skipped;
+  }
+  const maintenanceStarted = Date.now();
+  const record: Record<string, unknown> = { at: new Date().toISOString() };
+  const run = (name: string, task: () => unknown): unknown => {
+    const started = Date.now();
+    try {
+      const value = task();
+      record[name] = { ok: true, duration_ms: Date.now() - started };
+      return value;
+    } catch (e) {
+      record[name] = {
+        ok: false,
+        duration_ms: Date.now() - started,
+        error: e instanceof Error ? e.message : String(e),
+      };
+      return undefined;
+    }
+  };
+  try {
+    let asks: Asks = {};
+    try {
+      asks = loadAsks();
+    } catch {
+      /* A corrupt ask cache must not block maintenance. */
+    }
+    run('memory', () => tasks.memory(asks));
+    run('reflection', tasks.reflection);
+    const gcStamp = join(sa, 'gc-tick');
+    if (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000) {
+      writeAtomic(gcStamp, String(Date.now()));
+      run('gc', tasks.gc);
+    } else record.gc = { ok: true, duration_ms: 0, skipped: 'not-due' };
+    run('scratch', tasks.scratch);
+    const failed = Object.values(record).some(
+      value => value && typeof value === 'object' && 'ok' in value && value.ok === false
+    );
+    record.maintenance = { ok: !failed, duration_ms: Date.now() - maintenanceStarted };
+    writeAtomic(join(sa, 'maintenance.json'), JSON.stringify(record, null, 2) + '\n');
+    return record;
+  } finally {
+    held.release();
+  }
+}
+
+const launchMaintenance = (): void => {
+  const child = Bun.spawn([process.execPath, import.meta.path, 'maintenance-tick'], {
+    detached: true,
+    stdin: 'ignore',
+    stdout: 'ignore',
+    stderr: 'ignore',
+    env: { ...process.env },
+  });
+  child.unref();
+};
+
 const rotateTickLog = (sa: string): void => {
   const file = join(sa, 'supervise-tick.log');
   const stat = lstatSync(file, { throwIfNoEntry: false });
@@ -3465,24 +3544,13 @@ function tick(
     if (initialAsks) saveAsksDelta(initialAsks, asks);
   }
   if (!global && initialAsks && !(asks instanceof Error)) saveAsksDelta(initialAsks, asks);
-  if (global) {
-    memoryTick(asks instanceof Error ? {} : asks);
-    reconcileReflection();
-  }
-  // supervise.lock serializes the persisted throttle; reserve before the slow GC.
-  const gcStamp = join(sa, 'gc-tick'),
-    due = global && (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000);
-  if (due) writeAtomic(gcStamp, String(Date.now()));
-  const gcStarted = due ? Date.now() : undefined,
-    gcActions = due ? gc() : [];
   return {
     actions: out,
     skipped_terminal: skippedTerminal,
     repeated_errors: repeatedErrors,
     ...cockpitSignals(observed, asks instanceof Error ? {} : asks),
-    gc: gcActions,
-    ...(gcStarted === undefined ? {} : { gc_ms: Date.now() - gcStarted }),
-    scratch: global ? scratchClean() : [],
+    gc: [],
+    scratch: [],
   };
 }
 
@@ -4002,6 +4070,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'gc', flags: ['dry-run'] },
   { command: 'scratch-clean', flags: ['session', 'dry-run'] },
   { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
+  { command: 'maintenance-tick', flags: [] },
   { command: 'engine', positionals: 'promote <sha> | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence'] },
   { command: 'health', flags: ['cwd', 'verbose'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
@@ -4051,26 +4120,27 @@ function tickOutput(
 
 /** Console availability must not gate the unattended heartbeat. */
 // prettier-ignore
-export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick): Promise<number> {
+export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined): Promise<number> {
   const errors: string[] = [];
   const stages = {} as Omit<TickRecord, 'at'>;
-  const result = async (stage: keyof typeof stages, run: () => unknown): Promise<unknown> => {
+  const result = async (stage: keyof typeof stages, run: () => unknown, errorLabel: string = stage): Promise<unknown> => {
+    const started = Date.now();
     try {
       const value = await run();
-      stages[stage] = { ok: true, ...(value && typeof value === 'object' && 'skipped' in value ? { skipped: String(value.skipped) } : {}) };
+      stages[stage] = { ok: true, duration_ms: Date.now() - started, ...(value && typeof value === 'object' && 'skipped' in value ? { skipped: String(value.skipped) } : {}) };
       return value;
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      stages[stage] = { ok: false, error };
-      errors.push(`${stage} failed: ${error}`);
+      stages[stage] = { ok: false, duration_ms: Date.now() - started, error };
+      errors.push(`${errorLabel} failed: ${error}`);
       return undefined;
     }
   };
   if (!mode.noGlobal) await result('reclaim', reclaimTask);
-  else stages.reclaim = { ok: true, skipped: 'no-global' };
+  else stages.reclaim = { ok: true, duration_ms: 0, skipped: 'no-global' };
   let snapshot: Snapshot | undefined;
   if (!mode.noGlobal) snapshot = (await result('collect', load)) as Snapshot | undefined;
-  else stages.collect = { ok: true, skipped: 'no-global' };
+  else stages.collect = { ok: true, duration_ms: 0, skipped: 'no-global' };
   if (snapshot)
     await result('publish', () => {
       const path = join(home().sa, 'heartbeat.json'), now = Date.now();
@@ -4081,34 +4151,23 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
       if (changed) writeAtomic(path, JSON.stringify(next, null, 2) + '\n');
       return changed ? undefined : { skipped: 'unchanged' };
     });
-  else stages.publish = { ok: true, skipped: mode.noGlobal ? 'no-global' : 'collect-failed' };
-  try {
-    if (!mode.noGlobal) await refresh();
-    stages.console = { ok: true };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    stages.console = { ok: false, error }; errors.push(`console refresh failed: ${error}`);
-  }
+  else stages.publish = { ok: true, duration_ms: 0, skipped: mode.noGlobal ? 'no-global' : 'collect-failed' };
+  await result('console', () => mode.noGlobal ? { skipped: 'no-global' } : refresh(), 'console refresh');
   let output: Record<string, unknown> = {};
-  const exit = tickOutput(mode, value => (output = value));
-  stages.actions = { ok: exit === 0, ...(exit ? { error: 'tick actions failed' } : {}) };
-  try {
-    if (!mode.noGlobal) await claudeCommanderFailover();
-    stages.failover = { ok: true };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    stages.failover = { ok: false, error }; errors.push(`commander failover failed: ${error}`);
-  }
-  try {
-    if (!mode.noGlobal) {
-      const synced = snapshot ? await sync(snapshot) : { skipped: 'collect-failed' };
-      if (synced && typeof synced === 'object' && 'error' in synced) throw new Error(String(synced.error));
-      stages.orca = { ok: true, ...(synced && typeof synced === 'object' && 'skipped' in synced ? { skipped: String(synced.skipped) } : {}) };
-    } else stages.orca = { ok: true, skipped: 'no-global' };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    stages.orca = { ok: false, error }; errors.push(`orca sync failed: ${error}`);
-  }
+  const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
+  if (exit)
+    stages.actions = {
+      ok: false,
+      duration_ms: stages.actions?.duration_ms ?? 0,
+      error: 'tick actions failed',
+    };
+  await result('failover', () => mode.noGlobal ? { skipped: 'no-global' } : claudeCommanderFailover(), 'commander failover');
+  await result('orca', async () => {
+    if (mode.noGlobal) return { skipped: 'no-global' };
+    const synced = snapshot ? await sync(snapshot) : { skipped: 'collect-failed' };
+    if (synced && typeof synced === 'object' && 'error' in synced) throw new Error(String(synced.error));
+    return synced;
+  }, 'orca sync');
   const details = ['actions', 'gc', 'scratch'].flatMap(key =>
     Array.isArray(output[key])
       ? (output[key] as Record<string, unknown>[]).filter(item => item.action !== 'none')
@@ -4118,6 +4177,20 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   const unavailable = output.unavailable as { count?: number } | undefined;
   const gcMs = typeof output.gc_ms === 'number' ? output.gc_ms : typeof global?.gc_ms === 'number' ? global.gc_ms : undefined;
   if (!mode.noGlobal) writeAtomic(join(home().sa, 'tick.json'), JSON.stringify({ at: new Date().toISOString(), ...stages }, null, 2) + '\n');
+  if (!mode.noGlobal)
+    try {
+      startMaintenance();
+    } catch (e) {
+      const record = {
+        at: new Date().toISOString(),
+        maintenance: {
+          ok: false,
+          duration_ms: 0,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      };
+      writeAtomic(join(home().sa, 'maintenance.json'), JSON.stringify(record, null, 2) + '\n');
+    }
   console.log(
     JSON.stringify({
       heartbeat: new Date().toISOString(),
@@ -4622,6 +4695,9 @@ export function main(argv: string[]): number {
         runs: a.flags.runs,
         noGlobal: a.flags['no-global'],
       });
+    case 'maintenance-tick':
+      print(maintenanceTick());
+      return 0;
     case 'engine': {
       const result = engineCommand([
         ...a._.slice(1),
