@@ -86,16 +86,13 @@ let subprocessOutputModule:
   | Promise<typeof import('@archon/workflows/subprocess-output')>
   | undefined;
 // Generated resource checks resolve the frozen engine copy; ordinary checks never load it.
-const subprocessOutput = async (): Promise<
-  typeof import('@archon/workflows/subprocess-output')
-> => {
+// prettier-ignore
+const subprocessOutput = async (): Promise<typeof import('@archon/workflows/subprocess-output')> => {
   if (subprocessOutputModule) return subprocessOutputModule;
   // prettier-ignore
   const path = [resolve(import.meta.dir, '../../../../packages/workflows/src/subprocess-output.ts'), process.env.SUPERAGENT_HOME ? join(process.env.SUPERAGENT_HOME, 'engine/current/packages/workflows/src/subprocess-output.ts') : '', (() => { try { return resolve(dirname(dirname(realpathSync(join(dirname(env('PLAN')), 'archon')))), '../packages/workflows/src/subprocess-output.ts'); } catch { return ''; } })()].find(candidate => candidate && existsSync(candidate));
   if (!path) throw new Error('engine subprocess-output.ts unavailable');
-  subprocessOutputModule = import(pathToFileURL(path).href) as Promise<
-    typeof import('@archon/workflows/subprocess-output')
-  >;
+  subprocessOutputModule = import(pathToFileURL(path).href) as Promise<typeof import('@archon/workflows/subprocess-output')>;
   return subprocessOutputModule;
 };
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
@@ -110,12 +107,8 @@ let resourceWaitElapsedMs = 0,
 // prettier-ignore
 const resourceWaitBudgetMs = (): number =>
   process.env.NODE_ENV === 'test' && process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS ? Number(process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS) : RESOURCE_WAIT_BUDGET_S * 1000;
-
-class ResourceWaitTimeout extends Error {
-  constructor(readonly command: string) {
-    super(`resource wait budget exhausted before: ${command}`);
-  }
-}
+// prettier-ignore
+class ResourceWaitTimeout extends Error { constructor(readonly command: string) { super(`resource wait budget exhausted before: ${command}`); } }
 interface ResourceLease {
   waitedMs: number;
   release(): Promise<void>;
@@ -123,7 +116,7 @@ interface ResourceLease {
 // prettier-ignore
 const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
   resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE] : RESOURCE_SLOTS[resource];
-
+// prettier-ignore
 function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams | undefined> {
   // prettier-ignore
   const command = process.platform === 'darwin' ? ['/usr/bin/lockf', '-t', '0', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'] : ['flock', '-n', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'];
@@ -133,41 +126,24 @@ function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams |
   return new Promise((resolve, reject) => {
     let settled = false;
     child.once('error', reject);
-    child.once('exit', code => {
-      if (!settled) {
-        settled = true;
-        resolve(code === 0 ? child : undefined);
-      }
-    });
+    child.once('exit', code => { if (!settled) { settled = true; resolve(code === 0 ? child : undefined); } });
     child.stdout.once('data', (chunk: Buffer) => {
       if (settled || !chunk.toString().startsWith('acquired')) return;
-      settled = true;
-      resolve(child);
+      settled = true; resolve(child);
     });
   });
 }
-
-export async function acquireResource(
-  resource: NonNullable<Check['resource']>,
-  budgetMs: number,
-  lockFiles = resourceLockFiles(resource)
-): Promise<ResourceLease | undefined> {
-  const started = Date.now(),
-    deadline = started + budgetMs;
+// prettier-ignore
+export async function acquireResource(resource: NonNullable<Check['resource']>, budgetMs: number,
+  lockFiles = resourceLockFiles(resource)): Promise<ResourceLease | undefined> {
+  const started = Date.now(), deadline = started + budgetMs;
   while (Date.now() < deadline) {
     for (const path of lockFiles) {
       const child = await tryResourceLock(path);
       if (!child) continue;
       return {
         waitedMs: Date.now() - started,
-        release: async () => {
-          child.stdin.end();
-          await new Promise<void>(resolve =>
-            child.once('close', () => {
-              resolve();
-            })
-          );
-        },
+        release: async () => { child.stdin.end(); await new Promise<void>(resolve => child.once('close', () => { resolve(); })); },
       };
     }
     await Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now())));
@@ -643,18 +619,13 @@ async function run(
       }
     }
     let lease: ResourceLease | undefined;
+    // prettier-ignore
     if (c.resource) {
       const remainingWait = resourceWaitBudgetMs() - resourceWaitElapsedMs;
       lease = remainingWait > 0 ? await acquireResource(c.resource, remainingWait) : undefined;
       resourceWaitElapsedMs += lease?.waitedMs ?? Math.max(0, remainingWait);
       if (!lease) {
-        results.push({
-          check: c,
-          pass: false,
-          evidence: log,
-          exit: 'resource_wait_timeout',
-          duration_ms: 0,
-        });
+        results.push({ check: c, pass: false, evidence: log, exit: 'resource_wait_timeout', duration_ms: 0 });
         failures.push({ command: c.cmd, failure_class: 'test_env', evidence: log });
         throw new ResourceWaitTimeout(c.cmd);
       }
@@ -688,28 +659,23 @@ async function run(
       if (reportPath) rmSync(reportPath, { force: true });
       const remaining = deadline - Date.now();
       if (remaining <= 0) return [undefined, 'timeout', undefined, false, Date.now() - t0] as const;
-      const commandEnvironment =
-        c.resource === 'heavy-test' ? { ...commandEnv, SA_HEAVY_LOCK_HELD: '1' } : commandEnv;
+      // prettier-ignore
+      const commandEnvironment = c.resource === 'heavy-test' ? { ...commandEnv, SA_HEAVY_LOCK_HELD: '1' } : commandEnv;
       let p: { exitCode: number | null; signalCode: string | null; stdout: Buffer; stderr: Buffer };
+      // prettier-ignore
       if (c.resource) {
         const { recordNodeProcessTrees, runStreamingSubprocess } = await subprocessOutput();
         const recorder = recordNodeProcessTrees();
         try {
           const sequence = String(resourceOutputSequence++);
           const output = await runStreamingSubprocess({
-            cmd: 'bash',
-            args: ['-c', c.cmd],
-            cwd: cwd ?? process.cwd(),
-            env: commandEnvironment,
-            timeout: remaining,
-            credentialValues: [],
-            retainRawStdout: true,
+            cmd: 'bash', args: ['-c', c.cmd], cwd: cwd ?? process.cwd(), env: commandEnvironment,
+            timeout: remaining, credentialValues: [], retainRawStdout: true,
             stdoutPath: `${log}.${sequence}.stdout`,
             stderrPath: `${log}.${sequence}.stderr`,
           });
           p = {
-            exitCode: 0,
-            signalCode: null,
+            exitCode: 0, signalCode: null,
             stdout: Buffer.from(output.stdout.raw ?? output.stdout.preview),
             stderr: Buffer.from(output.stderr.preview),
           };
@@ -718,26 +684,18 @@ async function run(
           p = {
             exitCode: typeof failure.code === 'number' ? failure.code : null,
             signalCode: failure.signal ?? (failure.killed ? 'SIGTERM' : null),
-            stdout: Buffer.from(failure.stdout ?? ''),
-            stderr: Buffer.from(failure.stderr ?? ''),
+            stdout: Buffer.from(failure.stdout ?? ''), stderr: Buffer.from(failure.stderr ?? ''),
           };
         } finally {
-          await recorder.end();
-          recorder.release();
+          await recorder.end(); recorder.release();
         }
       } else {
         const result = Bun.spawnSync(['bash', '-c', c.cmd], {
-          cwd,
-          env: commandEnvironment,
-          stdout: 'pipe',
-          stderr: 'pipe',
-          timeout: remaining,
+          cwd, env: commandEnvironment, stdout: 'pipe', stderr: 'pipe', timeout: remaining,
         });
         p = {
-          exitCode: result.exitCode,
-          signalCode: result.signalCode ?? null,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          exitCode: result.exitCode, signalCode: result.signalCode ?? null,
+          stdout: result.stdout, stderr: result.stderr,
         };
       }
       const code = p.signalCode ? `signal ${p.signalCode}` : (p.exitCode ?? 'unknown');
@@ -765,15 +723,9 @@ async function run(
     let attempt;
     try {
       first = await execute();
+      // prettier-ignore
       attempt =
-        !first[3] &&
-        !first[0]?.signalCode &&
-        c.cache !== false &&
-        env('KIND') !== 'env' &&
-        retryFailure &&
-        deadline > Date.now()
-          ? await execute()
-          : first;
+        !first[3] && !first[0]?.signalCode && c.cache !== false && env('KIND') !== 'env' && retryFailure && deadline > Date.now() ? await execute() : first;
     } finally {
       if (lease) await lease.release();
     }
@@ -1104,8 +1056,9 @@ async function acceptOnce(
   const hash = patch ? diffHash(readFileSync(patch)) : '';
   const head = git('rev-parse', 'HEAD').trim();
   const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
-  let resourceWaitTimedOut = false;
-  let failed: string[] = [];
+  let resourceWaitTimedOut = false,
+    failed: string[] = [];
+  // prettier-ignore
   if (!prior)
     try {
       failed = await run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
@@ -1235,12 +1188,9 @@ async function acceptOnce(
     join(artifacts, `${tag}.coder.json`),
     reviewRounds
   );
+  // prettier-ignore
   if (resourceWaitTimedOut)
-    Object.assign(result, {
-      disposition: 'fail',
-      reason: 'resource_wait_timeout',
-      decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' },
-    });
+    Object.assign(result, { disposition: 'fail', reason: 'resource_wait_timeout', decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' } });
   const lines = lineBudget(pkgs, tag);
   if (lines && budgetExceeded(lines.limit, lines.used) && result.disposition === 'advance')
     Object.assign(result, {
@@ -1438,11 +1388,8 @@ async function settle(): Promise<void> {
 }
 
 /** 在 base 的临时 detached 工作树里准备同一环境后重跑失败命令；无法准备时不作基线结论。 */
-async function probe(
-  base: string,
-  checks: Check[],
-  tag: string
-): Promise<NonNullable<Accept['base_results']>> {
+// prettier-ignore
+async function probe(base: string, checks: Check[], tag: string): Promise<NonNullable<Accept['base_results']>> {
   const log = join(artifacts, `${tag}.probe.log`),
     setup = environmentChecks(plan());
   writeFileSync(log, setup.length ? '' : '# baseline unknown: no environment commands declared\n');
@@ -1458,9 +1405,8 @@ async function probe(
     for (const c of checks) {
       const failures: CheckFailure[] = [],
         results: CommandResult[] = [];
-      const passed =
-        (await run([c], log, dir, sha(JSON.stringify(['probe', base])), failures, results))
-          .length === 0;
+      // prettier-ignore
+      const passed = (await run([c], log, dir, sha(JSON.stringify(['probe', base])), failures, results)).length === 0;
       // Exit 1 alone cannot distinguish assertions from setup errors. Only a
       // structured non-environment failure proves the baseline actually ran.
       const comparable =
@@ -1592,9 +1538,8 @@ export async function prepareEnvironment(cwd: string, p: Parameters<typeof envir
   const failures: CheckFailure[] = precheck.failures.map(f => ({
     command: 'env-precheck', failure_class: f.failure_class, evidence: log,
   }));
-  const failed = precheck.ok
-    ? await run(environmentChecks(p), log, cwd, '', failures)
-    : ['env-precheck'];
+  // prettier-ignore
+  const failed = precheck.ok ? await run(environmentChecks(p), log, cwd, '', failures) : ['env-precheck'];
   return { ok: failed.length === 0, failed, failures, precheck, provisioned, log };
 }
 
