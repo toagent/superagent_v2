@@ -5,7 +5,6 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -213,17 +212,26 @@ const gitResult = (cwd: string, args: string[]) => {
   return result;
 };
 
+const gitFailure = (args: string[], result: ReturnType<typeof gitResult>): IntegrationError => {
+  const excerpt = (output: Uint8Array): string => {
+    const text = Buffer.from(output).toString().trim();
+    return text.length > 4000 ? `${text.slice(0, 4000)}...` : text || '(empty)';
+  };
+  return new IntegrationError(
+    'git_failed',
+    `git ${args.join(' ')} failed with exit code ${String(result.exitCode)}\nstderr:\n${excerpt(result.stderr)}\nstdout:\n${excerpt(result.stdout)}`
+  );
+};
+
 const git = (cwd: string, ...args: string[]): string => {
   const result = gitResult(cwd, args);
-  if (result.exitCode !== 0)
-    throw new IntegrationError('git_failed', result.stderr.toString().trim() || args.join(' '));
+  if (result.exitCode !== 0) throw gitFailure(args, result);
   return result.stdout.toString().trimEnd();
 };
 
 const gitBytes = (cwd: string, ...args: string[]): Buffer => {
   const result = gitResult(cwd, args);
-  if (result.exitCode !== 0)
-    throw new IntegrationError('git_failed', result.stderr.toString().trim() || args.join(' '));
+  if (result.exitCode !== 0) throw gitFailure(args, result);
   return result.stdout;
 };
 
@@ -284,27 +292,15 @@ export function sync(
       head: before,
     };
 
-  const merged = gitResult(worktree, ['merge', '--no-edit', targetTip]);
+  const mergeArgs = ['merge', '--no-edit', targetTip];
+  const merged = gitResult(worktree, mergeArgs);
   if (merged.exitCode !== 0) {
-    let files = conflicts(worktree);
-    const solver = Bun.which('mergiraf', { PATH: process.env.PATH });
-    if (solver)
-      for (const file of files) {
-        const solved = Bun.spawnSync([solver, 'solve', file], {
-          cwd: worktree,
-          stdout: 'pipe',
-          stderr: 'pipe',
-          timeout: QUERY_TIMEOUT_MS,
-        });
-        rmSync(join(worktree, `${file}.orig`), { force: true });
-        if (solved.exitCode === 0) git(worktree, 'add', '--', file);
-      }
-    files = conflicts(worktree);
-    if (files.length) {
-      git(worktree, 'merge', '--abort');
-      return { status: 'conflict', target_tip: targetTip, files };
-    }
-    git(worktree, 'commit', '--no-edit');
+    const mergeHead = gitResult(worktree, ['rev-parse', '--quiet', '--verify', 'MERGE_HEAD']);
+    if (mergeHead.exitCode !== 0) throw gitFailure(mergeArgs, merged);
+    const files = conflicts(worktree);
+    if (!files.length) throw gitFailure(mergeArgs, merged);
+    git(worktree, 'merge', '--abort');
+    return { status: 'conflict', target_tip: targetTip, files };
   }
   const head = git(worktree, 'rev-parse', 'HEAD');
   return {
