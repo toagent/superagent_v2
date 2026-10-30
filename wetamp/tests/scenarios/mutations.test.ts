@@ -19,15 +19,15 @@ const mutations: Mutation[] = [
     from: 'loop_group: {\n        max_iterations: 3,',
     to: 'loop_group: {\n        interactive: true,\n        max_iterations: 3,',
     test: 'tests/scenarios/scenario-core.test.ts',
-    name: 'S2',
+    name: 'S2/S11',
     expectedError: 'interactive',
   },
   {
     file: 'src/land.ts',
     from: 'const who = authorization.run;',
     to: 'const who = caller();',
-    test: 'tests/scenarios/scenario-core.test.ts',
-    name: 'S2',
+    test: 'tests/delivery-e2e.test.ts',
+    name: 'entry rejects',
     expectedError: 'integration: authorization/run mismatch',
     also: [
       "import { control, coord, repoScope, runScope, same } from './coord';",
@@ -63,8 +63,8 @@ const mutations: Mutation[] = [
     from: "until_bash: untilStatus(publishHandle, 'published'),",
     to: 'until_bash: `test $${publishId}.output.status = published`,',
     test: 'tests/scenarios/scenario-core.test.ts',
-    name: 'S2',
-    expectedError: 'publish-m1',
+    name: 'S2/S11',
+    expectedError: 'bun -e',
   },
   {
     file: 'templates/.archon/scripts/sa-context.ts',
@@ -76,19 +76,18 @@ const mutations: Mutation[] = [
   },
 ];
 
-test('project rules run the full wetamp suite for every mutation target', () => {
+test('project rules type-check every mutation target', () => {
   const repo = join(import.meta.dir, '../../..');
   const rules = JSON.parse(readFileSync(join(repo, '.superagent/rules.json'), 'utf8')) as {
     required_checks?: {
       when: string[];
-      check: { cmd: string; cache?: boolean; requires_prior_pass?: boolean };
+      check: { cmd: string; timeout_s?: number };
     }[];
   };
   const required = rules.required_checks?.find(
-    rule => rule.check.cmd === 'cd wetamp && bun run test'
+    rule => rule.check.cmd === 'cd wetamp && bun run type-check'
   );
-  expect(required?.check).toMatchObject({ cache: true });
-  expect(required?.check.requires_prior_pass).toBeUndefined();
+  expect(required?.check).toMatchObject({ timeout_s: 900 });
   for (const file of new Set(mutations.map(mutation => `wetamp/${mutation.file}`)))
     expect(required?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
 });

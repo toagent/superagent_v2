@@ -2,7 +2,16 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp, trackTestChild } from '../helpers';
-import { expectOutcome, expectPublishedGate, restore, runInProcess, scenario } from './framework';
+import {
+  completedOutput,
+  expectGate,
+  expectOutcome,
+  expectPublishedGate,
+  restore,
+  runGateContract,
+  runInProcess,
+  scenario,
+} from './framework';
 
 const fixture = (id: 'S1' | 'S2', risk: 'G1' | 'G2') =>
   scenario({
@@ -42,23 +51,47 @@ test('S2/S11: generated G2 workflow binds gate evidence without preset role', as
   for (const [id, risk] of [['S2', 'G2']] as const) {
     const f = fixture(id, risk);
     try {
-      const result = await runInProcess(f);
+      const result = await runGateContract(f);
       expectOutcome(f, result, {
         terminal: 'completed',
-        counts: {
-          'code-p': 1,
-          'integrate-m1.resync-m1': 1,
-          'integrate-m1.final-accept-m1': 1,
-          'integrate-m1.publish-m1': 1,
-        },
-        published: true,
+        counts: { 'code-p': 1, 'review-m1-r1': 1, 'gate-m1-r1': 1 },
+        published: false,
       });
-      expectPublishedGate(result, 1);
+      expectGate(result, 1);
+      const gate = completedOutput(result, 'gate-m1-r1') as {
+        identity: { authors: { model: string }[]; reviewer: { model: string } };
+      };
+      expect(gate).toMatchObject({
+        risk: 'G2',
+        grade: 'PASS',
+        identity: { reviewer: { model: 'fixture/reviewer' } },
+      });
+      expect(gate.identity.authors.every(author => author.model === 'fixture/coder')).toBeTrue();
       expect(f.roles.length).toBeGreaterThan(0);
       expect(new Set(f.roles)).toEqual(new Set(['']));
       expect(process.env.SUPERAGENT_ROLE).toBe('');
     } finally {
       restore(f);
     }
+  }
+}, 120_000);
+
+test('generated G2 workflow smoke completes and publishes', async () => {
+  const f = fixture('S2', 'G2');
+  try {
+    const result = await runInProcess(f);
+    expectOutcome(f, result, {
+      terminal: 'completed',
+      counts: {
+        'code-p': 1,
+        'integrate-m1.resync-m1': 1,
+        'integrate-m1.final-accept-m1': 1,
+        'integrate-m1.publish-m1': 1,
+      },
+      published: true,
+    });
+    expectPublishedGate(result, 1);
+  } finally {
+    restore(f);
   }
 }, 120_000);
