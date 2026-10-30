@@ -6,6 +6,14 @@
         "cmd": "cd wetamp && bun run type-check",
         "timeout_s": 900
       }
+    },
+    {
+      "when": [".superagent/rules.json"],
+      "check": {
+        "cmd": "bun wetamp/scripts/check-serving-rules.ts",
+        "timeout_s": 120,
+        "cache": false
+      }
     }
   ]
 }

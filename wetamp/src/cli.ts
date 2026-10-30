@@ -42,9 +42,10 @@ import {
   recoverySnapshot,
 } from './recovery';
 // prettier-ignore
-import { caller, control, coord, repoScope, runScope, same, presence, type Controller } from './coord';
+import { caller, control, coord, identityKey, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
+import { collectGenerals, generalAttention } from './stall';
 // prettier-ignore
 import { HEARTBEAT_INTERVAL_MS, heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
@@ -983,8 +984,9 @@ function recoverRun(
   reconciled?: string,
   evidenceFile?: string,
   admit?: (run: RunView) => string | undefined
-): RecoverResult {
+): RecoverResult & { working_path?: string } {
   let staleSnapshot = false;
+  let invalidWorkingPath: string | undefined;
   let adopted:
     | {
         from: string;
@@ -1008,11 +1010,18 @@ function recoverRun(
         cpSync(source, join(adopted.dir, name), { recursive: true, force: true });
     }
   };
-  return recover(
+  const result = recover(
     l.archon_run_id,
     l.repo,
     run => {
       Object.assign(l, loadLedger(l.run_id));
+      if (
+        !run.working_path ||
+        !statSync(run.working_path, { throwIfNoEntry: false })?.isDirectory()
+      ) {
+        invalidWorkingPath = run.working_path ?? '<missing>';
+        return 'environment';
+      }
       staleSnapshot = staleEngineSnapshot(l);
       if (l.rejected === run.id) return 'rejected run is not resumable';
       if (staleSnapshot && currentEngineSnapshot() !== runningEngineSnapshot())
@@ -1236,6 +1245,9 @@ function recoverRun(
     reconciled,
     admit
   );
+  return invalidWorkingPath && !result.ok
+    ? { ...result, working_path: invalidWorkingPath }
+    : result;
 }
 
 const clearAutoRecoverPause = (l: Ledger): string | undefined => {
@@ -1321,9 +1333,12 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
     const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running) return summary(l, run, c);
+    const general = generalAttention(l.run_id, identityKey(who), waitClock.now());
+    if (general)
+      return { ...summary(l, run, c), attention: general, heartbeat: waitHeartbeat(who) };
     // prettier-ignore
     if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who), ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}) };
-    const notification = waitNotification(l.archon_run_id, l.repo, left);
+    const notification = waitNotification(l.archon_run_id, l.repo, Math.min(left, 60));
     if (notification.kind !== 'attention') continue;
     const refreshedInbox = coord()
       .surfaced(who)
@@ -4139,7 +4154,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   if (!mode.noGlobal) await result('reclaim', reclaimTask);
   else stages.reclaim = { ok: true, duration_ms: 0, skipped: 'no-global' };
   let snapshot: Snapshot | undefined;
-  if (!mode.noGlobal) snapshot = (await result('collect', load)) as Snapshot | undefined;
+  if (!mode.noGlobal) snapshot = (await result('collect', async () => { const value = await load(); value.general = collectGenerals(value); return value; })) as Snapshot | undefined;
   else stages.collect = { ok: true, duration_ms: 0, skipped: 'no-global' };
   if (snapshot)
     await result('publish', () => {

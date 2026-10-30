@@ -94,7 +94,7 @@ export function gitRepo(root: string): string {
   if (!repoTemplate) {
     const seed = tmp();
     sh(
-      `git init -q -b main repo && echo hi > repo/README.md && git -C repo add README.md && git -C repo -c user.name=t -c user.email=t@l commit -qm init && git clone -q --bare repo origin.git && git -C repo remote add origin "${seed}/origin.git" && git -C repo fetch -q origin`,
+      `git init -q -b main repo && git -C repo config user.name t && git -C repo config user.email t@l && echo hi > repo/README.md && git -C repo add README.md && git -C repo commit -qm init && git clone -q --bare repo origin.git && git -C repo remote add origin "${seed}/origin.git" && git -C repo fetch -q origin`,
       seed
     );
     repoTemplate = seed;

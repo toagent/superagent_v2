@@ -6,9 +6,10 @@ import { elapsedAt, type Snapshot } from './board/data';
 import { reasonText, roleTag, type Cockpit } from './board/cockpit';
 import { unknownProgress, type Progress } from './board/eta';
 import { reasonOf } from './reasons';
+import { generalKey, type GeneralAssessment } from './stall';
 
 // prettier-ignore
-interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string }
+interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string; general?: GeneralAssessment }
 // prettier-ignore
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; waiting_for: string; waited_s: number }[]; line: string }
 // prettier-ignore
@@ -54,6 +55,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
       elapsed_s: elapsedAt(row, now), last_activity_s: age(row.lastEvent, now),
       estimate: snapshot.eta?.[row.run_id]?.nodes?.[node.id] ?? snapshot.eta?.[row.run_id]?.progress ?? unknownProgress(),
       ...(run?.reason ? { attention: run.reason } : {}),
+      ...(snapshot.general?.[generalKey(row.run_id, node.id)] ? { general: snapshot.general[generalKey(row.run_id, node.id)] } : {}),
     });
     const pending = row.coordination?.pending ?? 0;
     if (row.state !== 'running') {
@@ -69,13 +71,13 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     if (job.state === 'queued') marshal.waiting.push({ id: job.id, what: '作业排队', waiting_for: '执行槽位', waited_s: age(job.started_at, now) ?? 0 });
   }
   for (const marshal of groups.values()) {
-    const roles = marshal.running.map(item => `${item.role} ${item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
+    const roles = marshal.running.map(item => `${item.role} ${item.general ? ({ working: '干活', idle: `空转 ${String(Math.floor(item.general.idle_s / 60))}m${item.general.waiting_command ? '（在等命令）' : ''}`, stalled: `停滞 ${String(Math.floor(item.general.idle_s / 60))}m`, handed_back: '已交回', unknown: `观测未知${item.general.reason ? `（${item.general.reason}）` : ''}` }[item.general.state]) : item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
     marshal.line = `${marshal.project} 元帅｜${roles.join('｜') || '无执行'}${marshal.waiting.length ? `｜等待${String(marshal.waiting.length)}：${marshal.waiting.slice(0, 2).map(item => item.waiting_for).join('、')}` : ''}`;
   }
   return { at: new Date(now).toISOString(), reclaim_pending: reclaim, unowned, unreadable, marshals: [...groups.values()] };
 }
 // prettier-ignore
-const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line'].includes(key) ? undefined : item)) as unknown;
+const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line', 'idle_s', 'cpu', 'root'].includes(key) ? undefined : item)) as unknown;
 // prettier-ignore
 export const heartbeatBatch = (value: Heartbeat): string => createHash('sha256').update(JSON.stringify(semantic(value))).digest('hex');
 // prettier-ignore

@@ -883,25 +883,28 @@ else if (process.argv[1].endsWith('/claude')) {
     }
     const models = run(['models', '--json']); expect(await models.exited).toBe(0);
     const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
-    for (const role of ['general', 'strategist']) {
+    await Promise.all((['general', 'strategist'] as const).map(async role => {
       const p = run(['job', 'exec', '--title', role, '--role', role, '--', codex, 'exec', 'prompt']);
       expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
       expect(readJobs().jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
       expect(args.some((a: string) => a.startsWith('mcp_servers='))).toBe(false);
-    }
-    for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
+    }));
+    await Promise.all([[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']].map(async cmd => {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
       expect(await p.exited).not.toBe(0); expect(await new Response(p.stderr as ReadableStream).text()).toContain('candidates:');
-    }
+    }));
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
     const jobsBefore = readJobs().jobs.length; setClaudeDown();
-    const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']); expect(await unavailable.exited).not.toBe(0); const unavailableError = await new Response(unavailable.stderr as ReadableStream).text(); expect(unavailableError).toContain('claude_unavailable'); expect(unavailableError).toContain('--prompt-file'); expect(readJobs().jobs).toHaveLength(jobsBefore);
     writeFileSync(join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: loadTiers().routing.budget.claude_daily_usd }));
+    const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     const downgraded = run(['job', 'exec', '--title', 'budget', '--role', 'strategist', '--', claude, '-p']);
-    expect(await downgraded.exited).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('claude_unavailable');
+    const unavailableExit = await unavailable.exited;
+    const downgradedExit = await downgraded.exited;
+    expect(unavailableExit).not.toBe(0); const unavailableError = await new Response(unavailable.stderr as ReadableStream).text(); expect(unavailableError).toContain('claude_unavailable'); expect(unavailableError).toContain('--prompt-file'); expect(readJobs().jobs).toHaveLength(jobsBefore);
+    expect(downgradedExit).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('claude_unavailable');
   });
   test('automatic roles route to Codex while down and keep prompt bytes out of argv', async () => {
     const root = tmp(),

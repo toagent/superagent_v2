@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
@@ -93,6 +93,18 @@ test('sync merges the current local target tip into the run worktree', () => {
   expect(readFileSync(join(f.worktree, 'target.txt'), 'utf8')).toBe('target\n');
 });
 
+test('sync preserves a dirty worktree when merge fails before creating conflicts', () => {
+  const f = fixture();
+  commit(f.target, 'README.md', 'target\n');
+  const before = commit(f.worktree, 'README.md', 'run\n');
+  writeFileSync(join(f.worktree, 'README.md'), 'local\n');
+
+  expect(() => sync(f.worktree, f.targetSpec)).toThrow(/exit code 2[\s\S]*would be overwritten/);
+  expect(readFileSync(join(f.worktree, 'README.md'), 'utf8')).toBe('local\n');
+  expect(sh('git rev-parse HEAD', f.worktree).trim()).toBe(before);
+  expect(existsSync(join(f.worktree, '.git/MERGE_HEAD'))).toBe(false);
+});
+
 test('sync preserves and recovers an unheld stale worktree index lock', () => {
   const f = fixture();
   commit(f.target, 'target.txt', 'target\n');
@@ -135,33 +147,30 @@ test('sync reports the pid holding a worktree index lock without moving it', asy
   }
 });
 
-test('sync aborts an unresolved conflict and leaves the worktree clean', () => {
+test('sync returns conflicts without invoking mergiraf and leaves the worktree clean', () => {
   const f = fixture();
   commit(f.target, 'README.md', 'target\n');
   commit(f.worktree, 'README.md', 'run\n');
-  const unavailable = spyOn(Bun, 'which').mockReturnValue(null);
-  const result = sync(f.worktree, f.targetSpec);
-  unavailable.mockRestore();
+  const bin = join(f.root, 'bin');
+  mkdirSync(bin);
+  const solver = join(bin, 'mergiraf');
+  const marker = join(f.root, 'mergiraf-called');
+  writeFileSync(solver, `#!/bin/sh\nprintf called > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path ?? ''}`;
+  let result: ReturnType<typeof sync>;
+  try {
+    result = sync(f.worktree, f.targetSpec);
+  } finally {
+    process.env.PATH = path ?? '';
+    if (path === undefined) delete process.env.PATH;
+  }
   expect(result.status).toBe('conflict');
   if (result.status !== 'conflict') throw new Error('expected conflict');
   expect(result.files).toEqual(['README.md']);
   expect(sh('git status --porcelain', f.worktree)).toBe('');
   expect(existsSync(join(f.worktree, '.git/MERGE_HEAD'))).toBe(false);
-
-  const solved = fixture();
-  commit(solved.target, 'README.md', 'target\n');
-  commit(solved.worktree, 'README.md', 'run\n');
-  const bin = join(solved.root, 'bin');
-  mkdirSync(bin);
-  const solver = join(bin, 'mergiraf');
-  writeFileSync(solver, '#!/bin/sh\nprintf "resolved\\n" > "$2"\n', { mode: 0o755 });
-  const available = spyOn(Bun, 'which').mockReturnValue(solver);
-  try {
-    expect(sync(solved.worktree, solved.targetSpec).status).toBe('merged');
-  } finally {
-    available.mockRestore();
-  }
-  expect(readFileSync(join(solved.worktree, 'README.md'), 'utf8')).toBe('resolved\n');
+  expect(existsSync(marker)).toBe(false);
 });
 
 test('publish advances the target with CAS and writes its receipt', () => {

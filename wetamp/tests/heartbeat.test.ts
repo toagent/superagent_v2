@@ -4,6 +4,7 @@ import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
+import { generalKey } from '../src/stall';
 const now = Date.parse('2026-10-29T10:00:00Z');
 // prettier-ignore
 const owner = (pid: number): Identity => ({ client: 'codex', host: 'host', pid, pid_start: `start-${String(pid)}` });
@@ -111,11 +112,30 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     at: new Date(now).toISOString(),
     summary: {},
     rows: [row('a', owner(1))],
+    general: {
+      [generalKey('a', 'code-core')]: {
+        state: 'idle',
+        idle_s: 420,
+        waiting_command: true,
+        cpu: 50,
+        root: { pid: 7, command: 'bun test' },
+        episode: { id: 'episode', since: new Date(now).toISOString() },
+      },
+    },
   };
   const online = (): Presence => ({ state: 'online', activity: 'active' });
   const first = heartbeat(snap, cockpit(snap, now), now, online);
   const later = heartbeat(snap, cockpit(snap, now + 60_000), now + 60_000, online);
+  expect(first.marshals[0]?.line).toContain('将军·gpt 空转 7m（在等命令）');
   expect(shouldWriteHeartbeat(first, later, now + 60_000)).toBe(false);
+  const volatile = structuredClone(later);
+  volatile.marshals[0]!.running[0]!.general = {
+    ...volatile.marshals[0]!.running[0]!.general!,
+    idle_s: 999,
+    cpu: 1,
+    root: { pid: 8, command: 'changed' },
+  };
+  expect(shouldWriteHeartbeat(first, volatile, now + 60_000)).toBe(false);
   expect(shouldWriteHeartbeat(first, { ...later, unowned: 1 }, now + 60_000)).toBe(true);
   expect(shouldWriteHeartbeat(first, later, now + 900_000)).toBe(true);
   const tick = {

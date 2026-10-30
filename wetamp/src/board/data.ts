@@ -51,7 +51,8 @@ export interface BoardRow {
   nativeState?: RunView['status'];
   completed_at?: RunView['completed_at'];
   lastEvent?: string | null;
-  activeNodes?: { id: string; role: string | null; model: string | null }[];
+  activeNodes?: { id: string; role: string | null; model: string | null; startedAt?: string }[];
+  working_path?: string | null;
   coordination?: { owner: Identity | null; presence: Presence; pending: number; error?: string };
   landed?: boolean;
   intervened?: boolean;
@@ -96,6 +97,7 @@ export interface BoardRow {
 }
 
 export interface Snapshot {
+  general?: Record<string, import('../stall').GeneralAssessment>;
   reflection?: ReturnType<typeof memoryData>['reflection'];
   eta?: Record<string, Estimate>;
   heartbeat_ms?: number;
@@ -307,6 +309,7 @@ export function rowOf(
     nativeState: run.status,
     completed_at: run.completed_at,
     lastEvent: run.last_activity_at,
+    working_path: run.working_path,
     activeNodes: nodes
       .filter(n => n.state === 'running')
       .map(n => {
@@ -315,6 +318,7 @@ export function rowOf(
           id: n.nodeId,
           role: opts.roles?.get(n.nodeId) ?? null,
           model: m?.resolved.source === 'provider' ? m.resolved.value : (m?.requested ?? null),
+          ...(n.startedAt ? { startedAt: n.startedAt } : {}),
         };
       }),
     archon_id: l.archon_run_id,
