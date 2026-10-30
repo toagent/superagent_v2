@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { workflowWaitContextSchema } from '../../packages/workflows/src/schemas/workflow-run';
-import { tmp } from './helpers';
+import { tmp, trackTestChild } from './helpers';
 
 const repo = resolve(import.meta.dir, '../..');
 
@@ -75,14 +75,23 @@ for (const [pkg, args] of [
     ],
   ],
 ] as const) {
-  test(`upstream integration retains ${pkg} native contracts`, () => {
-    const result = Bun.spawnSync([process.execPath, 'run', 'test', ...args], {
-      cwd: join(repo, 'packages', pkg),
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    console.log(`${pkg} ${args.join(' ')}: exit=${result.exitCode}`);
-    if (result.exitCode !== 0) console.error(result.stderr.toString());
-    expect(result.exitCode).toBe(0);
+  test(`upstream integration retains ${pkg} native contracts`, async () => {
+    const child = trackTestChild(
+      Bun.spawn([process.execPath, 'run', 'test', ...args], {
+        cwd: join(repo, 'packages', pkg),
+        stdout: 'pipe',
+        stderr: 'pipe',
+        detached: true,
+      }),
+      true
+    );
+    const [exit, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    console.log(`${pkg} ${args.join(' ')}: exit=${exit}`);
+    if (exit !== 0) console.error(stderr);
+    expect(exit, stdout).toBe(0);
   }, 60_000);
 }

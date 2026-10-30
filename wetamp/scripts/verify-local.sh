@@ -7,9 +7,21 @@ set -euo pipefail
 WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
 SA_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 REV=HEAD TIMEOUT=1500
+ORIGINAL_ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in --commit) REV="$2"; shift 2;; --timeout) TIMEOUT="$2"; shift 2;; *) echo "verify-local: unknown arg $1" >&2; exit 1;; esac
 done
+
+if [ "${SA_HEAVY_LOCK_HELD:-}" != 1 ]; then
+  HEAVY_LOCK="${SA_HEAVY_LOCK_FILE:-/tmp/superagent-heavy-test.lock}"
+  case "$(uname -s)" in
+    Darwin) exec /usr/bin/lockf -k "$HEAVY_LOCK" env SA_HEAVY_LOCK_HELD=1 "$0" "${ORIGINAL_ARGS[@]}";;
+    Linux)
+      command -v flock >/dev/null 2>&1 || { echo 'verify-local: flock is required on Linux' >&2; exit 1; }
+      exec flock "$HEAVY_LOCK" env SA_HEAVY_LOCK_HELD=1 "$0" "${ORIGINAL_ARGS[@]}";;
+    *) echo "verify-local: unsupported platform $(uname -s)" >&2; exit 1;;
+  esac
+fi
 REPO="$(git -C "$WETAMP" rev-parse --show-toplevel)"
 MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
 SHA="$(git -C "$REPO" rev-parse --verify --quiet "$REV^{commit}")" || { echo "verify-local: no such commit $REV" >&2; exit 1; }

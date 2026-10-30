@@ -118,6 +118,7 @@ exit 0
           BUN_INSTALL: join(root, 'bun'),
           CALLS: calls,
           INSTALL_FAILS: '',
+          SA_HEAVY_LOCK_FILE: join(root, 'heavy-test.lock'),
           ...env,
         },
         stdout: 'pipe',
@@ -144,24 +145,55 @@ exit 0
 
 // 每个用例建临时仓库并多次 git worktree add/remove，满载（如嵌在 verify-local 里跑）时超过 bun 默认 5s。
 describe('scripts/verify-local.sh', () => {
+  let shared: ReturnType<typeof fixture>;
+  let sharedResult: ReturnType<ReturnType<typeof fixture>['run']>;
+  let sharedConfig: string;
+  let sharedCapture: string;
+  let sharedSync: string;
+
+  const prepareShared = (): void => {
+    if (shared) return;
+    shared = fixture();
+    sharedConfig = join(shared.root, 'host.gitconfig');
+    sharedCapture = join(shared.root, 'tmp-path');
+    sharedSync = join(shared.root, 'shard-sync');
+    writeFileSync(sharedConfig, '[core]\n\thooksPath = /host-hooks\n');
+    const bun = join(shared.root, 'bun/bin/bun');
+    writeFileSync(
+      bun,
+      readFileSync(bun, 'utf8').replace(
+        '#!/bin/sh',
+        `#!/bin/sh
+git config --global --get core.hooksPath && exit 9
+[ "$(git config --global user.name)" = "superagent verify" ] || exit 10`
+      )
+    );
+    sharedResult = shared.run(shared.pass, {
+      GIT_CONFIG_GLOBAL: sharedConfig,
+      TMPDIR: '/tmp/sa-scratch/not-created',
+      READONLY_CAPTURE: sharedCapture,
+      SHARD_SYNC: sharedSync,
+    });
+  };
+
   test('runs four parallel shards with complete, unique and balanced heavy-test assignment', () => {
-    const f = fixture(),
-      sync = join(f.root, 'shard-sync');
-    const result = f.run(f.pass, { SHARD_SYNC: sync });
-    expect(result.code).toBe(0);
-    const calls = readFileSync(join(f.root, 'calls.log'), 'utf8')
+    prepareShared();
+    expect(sharedResult.code).toBe(0);
+    const calls = readFileSync(join(shared.root, 'calls.log'), 'utf8')
       .split('\n')
       .filter(line => line.startsWith('bun test '));
     expect(calls).toHaveLength(4);
-    const assigned = calls.flatMap(line => f.testFiles.filter(file => line.includes(file)));
-    expect([...assigned].sort()).toEqual([...f.testFiles].sort());
-    expect(new Set(assigned).size).toBe(f.testFiles.length);
-    for (const heavy of f.testFiles.slice(0, 4))
+    const assigned = calls.flatMap(line => shared.testFiles.filter(file => line.includes(file)));
+    expect([...assigned].sort()).toEqual([...shared.testFiles].sort());
+    expect(new Set(assigned).size).toBe(shared.testFiles.length);
+    for (const heavy of shared.testFiles.slice(0, 4))
       expect(calls.filter(line => line.includes(heavy))).toHaveLength(1);
     expect(
-      new Set(f.testFiles.slice(0, 4).map(file => calls.findIndex(line => line.includes(file))))
+      new Set(
+        shared.testFiles.slice(0, 4).map(file => calls.findIndex(line => line.includes(file)))
+      )
     ).toHaveLength(4);
-    expect(result.v?.steps.find(step => step.name === 'test')).toMatchObject({ exit: 0 });
+    expect(sharedResult.v?.steps.find(step => step.name === 'test')).toMatchObject({ exit: 0 });
   }, 60000);
 
   test('one failed shard fails test, while one timed-out shard is inconclusive and uncached', () => {
@@ -204,32 +236,15 @@ case "$1" in`
   }, 60000);
 
   test('steps isolate global Git config and avoid production scratch TMPDIR', () => {
-    const f = fixture(),
-      config = join(f.root, 'host.gitconfig');
-    writeFileSync(config, '[core]\n\thooksPath = /host-hooks\n');
-    const bun = join(f.root, 'bun/bin/bun');
-    writeFileSync(
-      bun,
-      readFileSync(bun, 'utf8').replace(
-        '#!/bin/sh',
-        `#!/bin/sh
-git config --global --get core.hooksPath && exit 9
-[ "$(git config --global user.name)" = "superagent verify" ] || exit 10`
-      )
-    );
-    const result = f.run(f.pass, {
-      GIT_CONFIG_GLOBAL: config,
-      TMPDIR: '/tmp/sa-scratch/not-created',
-    });
-    expect(result.code).toBe(0);
-    expect(readFileSync(config, 'utf8')).toBe('[core]\n\thooksPath = /host-hooks\n');
+    prepareShared();
+    expect(sharedResult.code).toBe(0);
+    expect(readFileSync(sharedConfig, 'utf8')).toBe('[core]\n\thooksPath = /host-hooks\n');
   });
 
   test('exit removes temporary trees containing read-only snapshots', () => {
-    const f = fixture(),
-      capture = join(f.root, 'tmp-path');
-    expect(f.run(f.pass, { READONLY_CAPTURE: capture }).code).toBe(0);
-    expect(existsSync(readFileSync(capture, 'utf8').trim())).toBe(false);
+    prepareShared();
+    expect(sharedResult.code).toBe(0);
+    expect(existsSync(readFileSync(sharedCapture, 'utf8').trim())).toBe(false);
   });
 
   test.each(['dead', 'live', 'dirty'] as const)(
