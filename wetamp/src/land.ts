@@ -23,7 +23,6 @@ export {
 
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { control, coord, repoScope, runScope, same } from './coord';
 import type { Controller, DeliveryReauthorization, Identity } from './coord';
@@ -32,9 +31,7 @@ import { INTEGRATION_RECLAIM_TIMEOUT_MS, IntegrationError, publish, sync } from 
 import type { DeliveryReceipt } from './integration';
 import { gateHashInput, type PublishReceipt, type SyncOutput } from './contract';
 import type { RunView } from './archon';
-import type { Ledger } from './cli';
-
-const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
+import { artifactsOf, evidenceJson, loadLedger, readJson, type Ledger } from './ledger';
 
 export interface DeliveryAuthorization {
   run: Controller;
@@ -159,7 +156,7 @@ export function publishProjection(l: Ledger, run: RunView): PublishReceipt | und
   try {
     const evidence = publishEvidence(run);
     if (!l.delivery || !evidence) return;
-    const value = operator().evidenceJson(l, operator().artifactsOf(run), evidence.file) as
+    const value = evidenceJson(l, artifactsOf(run), evidence.file) as
       | Partial<PublishReceipt>
       | undefined;
     return value?.status === 'published' &&
@@ -179,7 +176,7 @@ export function publishRecoverable(run: RunView): boolean {
   try {
     const ref = coord().resolveRun(run.id);
     if (!ref) return false;
-    const ledger = operator().loadLedger(ref.run_id);
+    const ledger = loadLedger(ref.run_id);
     if (
       ledger.archon_run_id !== run.id ||
       !ledger.delivery ||
@@ -189,7 +186,7 @@ export function publishRecoverable(run: RunView): boolean {
     if (publishProjection(ledger, run)) return true;
     const active = run.nodes?.find(n => isPublishNode(n.nodeId) && n.state === 'running');
     if (!active || !run.working_path) return false;
-    const receipt = join(operator().artifactsOf(run), `${authoredNodeId(active.nodeId)}.json`);
+    const receipt = join(artifactsOf(run), `${authoredNodeId(active.nodeId)}.json`);
     if (existsSync(receipt)) return false; // Invalid durable evidence must remain unknown.
     const rev = (cwd: string, ref: string): string | undefined => {
       const result = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', '--verify', ref], {
@@ -220,7 +217,6 @@ const emit = (name: string, value: unknown, write = true): void => {
 export const authorized = (retry = true) => {
   const runId = process.env.INPUTS_RUN;
   if (!runId) throw new Error('integration: missing run id');
-  const { loadLedger, readJson } = operator();
   const ledger = loadLedger(runId);
   const originalPath = join(ledger.gen_dir, 'delivery-authorization.json');
   const original = readJson(originalPath) as DeliveryAuthorization | undefined;

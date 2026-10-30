@@ -42,6 +42,7 @@ import {
   HOLD_POLICY,
   ledgerPath,
   loadLedger,
+  maintenanceTick,
   main,
   parseArgs,
   quickPlan,
@@ -2649,7 +2650,7 @@ test('supervise tick reports due query errors without waking', () => {
 });
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
-  test('CLI compacts skipped cleanup details into counts on one line', () => {
+  test('fast tick excludes cleanup and maintenance retains cleanup tasks', () => {
     const s = stub([run('completed')]);
     s.gc.mockReturnValue([
       { run_id: 'old', object: 'run', action: 'skipped', reason: 'retained' },
@@ -2666,11 +2667,19 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(result).toMatchObject({
       actions: [],
       skipped_terminal: 0,
-      gc: [{ run_id: 'gone', action: 'removed' }],
-      scratch: [{ path: '/tmp/gone', action: 'removed' }],
-      gc_skipped: 1,
-      scratch_skipped: 1,
+      gc: [],
+      scratch: [],
+      gc_skipped: 0,
+      scratch_skipped: 0,
     });
+    maintenanceTick(join(s.root, 'home'), {
+      memory: () => undefined,
+      reflection: () => undefined,
+      gc: s.gc,
+      scratch: s.scratch,
+    });
+    expect(s.gc).toHaveBeenCalledTimes(1);
+    expect(s.scratch).toHaveBeenCalledTimes(1);
   });
   test('terminal cache skips unchanged runs and invalidates on ledger or revision changes', () => {
     const s = stub([run('completed')]),
@@ -2876,7 +2885,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       now = 600_000;
       await tick();
       const record = JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'));
-      expect(record.reclaim).toEqual({ ok: false, error: 'fixture reclaim' });
+      expect(record.reclaim).toMatchObject({ ok: false, error: 'fixture reclaim' });
+      expect(record.reclaim.duration_ms).toBeNumber();
       expect(existsSync(join(s.root, 'home/heartbeat.json'))).toBe(true);
     } finally {
       out.mockRestore();
@@ -2925,20 +2935,26 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       out.mockRestore();
     }
   });
-  test('heartbeat exposes gc_ms only when the tick runs GC', async () => {
-    stub([run('completed')]);
+  test('heartbeat records every fast-stage duration before launching maintenance', async () => {
+    const s = stub([run('completed')]);
     const out = spyOn(console, 'log').mockImplementation(() => undefined);
+    let launched = 0;
     try {
       await superviseTickCli(
         async () => undefined,
-        async () => undefined
-      );
-      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toHaveProperty('gc_ms');
-      await superviseTickCli(
         async () => undefined,
-        async () => undefined
+        {},
+        undefined,
+        undefined,
+        () => launched++
       );
-      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).not.toHaveProperty('gc_ms');
+      const record = JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'));
+      expect(
+        ['reclaim', 'collect', 'publish', 'console', 'actions', 'failover', 'orca'].every(
+          stage => typeof record[stage]?.duration_ms === 'number'
+        )
+      ).toBe(true);
+      expect(launched).toBe(1);
     } finally {
       out.mockRestore();
     }
@@ -3274,6 +3290,36 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
     expect(JSON.parse(out)).toEqual({ skipped: 'locked' });
     expect(s.calls()).toEqual([]);
     expect(tick()[0]).toMatchObject({ action: 'ask', ok: true });
+  });
+  test('maintenance is nonblocking and never owns supervise.lock', () => {
+    const sa = join(tmp(), 'home');
+    mkdirSync(sa, { recursive: true });
+    const held = archonMod.lock(join(sa, 'maintenance.lock'));
+    if (!held.ok) throw new Error('maintenance lock not taken');
+    expect(maintenanceTick(sa)).toMatchObject({
+      maintenance: { skipped: 'maintenance_running', duration_ms: 0 },
+    });
+    held.release();
+    const calls: string[] = [];
+    const result = maintenanceTick(sa, {
+      memory: () => {
+        const heartbeat = archonMod.lock(join(sa, 'supervise.lock'));
+        expect(heartbeat.ok).toBe(true);
+        if (heartbeat.ok) heartbeat.release();
+        calls.push('memory');
+      },
+      reflection: () => calls.push('reflection'),
+      gc: () => {
+        calls.push('gc');
+        return [];
+      },
+      scratch: () => {
+        calls.push('scratch');
+        return [];
+      },
+    });
+    expect(calls).toEqual(['memory', 'reflection', 'gc', 'scratch']);
+    expect(result).toMatchObject({ maintenance: { ok: true } });
   });
   test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
     const s = stub([humanWait()]);
