@@ -66,6 +66,19 @@ const execute = (f: ReturnType<typeof fixture>, patch = {}) => {
   const d = { ...f.deps, ...patch };
   return claudeCommanderFailover(d.health, d.runs, d.bin, d.launch, d.now);
 };
+async function answerMobile(
+  f: ReturnType<typeof fixture>,
+  patch: Parameters<typeof execute>[1] = {}
+): Promise<Record<string, unknown>> {
+  mkdirSync(join(process.env.SUPERAGENT_HOME!, 'console'), { recursive: true });
+  writeFileSync(join(process.env.SUPERAGENT_HOME!, 'console/decision-origin'), 'https://pwa.test');
+  await execute(f, patch);
+  const asksPath = join(process.env.SUPERAGENT_HOME!, 'asks.json');
+  const asks = JSON.parse(readFileSync(asksPath, 'utf8')) as Record<string, { status: string }>;
+  Object.values(asks)[0]!.status = 'yes';
+  writeFileSync(asksPath, JSON.stringify(asks, null, 2) + '\n');
+  return execute(f, patch);
+}
 const operator = (store: DeviceStore) => {
   const pairing = store.pairing(operatorGrant()),
     code = /<p>([^<]+)<\/p>/.exec(readFileSync(pairing, 'utf8'))![1];
@@ -103,8 +116,7 @@ test('no consumes the answer without launch or ownership mutation', async () => 
 
 test('yes launches once per repo with fenced brief-claim-reauthorize prompt; missing Orca returns manual commands', async () => {
   const f = fixture('yes', [run('a1', '/repo/a'), run('a2', '/repo/a'), run('b1', '/repo/b')]);
-  await execute(f);
-  await execute(f);
+  await answerMobile(f);
   expect(f.launches).toHaveLength(2);
   for (const args of f.launches) {
     const p = args[args.indexOf('--prompt') + 1];
@@ -122,22 +134,16 @@ test('yes launches once per repo with fenced brief-claim-reauthorize prompt; mis
         ? health()
         : { state: 'up' as const, observed_at: '2026-10-27T02:46:00Z', probe_failures: 0 },
   };
-  await execute(recovered, recovery);
-  await execute(recovered, recovery);
+  await answerMobile(recovered, recovery);
   expect(recovered.launches).toHaveLength(0);
-  expect(recovered.readCalls().some(c => c.join(' ').includes('恢复，未接管'))).toBeTrue();
+  expect(readFileSync(join(process.env.SUPERAGENT_HOME!, 'asks.json'), 'utf8')).toContain(
+    '恢复，未接管'
+  );
   const missing = fixture('yes');
-  await execute(missing, { bin: () => undefined });
-  await execute(missing, { bin: () => undefined });
-  expect(
-    missing
-      .readCalls()
-      .some(
-        c =>
-          c[0] === 'ask-ack' &&
-          JSON.parse(c[c.indexOf('--receipt-json') + 1]).body.includes('人工执行')
-      )
-  ).toBeTrue();
+  await answerMobile(missing, { bin: () => undefined });
+  expect(readFileSync(join(process.env.SUPERAGENT_HOME!, 'asks.json'), 'utf8')).toContain(
+    '人工执行'
+  );
 });
 
 test('PWA inbox answers yes/no and rejects takeover when Claude recovered', async () => {

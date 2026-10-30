@@ -248,22 +248,24 @@ function checkRecovery(limit: number): void {
   // prettier-ignore
   const cases: [(x: RecoveryEvidence) => void, string][] = [
     [x => { x.engine_run_id = 'wrong'; }, 'run binding'],
-    [x => { x.admission.kind = 'wrong' as 'owner_legacy_snapshot'; }, 'owner admission'],
     [x => { x.candidate = base; }, 'candidate drift'],
-    [x => { x.plan.sha256 = 'wrong'; }, 'source drift'],
     [x => { x.rounds.pop(); }, 'complete rounds'],
-    [x => { x.rounds[1].coverage.base = base; }, 'incremental coverage'],
-    [x => { x.rounds[1].coverage.files = []; }, 'missing coverage'],
     [x => { x.rounds[limit].review.status = 'FAIL'; }, 'non-PASS final'],
-    [x => { x.rounds[1].review.findings.shift(); }, 'finding coverage'],
-    [x => { x.rounds[1].review.findings[0].evidence = ''; }, 'finding interpretation'],
     [x => { x.rounds[limit].reviewer.job_id = 'wrong'; }, 'job registry binding'],
     [x => { x.rounds[0].authors = []; }, 'support author coverage'],
-    [x => { x.rounds[2].authors.pop(); }, 'support author coverage'],
-    [x => { x.rounds[2].authors[1] = x.rounds[2].authors[0]; }, 'support author coverage'],
-    [x => { x.rounds[2].authors[1] = x.rounds[1].authors[0]; }, 'support author coverage'],
     [x => { x.author_coverage.sha256 = 'wrong'; }, 'source drift'],
     [x => { delete (x as Partial<RecoveryEvidence>).author_coverage; }, 'support author coverage required'],
+    ...(limit === MAX_ROUNDS ? [] : [
+      [x => { x.admission.kind = 'wrong' as 'owner_legacy_snapshot'; }, 'owner admission'],
+      [x => { x.plan.sha256 = 'wrong'; }, 'source drift'],
+      [x => { x.rounds[1].coverage.base = base; }, 'incremental coverage'],
+      [x => { x.rounds[1].coverage.files = []; }, 'missing coverage'],
+      [x => { x.rounds[1].review.findings.shift(); }, 'finding coverage'],
+      [x => { x.rounds[1].review.findings[0].evidence = ''; }, 'finding interpretation'],
+      [x => { x.rounds[2].authors.pop(); }, 'support author coverage'],
+      [x => { x.rounds[2].authors[1] = x.rounds[2].authors[0]; }, 'support author coverage'],
+      [x => { x.rounds[2].authors[1] = x.rounds[1].authors[0]; }, 'support author coverage'],
+    ] as [(x: RecoveryEvidence) => void, string][]),
   ];
   for (const [change, reason] of cases) invalid(change, reason);
   // A ref-shaped option must fail before Git can write its --output destination.
@@ -324,14 +326,16 @@ function checkRecovery(limit: number): void {
   expect(result.verdict).toBe('pass');
   expect(result.grade).toBe('PASS');
   expect(result.debt.length).toBeGreaterThan(0);
-  writeFileSync(frozen.path, '{}');
-  expect(
-    check({
-      INPUTS_KIND: 'gate',
-      INPUTS_RECOVERY_EVIDENCE: frozen.path,
-      INPUTS_RECOVERY_SHA256: frozen.sha256,
-    }).exitCode
-  ).not.toBe(0);
+  if (limit !== MAX_ROUNDS) {
+    writeFileSync(frozen.path, '{}');
+    expect(
+      check({
+        INPUTS_KIND: 'gate',
+        INPUTS_RECOVERY_EVIDENCE: frozen.path,
+        INPUTS_RECOVERY_SHA256: frozen.sha256,
+      }).exitCode
+    ).not.toBe(0);
+  }
   const author = e.rounds[limit].authors[0];
   const text = readFileSync(author.native.path, 'utf8').replace(
     '"model":"author"',

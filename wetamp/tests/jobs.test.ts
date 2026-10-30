@@ -883,18 +883,18 @@ else if (process.argv[1].endsWith('/claude')) {
     }
     const models = run(['models', '--json']); expect(await models.exited).toBe(0);
     const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
-    await Promise.all((['general', 'strategist'] as const).map(async role => {
+    for (const role of ['general', 'strategist'] as const) {
       const p = run(['job', 'exec', '--title', role, '--role', role, '--', codex, 'exec', 'prompt']);
       expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
       expect(readJobs().jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
       expect(args.some((a: string) => a.startsWith('mcp_servers='))).toBe(false);
-    }));
-    await Promise.all([[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']].map(async cmd => {
+    }
+    for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
       expect(await p.exited).not.toBe(0); expect(await new Response(p.stderr as ReadableStream).text()).toContain('candidates:');
-    }));
+    }
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
     const jobsBefore = readJobs().jobs.length; setClaudeDown();

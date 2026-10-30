@@ -59,6 +59,9 @@ type Out = {
   };
   systemMessage?: string;
 } | null;
+const hookGuard = createRequire(import.meta.url)('../hooks/guard.cjs') as {
+  decide: (payload: object, client: string, env: Record<string, string>) => Out;
+};
 
 function run(
   file: string,
@@ -403,7 +406,19 @@ describe('两条底线', () => {
   test.each(['claude', 'codex'])(
     '%s 两条底线对所有角色一致，其余类别放行',
     client => {
-      const { repo, guard } = setup();
+      const { home, repo } = setup();
+      let n = 0;
+      const guard = (selectedClient: string, payload: object, env: Record<string, string>) =>
+        hookGuard.decide(
+          {
+            hook_event_name: 'PreToolUse',
+            session_id: `direct-${String(++n)}`,
+            cwd: repo,
+            ...payload,
+          },
+          selectedClient,
+          { ...baseEnv, SUPERAGENT_HOME: home, ...env }
+        );
       for (const role of ['worker', 'reviewer', 'strategist']) {
         const env = { SUPERAGENT_ROLE: role };
         for (const command of [

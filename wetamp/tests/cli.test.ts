@@ -67,6 +67,44 @@ import { Reclaimer, reclaimTick } from '../src/reclaim';
 
 const req = createRequire(import.meta.url);
 const generatorModule = req('../src/generate.ts') as typeof import('../src/generate');
+const realGenerate = generate;
+const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof generate> => {
+  const [plan, run, fake = false, previousHash, carried, delivery, engineSnapshot, routingState] =
+    args;
+  const dir = join(process.env.SUPERAGENT_HOME!, 'gen', run);
+  const workflow = `sa-${run}`;
+  const archon = join(dir, '.archon');
+  if (previousHash !== undefined && existsSync(archon)) renameSync(archon, `${archon}.old`);
+  const workflowDir = join(archon, 'workflows', workflow);
+  mkdirSync(workflowDir, { recursive: true });
+  writeFileSync(
+    join(workflowDir, `${workflow}.yaml`),
+    Bun.YAML.stringify(
+      buildWorkflow(
+        plan,
+        milestones(plan),
+        run,
+        dir,
+        fake,
+        Date.now(),
+        loadTiers(),
+        carried,
+        delivery,
+        engineSnapshot,
+        routingState
+      )
+    )
+  );
+  writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(dir, 'engine.json'), JSON.stringify({ fake }));
+  return {
+    dir,
+    workflow,
+    config: join(dir, 'run-config.yaml'),
+    engine_hash: engineHash(),
+    engine_commit: 'a'.repeat(40),
+  };
+};
 const engineRecoverLock = () => {
   const root = join(process.env.ARCHON_HOME ?? '', 'execution-admissions');
   mkdirSync(root, { recursive: true });
@@ -739,44 +777,6 @@ test('legacy deferred_deliveries is ignored without rewriting the ledger', () =>
 });
 
 describe('HF3 latest-engine recovery', () => {
-  const realGenerate = generate;
-  const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof generate> => {
-    const [plan, run, fake = false, previousHash, carried, delivery, engineSnapshot, routingState] =
-      args;
-    const dir = join(process.env.SUPERAGENT_HOME!, 'gen', run);
-    const workflow = `sa-${run}`;
-    const archon = join(dir, '.archon');
-    if (previousHash !== undefined && existsSync(archon)) renameSync(archon, `${archon}.old`);
-    const workflowDir = join(archon, 'workflows', workflow);
-    mkdirSync(workflowDir, { recursive: true });
-    writeFileSync(
-      join(workflowDir, `${workflow}.yaml`),
-      Bun.YAML.stringify(
-        buildWorkflow(
-          plan,
-          milestones(plan),
-          run,
-          dir,
-          fake,
-          Date.now(),
-          loadTiers(),
-          carried,
-          delivery,
-          engineSnapshot,
-          routingState
-        )
-      )
-    );
-    writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan));
-    writeFileSync(join(dir, 'engine.json'), JSON.stringify({ fake }));
-    return {
-      dir,
-      workflow,
-      config: join(dir, 'run-config.yaml'),
-      engine_hash: engineHash(),
-      engine_commit: 'a'.repeat(40),
-    };
-  };
   const setup = (hash?: string, fastRecovery = true) => {
     const s = stub([run('failed')]);
     fixtureSpies.push(
@@ -2083,6 +2083,7 @@ describe('run (archon stub)', () => {
           ).cmd
         ).toBe('required');
         const frozenRules = readFileSync(join(ledger.gen_dir, 'project-rules.json'), 'utf8');
+        fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation(fastGenerate));
         engineBoundary!.mockReturnValue(sha);
         writeFileSync(
           join(repo, '.superagent/rules.json'),
@@ -2162,6 +2163,7 @@ describe('run (archon stub)', () => {
     receipt => {
       const s = stub([]),
         repo = featureRepo(s.root);
+      fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation(fastGenerate));
       process.env.SUPERAGENT_WRITE_ROOTS = s.root;
       const plan = fixturePlan(s.root, repo, p => {
         delete p.deadline;

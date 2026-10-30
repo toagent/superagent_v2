@@ -412,9 +412,9 @@ test.each(['tracked', 'untracked'] as const)('dirty %s worktree is retained', di
   expect(f.branchExists()).toBe(true);
 });
 
-// prettier-ignore
-test('submodule worktrees are force-removed only when the submodule is clean', () => {
-  for (const dirty of [false, true]) {
+test.each([false, true])(
+  'submodule worktrees are force-removed only when the submodule is clean (dirty=%s)',
+  dirty => {
     const f = fixture(),
       module = join(f.root, 'module');
     mkdirSync(module);
@@ -422,7 +422,17 @@ test('submodule worktrees are force-removed only when the submodule is clean', (
     writeFileSync(join(module, 'README.md'), 'module');
     f.git('-C', module, 'add', 'README.md');
     f.git('-C', module, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qm', 'init');
-    f.git('-c', 'protocol.file.allow=always', '-C', f.path, 'submodule', 'add', '-q', module, 'module');
+    f.git(
+      '-c',
+      'protocol.file.allow=always',
+      '-C',
+      f.path,
+      'submodule',
+      'add',
+      '-q',
+      module,
+      'module'
+    );
     f.git('-C', f.path, '-c', 'user.name=t', '-c', 'user.email=t@l', 'commit', '-qam', 'submodule');
     f.git('merge', '--ff-only', `sa/${f.id}`);
     if (dirty) writeFileSync(join(f.path, 'module', 'README.md'), 'dirty');
@@ -430,7 +440,7 @@ test('submodule worktrees are force-removed only when the submodule is clean', (
     expect(gc()[0].action).toBe(dirty ? 'skipped' : 'removed');
     expect(existsSync(f.path)).toBe(dirty);
   }
-});
+);
 
 test.each(['path', 'branch', 'outside', 'symlink'] as const)(
   '%s registration mismatch is retained',
