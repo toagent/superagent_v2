@@ -551,6 +551,12 @@ export function gc(
             .some(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/'));
           // A failed run stays retryable through tick/decide whether or not it is fake.
           const disposable = engine.fake === true && run.status !== 'failed';
+          if (run.status === 'failed' && l.rejected !== run.id)
+            throw new GcSkip(
+              merged
+                ? 'run failed remains recoverable'
+                : 'run failed branch not merged; remains recoverable'
+            );
           if (!merged && !disposable && l.rejected !== run.id && run.status !== 'completed')
             throw new GcSkip(`run ${run.status} branch not merged; remains recoverable`);
           if (tree) {

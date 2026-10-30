@@ -983,8 +983,9 @@ function recoverRun(
   reconciled?: string,
   evidenceFile?: string,
   admit?: (run: RunView) => string | undefined
-): RecoverResult {
+): RecoverResult & { working_path?: string } {
   let staleSnapshot = false;
+  let invalidWorkingPath: string | undefined;
   let adopted:
     | {
         from: string;
@@ -1008,11 +1009,18 @@ function recoverRun(
         cpSync(source, join(adopted.dir, name), { recursive: true, force: true });
     }
   };
-  return recover(
+  const result = recover(
     l.archon_run_id,
     l.repo,
     run => {
       Object.assign(l, loadLedger(l.run_id));
+      if (
+        !run.working_path ||
+        !statSync(run.working_path, { throwIfNoEntry: false })?.isDirectory()
+      ) {
+        invalidWorkingPath = run.working_path ?? '<missing>';
+        return 'environment';
+      }
       staleSnapshot = staleEngineSnapshot(l);
       if (l.rejected === run.id) return 'rejected run is not resumable';
       if (staleSnapshot && currentEngineSnapshot() !== runningEngineSnapshot())
@@ -1236,6 +1244,9 @@ function recoverRun(
     reconciled,
     admit
   );
+  return invalidWorkingPath && !result.ok
+    ? { ...result, working_path: invalidWorkingPath }
+    : result;
 }
 
 const clearAutoRecoverPause = (l: Ledger): string | undefined => {

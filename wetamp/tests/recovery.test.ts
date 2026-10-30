@@ -35,6 +35,36 @@ import type { Plan } from '../src/plan';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
+test('recover refuses a missing working_path before admission or launch', () => {
+  // prettier-ignore
+  const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), dir = join(root, 'stub');
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  mkdirSync(join(dir, 'used'), { recursive: true });
+  const missing = join(root, 'missing-worktree');
+  // prettier-ignore
+  writeFileSync(join(dir, 'get-000.json'), JSON.stringify({ id: 'old', status: 'failed', working_path: missing }));
+  const env = { ...process.env };
+  // prettier-ignore
+  Object.assign(process.env, { ...fixtureEnv(), SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+  // prettier-ignore
+  const transport = spyOn(archonModule, 'archon').mockImplementation(args => fixtureArchon(dir, args));
+  const output = spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    // prettier-ignore
+    const ledger: Ledger = { run_id: 'operator', archon_run_id: 'old', repo, branch: 'sa/operator', workflow: 'sa-operator', workflow_hash: engineHash(), engine_hash: engineHash(), gen_dir: join(root, 'gen'), plan: '', console: 'codex', started_at: '', log: '', transcript: '', controller: coordination.coord().claim(coordination.repoScope(repo), coordination.caller()).controller };
+    writeFileSync(join(home, 'runs/operator.json'), JSON.stringify(ledger));
+    expect(main(['recover', 'operator'])).toBe(1);
+    // prettier-ignore
+    expect(JSON.parse(output.mock.calls.at(-1)?.[0] ?? '{}')).toMatchObject({ reason: 'environment', working_path: missing });
+    expect(existsSync(join(home, 'archon/execution-admissions/old.json'))).toBe(false);
+    expect(readFileSync(join(dir, 'calls'), 'utf8')).not.toContain('workflow resume');
+  } finally {
+    transport.mockRestore();
+    output.mockRestore();
+    process.env = env;
+  }
+});
+
 test.each([false, true])(
   'RETRY_NODE_PROGRESS completed=%s selects restart or resume',
   completed => {
@@ -47,6 +77,7 @@ test.each([false, true])(
     const run: RunView = {
       id: 'old',
       status: 'failed',
+      working_path: repo,
       nodes: [
         ...(completed ? [{ nodeId: 'prepare', state: 'completed' }] : []),
         { nodeId: 'environment', state: 'failed', error: 'environment fixture failure' },

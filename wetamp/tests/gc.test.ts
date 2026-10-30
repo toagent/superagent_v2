@@ -304,12 +304,12 @@ test('unmerged completed run removes its clean worktree but retains its branch',
 });
 
 test.each(['completed', 'cancelled', 'failed'] as const)(
-  'merged %s run is collected without accept, even with a SHA base_ref',
+  'merged %s run follows the recoverability contract',
   status => {
+    const retained = status === 'failed';
     const f = fixture(status);
-    expect(gc().map(e => e.action)).toEqual(['removed', 'removed']);
-    expect(existsSync(f.path)).toBe(false);
-    expect(f.branchExists()).toBe(false);
+    expect(gc().map(e => e.action)).toEqual(retained ? ['skipped'] : ['removed', 'removed']);
+    expect([existsSync(f.path), f.branchExists()]).toEqual([retained, retained]);
   }
 );
 
@@ -331,9 +331,11 @@ test('sa branches and remote refs alone do not authorize GC', () => {
 test.each([true, false])('missing engine.json is non-fake (merged=%s)', merged => {
   const f = fixture('failed', merged);
   rmSync(join(f.gen, 'engine.json'));
+  expect(gc().map(e => e.action)).toEqual(['skipped']);
+  expect([existsSync(f.path), f.branchExists()]).toEqual([true, true]);
+  const cancelled = fixture('cancelled', merged);
+  rmSync(join(cancelled.gen, 'engine.json'));
   expect(gc().map(e => e.action)).toEqual(merged ? ['removed', 'removed'] : ['skipped']);
-  expect(existsSync(f.path)).toBe(!merged);
-  expect(f.branchExists()).toBe(!merged);
 });
 
 test.each(['malformed', 'directory'] as const)('engine.json %s errors retain data', error => {
