@@ -7,7 +7,7 @@ import { same, type Identity, type Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
 import { reasonText, roleTag, type Cockpit } from './board/cockpit';
 import { unknownProgress, type Progress } from './board/eta';
-import { HOLD_POLICY, reasonOf } from './reasons';
+import { HOLD_POLICY, holdAction, reasonOf } from './reasons';
 import { generalKey, type GeneralAssessment } from './stall';
 
 // prettier-ignore
@@ -104,8 +104,9 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     });
     const runPending = coordination.get(`run:${row.run_id}`);
     if (row.state !== 'running') {
-      const code = row.engine?.reason.trim() ? row.engine.reason : row.askReason ?? row.state.replace('held:', ''), translated = reasonText(code), policy = (HOLD_POLICY as Partial<Record<string, { next?: string }>>)[code];
-      marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code, waiting_for: translated !== code ? translated : reasonOf(code)?.description ?? '需要决策', waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0, ...(policy?.next ? { next: policy.next } : {}) });
+      const code = row.engine?.reason.trim() ? row.engine.reason : row.askReason ?? row.state.replace('held:', ''), registered = reasonOf(code), hold = registered?.hold ?? code, translated = reasonText(code), policy = (HOLD_POLICY as Partial<Record<string, { next?: string }>>)[hold];
+      const next = policy?.next ? `${policy.next}；${holdAction(row.run_id, hold)}` : hold === 'acceptance_adjudication' ? holdAction(row.run_id, hold) : undefined;
+      marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code, waiting_for: translated !== code ? translated : registered?.description ?? '需要决策', waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0, ...(next ? { next } : {}) });
     } else if (runPending) marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code: 'coordination_pending', waiting_for: `${String(runPending.count)} 条协调消息`, waited_s: age(runPending.oldest, now) ?? 0 });
   }
   for (const marshal of groups.values()) {
