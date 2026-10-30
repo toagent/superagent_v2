@@ -9,8 +9,7 @@
       "check": {
         "cmd": "cd wetamp && bun run test",
         "timeout_s": 1800,
-        "cache": true,
-        "requires_prior_pass": true
+        "cache": true
       }
     }
   ]
