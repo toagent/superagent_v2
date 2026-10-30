@@ -48,7 +48,7 @@ import { cockpit } from './board/cockpit';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, renderPanel } from './panel';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
+import { heartbeat, heartbeatSummary, historicalReclaimRuns, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { reclaimOnce, reclaimTick } from './reclaim';
 import {
@@ -4159,7 +4159,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   if (snapshot)
     await result('publish', () => {
       const path = join(home().sa, 'heartbeat.json'), now = Date.now();
-      const next = heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa));
+      const next = heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa), historicalReclaimRuns());
       let previous: Heartbeat | undefined;
       try { previous = readJson(path) as Heartbeat | undefined; } catch { /* corrupt cache is replaced */ }
       const changed = shouldWriteHeartbeat(previous, next, now);

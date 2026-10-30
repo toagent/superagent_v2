@@ -1,6 +1,8 @@
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { home } from './config';
 import { same, type Identity, type Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
 import { reasonText, roleTag, type Cockpit } from './board/cockpit';
@@ -13,7 +15,7 @@ interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; 
 // prettier-ignore
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; code: string; waiting_for: string; waited_s: number; next?: string }[]; line: string }
 // prettier-ignore
-export interface Heartbeat { at: string; reclaim_pending: number; unowned: number; unreadable: number; marshals: Marshal[] }
+export interface Heartbeat { at: string; reclaim_pending: number; legacy?: number; unowned: number; unreadable: number; marshals: Marshal[] }
 export const HEARTBEAT_INTERVAL_MS = 900_000;
 // prettier-ignore
 export type HeartbeatSummary = { available: true; line: string; running: Item[]; waiting: Marshal['waiting']; warnings?: string[] } | { available: false; reason: string };
@@ -27,18 +29,51 @@ const { key: ownerKey } = createRequire(import.meta.url)('../hooks/identity.cjs'
 const ownerId = (owner: Identity | null): string =>
   owner ? JSON.stringify(ownerKey(owner)) : 'unknown';
 
-/** Pure projection: the caller supplies presence so collection owns all I/O. */
+export function historicalReclaimRuns(
+  path = join(home().sa, 'reclaim', 'observations.json')
+): Set<string> {
+  try {
+    const observations = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (!Array.isArray(observations)) return new Set();
+    return new Set(
+      observations.flatMap(value => {
+        if (!value || typeof value !== 'object') return [];
+        const row = value as {
+          run?: unknown;
+          count?: unknown;
+          first_offline_at?: unknown;
+          last_offline_at?: unknown;
+          last_online_at?: unknown;
+        };
+        return typeof row.run === 'string' &&
+          typeof row.count === 'number' &&
+          row.count >= 2 &&
+          typeof row.first_offline_at === 'number' &&
+          typeof row.last_offline_at === 'number' &&
+          row.last_offline_at - row.first_offline_at >= 120_000 &&
+          row.last_online_at === undefined
+          ? [row.run]
+          : [];
+      })
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
+    throw error;
+  }
+}
+
+/** Pure projection: the caller supplies presence and historical reclaim evidence. */
 // prettier-ignore
-export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence): Heartbeat {
+export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence, historical = new Set<string>()): Heartbeat {
   const groups = new Map<string, Marshal>();
   const coordination = new Map<string, { count: number; oldest: string }>();
   for (const message of snapshot.coordMessages ?? []) if (!message.type && ['queued', 'surfaced', 'escalated'].includes(message.state)) {
     const key = `${message.scope.kind}:${message.scope.id}`, found = coordination.get(key);
     coordination.set(key, { count: (found?.count ?? 0) + 1, oldest: found && found.oldest < message.at ? found.oldest : message.at });
   }
-  let reclaim = 0, unowned = 0, unreadable = 0;
+  let reclaim = 0, legacy = 0, unowned = 0, unreadable = 0;
   const group = (owner: Identity, cwd: string): Marshal | undefined => {
-    if (presenceOf(owner).state !== 'online') { reclaim++; return; }
+    if (presenceOf(owner).state !== 'online') return;
     const key = `${ownerId(owner)}\0${cwd}`, found = groups.get(key);
     if (found) return found;
     const value: Marshal = { owner, owner_key: ownerKey(owner), cwd, project: basename(cwd), running: [], waiting: [], line: '' };
@@ -51,6 +86,11 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     if (row.state === 'unreadable') { unreadable++; continue; }
     const owner = row.coordination?.owner;
     if (!owner) { unowned++; continue; }
+    if (presenceOf(owner).state !== 'online') {
+      if (row.state === 'failed' && historical.has(row.run_id)) legacy++;
+      else reclaim++;
+      continue;
+    }
     const marshal = group(owner, row.repo);
     if (!marshal) continue;
     const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
@@ -75,7 +115,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
   for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
     if (!job.launcher) { unowned++; continue; }
     const marshal = group(job.launcher, job.cwd), run = cockpit.active.find(item => item.id === job.id);
-    if (!marshal) continue;
+    if (!marshal) { reclaim++; continue; }
     if (job.state === 'running' && active.has(job.id)) marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
     if (job.state === 'queued') marshal.waiting.push({ id: job.id, what: '作业排队', code: 'queued', waiting_for: '执行槽位', waited_s: age(job.started_at, now) ?? 0 });
   }
@@ -83,7 +123,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const roles = marshal.running.map(item => `${item.role} ${item.general ? ({ working: '干活', idle: `空转 ${String(Math.floor(item.general.idle_s / 60))}m${item.general.waiting_command ? '（在等命令）' : ''}`, stalled: `停滞 ${String(Math.floor(item.general.idle_s / 60))}m`, handed_back: '已交回', unknown: `观测未知${item.general.reason ? `（${item.general.reason}）` : ''}` }[item.general.state]) : item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
     marshal.line = `${marshal.project} 元帅｜${roles.join('｜') || '无执行'}${marshal.waiting.length ? `｜等待${String(marshal.waiting.length)}：${marshal.waiting.slice(0, 2).map(item => item.waiting_for).join('、')}` : ''}`;
   }
-  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, unowned, unreadable, marshals: [...groups.values()] };
+  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, legacy, unowned, unreadable, marshals: [...groups.values()] };
 }
 // prettier-ignore
 const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line', 'idle_s', 'cpu', 'root'].includes(key) ? undefined : item)) as unknown;

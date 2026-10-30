@@ -110,7 +110,7 @@ export function renderPanel(
     waiting = selected.reduce((sum, item) => sum + item.waiting.length, 0);
   lines.push(
     '',
-    `统计｜在跑 ${String(running)}｜等待 ${String(waiting)}｜待回收 ${String(heartbeat?.reclaim_pending ?? 0)}`
+    `统计｜在跑 ${String(running)}｜等待 ${String(waiting)}｜待回收 ${String(heartbeat?.reclaim_pending ?? 0)}｜历史遗留 ${String(heartbeat?.legacy ?? 0)}（需确认）`
   );
   const output = lines.map(line => fit(line, Math.max(1, width)));
   return color

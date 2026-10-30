@@ -8,6 +8,7 @@ const tick = (minutes = 0): TickRecord => ({ at: new Date(now - minutes * 60_000
 const heartbeat = (at = now): Heartbeat => ({
   at: new Date(at).toISOString(),
   reclaim_pending: 2,
+  legacy: 3,
   unowned: 0,
   unreadable: 0,
   marshals: [
@@ -91,4 +92,5 @@ test('中文按显示宽度截断且空数据明确显示无', () => {
   const empty = renderPanel(undefined, tick(), now, allMarshals, 80);
   expect(empty.match(/^无$/gm)).toHaveLength(2);
   expect(empty).toContain('统计｜在跑 0｜等待 0｜待回收 0');
+  expect(renderPanel(heartbeat(), tick(), now, allMarshals, 100)).toContain('历史遗留 3（需确认）');
 });

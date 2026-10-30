@@ -409,7 +409,16 @@ export function gc(
       cached = {};
     }
   const next: Partial<Record<string, GcInput>> = {},
-    repos = new Map<string, RepoState>();
+    repos = new Map<string, RepoState>(),
+    successors = new Map<string, string>();
+  for (const ledgerId of ledgerIds()) {
+    try {
+      for (const adoption of loadLedger(ledgerId).adoptions ?? [])
+        successors.set(adoption.from, adoption.to);
+    } catch {
+      // The owning ledger will report its own read failure below.
+    }
+  }
   const repoState = (repo: string): RepoState => {
     const hit = repos.get(repo);
     if (hit) return hit;
@@ -502,9 +511,26 @@ export function gc(
           const path = run.working_path,
             root = join(home().archon, 'workspaces');
           object = 'worktree';
-          const adoptedBy = adoptions?.get(l.archon_run_id);
-          // prettier-ignore
-          if (!adoptions || adoptedBy) throw new GcSkip(adoptedBy ? `adopted by live run ${adoptedBy}` : 'live adoption state unavailable');
+          let finalReason: 'superseded' | 'resources_collected' | undefined;
+          const finalize = (
+            reason: NonNullable<typeof finalReason>,
+            evidence: Record<string, unknown>
+          ): void => {
+            finalReason = reason;
+            if (run.status !== 'failed' || l.rejected === run.id || dryRun) return;
+            l.rejected = run.id;
+            (l.intervention_events ??= []).push({
+              at: new Date().toISOString(),
+              action: 'abandon',
+              reason,
+              origin: 'engine',
+              source: 'superagent',
+              ok: true,
+              evidence,
+            });
+          };
+          const successor = successors.get(run.id);
+          if (successor) finalize('superseded', { successor });
           if (
             !path ||
             !isPathInside(root, path) ||
@@ -515,6 +541,13 @@ export function gc(
           const removed = l.gc?.some(
             e => e.object === 'worktree' && e.action === 'removed' && e.path === path
           );
+          const resourcesCollected = !tree && !sha && !existsSync(path);
+          if (resourcesCollected)
+            finalize('resources_collected', { missing: { branch: ref, worktree: path } });
+          if (resourcesCollected) return;
+          const adoptedBy = adoptions?.get(l.archon_run_id);
+          // prettier-ignore
+          if (!adoptions || adoptedBy) throw new GcSkip(adoptedBy ? `adopted by live run ${adoptedBy}` : 'live adoption state unavailable');
           let halfDeleted = false;
           if (!tree && !removed && existsSync(path)) {
             if (!sha) throw new GcSkip('half-deleted worktree branch ref missing');
@@ -551,13 +584,19 @@ export function gc(
             .some(r => r.startsWith('refs/heads/') && !r.startsWith('refs/heads/sa/'));
           // A failed run stays retryable through tick/decide whether or not it is fake.
           const disposable = engine.fake === true && run.status !== 'failed';
-          if (run.status === 'failed' && l.rejected !== run.id)
+          if (run.status === 'failed' && l.rejected !== run.id && !finalReason)
             throw new GcSkip(
               merged
                 ? 'run failed remains recoverable'
                 : 'run failed branch not merged; remains recoverable'
             );
-          if (!merged && !disposable && l.rejected !== run.id && run.status !== 'completed')
+          if (
+            !merged &&
+            !disposable &&
+            l.rejected !== run.id &&
+            !finalReason &&
+            run.status !== 'completed'
+          )
             throw new GcSkip(`run ${run.status} branch not merged; remains recoverable`);
           if (tree) {
             if (
