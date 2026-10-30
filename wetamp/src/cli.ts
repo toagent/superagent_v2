@@ -4797,6 +4797,7 @@ async function heartbeatCli(argv: string[]): Promise<number> {
   if (a._.length !== 1 || (a.flags.all && a.flags.cwd))
     throw new Error('usage: superagent heartbeat [--watch] [--cwd <absolute-path>|--all]');
   let filter = allMarshals;
+  let scopeLabel = '全部项目';
   if (!a.flags.all) {
     let cwd = a.flags.cwd;
     if (!cwd) {
@@ -4810,13 +4811,15 @@ async function heartbeatCli(argv: string[]): Promise<number> {
       cwd = git.stdout.toString().trim();
     }
     filter = cwdFilter(cwd);
+    scopeLabel = basename(cwd);
   }
   const readModel = () =>
     panelModel(
       readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
       readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
       Date.now(),
-      filter
+      filter,
+      scopeLabel
     );
   const draw = (): string =>
     renderPanel(
@@ -4825,7 +4828,8 @@ async function heartbeatCli(argv: string[]): Promise<number> {
       Date.now(),
       filter,
       process.stdout.columns || 100,
-      process.stdout.isTTY
+      process.stdout.isTTY,
+      scopeLabel
     );
   if (!a.flags.watch) {
     console.log(draw());

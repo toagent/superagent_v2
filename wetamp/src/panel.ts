@@ -72,6 +72,7 @@ export interface PanelRun {
   generalDetails?: Marshal['running'][number]['general'];
 }
 export interface PanelAttention {
+  id: string;
   project: string;
   text: string;
   waited_s?: number;
@@ -91,7 +92,8 @@ export function panelModel(
   heartbeat: Heartbeat | undefined,
   tick: TickRecord | undefined,
   now: number,
-  filter: PanelFilter = allMarshals
+  filter: PanelFilter = allMarshals,
+  scopeLabel = '全部项目'
 ): PanelModel {
   const selected = heartbeat?.marshals.filter(filter) ?? [];
   const grouped = new Map<string, { marshal: Marshal; items: Marshal['running'] }>();
@@ -130,10 +132,11 @@ export function panelModel(
       ) {
         const run = byRun.get(`${marshal.project}\0${item.id}`);
         if (!run) continue;
-        attention.push({ project: marshal.project, text: item.title, run });
+        attention.push({ id: item.id, project: marshal.project, text: item.title, run });
       }
     for (const wait of marshal.waiting)
       attention.push({
+        id: wait.id,
         project: marshal.project,
         text: wait.waiting_for,
         waited_s: wait.waited_s,
@@ -143,7 +146,7 @@ export function panelModel(
   return {
     heartbeatAt: heartbeat?.at ?? new Date(now).toISOString(),
     health: tickHealth(tick, now),
-    projects: selected.map(item => item.project).join('、') || '无数据',
+    projects: selected.map(item => item.project).join('、') || scopeLabel,
     attention,
     runs,
     stats: {
@@ -168,9 +171,10 @@ export function renderPanel(
   now: number,
   filter: PanelFilter = allMarshals,
   width = 100,
-  color = false
+  color = false,
+  scopeLabel = '全部项目'
 ): string {
-  const model = panelModel(heartbeat, tick, now, filter),
+  const model = panelModel(heartbeat, tick, now, filter, scopeLabel),
     drift = driftAt(model, now),
     lines = [
       `心跳面板｜${model.projects}｜${new Date(now).toLocaleString('zh-CN', { hour12: false })}｜${model.health.ok ? '巡检正常' : `⚠️ 巡检可能停了：${model.health.messages.join('；')}`}`,
@@ -181,14 +185,14 @@ export function renderPanel(
     ...(model.attention.length
       ? model.attention.map(item =>
           item.run
-            ? `! ${item.project}｜${item.text}｜${generalState(item.run, drift)}`
-            : `! ${item.project}｜${item.text}｜已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? `｜下一步：${item.next}` : ''}`
+            ? `! ${shortRunId(item.id)}｜${item.project}｜${item.text}｜${generalState(item.run, drift)}`
+            : `! ${shortRunId(item.id)}｜${item.project}｜${item.text}｜已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? `｜下一步：${item.next}` : ''}`
         )
       : ['无']),
     '',
     '进行中'
   );
-  if (!model.runs.length) lines.push('无');
+  if (!model.runs.length) lines.push('暂无在跑任务');
   for (const run of model.runs) {
     const elapsed = run.elapsed_s === null ? '未知' : panelDuration(run.elapsed_s + drift),
       activity =

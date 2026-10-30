@@ -31,8 +31,8 @@ const generalLabel = (run: PanelRun, drift: number): string => {
 };
 const attentionLabel = (item: PanelAttention, drift: number): string =>
   item.run
-    ? `${item.project} · ${item.text} · ${generalLabel(item.run, drift)}`
-    : `${item.project} · ${item.text} · 已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? ` · 下一步：${item.next}` : ''}`;
+    ? `${shortRunId(item.id)} · ${item.project} · ${item.text} · ${generalLabel(item.run, drift)}`
+    : `${shortRunId(item.id)} · ${item.project} · ${item.text} · 已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? ` · 下一步：${item.next}` : ''}`;
 
 type PipelineKind = 'code' | 'verify' | 'repair' | 'review' | 'land' | 'other';
 const pipelineKind = (run: PanelRun): PipelineKind => {
@@ -168,13 +168,10 @@ const displayLines = (value: string, width: number, limit: number): string[] => 
   while (rest && lines.length < limit) {
     if (lines.length === limit - 1) return [...lines, fit(rest, width)];
     let line = '',
-      used = 0,
       offset = 0;
     for (const character of rest) {
-      const columns = Bun.stringWidth(character);
-      if (used + columns > width) break;
+      if (Bun.stringWidth(line + character) > width) break;
       line += character;
-      used += columns;
       offset += character.length;
     }
     if (!line) return [...lines, fit(rest, width)];
@@ -200,15 +197,17 @@ export function HeartbeatFrame({
     attention = model.attention.slice(0, 5),
     attentionRows = Math.max(1, attention.length + (model.attention.length > 5 ? 1 : 0)),
     quotaPrefix = '额度：',
+    quotaIndent = ' '.repeat(Bun.stringWidth(quotaPrefix)),
     quotaLines = displayLines(
       quota ?? '未配置',
       Math.max(1, width - Bun.stringWidth(quotaPrefix)),
       Math.min(2, Math.max(0, availableRows - 1))
-    ).map(line => fit(quotaPrefix + line, width)),
+    ).map((line, index) => fit((index ? quotaIndent : quotaPrefix) + line, width)),
     footerRows = Math.min(availableRows, 1 + quotaLines.length),
     bodyBudget = Math.max(0, availableRows - footerRows),
-    shownAttentionRows = Math.min(attentionRows, Math.max(0, bodyBudget - 3)),
-    fixedBodyRows = Math.min(bodyBudget, 3 + shownAttentionRows),
+    runningRows = model.runs.length ? 1 : 2,
+    shownAttentionRows = Math.min(attentionRows, Math.max(0, bodyBudget - 3 - runningRows)),
+    fixedBodyRows = Math.min(bodyBudget, 3 + shownAttentionRows + runningRows),
     cardRows = compact ? 4 : 6,
     cardBudget = Math.max(0, bodyBudget - fixedBodyRows - (model.runs.length ? 1 : 0)),
     capacity = width < 20 ? 0 : Math.floor(cardBudget / cardRows) * columns,
@@ -283,6 +282,16 @@ export function HeartbeatFrame({
       {model.attention.length > 5 && shownAttentionRows > attention.length && (
         <Text color="yellow" wrap="truncate-end">
           +{String(model.attention.length - 5)} 条
+        </Text>
+      )}
+      {bodyBudget >= 4 + shownAttentionRows && (
+        <Text bold wrap="truncate-end">
+          进行中
+        </Text>
+      )}
+      {!model.runs.length && bodyBudget >= 5 + shownAttentionRows && (
+        <Text dimColor wrap="truncate-end">
+          暂无在跑任务
         </Text>
       )}
       <Box flexWrap="wrap">

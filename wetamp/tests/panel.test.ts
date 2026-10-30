@@ -55,7 +55,8 @@ test('问题置顶并显示空转、挂起处置和运行详情', () => {
   const output = renderPanel(heartbeat(), tick(), now, allMarshals, 120);
   expect(output.indexOf('需要处理')).toBeLessThan(output.indexOf('进行中'));
   expect(output).toContain('空转 5m（在等命令）');
-  expect(output).toContain('评审轮次用尽｜已等 2m｜下一步：重新确认 blocker');
+  expect(output).toContain('114127-582a｜demo｜实现心跳面板｜空转 5m（在等命令）');
+  expect(output).toContain('run-2｜demo｜评审轮次用尽｜已等 2m｜下一步：重新确认 blocker');
   expect(output).toContain('阶段 编码｜执行者 将军·gpt');
   const withoutNext = heartbeat();
   delete withoutNext.marshals[0]!.waiting[0]!.next;
@@ -89,8 +90,9 @@ test('中文按显示宽度截断且空数据明确显示无', () => {
   const narrow = renderPanel(heartbeat(), tick(), now, allMarshals, 20);
   for (const line of narrow.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(20);
   expect(narrow).toContain('…');
-  const empty = renderPanel(undefined, tick(), now, allMarshals, 80);
-  expect(empty.match(/^无$/gm)).toHaveLength(2);
+  const empty = renderPanel(undefined, tick(), now, allMarshals, 80, false, 'BestIFA');
+  expect(empty).toContain('心跳面板｜BestIFA');
+  expect(empty).toContain('暂无在跑任务');
   expect(empty).toContain('统计｜在跑 0｜等待 0｜待回收 0');
   expect(renderPanel(heartbeat(), tick(), now, allMarshals, 100)).toContain('历史遗留 3（需确认）');
 });
