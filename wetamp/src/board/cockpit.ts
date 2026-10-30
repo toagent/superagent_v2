@@ -48,26 +48,56 @@ export const roleTag = (
     human: '人工',
   })[role ?? ''] ?? '未归属') +
   (shortModel(model, compact) ? `·${shortModel(model, compact)}` : '');
+export type StageKind =
+  | 'code'
+  | 'verify'
+  | 'settle'
+  | 'review'
+  | 'repair'
+  | 'fix'
+  | 'diff'
+  | 'gate'
+  | 'human'
+  | 'land'
+  | 'other';
+export const stageKind = (nodeId: string | null | undefined): StageKind => {
+  const kind = (nodeId ?? '').split('-')[0];
+  return (
+    [
+      'code',
+      'verify',
+      'settle',
+      'review',
+      'repair',
+      'fix',
+      'diff',
+      'gate',
+      'human',
+      'land',
+    ].includes(kind)
+      ? kind
+      : 'other'
+  ) as StageKind;
+};
 export function stages(r: BoardRow): string {
-  const kind = (r.nodes.current ?? '').split('-')[0];
+  const kind = stageKind(r.nodes.current);
   const round = /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? String(r.engine?.round ?? 1);
   const ms = r.engine?.milestones ?? [],
     index = ms.indexOf(r.engine?.currentMilestone ?? '');
   if (kind === 'code')
     return `编码 m${index < 0 ? '?' : String(index + 1)}/${ms.length ? String(ms.length) : '?'}`;
   if (kind === 'review') return `评审 r${round}`;
-  return (
-    {
-      repair: '修复',
-      fix: '修复',
-      verify: '验收',
-      settle: '验收',
-      diff: '评审准备',
-      gate: '门禁',
-      human: '签收',
-      land: '合入',
-    }[kind] ?? '准备'
-  );
+  if (kind === 'other') return '准备';
+  return {
+    repair: '修复',
+    fix: '修复',
+    verify: '验收',
+    settle: '验收',
+    diff: '评审准备',
+    gate: '门禁',
+    human: '签收',
+    land: '合入',
+  }[kind];
 }
 export interface CockpitRun {
   coordination?: BoardRow['coordination'];
