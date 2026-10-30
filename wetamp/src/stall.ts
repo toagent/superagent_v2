@@ -6,7 +6,7 @@ import type { BoardRow, Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
 import { nodePackages } from './execution';
 import { loadLedger } from './ledger';
-import { planOf } from './ledger-metrics';
+import { clock, planOf } from './ledger-metrics';
 import { covered } from './plan-precheck';
 import { redact } from './redact';
 
@@ -67,10 +67,11 @@ export const generalKey = (run: string, node: string): string => `${run}\0${node
 // prettier-ignore
 export function assessGeneral(prev: StallRecord | undefined, o: GeneralObservation, now: number): StallRecord {
   const same = prev?.node === o.node && prev.startedAt === o.startedAt;
-  const start = Date.parse(o.startedAt), cpu = o.cpu ?? 0, entries = o.entries ?? '', mtime = o.mtime ?? 0;
+  // Archon node times are SQLite UTC without a zone suffix; Date.parse would read them as local time.
+  const start = clock(o.startedAt), cpu = o.cpu ?? 0, entries = o.entries ?? '', mtime = o.mtime ?? 0;
   const base = { node: o.node, startedAt: o.startedAt, entries, mtime, progressAt: same ? prev.progressAt : now, idle_s: 0, waiting_command: false, cpu, ...(o.root ? { root: o.root } : {}) };
   if (!o.coder) return { ...base, state: 'handed_back' };
-  const activity = Date.parse(o.lastActivityAt ?? '');
+  const activity = clock(o.lastActivityAt ?? '');
   if (o.error || !Number.isFinite(start) || !Number.isFinite(activity)) return { ...base, state: 'unknown', reason: o.error ?? 'invalid observation time', ...(same && prev.episode ? { episode: prev.episode } : {}) };
   if (prev && !same) return { ...base, state: 'working' };
   const progressed = same && (prev.entries !== entries || mtime > prev.mtime);

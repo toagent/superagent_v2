@@ -102,3 +102,21 @@ test('collectGenerals persists current run and maps node scope from the frozen p
     if (oldArchon) process.env.ARCHON_HOME = oldArchon; else delete process.env.ARCHON_HOME;
   }
 });
+
+test('assessGeneral reads zone-less SQLite node times as UTC', () => {
+  const zone = process.env.TZ;
+  process.env.TZ = 'Asia/Shanghai';
+  try {
+    const sqlite = (iso: string): string => iso.slice(0, 19).replace('T', ' ');
+    const fresh = assessGeneral(
+      undefined,
+      observation({ startedAt: sqlite(ago(1)), lastActivityAt: sqlite(ago(0)), mtime: 0 }),
+      now
+    );
+    expect(fresh).toMatchObject({ state: 'working', idle_s: 60 });
+    expect(fresh.episode).toBeUndefined();
+  } finally {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  }
+});
