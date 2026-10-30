@@ -13,7 +13,6 @@ const heartbeat = (
 ): Heartbeat => ({
   at: new Date(now).toISOString(),
   reclaim_pending: 2,
-  legacy: 3,
   unowned: 0,
   unreadable: 0,
   marshals: [
@@ -62,7 +61,6 @@ test('问题置顶、验收流水线与 quota 状态栏', () => {
   expect(output).toContain('✓ 编码');
   expect(output).toContain('● 验收');
   expect(output).toContain('○ 评审');
-  expect(output).toContain('历史遗留 3（需确认）');
   expect(output.trimEnd().split('\n').at(-1)).toContain('额度：Claude 今日 $1.23');
   expect(frame(heartbeat([]), 100, 20).trimEnd().split('\n').at(-1)).toContain('额度：未配置');
 });
