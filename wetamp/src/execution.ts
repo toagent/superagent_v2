@@ -24,6 +24,22 @@ export interface ExecutionDescriptor {
   profiles: Tiers['policy']['exec_profiles'];
 }
 
+/** One owner for generated coding-node identities and their package write scopes. */
+export function nodePackages(plan: Plan, maxRounds = 6): Map<string, string[]> {
+  const nodes = new Map<string, string[]>();
+  for (const m of milestones(plan))
+    for (const p of m.packages) {
+      for (const role of ['soldier', 'code', 'repair'] as const)
+        nodes.set(`${role}-${p.id}`, p.scope.write);
+      for (let round = 2; round <= maxRounds; round++)
+        nodes.set(
+          `fix-${m.id}-r${String(round)}`,
+          m.packages.flatMap(x => x.scope.write)
+        );
+    }
+  return nodes;
+}
+
 export function describeExecution(
   tiers: Tiers,
   role: ExecutionDescriptor['role'],
@@ -50,6 +66,7 @@ export function describeExecution(
 /** Frozen node identities, not names interpreted again at every dispatch. */
 export function executionTable(plan: Plan, tiers: Tiers): Record<string, ExecutionDescriptor> {
   const table: Record<string, ExecutionDescriptor> = {};
+  const scopes = nodePackages(plan, reviewRoundLimit(tiers.policy));
   for (const m of milestones(plan)) {
     for (const p of m.packages) {
       if (draftFor(p) === 'soldier' && tiers.routing.soldier?.models.length)
@@ -84,6 +101,8 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
     table[`resolve-sync-${m.id}`] = resolver;
     table[`resolve-sync-review-${m.id}`] = resolver;
   }
+  for (const [node, descriptor] of Object.entries(table))
+    descriptor.scope = [...(scopes.get(node) ?? descriptor.scope)];
   return table;
 }
 

@@ -45,6 +45,7 @@ import {
 import { caller, control, coord, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
+import { collectGenerals } from './stall';
 // prettier-ignore
 import { HEARTBEAT_INTERVAL_MS, heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
@@ -4139,7 +4140,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   if (!mode.noGlobal) await result('reclaim', reclaimTask);
   else stages.reclaim = { ok: true, duration_ms: 0, skipped: 'no-global' };
   let snapshot: Snapshot | undefined;
-  if (!mode.noGlobal) snapshot = (await result('collect', load)) as Snapshot | undefined;
+  if (!mode.noGlobal) snapshot = (await result('collect', async () => { const value = await load(); value.general = collectGenerals(value); return value; })) as Snapshot | undefined;
   else stages.collect = { ok: true, duration_ms: 0, skipped: 'no-global' };
   if (snapshot)
     await result('publish', () => {
