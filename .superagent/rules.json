@@ -15,5 +15,33 @@
         "cache": false
       }
     }
+  ],
+  "required_scope": [
+    {
+      "when": ["wetamp/schemas/plan.schema.json"],
+      "include": ["wetamp/src/plan-types.generated.ts", "wetamp/src/contract/nodes.generated.ts"]
+    },
+    {
+      "when": [
+        "wetamp/src/generate.ts",
+        "wetamp/src/land.ts",
+        "wetamp/templates/.archon/scripts/sa-check.ts",
+        "wetamp/templates/.archon/scripts/sa-context.ts"
+      ],
+      "include": ["wetamp/tests/scenarios/mutations.test.ts"]
+    },
+    {
+      "when": [
+        "wetamp/scripts/engine-acceptance.sh",
+        "wetamp/scripts/heavy-slot.sh",
+        "wetamp/scripts/verify-local.sh",
+        "wetamp/scripts/test.sh"
+      ],
+      "include": [
+        "wetamp/tests/engine-promote.test.ts",
+        "wetamp/tests/heavy-lock.test.ts",
+        "wetamp/tests/verify-local.test.ts"
+      ]
+    }
   ]
 }
