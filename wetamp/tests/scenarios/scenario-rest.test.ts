@@ -205,7 +205,10 @@ test('S3: review repair round binds the executed gate and publishes once', async
 test('S4: two detached runs sharing one target each publish exactly once', async () => {
   const root = tmp(),
     target = gitRepo(root);
-  Bun.spawnSync(['git', 'branch', '-m', 'scenario-target'], { cwd: target });
+  sh(
+    'git branch -m scenario-target && git config user.name t && git config user.email t@l',
+    target
+  );
   const run = (suffix: string) => {
     const barrier = tmp(),
       output = join(barrier, `s4-${suffix}.json`),
