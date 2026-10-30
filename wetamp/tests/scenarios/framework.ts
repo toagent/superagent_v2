@@ -469,7 +469,8 @@ export async function runInProcess(
     WORKFLOW_ID: id,
     SUPERAGENT_MEMORY: 'off',
     NODE_ENV: 'test',
-    SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
+    // Covers multi-pass scenario publishes and CI Git variance, but exposes leaks within 30s.
+    SA_INTEGRATION_LOCK_TIMEOUT_MS: '30000',
   });
   const shell = coordination.caller();
   const who = { ...shell, client: `${shell.client}-scenario-authorized` };
