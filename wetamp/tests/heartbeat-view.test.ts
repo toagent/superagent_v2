@@ -1,11 +1,15 @@
 import { expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
+import { mkdirSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
 import { HeartbeatFrame, registerHeartbeatResizeClear } from '../src/board/HeartbeatView';
+import { heartbeatEngineExitCode } from '../src/cli';
 import { unknownProgress } from '../src/board/eta';
 import { panelModel } from '../src/panel';
 import type { Heartbeat, TickRecord } from '../src/heartbeat';
+import { tmp } from './helpers';
 
 const now = Date.parse('2026-10-30T12:10:00Z');
 const tick: TickRecord = { at: new Date(now).toISOString() };
@@ -55,6 +59,30 @@ const frame = (value: Heartbeat, width: number, rows: number, quota?: string): s
     createElement(HeartbeatFrame, { model: panelModel(value, tick, now), quota, now, width, rows }),
     { columns: width }
   );
+
+test('engine/current 切换返回重启码，路径缺失时不触发', () => {
+  const root = tmp(),
+    current = join(root, 'current'),
+    a = join(root, 'a'),
+    b = join(root, 'b');
+  mkdirSync(a);
+  mkdirSync(b);
+  symlinkSync(a, current);
+  const resolveCurrent = (): string | undefined => {
+    try {
+      return realpathSync(current);
+    } catch {
+      return undefined;
+    }
+  };
+  const started = resolveCurrent();
+  expect(heartbeatEngineExitCode(started, resolveCurrent)).toBe(0);
+  unlinkSync(current);
+  symlinkSync(b, current);
+  expect(heartbeatEngineExitCode(started, resolveCurrent)).toBe(75);
+  unlinkSync(current);
+  expect(heartbeatEngineExitCode(started, resolveCurrent)).toBe(0);
+});
 
 test('问题置顶、验收流水线与 quota 状态栏', () => {
   const output = frame(heartbeat(['idle']), 100, 40, 'Claude 今日 $1.23');

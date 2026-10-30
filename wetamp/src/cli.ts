@@ -45,6 +45,7 @@ import {
 import { caller, control, coord, identityKey, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
+import { ENGINE_CHANGED } from './board/App';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
@@ -4830,11 +4831,14 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     console.log(draw());
     return 0;
   }
+  const startedEngine = currentEngineSnapshot();
   if (process.stdout.isTTY) {
     const [{ createElement }, ink, { HeartbeatView, registerHeartbeatResizeClear }] =
       await Promise.all([import('react'), import('ink'), import('./board/HeartbeatView')]);
     const quota = (): string | undefined => relayQuota().quota;
+    let watchExit = 0;
     let app: ReturnType<typeof ink.render> | undefined;
+    let promotionTimer: ReturnType<typeof setInterval> | undefined;
     const unregisterResizeClear = registerHeartbeatResizeClear(process.stdout, () => app?.clear());
     try {
       app = ink.render(
@@ -4846,11 +4850,16 @@ async function heartbeatCli(argv: string[]): Promise<number> {
         }),
         { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
       );
+      promotionTimer = setInterval(() => {
+        watchExit = heartbeatEngineExitCode(startedEngine);
+        if (watchExit) app?.unmount();
+      }, 15_000);
       await app.waitUntilExit();
     } finally {
+      if (promotionTimer) clearInterval(promotionTimer);
       unregisterResizeClear();
     }
-    return 0;
+    return watchExit;
   }
   let resolveStop: (value: 'stop') => void = () => undefined;
   const interrupted = new Promise<'stop'>(resolve => {
@@ -4863,12 +4872,23 @@ async function heartbeatCli(argv: string[]): Promise<number> {
   try {
     for (;;) {
       process.stdout.write(`\x1b[2J\x1b[H${draw()}\n`);
-      if ((await Promise.race([Bun.sleep(60_000), interrupted])) === 'stop') break;
+      if ((await Promise.race([Bun.sleep(15_000), interrupted])) === 'stop') break;
+      const exit = heartbeatEngineExitCode(startedEngine);
+      if (exit) return exit;
     }
   } finally {
     process.removeListener('SIGINT', stop);
   }
   return 0;
+}
+
+export function heartbeatEngineExitCode(
+  started: string | undefined,
+  current: () => string | undefined = currentEngineSnapshot
+): number {
+  if (!started) return 0;
+  const resolved = current();
+  return resolved && resolved !== started ? ENGINE_CHANGED : 0;
 }
 
 // Keep this module synchronous: land loads operator evidence lazily via require().
