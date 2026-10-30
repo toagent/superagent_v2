@@ -14,6 +14,7 @@ import { gitRepo, sh, tmp, trackTestChild } from '../helpers';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
 import { superviseTick, loadLedger, ledgerPath } from '../../src/cli';
 import * as archonModule from '../../src/archon';
+import { integrationLockPath } from '../../src/integration';
 import {
   expectOutcome,
   expectPublishedGate,
@@ -206,7 +207,20 @@ test('S4: two detached runs sharing one target each publish exactly once', async
   const root = tmp(),
     target = gitRepo(root);
   Bun.spawnSync(['git', 'branch', '-m', 'scenario-target'], { cwd: target });
-  const run = (suffix: string) => {
+  const lockBarrier = tmp(),
+    holdMarker = join(lockBarrier, 'held'),
+    holdRelease = join(lockBarrier, 'release'),
+    holdClaim = join(lockBarrier, 'claimed'),
+    gitWrapper = join(lockBarrier, 'git'),
+    realGit = Bun.which('git'),
+    commonDir = sh('git rev-parse --path-format=absolute --git-common-dir', target).trim();
+  if (!realGit) throw new Error('git unavailable');
+  writeFileSync(
+    gitWrapper,
+    `#!/bin/sh\nif [ -e "$SCENARIO_INTEGRATION_LOCK" ] && [ ! -e "$SCENARIO_HOLD_CLAIM" ]; then\n  : > "$SCENARIO_HOLD_CLAIM"\n  : > "$SCENARIO_HOLD_MARKER"\n  while [ ! -e "$SCENARIO_HOLD_RELEASE" ]; do sleep 0.025; done\nfi\nexec ${JSON.stringify(realGit)} "$@"\n`,
+    { mode: 0o755 }
+  );
+  const run = (suffix: string, holdPublish = false) => {
     const barrier = tmp(),
       output = join(barrier, `s4-${suffix}.json`),
       marker = join(barrier, 'ready'),
@@ -223,6 +237,15 @@ test('S4: two detached runs sharing one target each publish exactly once', async
           SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'integrate-m1.final-accept-m1',
           SCENARIO_BLOCK_MARKER: marker,
           SCENARIO_BLOCK_RELEASE: release,
+          ...(holdPublish
+            ? {
+                PATH: `${lockBarrier}:${process.env.PATH ?? ''}`,
+                SCENARIO_INTEGRATION_LOCK: integrationLockPath(commonDir, 'scenario-target'),
+                SCENARIO_HOLD_CLAIM: holdClaim,
+                SCENARIO_HOLD_MARKER: holdMarker,
+                SCENARIO_HOLD_RELEASE: holdRelease,
+              }
+            : {}),
         },
         stdout: 'ignore',
         stderr: 'pipe',
@@ -241,9 +264,13 @@ test('S4: two detached runs sharing one target each publish exactly once', async
     );
     return { marker, release, result };
   };
-  const runs = [run('a'), run('b')];
+  const runs = [run('a', true), run('b')];
   await Promise.all(runs.map(value => waitFor(value.marker)));
-  for (const value of runs) writeFileSync(value.release, 'release');
+  writeFileSync(runs[0]!.release, 'release');
+  await waitFor(holdMarker);
+  writeFileSync(runs[1]!.release, 'release');
+  await Bun.sleep(2500);
+  writeFileSync(holdRelease, 'release');
   const results = await Promise.all(runs.map(value => value.result));
   for (const result of results) {
     expect(result.terminal, JSON.stringify(result.failures)).toEqual({
