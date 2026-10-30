@@ -97,7 +97,9 @@ test('concurrent ensures create once with the right command and failures stay co
   expect(creates[0]).toContain(`心跳·superagent_v2`);
   expect(creates[0].join(' ')).toContain(`'heartbeat' '--watch' '--cwd' '${fresh.repo}'`);
   expect(creates[0].join(' ')).toContain(`bin/superagent-shim' 'heartbeat'`);
-  expect(creates[0].join(' ')).toContain('while true; do ');
+  const generated = creates[0][creates[0].indexOf('--command') + 1]!;
+  expect(generated).toContain('if [ "$status" -eq 75 ]; then continue; fi');
+  expect(generated).toContain("echo '心跳面板暂不可用，60 秒后重试'; sleep 60");
 
   const failed = fixture('fail');
   expect(run(failed).exitCode).toBe(0);

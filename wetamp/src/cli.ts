@@ -45,6 +45,7 @@ import {
 import { caller, control, coord, identityKey, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
+import { ENGINE_CHANGED } from './board/App';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
@@ -4830,6 +4831,7 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     console.log(draw());
     return 0;
   }
+  const startedEngine = currentEngineSnapshot();
   if (process.stdout.isTTY) {
     const [{ createElement }, ink, { HeartbeatView }] = await Promise.all([
       import('react'),
@@ -4837,17 +4839,19 @@ async function heartbeatCli(argv: string[]): Promise<number> {
       import('./board/HeartbeatView'),
     ]);
     const quota = (): string | undefined => relayQuota().quota;
+    let watchExit = 0;
     const app = ink.render(
       createElement(HeartbeatView, {
         initial: readModel(),
         load: readModel,
         initialQuota: quota(),
         loadQuota: quota,
+        beforeRefresh: () => (watchExit = heartbeatEngineExitCode(startedEngine)),
       }),
       { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
     );
     await app.waitUntilExit();
-    return 0;
+    return watchExit;
   }
   let resolveStop: (value: 'stop') => void = () => undefined;
   const interrupted = new Promise<'stop'>(resolve => {
@@ -4860,12 +4864,23 @@ async function heartbeatCli(argv: string[]): Promise<number> {
   try {
     for (;;) {
       process.stdout.write(`\x1b[2J\x1b[H${draw()}\n`);
-      if ((await Promise.race([Bun.sleep(60_000), interrupted])) === 'stop') break;
+      if ((await Promise.race([Bun.sleep(15_000), interrupted])) === 'stop') break;
+      const exit = heartbeatEngineExitCode(startedEngine);
+      if (exit) return exit;
     }
   } finally {
     process.removeListener('SIGINT', stop);
   }
   return 0;
+}
+
+export function heartbeatEngineExitCode(
+  started: string | undefined,
+  current: () => string | undefined = currentEngineSnapshot
+): number {
+  if (!started) return 0;
+  const resolved = current();
+  return resolved && resolved !== started ? ENGINE_CHANGED : 0;
 }
 
 // Keep this module synchronous: land loads operator evidence lazily via require().
