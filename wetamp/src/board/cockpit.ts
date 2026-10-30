@@ -22,6 +22,7 @@ export const REASONS = {
   needs: '需要补能力',
   redline: '命中红线',
   coder_blocked: '执行约束阻断',
+  false_handback: '无效交回',
   review_limit: '评审轮次用尽',
   review_not_independent: '评审不独立',
   engine_suspect: '引擎嫌疑',

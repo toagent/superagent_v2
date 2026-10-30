@@ -3889,6 +3889,19 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     decision: { kind: 'block', reason, evidence: ['events:code-core:0'], debt: [] },
   });
 
+  test('false handback auto-retries once with correction, then remains held', () => {
+    const s = held('verify-core', { 'verify-core.json': gate('false_handback') });
+    const workflow = join(s.root, 'gen', '.archon', 'workflows', 'sa-sa1', 'sa-sa1.yaml');
+    writeFileSync(workflow, 'nodes:\n  - id: attempt-m1\n  - id: package-attempt-core\n');
+    expect(tick()[0]).toMatchObject({ action: 'auto_retry', ok: true, reason: 'false_handback' });
+    expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).toContain(
+      '最后一条回复才输出 JSON'
+    );
+    expect(loadLedger('sa1').auto_retries).toHaveLength(1);
+    expect(tick()[0]).toMatchObject({ action: 'none', held: true });
+    expect(s.calls().filter(call => call.startsWith('workflow resume'))).toHaveLength(1);
+  });
+
   test('stale continuation guards reject non-owner, status races, and rejected runs without ledger writes', () => {
     const stale = (responses: RunView[], edit: (ledger: Ledger) => void = () => {}) => {
       const s = stub(responses),
@@ -4357,6 +4370,15 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       }),
       first: {},
     }),
+    false_handback: () => {
+      const s = held('verify-core', { 'verify-core.json': gate('false_handback') });
+      patchLedger(s.root, {
+        auto_retries: [
+          { milestone: 'pkg/core', reason: 'false_handback:pkg/core', at: '2026-10-30T00:00:00Z' },
+        ],
+      });
+      return { s, first: { action: 'none', held: true, ok: true } };
+    },
     review_limit: () => ({
       s: held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }),
       first: {},

@@ -22,4 +22,4 @@ argument-hint: (inputs bound by the generated workflow)
 - 本轮修复越出任务书预期范围又未在 `deviations[]`（manifest 的 `coder`）登记的文件，记一条 `medium` 新发现。
 - `status`：存在 open 的遗留 blocker/high（G2 含 medium）或新的 blocker → `FAIL`；否则 `PASS`；无法完成 → `INCOMPLETE`。
 
-只输出符合 output_format 的 JSON。
+最后一条回复只输出符合 output_format 的 JSON。

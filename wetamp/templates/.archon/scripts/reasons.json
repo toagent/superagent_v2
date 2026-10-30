@@ -168,6 +168,13 @@
     "description": "编码未完成且无改动或验收失败"
   },
   {
+    "code": "false_handback",
+    "hold": "false_handback",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码节点零工具调用且短时交回未完成"
+  },
+  {
     "code": "scope_violation",
     "hold": "coder",
     "determinism": "deterministic",
@@ -404,6 +411,13 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "编码未完成且无改动或验收失败"
+  },
+  {
+    "code": "false_handback+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "编码节点零工具调用且短时交回未完成"
   },
   {
     "code": "scope_violation+review_limit",

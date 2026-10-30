@@ -22,6 +22,7 @@ import {
   decide as rawDecide,
   disposition as rawDisposition,
   nextDisposition,
+  falseHandbackEvidence,
   permissionEvidence,
   identityOf,
   attemptIdentity,
@@ -48,6 +49,26 @@ const decide = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: nu
   rawDecide(withRounds(input));
 const disposition = (...args: Parameters<typeof rawDisposition>) =>
   rawDisposition(args[0], args[1], args[2], args[3], args[4], args[5] ?? MAX_ROUNDS);
+
+test('FALSE_HANDBACK uses terminal attempt metadata and structured provider tool calls', () => {
+  const coder = JSON.stringify({ status: 'partial', error_class: 'task', needs: [] });
+  const terminal = (durationMs: number) => ({
+    event_type: 'node_completed',
+    step_name: 'code-a',
+    data: { attempt: { id: 'attempt-1' }, timing: { durationMs } },
+  });
+  const tool = {
+    event_type: 'provider_event',
+    step_name: 'code-a',
+    data: { attemptId: 'attempt-1', event: { type: 'tool_call', toolCallId: 't', name: 'Read' } },
+  } as const;
+  expect(falseHandbackEvidence([terminal(10_600)], coder)).toBe('events:code-a:0');
+  expect(falseHandbackEvidence([tool, terminal(22_800)], coder)).toBeUndefined();
+  expect(falseHandbackEvidence([terminal(120_000)], coder)).toBeUndefined();
+  expect(
+    falseHandbackEvidence([terminal(10_600)], JSON.stringify({ status: 'done', needs: [] }))
+  ).toBeUndefined();
+});
 import {
   acceptanceNodeEnvironment,
   directAuxiliaryPreload,

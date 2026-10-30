@@ -51,6 +51,14 @@ const mutations: Mutation[] = [
     expectedError: '"nodeId":"verify-p"',
   },
   {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'duration >= 120_000',
+    to: 'duration > 120_000',
+    test: 'tests/sa-check.test.ts',
+    name: 'FALSE_HANDBACK',
+    expectedError: 'expected undefined',
+  },
+  {
     file: 'src/generate.ts',
     from: "ref.optional(\n          conditionalOutput<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256',\n          ''\n        ),",
     to: "ref.required(\n          output<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256'\n        ),",

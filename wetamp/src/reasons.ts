@@ -34,6 +34,11 @@ export const HOLD_POLICY = {
     text: '将军受执行约束阻断',
     next: '检查执行约束并提供符合约束的操作或环境',
   },
+  false_handback: {
+    do: 'blocked',
+    text: '将军未调用工具即交回',
+    next: '核对纠正提示与节点证据后显式重试',
+  },
   review_limit: { do: 'blocked', text: '评审轮次已用尽', next: '重新确认遗留blocker和工作包范围' },
   review_not_independent: {
     do: 'blocked',
@@ -161,6 +166,7 @@ const base: Reason[] = [
   deterministic('engine_suspect', 'engine_suspect', 'engine', '验收与状态矛盾或原因未注册'),
   entry('coder_output_invalid', 'coder', 'transient', 'coder', '编码输出不是合法 JSON'),
   deterministic('coder_partial', 'coder', 'coder', '编码未完成且无改动或验收失败'),
+  deterministic('false_handback', 'false_handback', 'coder', '编码节点零工具调用且短时交回未完成'),
   deterministic('scope_violation', 'coder', 'coder', '交付包含 scope.write 之外的路径'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
   deterministic('ruler_invalid', 'gate', 'human', '基线尺子缺失目标断言失败或无法执行'),

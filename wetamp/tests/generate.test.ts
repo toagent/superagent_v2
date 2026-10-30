@@ -616,6 +616,7 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
 test('review guidance and generated reason registry use their typed owners', () => {
   expect(reasonMirror).toEqual(REASONS);
   expect(REASONS).toContainEqual(expect.objectContaining({ code: 'reclaim_pending' }));
+  expect(REASONS).toContainEqual(expect.objectContaining({ code: 'false_handback' }));
   for (const name of ['sa-review.md', 'sa-review-delta.md']) {
     const guidance = readFileSync(
       join(import.meta.dir, '../templates/.archon/commands', name),
@@ -623,6 +624,16 @@ test('review guidance and generated reason registry use their typed owners', () 
     );
     expect(guidance).toContain('output schema');
     expect(guidance).not.toContain('product | test_env');
+    expect(guidance).toContain('最后一条回复只输出');
+  }
+  for (const name of ['sa-code.md', 'sa-repair.md', 'sa-fix.md']) {
+    const guidance = readFileSync(
+      join(import.meta.dir, '../templates/.archon/commands', name),
+      'utf8'
+    );
+    expect(guidance).toContain('过程中正常调用工具');
+    expect(guidance).toContain('最后一条回复只输出');
+    expect(guidance).not.toMatch(/^\u53ea输出符合 output_format/m);
   }
 });
 

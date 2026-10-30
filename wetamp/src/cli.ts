@@ -3833,6 +3833,39 @@ function dispose(
   const reauthorize = reauthorizationHint(l, run, c);
   if (reauthorize)
     return { run_id: l.run_id, action: 'none', ok: false, state: c.state, next: reauthorize };
+  if (holdOf(l, run, c) === 'false_handback') {
+    const scope = retryScope(l, c.node ?? '');
+    const reason = `false_handback:${scope}`;
+    if (!(l.auto_retries ?? []).some(entry => entry.reason === reason)) {
+      const correction =
+        '上一轮未调用任何工具即交回，属无效交回：请先读取任务卡与 context_pack，用工具完成修改与验收，最后一条回复才输出 JSON';
+      const packages = scope.startsWith('pkg/')
+        ? [scope.slice(4)]
+        : planOf(l)
+            .packages.filter(pkg => (pkg.milestone ?? 'm1') === scope)
+            .map(pkg => pkg.id);
+      const result = retry(
+        l,
+        c,
+        () => {
+          for (const pkg of packages)
+            writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), correction + '\n');
+        },
+        () => {
+          (l.auto_retries ??= []).push({ milestone: scope, reason, at: new Date().toISOString() });
+          saveLedger(l);
+        },
+        run
+      );
+      return {
+        run_id: l.run_id,
+        action: 'auto_retry',
+        ok: result.ok,
+        reason: 'false_handback',
+        ...(result.ok ? {} : { error: result.reason }),
+      };
+    }
+  }
   const act = (hold: Hold, extra: Record<string, unknown> = {}): Action | undefined => {
     row.hold = hold;
     row.disposed =

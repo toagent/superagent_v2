@@ -27,4 +27,4 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 - `status`：存在 open 的 blocker 或 high（$INPUTS.risk 为 G2 时含 medium）→ `FAIL`；否则 `PASS`；无法完成评审（diff 不可读、证据缺失）→ `INCOMPLETE` 并在 `notes` 说明。
 - 不阻塞的问题写进 `debt`（一句话一条）。`fixture_confirmations` 仅在 diff 新增测试夹具时填写，否则为空数组。
 
-只输出符合 output_format 的 JSON。
+最后一条回复只输出符合 output_format 的 JSON。

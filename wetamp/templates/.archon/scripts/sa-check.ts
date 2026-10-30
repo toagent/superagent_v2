@@ -1181,6 +1181,21 @@ async function acceptOnce(
     join(artifacts, `${tag}.coder.json`),
     reviewRounds
   );
+  const falseHandback =
+    env('ARCHON') && reviewRounds !== undefined
+      ? falseHandbackEvidence(runEvents(), coder)
+      : undefined;
+  if (falseHandback)
+    Object.assign(result, {
+      disposition: 'fail',
+      reason: 'false_handback',
+      decision: {
+        ...result.decision,
+        kind: 'block',
+        reason: 'false_handback',
+        evidence: [...result.decision.evidence, falseHandback],
+      },
+    });
   // prettier-ignore
   if (resourceWaitTimedOut)
     Object.assign(result, { disposition: 'fail', reason: 'resource_wait_timeout', decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' } });
@@ -2107,6 +2122,9 @@ interface RunEvent {
   step_name?: string;
   data?: {
     attemptId?: string;
+    duration_ms?: number;
+    attempt?: { id?: string };
+    timing?: { durationMs?: number };
     structured_output?: { attempt?: string };
     event?: import('../../../../packages/provider-contract/src/events').ProviderEvent;
     hook_event?: string;
@@ -2116,6 +2134,36 @@ interface RunEvent {
       tokens?: { source: string; value?: { input: number; output: number; cacheRead?: number } };
     };
   };
+}
+const CODER_NODE = /^(code|repair|fix|resolve)-/;
+/** Terminal node metadata and provider events are the only evidence used here. */
+export function falseHandbackEvidence(events: RunEvent[], raw: string): string | undefined {
+  let coder: Coder | undefined;
+  try {
+    coder = JSON.parse(raw) as Coder;
+  } catch {
+    return undefined;
+  }
+  if (coder.status === 'done' && !coder.needs?.length) return undefined;
+  const terminals = events
+    .map((event, index) => ({ event, index }))
+    .filter(
+      ({ event }) => event.event_type === 'node_completed' && CODER_NODE.test(event.step_name ?? '')
+    );
+  const terminal = terminals.at(-1);
+  if (!terminal) return undefined;
+  const node = terminal.event.step_name ?? '';
+  const attempt = terminal.event.data?.attempt?.id;
+  const duration = terminal.event.data?.timing?.durationMs ?? terminal.event.data?.duration_ms;
+  if (!attempt || typeof duration !== 'number' || duration >= 120_000) return undefined;
+  const toolCalls = events.filter(
+    event =>
+      event.event_type === 'provider_event' &&
+      event.step_name === node &&
+      event.data?.attemptId === attempt &&
+      event.data.event?.type === 'tool_call'
+  );
+  return toolCalls.length === 0 ? `events:${node}:${String(terminal.index)}` : undefined;
 }
 /** Counter changes clear their scope; an unchanged always_run counter preserves denials. */
 export function permissionEvidence(
