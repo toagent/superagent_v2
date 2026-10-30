@@ -162,7 +162,7 @@ function ensure(root, env = process.env) {
       watch = [superagent, 'heartbeat', '--watch', ...scope]
         .map(value => `'${value.replace(/'/g, "'\\''")}'`)
         .join(' '),
-      shellCommand = `while true; do ${watch}; status=$?; if [ "$status" -eq 75 ]; then continue; fi; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`,
+      shellCommand = `while true; do ${watch}; case $? in 75) continue;; esac; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`,
       created = command(
         orca,
         [
