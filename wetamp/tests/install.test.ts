@@ -95,24 +95,11 @@ describe('install.sh', () => {
     const home = join(tmp(), 'a&b');
     const la = join(home, 'Library', 'LaunchAgents');
     const plist = join(la, 'com.wetamp.superagent.supervise-tick.plist');
-    const bin = join(home, 'bin'),
-      log = join(home, 'launchctl.log');
-    mkdirSync(bin, { recursive: true });
-    writeFileSync(
-      join(bin, 'launchctl'),
-      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SA_LAUNCHCTL_LOG"\n[ "$1" != print ] || exit "${SA_LAUNCHCTL_LOADED:-1}"\n[ "$1" != bootstrap ] || exit "${SA_LAUNCHCTL_FAIL:-0}"\n',
-      { mode: 0o755 }
-    );
     const bunDir = dirname(Bun.which('bun') ?? ''),
       nodeDir = dirname(Bun.which('node') ?? ''),
-      callerPath = `${bin}:${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`,
-      reload = {
-        SA_SKIP_LAUNCHD_RELOAD: '',
-        SA_TEST_REAL_HOME: home,
-        SA_LAUNCHCTL_LOG: log,
-      };
+      callerPath = `${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`;
     mkdirSync(join(home, '.nvm/current/bin'), { recursive: true });
-    runInstall(home, la, undefined, callerPath, reload);
+    runInstall(home, la, undefined, callerPath);
     const xml = readFileSync(plist, 'utf8');
     for (const s of [
       '<integer>60</integer>',
@@ -127,29 +114,15 @@ describe('install.sh', () => {
     expect(xml).toContain(`${home.replace('&', '&amp;')}/.nvm/current/bin`);
     expect(xml).not.toContain('.nvm/versions/');
     expect(xml).not.toContain('.codex/tmp/');
-    const firstCalls = readFileSync(log, 'utf8');
-    expect(firstCalls).toMatch(
-      /^print gui\/\d+\/com\.wetamp\.superagent\.supervise-tick\nbootstrap gui\/\d+ /
-    );
-    expect(runInstall(home, la, undefined, callerPath, reload).trim()).toBe(
-      'install: mode=controller'
-    );
-    expect(readFileSync(log, 'utf8')).toBe(firstCalls);
+    expect(runInstall(home, la, undefined, callerPath).trim()).toBe('install: mode=controller');
     writeFileSync(plist, 'stale');
-    runInstall(home, la, undefined, callerPath, { ...reload, SA_LAUNCHCTL_LOADED: '0' });
-    expect(readFileSync(log, 'utf8').slice(firstCalls.length)).toMatch(
-      /^print .+\nbootout .+\nbootstrap .+\n$/
-    );
+    runInstall(home, la, undefined, callerPath);
     expect(readFileSync(plist, 'utf8')).toBe(xml);
     const baks = readdirSync(la).filter(f => f.includes('.plist.bak-'));
     expect(baks.map(f => readFileSync(join(la, f), 'utf8'))).toEqual(['stale']);
-    writeFileSync(plist, 'stale again');
-    expect(
-      runInstall(home, la, undefined, callerPath, { ...reload, SA_LAUNCHCTL_FAIL: '1' }, 1)
-    ).toContain('launchd bootstrap failed');
   });
 
-  test('launchd reload skips a plist outside the real user directory', () => {
+  test('launchd reload refuses a plist outside the system user directory', () => {
     const home = tmp(),
       bin = join(home, 'bin'),
       log = join(home, 'launchctl.log');
@@ -157,12 +130,15 @@ describe('install.sh', () => {
     writeFileSync(join(bin, 'launchctl'), '#!/bin/sh\necho called >> "$SA_LAUNCHCTL_LOG"\n', {
       mode: 0o755,
     });
-    const out = runInstall(home, undefined, undefined, `${bin}:${process.env.PATH}`, {
-      SA_SKIP_LAUNCHD_RELOAD: '',
-      SA_TEST_REAL_HOME: join(home, 'real-user'),
-      SA_LAUNCHCTL_LOG: log,
-    });
-    expect(out).toContain('跳过 launchd 重载（非真实用户目录）');
+    const out = runInstall(
+      home,
+      undefined,
+      undefined,
+      `${bin}:${process.env.PATH}`,
+      { SA_SKIP_LAUNCHD_RELOAD: '', SA_LAUNCHCTL_LOG: log },
+      1
+    );
+    expect(out).toContain('launchd mutation refused');
     expect(existsSync(log)).toBe(false);
   });
 

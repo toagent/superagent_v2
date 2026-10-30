@@ -21,6 +21,7 @@ import { WETAMP, home, writeAtomic } from '../config';
 import { inspectProcess } from '../launcher';
 import { SCRATCH_ROOT } from '../plan';
 import { runProbe, type ProbeEvidence } from '../probe';
+import { printLaunchd, type LaunchctlRunner } from '../launchd';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
 
@@ -394,12 +395,9 @@ export interface PromotionDependencies {
   followConsole?: (snapshot: string) => void;
 }
 
-type ConsoleLaunch = (...args: string[]) => { exitCode: number | null; stderr: unknown };
-
 export function followCurrentConsole(
   snapshot: string,
-  launch: ConsoleLaunch = (...args) =>
-    Bun.spawnSync(['launchctl', ...args], { stdout: 'ignore', stderr: 'pipe' }),
+  launch?: LaunchctlRunner,
   restart = (path: string): void => {
     const result = Bun.spawnSync(
       [process.execPath, join(path, 'wetamp', 'src', 'cli.ts'), 'console', 'start'],
@@ -416,7 +414,7 @@ export function followCurrentConsole(
     return;
   }
   if (typeof state.label !== 'string' || process.getuid === undefined) return;
-  if (launch('print', `gui/${String(process.getuid())}/${state.label}`).exitCode !== 0) return;
+  if (printLaunchd(`gui/${String(process.getuid())}/${state.label}`, launch).status !== 0) return;
   restart(snapshot);
 }
 

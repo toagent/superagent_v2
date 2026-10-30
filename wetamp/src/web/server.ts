@@ -2,7 +2,7 @@ import { createDecisionAdapter } from './decision-adapter';
 import { DeviceStore, requireThat } from './device-store';
 import { authorizeDecision } from '../decisions';
 import { caller, coord, runScope } from '../coord';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -19,6 +19,7 @@ import { episodeOf } from '../memory';
 import { memoryOverview, memoryPanel } from './memory';
 import { makeWritable } from '../engine';
 import { normalizeLaunchdPath } from '../launchd-path';
+import { bootstrapLaunchd, bootoutLaunchd, kickstartLaunchd, printLaunchd } from '../launchd';
 
 interface LegacyWebState {
   port: number;
@@ -48,9 +49,7 @@ export const webUrl = (s: ConsoleState): string =>
 const label = consoleLaunchdLabel;
 const domain = (): string => `gui/${String(process.getuid?.())}`;
 const job = (): string => `${domain()}/${label()}`;
-const launch = (...args: string[]): ReturnType<typeof spawnSync> =>
-  spawnSync('launchctl', args, { encoding: 'utf8' });
-const loaded = (): boolean => launch('print', job()).status === 0;
+const loaded = (): boolean => printLaunchd(job()).status === 0;
 export const needsRestart = (s: ConsoleState, current = residentHash()): boolean =>
   !('engine_hash' in s) || s.engine_hash !== current;
 type PsReader = (pid: number, field: 'uid' | 'lstart' | 'command' | 'ppid') => string;
@@ -473,8 +472,8 @@ async function serve(): Promise<void> {
 export async function stopWeb(s = webState()): Promise<void> {
   if (s) await migrate(s);
   if (loaded()) {
-    const p = launch('bootout', job());
-    if (p.status !== 0) throw new Error(`console bootout failed: ${String(p.stderr)}`);
+    const p = bootoutLaunchd(job(), consoleLaunchdPlist());
+    if (p.status !== 0) throw new Error(`console bootout failed: ${p.stderr}`);
   }
   for (
     let i = 0;
@@ -514,11 +513,11 @@ export async function startWeb(): Promise<WebState> {
     if (existsSync(error)) unlinkSync(error);
     if (changed && loaded()) await stopWeb(old);
     if (!loaded()) {
-      const p = launch('bootstrap', domain(), file);
-      if (p.status !== 0) throw new Error(`console bootstrap failed: ${String(p.stderr)}`);
+      const p = bootstrapLaunchd(domain(), file);
+      if (p.status !== 0) throw new Error(`console bootstrap failed: ${p.stderr}`);
     } else if (changed || !old || needsRestart(old)) {
-      const p = launch('kickstart', '-k', job());
-      if (p.status !== 0) throw new Error(`console kickstart failed: ${String(p.stderr)}`);
+      const p = kickstartLaunchd(job(), file);
+      if (p.status !== 0) throw new Error(`console kickstart failed: ${p.stderr}`);
     }
     for (let i = 0; i < 1200; i++) {
       const s = webState();
@@ -643,7 +642,7 @@ export async function webCli(argv: string[]): Promise<number> {
   }
   const s = webState();
   if (sub === 'status') {
-    const p = launch('print', job()),
+    const p = printLaunchd(job()),
       error = join(home().sa, 'console/error');
     console.log(
       JSON.stringify({
@@ -656,7 +655,7 @@ export async function webCli(argv: string[]): Promise<number> {
         },
         port: s?.port,
         error: existsSync(error) ? readFileSync(error, 'utf8') : undefined,
-        launchd: String(p.stdout)
+        launchd: p.stdout
           .split('\n')
           .filter(x => /state =|last exit code =/.test(x))
           .map(x => x.trim()),
