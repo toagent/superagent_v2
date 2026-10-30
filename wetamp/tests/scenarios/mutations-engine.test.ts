@@ -30,23 +30,6 @@ test('S15: carried evidence without its persisted-byte hash fails the real scena
   expect(source.split(from)).toHaveLength(3);
   const carried = source.indexOf(from);
   writeFileSync(path, `${source.slice(0, carried)}${to}${source.slice(carried + from.length)}`);
-  for (const args of [
-    ['init', '-q'],
-    ['config', 'core.hooksPath', '/dev/null'],
-    ['add', 'wetamp', 'packages', 'package.json', 'bun.lock'],
-    [
-      '-c',
-      'user.name=scenario',
-      '-c',
-      'user.email=scenario@local',
-      'commit',
-      '-qm',
-      'S15 mutation',
-    ],
-  ]) {
-    const git = Bun.spawnSync(['git', ...args], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
-    expect(git.exitCode, git.stderr.toString()).toBe(0);
-  }
   const result = Bun.spawnSync(
     [
       process.execPath,

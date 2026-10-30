@@ -390,7 +390,11 @@ const platform: IWorkflowPlatform = {
   sendStructuredEvent: async () => {},
 };
 
-export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedContinuation) {
+export async function runInProcess(
+  f: ScenarioFixture,
+  continuation?: GeneratedContinuation,
+  stopAfter?: string
+) {
   const id = continuation?.runId ?? f.runId ?? `5ce0-${f.spec.id.slice(1).padStart(4, '0')}`;
   const store = createWorkflowStore();
   const codebaseId = continuation
@@ -538,6 +542,11 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
     }
   };
   routeAi(raw.nodes);
+  if (stopAfter !== undefined) {
+    const last = raw.nodes.findIndex(node => node.id === stopAfter);
+    if (last < 0) throw new Error(`focused scenario missing ${stopAfter}`);
+    raw.nodes = raw.nodes.slice(0, last + 1);
+  }
   const workflow = makeTestResolvedWorkflow({
     name: generated.workflow,
     description: raw.description,
@@ -580,6 +589,8 @@ export async function runInProcess(f: ScenarioFixture, continuation?: GeneratedC
     },
   };
 }
+
+export const runGateContract = (f: ScenarioFixture) => runInProcess(f, undefined, 'gate-m1-r1');
 
 export type ScenarioResult = Awaited<ReturnType<typeof runInProcess>>;
 export type ScenarioEvidence = Pick<
@@ -939,12 +950,16 @@ export function completedOutput(result: ScenarioEvidence, node: string): Record<
 }
 
 export function expectPublishedGate(result: ScenarioEvidence, round: number): void {
+  expectGate(result, round);
+  expect(
+    JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8'))
+  ).toMatchObject({ status: 'published' });
+}
+
+export function expectGate(result: ScenarioEvidence, round: number): void {
   const output = completedOutput(result, `gate-m1-r${String(round)}`);
   const file = join(result.artifactsDir, `gate-m1-r${String(round)}.json`);
   expect(output.artifact_sha256).toBe(
     new Bun.CryptoHasher('sha256').update(readFileSync(file)).digest('hex')
   );
-  expect(
-    JSON.parse(readFileSync(join(result.artifactsDir, 'publish-m1.json'), 'utf8'))
-  ).toMatchObject({ status: 'published' });
 }

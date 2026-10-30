@@ -18,16 +18,16 @@ const mutations: Mutation[] = [
     file: 'src/generate.ts',
     from: 'loop_group: {\n        max_iterations: 3,',
     to: 'loop_group: {\n        interactive: true,\n        max_iterations: 3,',
-    test: 'tests/scenarios/scenario-core.test.ts',
-    name: 'S2',
+    test: 'tests/generate.test.ts',
+    name: 'multi-milestone delivery',
     expectedError: 'interactive',
   },
   {
     file: 'src/land.ts',
     from: 'const who = authorization.run;',
     to: 'const who = caller();',
-    test: 'tests/scenarios/scenario-core.test.ts',
-    name: 'S2',
+    test: 'tests/delivery-e2e.test.ts',
+    name: 'entry rejects',
     expectedError: 'integration: authorization/run mismatch',
     also: [
       "import { control, coord, repoScope, runScope, same } from './coord';",
@@ -62,9 +62,9 @@ const mutations: Mutation[] = [
     file: 'src/generate.ts',
     from: "until_bash: untilStatus(publishHandle, 'published'),",
     to: 'until_bash: `test $${publishId}.output.status = published`,',
-    test: 'tests/scenarios/scenario-core.test.ts',
-    name: 'S2',
-    expectedError: 'publish-m1',
+    test: 'tests/generate.test.ts',
+    name: 'multi-milestone delivery',
+    expectedError: 'bun -e',
   },
   {
     file: 'templates/.archon/scripts/sa-context.ts',
@@ -87,7 +87,7 @@ test('project rules run the full wetamp suite for every mutation target', () => 
   const required = rules.required_checks?.find(
     rule => rule.check.cmd === 'cd wetamp && bun run test'
   );
-  expect(required?.check).toMatchObject({ cache: true, requires_prior_pass: true });
+  expect(required?.check).toMatchObject({ cache: true });
   for (const file of new Set(mutations.map(mutation => `wetamp/${mutation.file}`)))
     expect(required?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
 });

@@ -37,7 +37,7 @@ import {
 } from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
-import type { CoderOutput } from '../src/contract';
+import { untilStatus, type CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
 import reasonMirror from '../templates/.archon/scripts/reasons.json';
 import { integrationLockTimeout, integrationNodeTimeout } from '../src/integration';
@@ -1405,7 +1405,12 @@ describe('buildWorkflow', () => {
     };
     expect(integration.loop_group).toMatchObject({
       max_iterations: 3,
+      until_bash: untilStatus<{ status?: 'published' }>(
+        { id: 'publish-m1', conditional: false },
+        'published'
+      ),
     });
+    expect(integration.loop_group).not.toHaveProperty('interactive');
     expect((build(false) as { interactive?: boolean }).interactive).toBeUndefined();
     expect(integration.loop_group.nodes.some(n => n.approval)).toBe(false);
     expect(integration.loop_group.nodes.some(n => n.id.startsWith('target-dirty-'))).toBe(false);
