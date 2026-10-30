@@ -48,6 +48,7 @@ import reasonMirror from '../templates/.archon/scripts/reasons.json';
 import { integrationLockTimeout, integrationNodeTimeout } from '../src/integration';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
+const RESYNC_MAX_ROUNDS = Math.max(1, MAX_ROUNDS - 1);
 const ACCEPTANCE_FIXED_BUDGET_MS =
   CHECK_AUX_BUDGET_MS + 5_000 + RESOURCE_WAIT_BUDGET_S * 1000 + PROCESS_TREE_RECOVERY_MS;
 
@@ -1429,16 +1430,18 @@ describe('buildWorkflow', () => {
     expect(allNodesOf(workflow).some(node => 'interactive' in node)).toBeFalse();
   });
   test('multi-milestone delivery publishes each cumulative prefix before the next sync', () => {
-    const resyncRounds = Array.from({ length: MAX_ROUNDS }, (_, i) => i + 1).flatMap(round => [
-      ...(round > 1
-        ? [`handoff-resync-m1-r${String(round)}`, `fix-resync-m1-r${String(round)}`]
-        : []),
-      round === 1 ? 'final-accept-m1' : `diff-resync-m1-r${String(round)}`,
-      `attempt-review-resync-m1-r${String(round)}`,
-      `review-context-resync-m1-r${String(round)}`,
-      `review-resync-m1-r${String(round)}`,
-      `gate-m1-rresync${String(round)}`,
-    ]);
+    const resyncRounds = Array.from({ length: RESYNC_MAX_ROUNDS }, (_, i) => i + 1).flatMap(
+      round => [
+        ...(round > 1
+          ? [`handoff-resync-m1-r${String(round)}`, `fix-resync-m1-r${String(round)}`]
+          : []),
+        round === 1 ? 'final-accept-m1' : `diff-resync-m1-r${String(round)}`,
+        `attempt-review-resync-m1-r${String(round)}`,
+        `review-context-resync-m1-r${String(round)}`,
+        `review-resync-m1-r${String(round)}`,
+        `gate-m1-rresync${String(round)}`,
+      ]
+    );
     const nodes = nodesOf(build(false));
     const integration = nodes.find(n => n.id === 'integrate-m1') as N & {
       loop_group: { nodes: N[] };

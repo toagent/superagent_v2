@@ -436,6 +436,9 @@ export function buildWorkflow(
     gateBindings: { round: number; node: string; carried?: boolean }[]
   ): Node => {
     const reviewRequired = m.review || m.risk === 'G2';
+    // A resync happens only after the milestone gate passed, so at least one round of the
+    // package-wide repair/review budget is already spent.
+    const resyncMaxRounds = Math.max(1, maxRounds - 1);
     const resyncBase = `resync-base-${m.id}`;
     const syncId = `resync-${m.id}`;
     const resolveId = `resolve-${syncId}`;
@@ -464,7 +467,7 @@ export function buildWorkflow(
         ),
       ])
     );
-    for (let round = 1; round <= maxRounds; round++)
+    for (let round = 1; round <= resyncMaxRounds; round++)
       gateHashes[gateHashInput(`resync${String(round)}`).workflow] = ref.optional(
         conditionalOutput<{ artifact_sha256: string }>(gateId(round)),
         'artifact_sha256',
@@ -568,7 +571,7 @@ export function buildWorkflow(
     ];
     const resyncRounds: Node = {};
     let previous = syncReady;
-    for (let round = 1; round <= maxRounds; round++) {
+    for (let round = 1; round <= resyncMaxRounds; round++) {
       const accepted = acceptId(round);
       const acceptedHandle = conditionalOutput<AcceptOutput>(accepted);
       const reviewer = reviewId(round);
@@ -761,13 +764,16 @@ export function buildWorkflow(
     integrationNodes.push(
       {
         id: integrationReady,
-        depends_on: [finalAccept, ...Array.from({ length: maxRounds }, (_, i) => gateId(i + 1))],
+        depends_on: [
+          finalAccept,
+          ...Array.from({ length: resyncMaxRounds }, (_, i) => gateId(i + 1)),
+        ],
         trigger_rule: 'none_failed_min_one_success',
         script: [
           "const status = process.env.INPUTS_STATUS ?? '';",
           "const disposition = process.env.INPUTS_DISPOSITION ?? '';",
           `const gates = [${Array.from(
-            { length: maxRounds },
+            { length: resyncMaxRounds },
             (_, i) => `process.env.INPUTS_GATE_${String(i + 1)} ?? ''`
           ).join(', ')}];`,
           "const ok = status === 'resolved' ? gates.includes('pass') : ['advance', 'debt'].includes(disposition);",
@@ -782,7 +788,7 @@ export function buildWorkflow(
             'fail'
           ),
           ...Object.fromEntries(
-            Array.from({ length: maxRounds }, (_, i) => [
+            Array.from({ length: resyncMaxRounds }, (_, i) => [
               `gate_${String(i + 1)}`,
               ref.optional(conditionalOutput<{ verdict: string }>(gateId(i + 1)), 'verdict', ''),
             ])
