@@ -46,6 +46,7 @@ import { caller, control, coord, identityKey, repoScope, runScope, same, presenc
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
 import { collectGenerals, generalAttention } from './stall';
+import { allMarshals, cwdFilter, renderPanel } from './panel';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
@@ -247,6 +248,7 @@ export const OPTIONS = {
   verbose: { type: 'boolean' },
   once: { type: 'boolean' },
   interval: { type: 'string' },
+  watch: { type: 'boolean' },
   limit: { type: 'string' },
   json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
   full: { type: 'boolean' },
@@ -4085,6 +4087,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'maintenance-tick', flags: [] },
   { command: 'engine', positionals: 'promote <sha> | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence'] },
   { command: 'health', flags: ['cwd', 'verbose'] },
+  { command: 'heartbeat', flags: ['watch', 'cwd', 'all'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'models', flags: ['mode'] },
   { command: 'job exec', positionals: '[-- <cmd...>]', flags: ['title', 'request-ref', 'card', 'prompt-file', 'output', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
@@ -4769,6 +4772,9 @@ export function main(argv: string[]): number {
       return 0;
     case 'health':
       return health(a.flags.cwd, a.flags.verbose);
+    case 'heartbeat':
+      console.error('heartbeat is async: run it through bin/superagent');
+      return EXIT_USAGE;
     case 'board':
     case 'job':
     case 'jobs':
@@ -4785,6 +4791,57 @@ function need<T>(v: T | undefined, usage: string): T {
   return v;
 }
 
+async function heartbeatCli(argv: string[]): Promise<number> {
+  const a = parseArgs(argv);
+  if (a._.length !== 1 || (a.flags.all && a.flags.cwd))
+    throw new Error('usage: superagent heartbeat [--watch] [--cwd <absolute-path>|--all]');
+  let filter = allMarshals;
+  if (!a.flags.all) {
+    let cwd = a.flags.cwd;
+    if (!cwd) {
+      const git = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
+        cwd: process.cwd(),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      if (git.exitCode !== 0)
+        throw new Error('heartbeat: current directory is not inside a git repository');
+      cwd = git.stdout.toString().trim();
+    }
+    filter = cwdFilter(cwd);
+  }
+  const draw = (): string =>
+    renderPanel(
+      readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
+      readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
+      Date.now(),
+      filter,
+      process.stdout.columns || 100,
+      process.stdout.isTTY
+    );
+  if (!a.flags.watch) {
+    console.log(draw());
+    return 0;
+  }
+  let resolveStop: (value: 'stop') => void = () => undefined;
+  const interrupted = new Promise<'stop'>(resolve => {
+    resolveStop = resolve;
+  });
+  const stop = (): void => {
+    resolveStop('stop');
+  };
+  process.once('SIGINT', stop);
+  try {
+    for (;;) {
+      process.stdout.write(`\x1b[2J\x1b[H${draw()}\n`);
+      if ((await Promise.race([Bun.sleep(60_000), interrupted])) === 'stop') break;
+    }
+  } finally {
+    process.removeListener('SIGINT', stop);
+  }
+  return 0;
+}
+
 // Keep this module synchronous: land loads operator evidence lazily via require().
 async function runCli(): Promise<void> {
   try {
@@ -4799,13 +4856,22 @@ async function runCli(): Promise<void> {
       }
     })();
     if (
-      ['board', 'usage', 'supervise-tick', 'console', 'web', 'job', 'jobs', 'rollover'].includes(
-        verb ?? ''
-      )
+      [
+        'board',
+        'usage',
+        'heartbeat',
+        'supervise-tick',
+        'console',
+        'web',
+        'job',
+        'jobs',
+        'rollover',
+      ].includes(verb ?? '')
     )
       assertEngineAccess(argv);
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
+    if (verb === 'heartbeat') process.exit(await heartbeatCli(argv));
     if (verb === 'supervise-tick') {
       const parsed = parseArgs(argv);
       process.exit(

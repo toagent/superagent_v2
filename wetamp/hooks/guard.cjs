@@ -198,7 +198,11 @@ function decide(payload, client, env = process.env) {
   if (event !== 'PreToolUse') {
     if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event))
       return null;
-    if (event === 'SessionStart') return require('./scratch.cjs').start(payload, client, env);
+    if (event === 'SessionStart') {
+      const result = require('./scratch.cjs').start(payload, client, env);
+      require('./heartbeat-panel.cjs').ensurePanel(payload, env);
+      return result;
+    }
     return stopGate.gate(payload, client);
   }
   const text = shellText(name, input);
