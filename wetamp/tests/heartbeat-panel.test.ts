@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmp } from './helpers';
@@ -97,7 +97,19 @@ test('concurrent ensures create once with the right command and failures stay co
   expect(creates[0]).toContain(`心跳·superagent_v2`);
   expect(creates[0].join(' ')).toContain(`'heartbeat' '--watch' '--cwd' '${fresh.repo}'`);
   expect(creates[0].join(' ')).toContain(`bin/superagent-shim' 'heartbeat'`);
-  expect(creates[0].join(' ')).toContain('while true; do ');
+  const generated = creates[0][creates[0].indexOf('--command') + 1]!;
+  expect(generated).toContain('if [ "$status" -eq 75 ]; then continue; fi');
+  expect(generated).toContain("echo '心跳面板暂不可用，60 秒后重试'; sleep 60");
+  const fake = join(fresh.home, 'fake'),
+    marker = join(fresh.home, 'restarted');
+  writeFileSync(fake, `#!/bin/sh\n[ -f '${marker}' ] && exit 0\ntouch '${marker}'\nexit 75\n`, {
+    mode: 0o755,
+  });
+  const proof = generated
+    .replace(/'[^']*superagent-shim'/, `'${fake}'`)
+    .replace('sleep 60', 'break');
+  expect(Bun.spawnSync(['bash', '-c', proof]).exitCode).toBe(0);
+  expect(existsSync(marker)).toBe(true);
 
   const failed = fixture('fail');
   expect(run(failed).exitCode).toBe(0);
