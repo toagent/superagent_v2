@@ -90,7 +90,7 @@ export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): 
 }
 
 // prettier-ignore
-export interface TickStage { ok: boolean; error?: string; skipped?: string }
+export interface TickStage { ok: boolean; duration_ms?: number; error?: string; skipped?: string }
 type Stage = 'collect' | 'publish' | 'reclaim' | 'orca' | 'console' | 'failover' | 'actions';
 export type TickRecord = { at: string } & Partial<Record<Stage, TickStage>>;
 // prettier-ignore
