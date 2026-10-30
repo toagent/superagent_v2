@@ -241,7 +241,8 @@ export function HeartbeatFrame({
       <Box flexDirection="column">
         <Text backgroundColor="cyan" color="black">
           在跑 {String(model.stats.running)} · 等待 {String(model.stats.waiting)} · 待回收{' '}
-          {String(model.stats.reclaimPending)} · 数据 {String(dataAge)}s 前
+          {String(model.stats.reclaimPending)} · 历史遗留 {String(model.stats.legacy)}（需确认） · 数据{' '}
+          {String(dataAge)}s 前
         </Text>
         <Text backgroundColor="cyan" color="black">
           {quota ? `额度：${quota}` : '额度：未配置'}
