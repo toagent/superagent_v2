@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptionsWithBufferEncoding } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { mkdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import type { BoardRow, Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
 import { nodePackages } from './execution';
@@ -11,6 +11,7 @@ import { covered } from './plan-precheck';
 import { redact } from './redact';
 
 const LIMIT_MS = 300_000;
+const STALE_MS = 180_000;
 export type GeneralState = 'working' | 'idle' | 'stalled' | 'handed_back' | 'unknown';
 export interface GeneralAssessment {
   state: GeneralState;
@@ -27,6 +28,16 @@ export interface StallRecord extends GeneralAssessment {
   entries: string;
   mtime: number;
   progressAt: number;
+}
+export interface GeneralAttention {
+  kind: 'general_idle' | 'general_stalled';
+  node: string;
+  idle_s: number;
+  waiting_command: boolean;
+  cpu: number;
+  root?: { pid: number; command: string };
+  episode_id: string;
+  actions: string[];
 }
 export interface GeneralObservation {
   run: string;
@@ -65,10 +76,30 @@ export function assessGeneral(prev: StallRecord | undefined, o: GeneralObservati
   const progressed = same && (prev.entries !== entries || mtime > prev.mtime);
   const progressAt = same ? (progressed ? now : prev.progressAt) : Math.max(start, mtime);
   const idle_s = Math.max(0, Math.floor((now - Math.max(start, progressAt)) / 1000));
-  const state: GeneralState = progressed ? 'working' : now - activity >= LIMIT_MS && cpu < 5 ? 'stalled' : idle_s * 1000 >= LIMIT_MS ? 'idle' : 'working';
+  const state: GeneralState = progressed ? 'working' : now - Math.max(activity, start) >= LIMIT_MS && cpu < 5 ? 'stalled' : idle_s * 1000 >= LIMIT_MS ? 'idle' : 'working';
   if (state === 'working') return { ...base, progressAt, idle_s, state };
   const since = same && prev.episode ? prev.episode.since : new Date(now).toISOString();
   return { ...base, progressAt, idle_s, state, waiting_command: state === 'idle' && cpu >= 5, episode: { since, id: digest([o.run, o.node, o.startedAt, since].join('\0')) } };
+}
+
+// prettier-ignore
+export function generalAttention(run: string, ownerKey: readonly unknown[], now = Date.now()): GeneralAttention | undefined {
+  const stallPath = join(home().sa, 'stall.json'); let snapshot: { at?: string; runs?: Record<string, StallRecord> };
+  try { snapshot = JSON.parse(readFileSync(stallPath, 'utf8')) as typeof snapshot; } catch { return undefined; }
+  const observedAt = Date.parse(snapshot.at ?? '');
+  if (!Number.isFinite(observedAt) || now - observedAt > STALE_MS) return undefined;
+  const active = new Set(Object.values(snapshot.runs ?? {}).flatMap(record => record.episode?.id ? [record.episode.id] : []));
+  const record = snapshot.runs?.[run], episode = record?.episode;
+  const ackPath = join(home().sa, 'stall-acks', `${digest(JSON.stringify(ownerKey))}.json`); let acknowledged: string[] = [];
+  try { const value = JSON.parse(readFileSync(ackPath, 'utf8')) as { episodes?: unknown }; if (Array.isArray(value.episodes)) acknowledged = value.episodes.filter((id): id is string => typeof id === 'string'); } catch { /* first acknowledgement */ }
+  const retained = acknowledged.filter(id => active.has(id));
+  const wake = !!record && !!episode && ['idle', 'stalled'].includes(record.state) && !retained.includes(episode.id);
+  if (wake) retained.push(episode.id);
+  if (wake || retained.length !== acknowledged.length) { mkdirSync(dirname(ackPath), { recursive: true }); writeAtomic(ackPath, JSON.stringify({ episodes: retained }, null, 2) + '\n'); }
+  if (!wake) return undefined;
+  return { kind: record.state === 'idle' ? 'general_idle' : 'general_stalled', node: record.node, idle_s: record.idle_s, waiting_command: record.waiting_command, cpu: record.cpu,
+    ...(record.root ? { root: record.root } : {}), episode_id: episode.id,
+    actions: [`继续等待：superagent wait ${run}`, `处置：superagent cancel ${run} 后 superagent recover ${run}`] };
 }
 
 // prettier-ignore
