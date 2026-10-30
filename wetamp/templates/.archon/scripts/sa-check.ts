@@ -82,14 +82,11 @@ export function reviewRoundLimit(policy: ReviewEffortPolicy): number {
 }
 
 const env = (k: string): string => process.env[`INPUTS_${k}`] ?? '';
-let subprocessOutputModule:
-  | Promise<typeof import('@archon/workflows/subprocess-output')>
-  | undefined;
-// Generated resource checks resolve the frozen engine copy; ordinary checks never load it.
+// prettier-ignore
+let subprocessOutputModule: Promise<typeof import('@archon/workflows/subprocess-output')> | undefined;
 // prettier-ignore
 const subprocessOutput = async (): Promise<typeof import('@archon/workflows/subprocess-output')> => {
   if (subprocessOutputModule) return subprocessOutputModule;
-  // prettier-ignore
   const path = [resolve(import.meta.dir, '../../../../packages/workflows/src/subprocess-output.ts'), process.env.SUPERAGENT_HOME ? join(process.env.SUPERAGENT_HOME, 'engine/current/packages/workflows/src/subprocess-output.ts') : '', (() => { try { return resolve(dirname(dirname(realpathSync(join(dirname(env('PLAN')), 'archon')))), '../packages/workflows/src/subprocess-output.ts'); } catch { return ''; } })()].find(candidate => candidate && existsSync(candidate));
   if (!path) throw new Error('engine subprocess-output.ts unavailable');
   subprocessOutputModule = import(pathToFileURL(path).href) as Promise<typeof import('@archon/workflows/subprocess-output')>;
@@ -101,24 +98,20 @@ export const RESOURCE_WAIT_BUDGET_S = 1_800;
 export const PROCESS_TREE_RECOVERY_MS = 10_000;
 // prettier-ignore
 export const RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
-let resourceWaitElapsedMs = 0,
-  resourceOutputSequence = 0;
-// Test-only override makes exhausted-wait coverage deterministic without changing the engine contract.
+// prettier-ignore
+let resourceWaitElapsedMs = 0, resourceOutputSequence = 0;
 // prettier-ignore
 const resourceWaitBudgetMs = (): number =>
   process.env.NODE_ENV === 'test' && process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS ? Number(process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS) : RESOURCE_WAIT_BUDGET_S * 1000;
 // prettier-ignore
 class ResourceWaitTimeout extends Error { constructor(readonly command: string) { super(`resource wait budget exhausted before: ${command}`); } }
-interface ResourceLease {
-  waitedMs: number;
-  release(): Promise<void>;
-}
+// prettier-ignore
+interface ResourceLease { waitedMs: number; release(): Promise<void>; }
 // prettier-ignore
 const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
   resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE] : RESOURCE_SLOTS[resource];
 // prettier-ignore
 function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams | undefined> {
-  // prettier-ignore
   const command = process.platform === 'darwin' ? ['/usr/bin/lockf', '-t', '0', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'] : ['flock', '-n', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'];
   if (process.platform !== 'darwin' && process.platform !== 'linux')
     throw new Error(`resource slots: unsupported platform ${process.platform}`);
@@ -1056,8 +1049,8 @@ async function acceptOnce(
   const hash = patch ? diffHash(readFileSync(patch)) : '';
   const head = git('rev-parse', 'HEAD').trim();
   const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
-  let resourceWaitTimedOut = false,
-    failed: string[] = [];
+  // prettier-ignore
+  let resourceWaitTimedOut = false, failed: string[] = [];
   // prettier-ignore
   if (!prior)
     try {
