@@ -75,7 +75,7 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
   expect(() => s.r.accept(String(started.token))).toThrow('新会话');
   s.setWho(b);
   const accepted = s.r.accept(String(started.token));
-  expect(accepted).toMatchObject({ state: 'accepted', repo: 'unchanged', scratch: { action: 'transferred' } });
+  expect(accepted).toMatchObject({ state: 'accepted', repo: 'unchanged', scratch: { action: 'transferred' }, runs: [{ wait: 'superagent wait run1 --timeout 7000' }] });
   expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
   expect(s.scratchCalls).toHaveLength(1);
   expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);

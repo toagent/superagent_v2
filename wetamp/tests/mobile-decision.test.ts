@@ -506,7 +506,7 @@ test('operator push shares one inbox and notifies each run once', async () => {
   expect(sends).toBe(2);
   expect(store.transaction(s => Object.keys(s.notices))).toHaveLength(2);
 });
-test('operator heartbeat push is periodic, semantic, work-gated and stale-aware', async () => {
+test('operator removes legacy heartbeat notices and sends only decision pushes', async () => {
   const previous = [process.env.SUPERAGENT_HOME, process.env.ARCHON_HOME];
   const sa = tmp(),
     store = new DeviceStore(join(sa, 'mobile')),
@@ -521,60 +521,47 @@ test('operator heartbeat push is periodic, semantic, work-gated and stale-aware'
         auth: Buffer.alloc(16).toString('base64url'),
       },
     };
+    s.notices[operator.device.id + ':heartbeat:legacy'] = {
+      attempts: 3,
+      next: 0,
+      status: 'failed',
+    };
   });
   let clock = Date.parse('2026-10-29T10:00:00Z');
-  const sent: Record<string, string>[] = [],
-    write = (running: object[], at = clock) =>
-      writeFileSync(
-        join(sa, 'heartbeat.json'),
-        JSON.stringify({
-          at: new Date(at).toISOString(),
-          reclaim_pending: 0,
-          marshals: [
-            {
-              owner: { client: 'codex', host: 'host', pid: 1, pid_start: 'start' },
-              owner_key: [],
-              cwd: '/repo',
-              project: 'repo',
-              running,
-              waiting: [],
-              line: running.length
-                ? `repo ${String((running[0] as { id?: string }).id)}`
-                : 'repo idle',
-            },
-          ],
-        })
-      );
+  const decision = {
+      id: digest('decision-only'),
+      run: 'run-a',
+      engine: 'engine-a',
+      node: 'gate',
+      pause: 'pause-a',
+      question: 'approve?',
+      reason: 'approval',
+      context: 'context',
+      options: [{ id: 'approve', label: 'Approve', consequence: 'Continue' }],
+    },
+    sent: Record<string, string>[] = [];
   const push = createPush(
     store,
     origin,
     async (_target, payload) => {
       sent.push(JSON.parse(payload));
     },
-    async () => ({ decisions: [], unknown: [] }),
+    async () => ({ decisions: [decision], unknown: [] }),
     () => clock
   );
-  write([{ id: 'a', state: 'running' }]);
+  writeFileSync(
+    join(sa, 'tick.json'),
+    JSON.stringify({ at: new Date(clock).toISOString(), collect: { ok: true } })
+  );
   expect(await push.tick()).toMatchObject({ heartbeat: 'current' });
-  clock += 899_999;
-  write([{ id: 'a', state: 'running' }]);
-  await push.tick();
   expect(sent).toHaveLength(1);
-  clock++;
-  write([{ id: 'a', state: 'running' }]);
-  await push.tick();
-  write([{ id: 'b', state: 'running' }]);
-  await push.tick();
-  expect(sent).toHaveLength(3);
-  expect(sent[0]).toEqual({ title: '引擎心跳', body: 'repo a', url: '/?heartbeat' });
+  expect(sent[0]).toMatchObject({ title: '需要你的决定', url: '/?decision=' + decision.id });
   expect(
     store.transaction(s => Object.keys(s.notices).filter(k => k.includes(':heartbeat:')))
-  ).toHaveLength(1);
-  write([]);
-  await push.tick();
-  write([{ id: 'c', state: 'running' }], clock - 1_080_001);
+  ).toHaveLength(0);
+  clock += 4 * 60_000;
   expect(await push.tick()).toMatchObject({ heartbeat: 'stale' });
-  expect(sent).toHaveLength(3);
+  expect(sent).toHaveLength(1);
   restoreEnv('SUPERAGENT_HOME', previous[0]);
   restoreEnv('ARCHON_HOME', previous[1]);
 });

@@ -2,12 +2,12 @@ import webpush from 'web-push';
 import { resolve4 } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { Agent } from 'node:https';
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DeviceStore, isAuthorizedDevice, isOperatorDevice, requireThat } from './device-store';
 import { decisionState, loadCurrentDecisions, type DecisionInbox } from '../decisions';
 import { home } from '../config';
-import { HEARTBEAT_INTERVAL_MS, heartbeatBatch, type Heartbeat } from '../heartbeat';
+import { readJson } from '../ledger';
+import { tickHealth, type TickRecord } from '../heartbeat';
 
 export function validateSubscription(value: unknown): webpush.PushSubscription {
   requireThat(value && typeof value === 'object');
@@ -108,15 +108,17 @@ export function createPush(
         s.devices.filter(d => isAuthorizedDevice(d) && d.subscription)
       );
       const operatorInbox = devices.some(isOperatorDevice) ? await loadInbox() : undefined;
-      let pulse: Heartbeat | undefined;
+      let tick: TickRecord | undefined;
       try {
-        pulse = JSON.parse(readFileSync(join(home().sa, 'heartbeat.json'), 'utf8')) as Heartbeat;
+        tick = readJson(join(home().sa, 'tick.json')) as TickRecord | undefined;
       } catch {
-        /* Health below reports a missing or unreadable heartbeat as stale. */
+        /* Health below reports a missing or unreadable tick as stale. */
       }
-      const pulseAt = Date.parse(pulse?.at ?? '');
-      const heartbeatState =
-        !Number.isFinite(pulseAt) || now() - pulseAt > 1_080_000 ? 'stale' : 'current';
+      const heartbeatState = tickHealth(tick, now()).ok ? 'current' : 'stale';
+      store.transaction(s => {
+        for (const key of Object.keys(s.notices))
+          if (key.includes(':heartbeat:')) s.notices[key] = undefined;
+      });
       let unknown = 0;
       for (const device of devices) {
         const view = isOperatorDevice(device)
@@ -127,63 +129,6 @@ export function createPush(
           : await decisionState(device, undefined, store);
         unknown += view.unknown;
         const receipts = store.transaction(s => s.receipts.filter(r => r.device === device.id));
-        if (isOperatorDevice(device) && heartbeatState === 'current' && pulse) {
-          const active = pulse.marshals.filter(
-            m => m.owner !== 'unknown' && (m.running.length || m.waiting.length)
-          );
-          if (active.length) {
-            const prefix = device.id + ':heartbeat:',
-              key = prefix + heartbeatBatch({ ...pulse, marshals: active }),
-              at = now();
-            const shouldSend = store.transaction(s => {
-              for (const old of Object.keys(s.notices))
-                if (old.startsWith(prefix) && old !== key) s.notices[old] = undefined;
-              const n = s.notices[key];
-              if (n && (n.attempts >= 3 || n.next > at)) return false;
-              s.notices[key] = {
-                attempts: n?.status === 'accepted' ? 1 : (n?.attempts ?? 0) + 1,
-                next: at + 60_000,
-                status: 'unknown',
-              };
-              return true;
-            });
-            if (shouldSend) {
-              let status = 'failed';
-              try {
-                const target = store.transaction(
-                  s =>
-                    s.devices.find(d => d.id === device.id && isAuthorizedDevice(d))?.subscription
-                );
-                if (target) {
-                  const lines = active.map(m => m.line),
-                    body = lines.join('\n');
-                  await send(
-                    target,
-                    JSON.stringify({
-                      title: '引擎心跳',
-                      body:
-                        body.length <= 480
-                          ? body
-                          : body.slice(0, 470) + `…+${String(Math.max(0, lines.length - 1))}`,
-                      url: '/?heartbeat',
-                    }),
-                    vapid,
-                    origin
-                  );
-                  status = 'accepted';
-                }
-              } catch {
-                /* Decision delivery continues independently. */
-              }
-              store.transaction(s => {
-                const n = s.notices[key];
-                requireThat(n, 500);
-                n.status = status;
-                n.next = at + (status === 'accepted' ? HEARTBEAT_INTERVAL_MS : 60_000);
-              });
-            }
-          }
-        }
         const items: { id: string; status?: string }[] = view.decisions
           .filter(d => !d.disabled)
           .map(d => ({ id: d.id }));

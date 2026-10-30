@@ -20,7 +20,10 @@ function waiterGate(payload, client, deps = {}) {
               ...process.env,
               ARCHON_HOME:
                 process.env.ARCHON_HOME ||
-                path.join(process.env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent'), 'archon'),
+                path.join(
+                  process.env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent'),
+                  'archon'
+                ),
             },
             timeout: 10000,
           }).stdout
@@ -29,7 +32,8 @@ function waiterGate(payload, client, deps = {}) {
     if (!active.length) return null;
     const listing = deps.processes
       ? deps.processes()
-      : spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 3000 }).stdout;
+      : spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 3000 })
+          .stdout;
     if (!listing) throw new Error('进程表为空');
     const rows = listing.split('\n').flatMap(line => {
       const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
@@ -47,7 +51,7 @@ function waiterGate(payload, client, deps = {}) {
       return !rows.some(row => tree.has(row.pid) && wait.test(row.command));
     });
     if (!missing.length) return null;
-    const reason = `SUPERAGENT：请在后台运行以下缺失的等待进程：\n${missing.map(run => `superagent wait ${run.run_id} --timeout 900`).join('\n')}`;
+    const reason = `SUPERAGENT：请在后台运行以下缺失的等待进程：\n${missing.map(run => `superagent wait ${run.run_id} --timeout 7000`).join('\n')}`;
     return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
   } catch (error) {
     return advisory(error instanceof Error ? error : new Error(String(error)));
@@ -63,8 +67,7 @@ function gate(payload, client, deps) {
       systemMessage: `${waiter?.systemMessage ? `${waiter.systemMessage}\n` : ''}SUPERAGENT: stop_gate=${mode} 无效（off/advisory；cycle/change 仅兼容提示），请修正 tiers.json。`,
     };
   return {
-    systemMessage:
-      `${waiter?.systemMessage ? `${waiter.systemMessage}\n` : ''}SUPERAGENT G-3 advisory：hook 不确认评审通过；最终 candidate、实际模型独立性与 verdict 以引擎正式 gate 证据为准。`,
+    systemMessage: `${waiter?.systemMessage ? `${waiter.systemMessage}\n` : ''}SUPERAGENT G-3 advisory：hook 不确认评审通过；最终 candidate、实际模型独立性与 verdict 以引擎正式 gate 证据为准。`,
   };
 }
 // Compatibility export shares the hook transaction owner; no second state store.

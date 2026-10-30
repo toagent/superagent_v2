@@ -1513,7 +1513,7 @@ describe('waitRun (archon stub)', () => {
     expect(s.calls().filter(c => c.startsWith('workflow wait'))).toHaveLength(1);
   });
   // prettier-ignore
-  test('timeout while running returns 4 without blocking past deadline', () => {
+  test('one hour without events returns only at the requested deadline', () => {
     const s = stub([run('running')]), who = coordModule.caller();
     writeFileSync(join(s.root, 'home/heartbeat.json'), JSON.stringify({
       at: new Date(Date.now() - 19 * 60_000).toISOString(), reclaim_pending: 0,
@@ -1525,18 +1525,17 @@ describe('waitRun (archon stub)', () => {
     writeFileSync(join(s.root, 'home/tick.json'), JSON.stringify({
       at: new Date(Date.now() - 4 * 60_000).toISOString(), collect: { ok: true }, publish: { ok: true }, orca: { ok: true }, console: { ok: true }, failover: { ok: true }, actions: { ok: true },
     }));
-    const capped = captured(() => main(['wait', 'sa1', '--timeout', '3000']));
-    expect(capped.code).toBe(EXIT.running);
-    expect(JSON.parse(capped.out)).toMatchObject({ state: 'running', exit: EXIT.running,
+    const timedOut = captured(() => main(['wait', 'sa1', '--timeout', '3600']));
+    expect(timedOut.code).toBe(EXIT.running);
+    expect(JSON.parse(timedOut.out)).toMatchObject({ state: 'running', exit: EXIT.running, timed_out: true,
       heartbeat: { available: true, line: 'mine', running: [{ id: 'mine' }], waiting: [{ id: 'wait' }], warnings: ['心跳过期 19m', '未收到巡检心跳 4m'] },
-      timeout_capped: { requested: 3000, effective: 900 },
     });
-    const cappedWaits = s.calls().filter(c => c.startsWith('workflow wait'));
-    expect(cappedWaits).toHaveLength(15);
-    expect(cappedWaits.every(call => Number(call.split('--timeout ')[1]) <= 60)).toBe(true);
+    const waits = s.calls().filter(c => c.startsWith('workflow wait'));
+    expect(waits).toHaveLength(60);
+    expect(waits.every(call => Number(call.split('--timeout ')[1]) <= 60)).toBe(true);
     stub([run('running')]);
     const short = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '60'])).out);
-    expect(short).toMatchObject({ state: 'running', exit: EXIT.running, heartbeat: { available: false } });
+    expect(short).toMatchObject({ state: 'running', exit: EXIT.running, timed_out: true, heartbeat: { available: false } });
     expect(short).not.toHaveProperty('timeout_capped');
     expect(waitRun(stub([run('completed')]).ledger, 0, who).heartbeat).toBeUndefined();
   });
