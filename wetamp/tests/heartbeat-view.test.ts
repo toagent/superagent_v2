@@ -178,8 +178,13 @@ test('长项目名与额度在各尺寸下不超宽高预算', () => {
       const lines = frame(value, columns, rows, quota).split('\n');
       expect(lines.every(line => Bun.stringWidth(Bun.stripANSI(line)) <= columns)).toBe(true);
       expect(lines.length).toBeLessThanOrEqual(rows - 1);
-      expect(lines[0]).toContain(clock);
-      expect(lines[0]).toContain('巡检正常');
+      if (columns < 60) {
+        expect(lines[1]).toContain(clock.slice(0, 5));
+        expect(lines[1]).toContain('巡检');
+      } else {
+        expect(lines[0]).toContain(clock);
+        expect(lines[0]).toContain('巡检正常');
+      }
       expect(lines.slice(-2).filter(line => line.includes('额度：'))).toHaveLength(1);
     }
   }
@@ -192,6 +197,45 @@ test('长项目名与额度在各尺寸下不超宽高预算', () => {
   const empty = frame(undefined, 100, 20, undefined, 'BestIFA');
   expect(empty).toContain('◆ 心跳 · BestIFA');
   expect(empty).toContain('暂无在跑任务');
+});
+
+test('手机宽度使用两行标题、短徽标、两行提醒、三行卡片与无损额度折行', () => {
+  const value = heartbeat(['idle']);
+  value.marshals[0]!.project = 'superagent_v2';
+  value.marshals[0]!.running[0]!.title = '编码未在预期时间内完成';
+  const quota = '⚠️ Codex 超 $500 · Claude 今日 $80.12 · （2/2 可用） | Codex 今日 $810.46';
+  for (const columns of [36, 40, 50]) {
+    for (const rows of [24, 40]) {
+      const lines = frame(value, columns, rows, quota).split('\n').map(Bun.stripANSI);
+      expect(lines[0]).toContain('◆ 心跳 · superagent_v2');
+      expect(lines[1]).toContain('巡检');
+      expect(lines.find(line => /跑1.*等1.*需2.*收2.*遗0/.test(line))).toBeDefined();
+      const attention = lines.findIndex(line => line.includes('run-1 · superagent_v2'));
+      expect(attention).toBeGreaterThan(0);
+      expect(lines[attention + 1]).toContain('编码未在预期时间内完成');
+      const card = lines.findIndex(line => line.includes('◐ run-1 · 已用'));
+      expect(card).toBeGreaterThan(attention);
+      expect(lines[card + 1]).toContain('编码未在预期时间内完成');
+      expect(lines[card + 2]).toContain('✓编 ●验 ○评 ○合 · 将军');
+      const quotaStart = lines.findIndex(line => line.startsWith('额度：'));
+      expect(quotaStart).toBeGreaterThan(card);
+      expect(
+        lines
+          .slice(quotaStart)
+          .map((line, index) =>
+            index ? line.slice(Bun.stringWidth('额度：')) : line.slice('额度：'.length)
+          )
+          .join('')
+      ).toBe(quota);
+      expect(lines.every(line => Bun.stringWidth(line) <= columns)).toBe(true);
+      expect(lines.length).toBeLessThanOrEqual(rows - 1);
+    }
+  }
+  value.marshals[0]!.running[0]!.node = 'fix-m1-r2';
+  expect(frame(value, 40, 24, quota)).toContain('✓编 ●修r2 ○评 ○合');
+  expect(
+    frame(value, 40, 24, quota, undefined, { at: new Date(now - 240_000).toISOString() })
+  ).toContain('⚠ 巡检可能停了');
 });
 
 test('resize 先清屏再触发组件重渲染', () => {
