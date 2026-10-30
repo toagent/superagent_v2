@@ -111,11 +111,13 @@ test('general worktrees reject only unapproved complete suites before taking a s
   expect(await run(unapproved, 'outside', [], outside).exited).toBe(0);
 });
 
-test('a complete suite leaves two CPUs free for the machine', async () => {
+test('a complete suite uses at most half the machine CPUs', async () => {
   const { root, env } = fixture();
   expect(await run(env, 'budget').exited).toBe(0);
   const args = readFileSync(join(root, 'args.budget'), 'utf8').trim();
-  expect(args).toEndWith(`--parallel=${Math.max(1, cpus().length - 2)} tests/ scripts/`);
+  expect(args).toEndWith(
+    `--parallel=${Math.max(1, Math.floor(cpus().length / 2))} tests/ scripts/`
+  );
 });
 
 test('killing a lock holder lets the next suite acquire the slot', async () => {
