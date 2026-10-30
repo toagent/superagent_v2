@@ -166,14 +166,14 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
         SA_INTEGRATION_LOCK_TIMEOUT_MS: '2000',
       });
       if (mode === 'conflict') {
-        const failed = Bun.spawnSync(['bash', '-c', sync.bash!], {
+        const conflicted = Bun.spawnSync(['bash', '-c', sync.bash!], {
           cwd: f.worker,
           env,
           stdout: 'pipe',
           stderr: 'pipe',
         });
-        expect(failed.exitCode).toBe(1);
-        expect(JSON.parse(failed.stdout.toString()).status).toBe('conflict');
+        expect(conflicted.exitCode).toBe(0);
+        expect(JSON.parse(conflicted.stdout.toString()).status).toBe('conflict');
         expect(readFileSync(join(f.artifact, 'sync-m1-1.json'), 'utf8')).toContain(
           '"status": "conflict"'
         );
