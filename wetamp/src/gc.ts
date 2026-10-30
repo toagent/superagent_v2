@@ -39,6 +39,9 @@ const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
     referenced: (path: string) => boolean
   ) => ScratchAction[];
 };
+const { abandoned } = createRequire(import.meta.url)('../hooks/coord.cjs') as {
+  abandoned: (ledger: Ledger) => boolean;
+};
 export function scratchClean(session?: string, dryRun = false): ScratchAction[] {
   let ledgers: Ledger[] | undefined;
   const cachedPlans = new Map<string, string[]>();
@@ -410,11 +413,12 @@ export function gc(
     }
   const next: Partial<Record<string, GcInput>> = {},
     repos = new Map<string, RepoState>(),
-    successors = new Map<string, string>();
+    successors = new Map<string, { id: string; ledger: Ledger }>();
   for (const ledgerId of ledgerIds()) {
     try {
-      for (const adoption of loadLedger(ledgerId).adoptions ?? [])
-        successors.set(adoption.from, adoption.to);
+      const ledger = loadLedger(ledgerId);
+      for (const adoption of ledger.adoptions ?? [])
+        successors.set(adoption.from, { id: adoption.to, ledger });
     } catch {
       // The owning ledger will report its own read failure below.
     }
@@ -530,7 +534,7 @@ export function gc(
             });
           };
           const successor = successors.get(run.id);
-          if (successor) finalize('superseded', { successor });
+          if (successor) finalize('superseded', { successor: successor.id });
           if (
             !path ||
             !isPathInside(root, path) ||
@@ -545,6 +549,13 @@ export function gc(
           if (resourcesCollected)
             finalize('resources_collected', { missing: { branch: ref, worktree: path } });
           if (resourcesCollected) return;
+          if (successor) {
+            const successorStatus =
+              statuses?.get(successor.ledger.archon_run_id) ??
+              getRun(successor.ledger.archon_run_id, successor.ledger.repo).status;
+            if (successorStatus !== 'completed' && !abandoned(successor.ledger))
+              throw new GcSkip(`successor ${successor.id} ${successorStatus} remains recoverable`);
+          }
           const adoptedBy = adoptions?.get(l.archon_run_id);
           // prettier-ignore
           if (!adoptions || adoptedBy) throw new GcSkip(adoptedBy ? `adopted by live run ${adoptedBy}` : 'live adoption state unavailable');
@@ -660,7 +671,7 @@ export function gc(
           updateLedger(l, collect);
           const after = state && fingerprint(id, l, state, workingPath);
           // prettier-ignore
-          if (!failures.length && after && workingPath && adoptions && !adoptions.has(l.archon_run_id) && events.every(e => e.action === 'skipped'))
+          if (!failures.length && after && workingPath && adoptions && !adoptions.has(l.archon_run_id) && !successors.has(l.archon_run_id) && events.every(e => e.action === 'skipped'))
             next[id] = { fingerprint: after, rule_version: ruleVersion, working_path: workingPath };
         }
       } catch (e) {
