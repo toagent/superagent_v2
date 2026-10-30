@@ -18,8 +18,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { spawn } from 'node:child_process';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -94,13 +93,10 @@ const subprocessOutput = async (): Promise<typeof import('@archon/workflows/subp
 };
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
 export const CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000;
-export const RESOURCE_WAIT_BUDGET_S = 1_800;
-export const PROCESS_TREE_RECOVERY_MS = 10_000;
 // prettier-ignore
-export const RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
-let resourceWaitElapsedMs = 0,
-  resourceOutputSequence = 0,
-  resourceWaitTimeoutCommand = '';
+export const RESOURCE_WAIT_BUDGET_S = 1_800, PROCESS_TREE_RECOVERY_MS = 10_000, RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
+// prettier-ignore
+let resourceWaitElapsedMs = 0, resourceOutputSequence = 0, resourceWaitTimeoutCommand = '';
 // prettier-ignore
 const resourceWaitBudgetMs = (): number =>
   process.env.NODE_ENV === 'test' && process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS ? Number(process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS) : RESOURCE_WAIT_BUDGET_S * 1000;
