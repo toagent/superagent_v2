@@ -91,25 +91,48 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   const snap: Snapshot = {
     at: new Date(now).toISOString(),
     summary: {},
-    rows: [failed, held, running],
+    rows: [failed, held, running, row('other', who)],
+    coordMessages: [
+      {
+        id: 'run-queued',
+        scope: { kind: 'run', id: 'running', repo: '/repo/project' },
+        state: 'queued',
+        at: '2026-10-29T09:58:00Z',
+      },
+      {
+        id: 'run-accepted',
+        scope: { kind: 'run', id: 'running', repo: '/repo/project' },
+        state: 'accepted',
+        at: '2026-10-29T09:57:00Z',
+      },
+      {
+        id: 'repo-surfaced',
+        scope: { kind: 'repo', id: '/repo/project' },
+        state: 'surfaced',
+        at: '2026-10-29T09:56:00Z',
+      },
+    ] as Snapshot['coordMessages'],
   };
+  snap.rows[3]!.repo = '/repo/project';
   const result = heartbeat(snap, cockpit(snap, now), now, () => ({
     state: 'online',
     activity: 'active',
   }));
   const marshal = result.marshals[0]!;
-  expect([...new Set(marshal.running.map(item => item.id))]).toEqual(['running']);
+  expect([...new Set(marshal.running.map(item => item.id))]).toEqual(['running', 'other']);
   expect(marshal.waiting.map(item => [item.id, item.waiting_for])).toEqual([
     ['failed', '交付包含 scope.write 之外的路径'],
     ['held', '评审轮次用尽'],
-    ['running', '2 条协调消息'],
+    ['running', '1 条协调消息'],
+    ['repo:/repo/project', '1 条协调消息'],
   ]);
   expect(marshal.waiting[1]).toMatchObject({
     code: 'review_limit',
     next: '重新确认遗留blocker和工作包范围',
   });
   expect(marshal.waiting[2]).toMatchObject({ code: 'coordination_pending' });
-  expect(marshal.line).toContain('等待3：交付包含 scope.write 之外的路径、评审轮次用尽');
+  expect(marshal.waiting.filter(item => item.id.startsWith('repo:'))).toHaveLength(1);
+  expect(marshal.line).toContain('等待4：交付包含 scope.write 之外的路径、评审轮次用尽');
 });
 
 test('heartbeat persistence ignores clocks, refreshes at 900s, and health classifies stages', () => {

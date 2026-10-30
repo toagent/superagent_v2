@@ -21,6 +21,7 @@ export function cwdFilter(cwd: string): PanelFilter {
 
 const duration = (seconds: number): string => {
   const minutes = Math.floor(Math.max(0, seconds) / 60);
+  if (minutes === 0) return '刚刚';
   return minutes < 60
     ? `${String(minutes)}m`
     : `${String(Math.floor(minutes / 60))}h ${String(minutes % 60)}m`;
@@ -36,6 +37,7 @@ const fit = (text: string, width: number): string => {
   return `${value}…`;
 };
 const generalState = (item: Marshal['running'][number], drift: number): string => {
+  if (item.kind === 'run' && item.coder === false) return '已交回';
   const state = item.general;
   if (!state) return '未知';
   const idle = duration(state.idle_s + drift);
@@ -47,6 +49,7 @@ const generalState = (item: Marshal['running'][number], drift: number): string =
     unknown: '未知',
   }[state.state];
 };
+const shortRunId = (id: string): string => id.replace(/^\d{8}-/, '');
 
 export function renderPanel(
   heartbeat: Heartbeat | undefined,
@@ -71,11 +74,11 @@ export function renderPanel(
   const attention: string[] = [];
   for (const marshal of selected) {
     for (const item of marshal.running)
-      if (item.general && ['idle', 'stalled'].includes(item.general.state))
+      if (item.coder !== false && item.general && ['idle', 'stalled'].includes(item.general.state))
         attention.push(`${marshal.project}｜${item.title}｜${generalState(item, drift)}`);
     for (const wait of marshal.waiting)
       attention.push(
-        `${marshal.project}｜${wait.waiting_for}｜已等 ${duration(wait.waited_s + drift)}｜下一步：${wait.next ?? wait.waiting_for}`
+        `${marshal.project}｜${wait.waiting_for}｜已等 ${duration(wait.waited_s + drift)}${wait.next ? `｜下一步：${wait.next}` : ''}`
       );
   }
   lines.push(...(attention.length ? attention.map(item => `! ${item}`) : ['无']), '', '进行中');
@@ -92,9 +95,13 @@ export function renderPanel(
     const first = items[0],
       elapsed = first.elapsed_s === null ? '未知' : duration(first.elapsed_s + drift),
       activity =
-        first.last_activity_s === null ? '未知' : `≥${duration(first.last_activity_s + drift)} 前`;
+        first.last_activity_s === null
+          ? '未知'
+          : first.last_activity_s + drift < 60
+            ? '刚刚'
+            : `≥${duration(first.last_activity_s + drift)} 前`;
     lines.push(
-      `${marshal.project}｜${first.title} (${first.id})`,
+      `${shortRunId(first.id)}｜${marshal.project}｜${first.title}`,
       `  阶段 ${first.stage}｜执行者 ${items.map(item => item.role).join('、')}`,
       `  已用 ${elapsed}｜最近活动 ${activity}｜将军 ${generalState(first, drift)}`
     );

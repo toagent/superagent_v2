@@ -24,7 +24,7 @@ const heartbeat = (at = now): Heartbeat => ({
       line: '',
       running: [
         {
-          id: 'run-1',
+          id: '20261030-114127-582a',
           kind: 'run',
           title: '实现心跳面板',
           stage: '编码',
@@ -56,6 +56,9 @@ test('问题置顶并显示空转、挂起处置和运行详情', () => {
   expect(output).toContain('空转 5m（在等命令）');
   expect(output).toContain('评审轮次用尽｜已等 2m｜下一步：重新确认 blocker');
   expect(output).toContain('阶段 编码｜执行者 将军·gpt');
+  const withoutNext = heartbeat();
+  delete withoutNext.marshals[0]!.waiting[0]!.next;
+  expect(renderPanel(withoutNext, tick(), now, allMarshals, 120)).not.toContain('下一步');
 });
 
 test('用 tick 判断新鲜度并按 heartbeat.at 漂移时长', () => {
@@ -65,6 +68,12 @@ test('用 tick 判断新鲜度并按 heartbeat.at 漂移时长', () => {
   expect(fresh).toContain('已用 12m');
   expect(fresh).toContain('最近活动 ≥11m 前');
   expect(renderPanel(old, tick(4), now, allMarshals, 120)).toContain('⚠️ 巡检可能停了');
+  const current = heartbeat();
+  current.marshals[0]!.running[0]!.last_activity_s = 0;
+  current.marshals[0]!.running[0]!.coder = false;
+  expect(renderPanel(current, tick(), now, allMarshals, 30)).toContain('114127-582a｜demo');
+  const output = renderPanel(current, tick(), now, allMarshals, 120);
+  expect(output).toContain('最近活动 刚刚｜将军 已交回');
 });
 
 test('--cwd 优先匹配 owner.cwd，无 cwd 时回退 marshal.cwd', () => {

@@ -9,7 +9,7 @@ import { HOLD_POLICY, reasonOf } from './reasons';
 import { generalKey, type GeneralAssessment } from './stall';
 
 // prettier-ignore
-interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string; general?: GeneralAssessment }
+interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; coder?: boolean; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string; general?: GeneralAssessment }
 // prettier-ignore
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; code: string; waiting_for: string; waited_s: number; next?: string }[]; line: string }
 // prettier-ignore
@@ -31,6 +31,11 @@ const ownerId = (owner: Identity | null): string =>
 // prettier-ignore
 export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence): Heartbeat {
   const groups = new Map<string, Marshal>();
+  const coordination = new Map<string, { count: number; oldest: string }>();
+  for (const message of snapshot.coordMessages ?? []) if (!message.type && ['queued', 'surfaced', 'escalated'].includes(message.state)) {
+    const key = `${message.scope.kind}:${message.scope.id}`, found = coordination.get(key);
+    coordination.set(key, { count: (found?.count ?? 0) + 1, oldest: found && found.oldest < message.at ? found.oldest : message.at });
+  }
   let reclaim = 0, unowned = 0, unreadable = 0;
   const group = (owner: Identity, cwd: string): Marshal | undefined => {
     if (presenceOf(owner).state !== 'online') { reclaim++; return; }
@@ -51,17 +56,21 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
     if (row.state === 'running' && active.has(row.run_id)) for (const node of nodes) marshal.running.push({
       id: row.run_id, kind: 'run', title: row.engine?.title ?? '任务标题未知', stage: run?.stage ?? row.state,
-      ...(node.id ? { node: node.id } : {}), role: roleTag(node.role, node.model), model: node.model, state: row.state,
+      ...(node.id ? { node: node.id } : {}), coder: node.role === 'coder', role: roleTag(node.role, node.model), model: node.model, state: row.state,
       elapsed_s: elapsedAt(row, now), last_activity_s: age(row.lastEvent, now),
       estimate: snapshot.eta?.[row.run_id]?.nodes?.[node.id] ?? snapshot.eta?.[row.run_id]?.progress ?? unknownProgress(),
       ...(run?.reason ? { attention: run.reason } : {}),
       ...(snapshot.general?.[generalKey(row.run_id, node.id)] ? { general: snapshot.general[generalKey(row.run_id, node.id)] } : {}),
     });
-    const pending = row.coordination?.pending ?? 0;
+    const runPending = coordination.get(`run:${row.run_id}`);
     if (row.state !== 'running') {
       const code = row.engine?.reason.trim() ? row.engine.reason : row.askReason ?? row.state.replace('held:', ''), translated = reasonText(code), policy = (HOLD_POLICY as Partial<Record<string, { next?: string }>>)[code];
       marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code, waiting_for: translated !== code ? translated : reasonOf(code)?.description ?? '需要决策', waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0, ...(policy?.next ? { next: policy.next } : {}) });
-    } else if (pending) marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code: 'coordination_pending', waiting_for: `${String(pending)} 条协调消息`, waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0 });
+    } else if (runPending) marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code: 'coordination_pending', waiting_for: `${String(runPending.count)} 条协调消息`, waited_s: age(runPending.oldest, now) ?? 0 });
+  }
+  for (const marshal of groups.values()) {
+    const pending = coordination.get(`repo:${marshal.cwd}`);
+    if (pending) marshal.waiting.push({ id: `repo:${marshal.cwd}`, what: '仓库交接', code: 'coordination_pending', waiting_for: `${String(pending.count)} 条协调消息`, waited_s: age(pending.oldest, now) ?? 0 });
   }
   for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
     if (!job.launcher) { unowned++; continue; }
