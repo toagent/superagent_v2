@@ -233,6 +233,7 @@ test('S4: two detached runs sharing one target each publish exactly once', async
           SCENARIO_ID: 'S4',
           SCENARIO_TARGET: target,
           SCENARIO_SUFFIX: suffix,
+          GIT_AUTHOR_DATE: suffix === 'a' ? '2000-01-01T00:00:00Z' : '2000-01-01T00:00:01Z',
           SCENARIO_RESULT: output,
           SCENARIO_BLOCK_AFTER_COMPLETED_NODE: 'integrate-m1.final-accept-m1',
           SCENARIO_BLOCK_MARKER: marker,
