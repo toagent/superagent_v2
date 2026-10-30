@@ -115,13 +115,14 @@ function sourceSelectors(testScript: string | undefined): SelectorParseResult {
 }
 
 function packageTestSelectors(
-  manifest: { testScript: string | undefined; testGroups: unknown },
+  manifest: { name?: string | undefined; testScript: string | undefined; testGroups: unknown },
   packageDirectory: string
 ): SelectorParseResult {
   const localRunner = `bun run ${normalizePath(relative(packageDirectory, join(REPO_ROOT, 'scripts/package-tests.ts')))}`;
-  const runsSharedRunner = [PACKAGE_TEST_RUNNER, localRunner].includes(
-    manifest.testScript?.trim() ?? ''
-  );
+  const testScript = manifest.testScript?.trim() ?? '';
+  const runsSharedRunner =
+    [PACKAGE_TEST_RUNNER, localRunner].includes(testScript) ||
+    (manifest.name === '@wetamp/superagent' && testScript === './scripts/test.sh');
   if (runsSharedRunner) {
     try {
       const selectors = resolvePackageTestGroups(packageDirectory, manifest)

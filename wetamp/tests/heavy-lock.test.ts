@@ -25,6 +25,7 @@ function fixture(): { root: string; env: Record<string, string> } {
     join(root, 'job.sh'),
     `#!/bin/sh
 set -eu
+echo $$ > "$COUNTER_ROOT/pid.$JOB_ID"
 while ! mkdir "$COUNTER_ROOT/mutex" 2>/dev/null; do sleep 0.01; done
 active=$(cat "$COUNTER_ROOT/active"); active=$((active + 1)); echo "$active" > "$COUNTER_ROOT/active"
 max=$(cat "$COUNTER_ROOT/max"); [ "$active" -le "$max" ] || echo "$active" > "$COUNTER_ROOT/max"
@@ -90,8 +91,17 @@ test('killing a lock holder lets the next suite acquire the slot', async () => {
   const next = run(env, 'next');
   holder.kill('SIGKILL');
   await holder.exited;
-  expect(await next.exited).toBe(0);
-  expect(existsSync(join(root, 'started.next'))).toBe(true);
+  try {
+    expect(await next.exited).toBe(0);
+    expect(existsSync(join(root, 'started.next'))).toBe(true);
+  } finally {
+    const holderJob = Number(readFileSync(join(root, 'pid.holder'), 'utf8'));
+    try {
+      process.kill(holderJob, 'SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  }
 });
 
 test('selectors and an inherited heavy slot bypass the lock', async () => {
