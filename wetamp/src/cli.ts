@@ -1016,10 +1016,10 @@ function recoverRun(
     run => {
       Object.assign(l, loadLedger(l.run_id));
       if (
-        !run.working_path ||
+        run.working_path &&
         !statSync(run.working_path, { throwIfNoEntry: false })?.isDirectory()
       ) {
-        invalidWorkingPath = run.working_path ?? '<missing>';
+        invalidWorkingPath = run.working_path;
         return 'environment';
       }
       staleSnapshot = staleEngineSnapshot(l);

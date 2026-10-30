@@ -35,7 +35,7 @@ import type { Plan } from '../src/plan';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 
-test('recover refuses a missing working_path before admission or launch', () => {
+test('recover refuses a deleted working_path before admission or launch', () => {
   // prettier-ignore
   const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), dir = join(root, 'stub');
   mkdirSync(join(home, 'runs'), { recursive: true });
@@ -58,6 +58,36 @@ test('recover refuses a missing working_path before admission or launch', () => 
     expect(JSON.parse(output.mock.calls.at(-1)?.[0] ?? '{}')).toMatchObject({ reason: 'environment', working_path: missing });
     expect(existsSync(join(home, 'archon/execution-admissions/old.json'))).toBe(false);
     expect(readFileSync(join(dir, 'calls'), 'utf8')).not.toContain('workflow resume');
+  } finally {
+    transport.mockRestore();
+    output.mockRestore();
+    process.env = env;
+  }
+});
+
+test('recover resumes when working_path was not recorded', () => {
+  // prettier-ignore
+  const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), dir = join(root, 'stub');
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  mkdirSync(join(dir, 'used'), { recursive: true });
+  const run = { id: 'old', status: 'failed' };
+  writeFileSync(join(dir, 'get-000.json'), JSON.stringify(run));
+  const env = { ...process.env };
+  // prettier-ignore
+  Object.assign(process.env, { ...fixtureEnv(), SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+  const transport = spyOn(archonModule, 'archon').mockImplementation(args =>
+    args[1] === 'get' ? { code: 0, out: JSON.stringify(run), err: '' } : fixtureArchon(dir, args)
+  );
+  const output = spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    // prettier-ignore
+    const ledger: Ledger = { run_id: 'operator', archon_run_id: 'old', repo, branch: 'sa/operator', workflow: 'sa-operator', workflow_hash: engineHash(), engine_hash: engineHash(), gen_dir: join(root, 'gen'), plan: '', console: 'codex', started_at: '', log: '', transcript: '', controller: coordination.coord().claim(coordination.repoScope(repo), coordination.caller()).controller };
+    writeFileSync(join(home, 'runs/operator.json'), JSON.stringify(ledger));
+    expect(main(['recover', 'operator'])).toBe(0);
+    expect(JSON.parse(output.mock.calls.at(-1)?.[0] ?? '{}')).toMatchObject({ ok: true });
+    expect(readFileSync(join(dir, 'calls'), 'utf8')).toContain(
+      'workflow resume old --detach --json'
+    );
   } finally {
     transport.mockRestore();
     output.mockRestore();
