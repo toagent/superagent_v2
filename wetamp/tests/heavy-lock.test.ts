@@ -53,13 +53,14 @@ rmdir "$COUNTER_ROOT/mutex"
       COUNTER_ROOT: root,
       SA_HEAVY_LOCK_FILE: join(root, 'suite.lock'),
       SA_HEAVY_LOCK_HELD: '',
+      SA_ACCEPTANCE: '1',
     },
   };
 }
 
-function run(env: Record<string, string>, id: string, args: string[] = []) {
+function run(env: Record<string, string>, id: string, args: string[] = [], cwd = wetamp) {
   return Bun.spawn([script, ...args], {
-    cwd: wetamp,
+    cwd,
     env: { ...env, JOB_ID: id },
     stdout: 'ignore',
     stderr: 'pipe',
@@ -75,6 +76,22 @@ async function maxFor(extra: Record<string, string>, args: string[] = []): Promi
 
 test('four complete suites share one machine-wide slot', async () => {
   expect(await maxFor({})).toBe(1);
+});
+
+test('general worktrees reject only unapproved complete suites before taking a slot', async () => {
+  const { root, env } = fixture();
+  const general = join(root, 'worktrees/sa/run/wetamp');
+  const outside = join(root, 'ordinary/wetamp');
+  mkdirSync(general, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const unapproved = { ...env, SA_ACCEPTANCE: '' };
+  const blocked = run(unapproved, 'blocked', [], general);
+  expect(await blocked.exited).toBe(2);
+  expect(await new Response(blocked.stderr).text()).toContain('完整套件由验收运行');
+  expect(existsSync(join(root, 'started.blocked'))).toBe(false);
+  expect(await run(env, 'acceptance', [], general).exited).toBe(0);
+  expect(await run(unapproved, 'focused', ['tests/one.test.ts'], general).exited).toBe(0);
+  expect(await run(unapproved, 'outside', [], outside).exited).toBe(0);
 });
 
 test('a complete suite leaves two CPUs free for the machine', async () => {

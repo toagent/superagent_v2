@@ -328,6 +328,7 @@ export const projectEnvironment = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv
     )
   ),
   PYTHONDONTWRITEBYTECODE: '1',
+  SA_ACCEPTANCE: '1',
 });
 export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
   createHmac('sha256', cacheKey())

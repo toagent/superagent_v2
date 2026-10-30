@@ -3171,7 +3171,7 @@ describe('sa-check script', () => {
   });
   test('env: environment commands retain engine node variables', () => {
     const root = tmp();
-    const command = `bun -e 'if (process.env.INPUTS_KIND !== "env" || process.env.INPUTS_UNUSED !== "node-input" || process.env.WORKFLOW_ID !== "node-workflow" || !process.env.ARTIFACTS_DIR || process.env.SA_COORD_ADMISSION !== "fixture-admission" || process.env.SUPERAGENT_ROLE !== "worker") process.exit(1)'`;
+    const command = `bun -e 'if (process.env.INPUTS_KIND !== "env" || process.env.INPUTS_UNUSED !== "node-input" || process.env.WORKFLOW_ID !== "node-workflow" || !process.env.ARTIFACTS_DIR || process.env.SA_COORD_ADMISSION !== "fixture-admission" || process.env.SUPERAGENT_ROLE !== "worker" || process.env.SA_ACCEPTANCE !== undefined) process.exit(1)'`;
     const r = runScript(
       gitRepo(root),
       {
@@ -3952,7 +3952,7 @@ describe('sa-check script', () => {
     const counter = join(root, 'n'),
       art = join(root, 'art'),
       cache = join(art, 'accept-cache');
-    const cmd = `echo x >> ${counter}; test "$SA_REVIEW_MODE" = good && bun -e 'if (Object.keys(process.env).some(k => k.startsWith("INPUTS_") || ["ARCHON_NODE_EXECUTION", "TYPED_ARTIFACTS_FILE", "STATE_DIR", "LOG_DIR", "BASE_BRANCH", "USER_MESSAGE", "CONTEXT"].includes(k))) process.exit(1)'`;
+    const cmd = `echo x >> ${counter}; test "$SA_REVIEW_MODE" = good && test "$SA_ACCEPTANCE" = 1 && bun -e 'if (Object.keys(process.env).some(k => k.startsWith("INPUTS_") || ["ARCHON_NODE_EXECUTION", "TYPED_ARTIFACTS_FILE", "STATE_DIR", "LOG_DIR", "BASE_BRANCH", "USER_MESSAGE", "CONTEXT"].includes(k))) process.exit(1)'`;
     const check = { cmd, timeout_s: 5, cache: true };
     const claudeEnv = {
       CLAUDECODE: '1',
