@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { mkdirSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import {
   bootstrapLaunchd,
@@ -13,14 +14,11 @@ const result = (status = 0) => ({ status, signal: null, stdout: '', stderr: '', 
 
 test('mutation rejects a fake-home plist before invoking the runner', () => {
   const root = tmp(),
-    actual = join(root, 'fake', 'Library', 'LaunchAgents'),
-    system = join(root, 'system');
+    actual = join(root, 'fake', 'Library', 'LaunchAgents');
   mkdirSync(actual, { recursive: true });
-  mkdirSync(join(system, 'Library', 'LaunchAgents'), { recursive: true });
   let calls = 0;
   expect(() =>
     bootstrapLaunchd('gui/501', join(actual, 'com.wetamp.superagent.supervise-tick.plist'), {
-      accountHome: () => system,
       runner: () => (calls++, result()),
     })
   ).toThrow('launchd mutation refused');
@@ -28,13 +26,10 @@ test('mutation rejects a fake-home plist before invoking the runner', () => {
 });
 
 test('mutation invokes the injected runner for the system user LaunchAgents directory', () => {
-  const system = tmp(),
-    dir = join(system, 'Library', 'LaunchAgents'),
+  const dir = join(userInfo().homedir, 'Library', 'LaunchAgents'),
     plist = join(dir, 'fixture.plist'),
     calls: string[][] = [];
-  mkdirSync(dir, { recursive: true });
   kickstartLaunchd('gui/501/fixture', plist, {
-    accountHome: () => system,
     runner: args => (calls.push(args), result()),
   });
   expect(calls).toEqual([['kickstart', '-k', 'gui/501/fixture']]);
