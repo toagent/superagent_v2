@@ -59,11 +59,12 @@ const frame = (
   width: number,
   rows: number,
   quota?: string,
-  scopeLabel?: string
+  scopeLabel?: string,
+  currentTick: TickRecord | null = tick
 ): string =>
   renderToString(
     createElement(HeartbeatFrame, {
-      model: panelModel(value, tick, now, undefined, scopeLabel),
+      model: panelModel(value, currentTick ?? undefined, now, undefined, scopeLabel),
       quota,
       now,
       width,
@@ -105,6 +106,17 @@ test('问题置顶、验收流水线与 quota 状态栏', () => {
   expect(output.split('\n').find(line => line.includes('任务1'))).toContain('run-1');
   expect(output.trimEnd().split('\n').at(-1)).toContain('额度：Claude 今日 $1.23');
   expect(frame(heartbeat([]), 100, 20).trimEnd().split('\n').at(-1)).toContain('额度：未配置');
+});
+
+test('标题与状态栏按巡检时间显示新鲜度，tick 缺失时回退心跳时间', () => {
+  const old = heartbeat([]);
+  old.at = new Date(now - 6 * 60_000).toISOString();
+  const fresh = frame(old, 100, 20, undefined, undefined, {
+    at: new Date(now - 30_000).toISOString(),
+  });
+  expect(fresh.match(/巡检 30s 前/g)).toHaveLength(2);
+  expect(fresh).not.toContain('数据 360s 前');
+  expect(frame(old, 100, 20, undefined, undefined, null)).toContain('巡检 360s 前');
 });
 
 test('状态图标完整且宽屏双列、普通宽度单列', () => {

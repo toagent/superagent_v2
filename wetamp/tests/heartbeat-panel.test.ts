@@ -98,18 +98,27 @@ test('concurrent ensures create once with the right command and failures stay co
   expect(creates[0].join(' ')).toContain(`'heartbeat' '--watch' '--cwd' '${fresh.repo}'`);
   expect(creates[0].join(' ')).toContain(`bin/superagent-shim' 'heartbeat'`);
   const generated = creates[0][creates[0].indexOf('--command') + 1]!;
-  expect(generated).toContain('if [ "$status" -eq 75 ]; then continue; fi');
+  expect(generated).toContain('case $? in 75) continue;; esac');
   expect(generated).toContain("echo '心跳面板暂不可用，60 秒后重试'; sleep 60");
   const fake = join(fresh.home, 'fake'),
     marker = join(fresh.home, 'restarted');
-  writeFileSync(fake, `#!/bin/sh\n[ -f '${marker}' ] && exit 0\ntouch '${marker}'\nexit 75\n`, {
-    mode: 0o755,
-  });
+  writeFileSync(
+    fake,
+    `#!/bin/sh\nprintf x >> '${marker}'\n[ "$(wc -c < '${marker}')" -eq 1 ] && exit 75\nexit 0\n`,
+    { mode: 0o755 }
+  );
   const proof = generated
     .replace(/'[^']*superagent-shim'/, `'${fake}'`)
     .replace('sleep 60', 'break');
-  expect(Bun.spawnSync(['bash', '-c', proof]).exitCode).toBe(0);
-  expect(existsSync(marker)).toBe(true);
+  const shells = ['/bin/sh', 'bash', ...(existsSync('/bin/zsh') ? ['/bin/zsh'] : [])];
+  for (const shell of shells) {
+    writeFileSync(marker, '');
+    const args = shell === '/bin/zsh' ? [shell, '-f', '-i', '-c', proof] : [shell, '-c', proof],
+      result = Bun.spawnSync(args, { stdout: 'pipe', stderr: 'pipe' });
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(marker, 'utf8')).toBe('xx');
+    expect(result.stderr.toString()).not.toMatch(/read-only/i);
+  }
 
   const failed = fixture('fail');
   expect(run(failed).exitCode).toBe(0);

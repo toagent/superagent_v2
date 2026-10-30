@@ -213,10 +213,10 @@ export function HeartbeatFrame({
     capacity = width < 20 ? 0 : Math.floor(cardBudget / cardRows) * columns,
     shown = model.runs.slice(0, capacity),
     hidden = model.runs.length - shown.length,
-    dataAge = Math.max(0, Math.floor((now - Date.parse(model.heartbeatAt)) / 1000)),
+    checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
     clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }),
     health = model.health.ok
-      ? `● 巡检正常 · 数据 ${String(dataAge)}s 前`
+      ? `● 巡检正常 · 巡检 ${String(checkedAge)}s 前`
       : `⚠ 巡检可能停了：${model.health.messages.join('；')}`,
     status = `${clock} · ${health}`,
     titleWidth = Math.max(0, width - Bun.stringWidth(status) - 1),
@@ -224,7 +224,7 @@ export function HeartbeatFrame({
       ? `${fit(`◆ 心跳 · ${model.projects}`, titleWidth)} ${status}`
       : fit(status, width),
     footer = fit(
-      `在跑 ${String(model.stats.running)} · 等待 ${String(model.stats.waiting)} · 待回收 ${String(model.stats.reclaimPending)} · 历史遗留 ${String(model.stats.legacy)} · 数据 ${String(dataAge)}s 前`,
+      `在跑 ${String(model.stats.running)} · 等待 ${String(model.stats.waiting)} · 待回收 ${String(model.stats.reclaimPending)} · 历史遗留 ${String(model.stats.legacy)} · 巡检 ${String(checkedAge)}s 前`,
       width
     );
   return (

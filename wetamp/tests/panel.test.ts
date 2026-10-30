@@ -104,4 +104,6 @@ test('panelModel 集中结构化统计、阶段键与原始时长', () => {
   expect(model.stats).toEqual({ running: 1, waiting: 1, reclaimPending: 2, legacy: 3 });
   expect(model.runs[0]).toMatchObject({ stageKind: 'verify', elapsed_s: 120 });
   expect(model.attention).toHaveLength(2);
+  expect(model.checkedAt).toBe(tick().at);
+  expect(panelModel(value, undefined, now).checkedAt).toBe(value.at);
 });

@@ -81,6 +81,7 @@ export interface PanelAttention {
 }
 export interface PanelModel {
   heartbeatAt: string;
+  checkedAt: string;
   health: ReturnType<typeof tickHealth>;
   projects: string;
   attention: PanelAttention[];
@@ -145,6 +146,7 @@ export function panelModel(
   }
   return {
     heartbeatAt: heartbeat?.at ?? new Date(now).toISOString(),
+    checkedAt: tick?.at ?? heartbeat?.at ?? new Date(now).toISOString(),
     health: tickHealth(tick, now),
     projects: selected.map(item => item.project).join('、') || scopeLabel,
     attention,
