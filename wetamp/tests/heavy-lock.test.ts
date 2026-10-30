@@ -116,7 +116,7 @@ test('a complete suite uses at most half the machine CPUs', async () => {
   expect(await run(env, 'budget').exited).toBe(0);
   const args = readFileSync(join(root, 'args.budget'), 'utf8').trim();
   expect(args).toEndWith(
-    `--parallel=${Math.max(1, Math.floor(cpus().length / 2))} tests/ scripts/`
+    `--timeout 30000 --parallel=${Math.max(1, Math.floor(cpus().length / 2))} tests/ scripts/`
   );
 });
 
