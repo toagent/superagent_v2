@@ -87,7 +87,8 @@ test('project rules run the full wetamp suite for every mutation target', () => 
   const required = rules.required_checks?.find(
     rule => rule.check.cmd === 'cd wetamp && bun run test'
   );
-  expect(required?.check).toMatchObject({ cache: true, requires_prior_pass: true });
+  expect(required?.check).toMatchObject({ cache: true });
+  expect(required?.check.requires_prior_pass).toBeUndefined();
   for (const file of new Set(mutations.map(mutation => `wetamp/${mutation.file}`)))
     expect(required?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
 });

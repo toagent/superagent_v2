@@ -78,11 +78,34 @@ test('required checks append once without changing requirement indexes or obeyin
     'cd wetamp && bun run type-check',
     'cd wetamp && bun run test',
   ]);
-  expect(wetampChecks.at(-1)?.requires_prior_pass).toBe(true);
+  expect(wetampChecks.at(-1)?.requires_prior_pass).toBeUndefined();
   expect(wetampChecks.some(check => check.cmd.includes('mutations.test.ts'))).toBe(false);
 
   self.packages[0].scope.write = ['packages/paths/src/index.ts'];
   expect(applyPlanRules(self).plan.packages[0].accept.at(-1)?.cmd).toBe(
     'cd wetamp && bun run test'
   );
+});
+
+test('required scope rejects missing companion files even with an override', () => {
+  const s = setup();
+  s.rules({
+    required_scope: [
+      {
+        when: ['tools/qa'],
+        include: ['tools/qa/contract.ts', 'tools/qa/scenario.test.ts'],
+      },
+    ],
+  });
+  expect(() => applyPlanRules(s.plan())).toThrow(
+    /scope\.write missing tools\/qa\/contract\.ts, tools\/qa\/scenario\.test\.ts/
+  );
+  expect(() => applyPlanRules(s.plan(), 'approved exception')).toThrow(/required_scope/);
+
+  const complete = s.plan();
+  complete.packages[0].scope.write.push('tools/qa/contract.ts', 'tools/qa/scenario.test.ts');
+  expect(applyPlanRules(complete).rejected).toBe(false);
+  const unrelated = s.plan();
+  unrelated.packages[0].scope.write = ['docs/**'];
+  expect(applyPlanRules(unrelated).rejected).toBe(false);
 });

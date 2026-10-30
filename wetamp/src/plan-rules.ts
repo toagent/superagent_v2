@@ -8,6 +8,7 @@ import { covered } from './plan-precheck';
 interface ProjectRules {
   frozen?: string[];
   required_checks?: { when: string[]; check: Check }[];
+  required_scope?: { when: string[]; include: string[] }[];
   limits?: { max_size?: 'S' | 'M' | 'L' };
 }
 interface Validator {
@@ -78,6 +79,14 @@ export function applyPlanRules(plan: Plan, override?: string) {
     const maximum = loaded.rules.limits?.max_size;
     if (maximum && sizeRank[pkg.size] > sizeRank[maximum])
       warnings.push(`[${pkg.id}] size ${pkg.size} exceeds limits.max_size ${maximum}`);
+    for (const required of loaded.rules.required_scope ?? []) {
+      if (!intersects(pkg.scope.write, required.when)) continue;
+      const missing = required.include.filter(path => !covered(path, pkg.scope.write));
+      if (missing.length)
+        throw new Error(
+          `project rules required_scope: [${pkg.id}] scope.write missing ${missing.join(', ')}`
+        );
+    }
     const accept = [...pkg.accept];
     for (const required of loaded.rules.required_checks ?? [])
       if (
