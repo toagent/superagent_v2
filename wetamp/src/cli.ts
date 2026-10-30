@@ -48,7 +48,7 @@ import { cockpit } from './board/cockpit';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, renderPanel } from './panel';
 // prettier-ignore
-import { HEARTBEAT_INTERVAL_MS, heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
+import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { reclaimOnce, reclaimTick } from './reclaim';
 import {
@@ -1322,8 +1322,7 @@ const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
 
 /** Observe engine state and inbox; continuation is an explicit engine action. */
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
-  const effective = Math.min(timeoutS, HEARTBEAT_INTERVAL_MS / 1000);
-  const deadline = waitClock.now() + effective * 1000;
+  const deadline = waitClock.now() + timeoutS * 1000;
   for (;;) {
     const inbox = coord()
       .surfaced(who)
@@ -1338,8 +1337,7 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     const general = generalAttention(l.run_id, identityKey(who), waitClock.now());
     if (general)
       return { ...summary(l, run, c), attention: general, heartbeat: waitHeartbeat(who) };
-    // prettier-ignore
-    if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who), ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}) };
+    if (left <= 0) return { ...summary(l, run, c), timed_out: true, heartbeat: waitHeartbeat(who) };
     const notification = waitNotification(l.archon_run_id, l.repo, Math.min(left, 60));
     if (notification.kind !== 'attention') continue;
     const refreshedInbox = coord()
@@ -1356,7 +1354,6 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
       ...summary(l, refreshed, refreshedClass),
       attention: notification.attention,
       heartbeat: waitHeartbeat(who),
-      ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}),
     };
   }
 }

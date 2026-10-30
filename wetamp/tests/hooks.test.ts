@@ -547,7 +547,7 @@ describe('guard.cjs', () => {
       gate(p, 'claude', { runs, processes, rootPid: 10, ...deps });
     const blocked = check();
     expect(blocked.decision).toBe('block');
-    expect(blocked.reason).toContain('superagent wait run-b --timeout 900');
+    expect(blocked.reason).toContain('superagent wait run-b --timeout 7000');
     expect(blocked.reason).not.toContain('wait run-a');
     expect(check({}, { ...payload, stop_hook_active: true }).decision).toBeUndefined();
     expect(check({ processes: () => `${processes()}\n12 10 bun cli.ts wait run-b` })).toBeNull();

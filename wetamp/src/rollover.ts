@@ -313,7 +313,7 @@ export class Rollover {
     r.state = 'accepted';
     r.accepted_at = this.d.now().toISOString();
     this.save(r);
-    const runs = r.runs.map(id => { const run = this.d.coord.resolveRun(id); return { run: id, status: run ? this.runStatus(run) : 'missing', wait: `superagent wait ${id} --timeout 900`, skipped: skipped[id] }; });
+    const runs = r.runs.map(id => { const run = this.d.coord.resolveRun(id); return { run: id, status: run ? this.runStatus(run) : 'missing', wait: `superagent wait ${id} --timeout 7000`, skipped: skipped[id] }; });
     const jobs = this.d
       .jobs()
       .filter(j => j.launcher?.session_id === r.from.session_id && ['queued', 'running'].includes(j.state))
