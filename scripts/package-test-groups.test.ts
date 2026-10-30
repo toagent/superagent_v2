@@ -78,16 +78,6 @@ test('inventory accepts independent additions and rejects invalid groups and sta
   write(
     root,
     'package.json',
-    JSON.stringify({
-      testGroups: [['src/']],
-      testGroupsRunner: './scripts/test.sh',
-      scripts: { test: './scripts/test.sh' },
-    })
-  );
-  expect(inspectPackage(root)).toBeUndefined();
-  write(
-    root,
-    'package.json',
     JSON.stringify({ testGroups: [['src/']], scripts: { test: 'bun test src/' } })
   );
   expect(inspectPackage(root)?.unsupportedDeclarations.length).toBe(1);

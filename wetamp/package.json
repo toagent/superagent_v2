@@ -33,6 +33,5 @@
       "tests/",
       "scripts/"
     ]
-  ],
-  "testGroupsRunner": "./scripts/test.sh"
+  ]
 }
