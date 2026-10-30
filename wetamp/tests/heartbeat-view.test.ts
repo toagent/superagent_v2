@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
-import { createElement } from 'react';
-import { renderToString } from 'ink';
+import { EventEmitter } from 'node:events';
 import { mkdirSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { HeartbeatFrame } from '../src/board/HeartbeatView';
+import { createElement } from 'react';
+import { renderToString } from 'ink';
+import { HeartbeatFrame, registerHeartbeatResizeClear } from '../src/board/HeartbeatView';
 import { heartbeatEngineExitCode } from '../src/cli';
 import { unknownProgress } from '../src/board/eta';
 import { panelModel } from '../src/panel';
@@ -53,9 +54,21 @@ const heartbeat = (
     },
   ],
 });
-const frame = (value: Heartbeat, width: number, rows: number, quota?: string): string =>
+const frame = (
+  value: Heartbeat | undefined,
+  width: number,
+  rows: number,
+  quota?: string,
+  scopeLabel?: string
+): string =>
   renderToString(
-    createElement(HeartbeatFrame, { model: panelModel(value, tick, now), quota, now, width, rows }),
+    createElement(HeartbeatFrame, {
+      model: panelModel(value, tick, now, undefined, scopeLabel),
+      quota,
+      now,
+      width,
+      rows,
+    }),
     { columns: width }
   );
 
@@ -89,6 +102,7 @@ test('问题置顶、验收流水线与 quota 状态栏', () => {
   expect(output).toContain('✓ 编码');
   expect(output).toContain('● 验收');
   expect(output).toContain('○ 评审');
+  expect(output.split('\n').find(line => line.includes('任务1'))).toContain('run-1');
   expect(output.trimEnd().split('\n').at(-1)).toContain('额度：Claude 今日 $1.23');
   expect(frame(heartbeat([]), 100, 20).trimEnd().split('\n').at(-1)).toContain('额度：未配置');
 });
@@ -137,4 +151,43 @@ test('行数不足裁剪卡片且窄屏去掉边框，状态栏仍在末尾', ()
   const narrow = frame(value, 50, 40);
   expect(narrow).not.toContain('╭');
   expect(narrow).not.toContain('╰');
+});
+
+test('长项目名与额度在各尺寸下不超宽高预算', () => {
+  const value = heartbeat(['working', 'idle', 'stalled']);
+  value.marshals[0]!.project = '.bestifa-land-wt-项目'.repeat(8);
+  const quota =
+    '⚠️ Codex 超 $500 · Claude 今日 $423.10 · （2/2 可用） | Codex 今日 $810.46 · 5h 余 100% · 7d 余 36% · （3/4 可用）'.repeat(
+      2
+    );
+  const clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false });
+  for (const columns of [50, 78, 100, 140]) {
+    for (const rows of [16, 30]) {
+      const lines = frame(value, columns, rows, quota).split('\n');
+      expect(lines.every(line => Bun.stringWidth(Bun.stripANSI(line)) <= columns)).toBe(true);
+      expect(lines.length).toBeLessThanOrEqual(rows - 1);
+      expect(lines[0]).toContain(clock);
+      expect(lines[0]).toContain('巡检正常');
+      expect(lines.slice(-2).filter(line => line.includes('额度：'))).toHaveLength(1);
+    }
+  }
+  const realQuota =
+    '⚠️ Codex 超 $500 · Claude 今日 $425.48 · （2/2 可用） | Codex 今日 $814.83 · 5h 余 100% · 7d 余 36% · （3/4 可用）';
+  const quotaLines = frame(value, 78, 30, realQuota).trimEnd().split('\n').slice(-2);
+  expect(quotaLines[1]).not.toContain('额度：');
+  expect(quotaLines.map(line => Bun.stringWidth(line) <= 78)).toEqual([true, true]);
+  expect(quotaLines[0]!.replace('额度：', '') + quotaLines[1]!.trimStart()).toBe(realQuota);
+  const empty = frame(undefined, 100, 20, undefined, 'BestIFA');
+  expect(empty).toContain('◆ 心跳 · BestIFA');
+  expect(empty).toContain('暂无在跑任务');
+});
+
+test('resize 先清屏再触发组件重渲染', () => {
+  const stdout = new EventEmitter();
+  const calls: string[] = [];
+  const unregister = registerHeartbeatResizeClear(stdout, () => calls.push('clear'));
+  stdout.on('resize', () => calls.push('render'));
+  stdout.emit('resize');
+  expect(calls).toEqual(['clear', 'render']);
+  unregister();
 });
