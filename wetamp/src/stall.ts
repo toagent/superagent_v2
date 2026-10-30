@@ -137,11 +137,14 @@ export function observeGeneral(row: BoardRow, node: NonNullable<BoardRow['active
 export function collectGenerals(snapshot: Snapshot, now = Date.now(), run: Run = command): Record<string, GeneralAssessment> {
   const path = `${home().sa}/stall.json`; let previous: { runs?: Record<string, StallRecord> } = {};
   try { previous = JSON.parse(readFileSync(path, 'utf8')) as typeof previous; } catch { /* fresh observation */ }
-  const processes = processSnapshot(run), runs: Record<string, StallRecord> = {}, result: Record<string, GeneralAssessment> = {};
-  for (const row of snapshot.rows.filter(x => x.state === 'running')) for (const node of row.activeNodes ?? []) { let scope: string[] | undefined;
-    if (node.role === 'coder') try { const plan = planOf(loadLedger(row.run_id)); scope = plan ? nodePackages(plan).get(node.id) : undefined; } catch { scope = undefined; }
+  const active = snapshot.rows.flatMap(row => row.state === 'running' ? (row.activeNodes ?? []).filter(node => node.role === 'coder').map(node => ({ row, node })) : []);
+  const runs: Record<string, StallRecord> = {}, result: Record<string, GeneralAssessment> = {};
+  if (active.length === 0) { writeAtomic(path, JSON.stringify({ at: new Date(now).toISOString(), runs }, null, 2) + '\n'); return result; }
+  const processes = processSnapshot(run);
+  for (const { row, node } of active) { let scope: string[] | undefined;
+    try { const plan = planOf(loadLedger(row.run_id)); scope = plan ? nodePackages(plan).get(node.id) : undefined; } catch { scope = undefined; }
     const record = assessGeneral(previous.runs?.[row.run_id], observeGeneral(row, node, scope, processes, run), now);
-    result[generalKey(row.run_id, node.id)] = record; if (node.role === 'coder') runs[row.run_id] = record;
+    result[generalKey(row.run_id, node.id)] = record; runs[row.run_id] = record;
   }
   writeAtomic(path, JSON.stringify({ at: new Date(now).toISOString(), runs }, null, 2) + '\n'); return result;
 }

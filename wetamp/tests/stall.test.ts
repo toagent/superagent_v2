@@ -88,9 +88,13 @@ test('collectGenerals persists current run and maps node scope from the frozen p
   const oldSa = process.env.SUPERAGENT_HOME, oldArchon = process.env.ARCHON_HOME;
   process.env.SUPERAGENT_HOME = root; process.env.ARCHON_HOME = root;
   try {
-    const run = ((name: string) => name === 'ps' || name === 'lsof' ? result('') : result(' M core.txt\0')) as never;
+    const calls: string[] = [], run = ((name: string) => { calls.push(name); return name === 'ps' || name === 'lsof' ? result('') : result(' M core.txt\0'); }) as never;
     const snap: Snapshot = { at: new Date(now).toISOString(), summary: {}, rows: [row(repo)] };
+    const reviewer = { ...snap, rows: [{ ...row(repo), activeNodes: [{ ...row(repo).activeNodes![0], role: 'reviewer' }] }] };
+    expect(collectGenerals(reviewer, now, run)).toEqual({}); expect(calls).toEqual([]);
+    expect(JSON.parse(readFileSync(join(root, 'stall.json'), 'utf8'))).toEqual({ at: new Date(now).toISOString(), runs: {} });
     const general = collectGenerals(snap, now, run), saved = JSON.parse(readFileSync(join(root, 'stall.json'), 'utf8'));
+    expect(calls.filter(x => x === 'ps')).toHaveLength(1); expect(calls.filter(x => x === 'lsof')).toHaveLength(1);
     expect(general[generalKey('run', 'code-core')]?.state).not.toBe('unknown');
     expect(saved).toMatchObject({ at: new Date(now).toISOString(), runs: { run: { node: 'code-core' } } });
   } finally {
