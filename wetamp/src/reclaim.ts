@@ -1,10 +1,10 @@
-import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 // prettier-ignore
 import { Coordination, coord, identityKey, runScope, same, type Identity, type RunRef } from './coord';
 import { getRun, runStatuses } from './archon';
 import { writeAtomic } from './config';
+import { loadLedger, mutateLedger } from './ledger';
 
 // prettier-ignore
 interface Observation { run: string; repo: string; first_offline_at?: number; last_offline_at?: number; last_online_at?: number; count: number; owner: Identity; generation: number }
@@ -12,7 +12,6 @@ interface Observation { run: string; repo: string; first_offline_at?: number; la
 interface Entry { id: string; run: string; from: Identity; to: Identity; expected_generation: number; observation?: Pick<Observation, 'first_offline_at' | 'last_offline_at' | 'count'>; state: 'transferring' | 'transferred' | 'reauthorized' | 'abandoned_attempt'; at: string }
 // prettier-ignore
 export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; skip_reasons: Record<string, 'repository_unavailable'>; pending: string[]; historical: string[] }
-const operator = () => createRequire(import.meta.url)('./cli.ts') as typeof import('./cli');
 // prettier-ignore
 const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
 
@@ -25,8 +24,8 @@ export class Reclaimer {
   private append(entry: Entry): void { this.c.locked(() => { this.write(this.journal, [...values<Entry>(this.journal), entry]); }); }
   private latest(): Map<string, Entry> { const out = new Map<string, Entry>(); for (const e of values<Entry>(this.journal)) out.set(e.run, e); return out; }
   private event(run: RunRef, action: string, ok: boolean, evidence: Record<string, unknown>): void {
-    const ledger = operator().loadLedger(run.run_id);
-    operator().updateLedger(ledger, cur => (cur.intervention_events ??= []).push({ at: new Date(this.now()).toISOString(), action, reason: action, origin: 'engine', source: 'superagent', ok, ...(!ok ? { error: 'Error' } : {}), evidence }));
+    const ledger = loadLedger(run.run_id);
+    mutateLedger(ledger, cur => (cur.intervention_events ??= []).push({ at: new Date(this.now()).toISOString(), action, reason: action, origin: 'engine', source: 'superagent', ok, ...(!ok ? { error: 'Error' } : {}), evidence }));
   }
   observe(): Observation[] {
     this.unavailable.clear();

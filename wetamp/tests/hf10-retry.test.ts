@@ -100,6 +100,8 @@ for (const scope of ['package', 'milestone'] as const)
       ARCHON_HOME: join(root, 'home/archon'),
       SUPERAGENT_WRITE_ROOTS: root,
       SA_ARCHON_BIN: '',
+      SA_ACCEPTANCE: '',
+      SA_HEAVY_LOCK_HELD: '',
       SA_SUPERVISOR: py,
       AGENT_SUPERVISOR_STATE: join(root, 'supervisor'),
       XDG_STATE_HOME: join(root, 'state'),

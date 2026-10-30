@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
@@ -164,7 +165,12 @@ test('heavy slot publishes live holder metadata and ignores a stale holder', asy
   const metadata = readFileSync(holderFile, 'utf8');
   expect(metadata).toContain('pid=');
   expect(metadata).toContain('command=');
-  expect(metadata).toContain(`cwd=${wetamp}`);
+  const cwd = metadata
+    .split('\n')
+    .find(line => line.startsWith('cwd='))
+    ?.slice(4);
+  expect(cwd).toBeDefined();
+  expect(realpathSync(cwd!)).toBe(realpathSync(wetamp));
   expect(metadata).toContain('started_at=');
   expect(await holder.exited).toBe(0);
   expect(existsSync(holderFile)).toBe(false);
