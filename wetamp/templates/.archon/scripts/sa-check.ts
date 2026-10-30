@@ -661,29 +661,23 @@ async function run(
       if (c.resource) {
         const { recordNodeProcessTrees, runStreamingSubprocess } = await subprocessOutput();
         const recorder = recordNodeProcessTrees();
+        const sequence = String(resourceOutputSequence++), stdoutPath = `${log}.${sequence}.stdout`, stderrPath = `${log}.${sequence}.stderr`;
+        let failure: StreamedSubprocessError | undefined;
         try {
-          const sequence = String(resourceOutputSequence++);
-          const output = await runStreamingSubprocess({
+          await runStreamingSubprocess({
             cmd: 'bash', args: ['-c', c.cmd], cwd: cwd ?? process.cwd(), env: commandEnvironment,
-            timeout: remaining, credentialValues: [], retainRawStdout: true,
-            stdoutPath: `${log}.${sequence}.stdout`,
-            stderrPath: `${log}.${sequence}.stderr`,
+            timeout: remaining, credentialValues: [], stdoutPath, stderrPath,
           });
-          p = {
-            exitCode: 0, signalCode: null,
-            stdout: Buffer.from(output.stdout.raw ?? output.stdout.preview),
-            stderr: Buffer.from(output.stderr.preview),
-          };
         } catch (error) {
-          const failure = error as StreamedSubprocessError;
-          p = {
-            exitCode: typeof failure.code === 'number' ? failure.code : null,
-            signalCode: failure.signal ?? (failure.killed ? 'SIGTERM' : null),
-            stdout: Buffer.from(failure.stdout ?? ''), stderr: Buffer.from(failure.stderr ?? ''),
-          };
+          failure = error as StreamedSubprocessError;
         } finally {
           await recorder.end(); recorder.release();
         }
+        p = {
+          exitCode: failure ? (typeof failure.code === 'number' ? failure.code : null) : 0,
+          signalCode: failure?.signal ?? (failure?.killed ? 'SIGTERM' : null),
+          stdout: readFileSync(stdoutPath), stderr: readFileSync(stderrPath),
+        };
       } else {
         const result = Bun.spawnSync(['bash', '-c', c.cmd], {
           cwd, env: commandEnvironment, stdout: 'pipe', stderr: 'pipe', timeout: remaining,

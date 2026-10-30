@@ -2213,16 +2213,27 @@ describe('sa-check script', () => {
           timeout_s: 5,
           cache: true,
           requires_prior_pass: true,
+          resource: 'heavy-test',
         },
       ];
       writeFileSync(path, JSON.stringify(plan));
-      const result = runScript(repo, {
-        kind: 'accept',
-        plan: path,
-        pkgs: 'a',
-        tag: `prior-${first}`,
-        ...(first === 'fail' ? { base: sh('git rev-parse HEAD', repo).trim() } : {}),
-      });
+      const result = runScript(
+        repo,
+        {
+          kind: 'accept',
+          plan: path,
+          pkgs: 'a',
+          tag: `prior-${first}`,
+          ...(first === 'fail' ? { base: sh('git rev-parse HEAD', repo).trim() } : {}),
+        },
+        SCRIPT,
+        {
+          NODE_ENV: 'test',
+          SA_TEST_RESOURCE_WAIT_BUDGET_MS: '1',
+          SA_HEAVY_LOCK_FILE:
+            first === 'fail' ? join(root, 'missing/slot.lock') : join(root, 'slot.lock'),
+        }
+      );
       return { result, marker };
     };
 
@@ -3324,7 +3335,18 @@ describe('sa-check script', () => {
     writeFileSync(
       p,
       JSON.stringify({
-        packages: [{ id: 'a', accept: [{ cmd: 'true', timeout_s: 1, resource: 'heavy-test' }] }],
+        packages: [
+          {
+            id: 'a',
+            accept: [
+              {
+                cmd: `. '${join(import.meta.dir, '../scripts/heavy-slot.sh')}'; heavy_exec true`,
+                timeout_s: 1,
+                resource: 'heavy-test',
+              },
+            ],
+          },
+        ],
       })
     );
     const next = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'next' }, SCRIPT, {
@@ -3332,6 +3354,77 @@ describe('sa-check script', () => {
     });
     expect(next.out, next.err).toMatchObject({ ok: true });
   });
+
+  test(
+    'resource waits precede each timeout and preserve full command output',
+    async () => {
+      const root = tmp(),
+        repo = gitRepo(root),
+        lock = join(root, 'resource.lock'),
+        ready = join(root, 'initial-ready'),
+        waiting = join(root, 'queued-waiting'),
+        queued = join(root, 'queued-ready'),
+        once = join(root, 'queued-once'),
+        reacquire = join(root, 'reacquire.sh'),
+        p = join(root, 'plan.json');
+      const lockArgs = (body: string) =>
+        process.platform === 'darwin'
+          ? ['/usr/bin/lockf', '-k', lock, 'sh', '-c', body]
+          : ['flock', lock, 'sh', '-c', body];
+      writeFileSync(
+        reacquire,
+        process.platform === 'darwin'
+          ? `#!/bin/sh\n/usr/bin/lockf -t 0 "$SA_HEAVY_LOCK_FILE" true && exit 2\ntouch '${waiting}'\nexec /usr/bin/lockf -k "$SA_HEAVY_LOCK_FILE" sh -c ${JSON.stringify(`touch '${queued}'; sleep 1.2`)}\n`
+          : `#!/bin/sh\nflock -n "$SA_HEAVY_LOCK_FILE" true && exit 2\ntouch '${waiting}'\nexec flock "$SA_HEAVY_LOCK_FILE" sh -c ${JSON.stringify(`touch '${queued}'; sleep 1.2`)}\n`,
+        { mode: 0o755 }
+      );
+      const holder = Bun.spawn(lockArgs(`touch '${ready}'; sleep 1.2`), {
+        stdout: 'ignore',
+        stderr: 'pipe',
+      });
+      for (let i = 0; i < 100 && !existsSync(ready); i++) await Bun.sleep(10);
+      expect(existsSync(ready)).toBe(true);
+      const command = `if [ ! -e '${once}' ]; then touch '${once}'; nohup '${reacquire}' >/dev/null 2>&1 & while [ ! -e '${waiting}' ]; do sleep 0.01; done; fi; printf '%40000s' ''; printf '%s' '{"failure_class":"product","evidence":"full stdout survived"}'; printf 'full stderr survived\\n' >&2; exit 1`;
+      writeFileSync(
+        p,
+        JSON.stringify({
+          repo,
+          environment: [{ cmd: 'true', timeout_s: 1 }],
+          packages: [
+            {
+              id: 'a',
+              accept: [{ cmd: command, timeout_s: 1, cache: false, resource: 'heavy-test' }],
+            },
+          ],
+        })
+      );
+      const result = runScript(
+        repo,
+        {
+          kind: 'accept',
+          plan: p,
+          pkgs: 'a',
+          tag: 'resource-output',
+          base: sh('git rev-parse HEAD', repo).trim(),
+        },
+        SCRIPT,
+        { SA_HEAVY_LOCK_FILE: lock }
+      );
+      expect(await holder.exited).toBe(0);
+      expect(result.out).toMatchObject({
+        failures: [{ failure_class: 'product' }],
+        command_results: [{ exit: 1 }],
+        base_results: [{ pass: false }],
+      });
+      expect(existsSync(queued)).toBe(true);
+      for (const log of ['resource-output.log', 'resource-output.probe.log']) {
+        const output = readFileSync(join(result.art, log), 'utf8');
+        expect(output).toContain('full stdout survived');
+        expect(output).toContain('full stderr survived');
+      }
+    },
+    testTimeout(10_000)
+  );
 
   test('accept: exhausted cumulative resource wait emits its typed reason', () => {
     const root = tmp(),
