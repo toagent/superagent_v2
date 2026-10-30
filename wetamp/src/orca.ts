@@ -6,12 +6,7 @@ import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit, decisionHeader, REASONS, type Cockpit } from './board/cockpit';
 import { presence, type Identity, type Presence } from './coord';
-import {
-  heartbeat,
-  historicalReclaimRuns,
-  shouldWriteHeartbeat,
-  type Heartbeat,
-} from './heartbeat';
+import { heartbeat, shouldWriteHeartbeat, type Heartbeat } from './heartbeat';
 
 export interface OrcaView {
   status: 'in-review' | 'in-progress' | 'completed';
@@ -213,7 +208,7 @@ export async function syncOrca(
     const now = d.now(),
       source = snapshot ?? (await bounded(signal, () => d.load(signal))),
       c = cockpit(source, now);
-    const pulse = heartbeat(source, c, now, d.presence, historicalReclaimRuns()),
+    const pulse = heartbeat(source, c, now, d.presence),
       next = orcaView(c, pulse);
     signal.throwIfAborted();
     const saved = d.read(state);

@@ -62,9 +62,9 @@ export function historicalReclaimRuns(
   }
 }
 
-/** Pure projection: the caller supplies presence and historical reclaim evidence. */
+/** Historical evidence is injectable for deterministic projections and tests. */
 // prettier-ignore
-export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence, historical = new Set<string>()): Heartbeat {
+export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence, historical = historicalReclaimRuns()): Heartbeat {
   const groups = new Map<string, Marshal>();
   const coordination = new Map<string, { count: number; oldest: string }>();
   for (const message of snapshot.coordMessages ?? []) if (!message.type && ['queued', 'surfaced', 'escalated'].includes(message.state)) {
