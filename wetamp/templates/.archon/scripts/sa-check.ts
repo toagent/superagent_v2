@@ -98,8 +98,9 @@ export const RESOURCE_WAIT_BUDGET_S = 1_800;
 export const PROCESS_TREE_RECOVERY_MS = 10_000;
 // prettier-ignore
 export const RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
-// prettier-ignore
-let resourceWaitElapsedMs = 0, resourceOutputSequence = 0;
+let resourceWaitElapsedMs = 0,
+  resourceOutputSequence = 0,
+  resourceWaitTimeoutCommand = '';
 // prettier-ignore
 const resourceWaitBudgetMs = (): number =>
   process.env.NODE_ENV === 'test' && process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS ? Number(process.env.SA_TEST_RESOURCE_WAIT_BUDGET_MS) : RESOURCE_WAIT_BUDGET_S * 1000;
@@ -618,6 +619,7 @@ async function run(
       if (!lease) {
         results.push({ check: c, pass: false, evidence: log, exit: 'resource_wait_timeout', duration_ms: 0 });
         failures.push({ command: c.cmd, failure_class: 'test_env', evidence: log });
+        resourceWaitTimeoutCommand = c.cmd;
         throw new ResourceWaitTimeout(c.cmd);
       }
     }
@@ -1081,19 +1083,17 @@ async function acceptOnce(
       { length: reviewRounds ?? 0 },
       (_, i) => `diff-${env('MILESTONE')}-r${String(i + 1)}`
     ).indexOf(tag) + 1;
-  // prettier-ignore
-  let baseResults: NonNullable<Accept['base_results']> = [];
-  try {
-    if (base && failed.length && !resourceWaitTimedOut)
-      baseResults = await probe(
-        base,
-        checks.filter(c => failed.includes(c.cmd)),
-        tag
-      );
-  } catch (error) {
-    if (!(error instanceof ResourceWaitTimeout)) throw error;
+  const baseResults =
+    base && failed.length && !resourceWaitTimedOut
+      ? await probe(
+          base,
+          checks.filter(c => failed.includes(c.cmd)),
+          tag
+        )
+      : [];
+  if (resourceWaitTimeoutCommand) {
     resourceWaitTimedOut = true;
-    failed = [error.command];
+    failed = [resourceWaitTimeoutCommand];
   }
   const incomparable =
     base && failed.length && (!baseResults.length || baseResults.some(r => r.pass === null));
@@ -1425,7 +1425,6 @@ async function probe(base: string, checks: Check[], tag: string): Promise<NonNul
     }
     return output;
   } catch (error) {
-    if (error instanceof ResourceWaitTimeout) throw error;
     appendFileSync(log, `# baseline unknown: ${String(error)}\n`);
     return [];
   } finally {
