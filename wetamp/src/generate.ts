@@ -443,18 +443,16 @@ export function buildWorkflow(
     const resolveDecision = `${resolveId}-decision`;
     const syncReady = `${syncId}-ready`;
     const finalAccept = `final-accept-${m.id}`;
-    const reviewAttempt = `attempt-review-${syncId}`;
-    const reviewContext = `review-context-${syncId}`;
-    const reviewId = `review-${syncId}`;
-    const reviewContract = `review-${m.id}-r1`;
-    const gateId = `gate-${m.id}-rresync`;
+    const resyncRound = (round: number): string => `${m.id}-rresync${String(round)}`;
+    const acceptId = (round: number): string =>
+      round === 1 ? finalAccept : `diff-resync-${m.id}-r${String(round)}`;
+    const reviewId = (round: number): string => `review-resync-${m.id}-r${String(round)}`;
+    const gateId = (round: number): string => `gate-${resyncRound(round)}`;
     const integrationReady = `integration-ready-${m.id}`;
     const publishId = `publish-${m.id}`;
     const syncHandle = output<SyncOutput>(syncId);
     const readyHandle = output<SyncOutput>(syncReady);
     const resolveHandle = conditionalOutput<CoderOutput>(resolveId);
-    const finalHandle = conditionalOutput<AcceptOutput>(finalAccept);
-    const reviewHandle = conditionalOutput<ReviewerOutput>(reviewId);
     const publishHandle = output<PublishOutput>(publishId);
     const gateHashes = Object.fromEntries(
       gateBindings.map(binding => [
@@ -466,11 +464,12 @@ export function buildWorkflow(
         ),
       ])
     );
-    gateHashes[gateHashInput('resync').workflow] = ref.optional(
-      conditionalOutput<{ artifact_sha256: string }>(gateId),
-      'artifact_sha256',
-      ''
-    );
+    for (let round = 1; round <= maxRounds; round++)
+      gateHashes[gateHashInput(`resync${String(round)}`).workflow] = ref.optional(
+        conditionalOutput<{ artifact_sha256: string }>(gateId(round)),
+        'artifact_sha256',
+        ''
+      );
     const integrationNodes: Node[] = [
       {
         id: resyncBase,
@@ -566,50 +565,141 @@ export function buildWorkflow(
         },
         output_format: syncOutputFormat,
       },
-      check(
-        finalAccept,
-        [syncReady],
-        {
-          ...acceptInputs,
-          kind: 'accept',
-          base: ref.required(readyHandle, 'merge_base'),
-          target_tip: ref.required(readyHandle, 'target_tip'),
-          sync_generation: ref.required(readyHandle, 'generation'),
-          delta_base: ref.value(output<string>(resyncBase)),
-          acceptance_evidence: `$ARTIFACTS_DIR/accepted-${m.id}.json`,
-          context_node: reviewContract,
-          context_counter: attemptPath(gen, `review-${syncId}`),
-          tag: finalAccept,
-          terminal: '1',
-        },
-        { output_format: acceptOutputFormat, ...acceptTimeout(m.packages, plan) }
-      ),
-      {
-        id: reviewAttempt,
-        when: `$${syncReady}.output.status == 'resolved'`,
-        depends_on: [finalAccept],
-        ...attemptInputs(attemptPath(gen, `review-${syncId}`)),
-        output_format: attemptOutputFormat,
-      },
-      ...(!fake
-        ? [
-            {
-              id: reviewContext,
-              when: `$${syncReady}.output.status == 'resolved'`,
-              always_run: true,
-              depends_on: [reviewAttempt],
-              ...attemptInputs(attemptPath(gen, `review-${syncId}`), '', reviewContract, gateId),
-              output_format: attemptOutputFormat,
+    ];
+    const resyncRounds: Node = {};
+    let previous = syncReady;
+    for (let round = 1; round <= maxRounds; round++) {
+      const accepted = acceptId(round);
+      const acceptedHandle = conditionalOutput<AcceptOutput>(accepted);
+      const reviewer = reviewId(round);
+      const reviewerHandle = conditionalOutput<ReviewerOutput>(reviewer);
+      const gate = gateId(round);
+      const reviewContract = `review-${m.id}-r${String(round)}`;
+      const reviewAttempt = `attempt-review-resync-${m.id}-r${String(round)}`;
+      const reviewContext = `review-context-resync-${m.id}-r${String(round)}`;
+      const reviewWhen =
+        `$${syncReady}.output.status == 'resolved' && ` +
+        `$${accepted}.output.disposition == 'advance'`;
+      if (round > 1) {
+        const priorGate = gateId(round - 1);
+        const handoff = `handoff-resync-${m.id}-r${String(round)}`;
+        const fix = `fix-resync-${m.id}-r${String(round)}`;
+        if (!fake)
+          integrationNodes.push({
+            id: handoff,
+            ...attemptInputs(attemptPath(gen, m.id)),
+            with: {
+              counter: attemptPath(gen, m.id),
+              gen,
+              context_node: `fix-${m.id}-r${String(round)}`,
+              context_packages: m.packages.map(p => p.id),
+              handoff: '1',
+              work_keys: round === 2 ? (delivery ? ['resolve'] : []) : ['fix'],
+              ...(round === 2
+                ? delivery
+                  ? { work_resolve: ref.optionalValue(resolveHandle, null) }
+                  : {}
+                : {
+                    work_fix: ref.optionalValue(
+                      conditionalOutput<CoderOutput>(`fix-resync-${m.id}-r${String(round - 1)}`),
+                      null
+                    ),
+                  }),
             },
-          ]
-        : []),
-      {
-        id: reviewId,
-        when: reviewRequired
-          ? `$${syncReady}.output.status == 'resolved'`
-          : `$${syncReady}.output.status == '__never__'`,
+            depends_on: [priorGate],
+            when: `$${priorGate}.output.verdict == 'fix'`,
+          });
+        integrationNodes.push({
+          id: fix,
+          ...(fake
+            ? { bash: fakeEdit(m.packages[0], `fix resync ${m.id} r${String(round)}`) }
+            : {
+                command: 'sa-fix',
+                retry: { on_error: 'transient' },
+                model: '@sa-coder',
+                ...execution(`fix-${m.id}-r${String(round)}`),
+                with: {
+                  prior_work: `$${handoff}.output.handoff`,
+                  context_node: handoff,
+                  milestone: m.id,
+                  round,
+                  ledger: `$${priorGate}.output.ledger_file`,
+                  accept_log: ref.optional(
+                    conditionalOutput<AcceptOutput>(acceptId(round - 1)),
+                    'log',
+                    ''
+                  ),
+                  briefs: m.packages.map(brief).join(' '),
+                  hints: join(gen, 'hints'),
+                },
+              }),
+          depends_on: fake ? [priorGate] : [priorGate, handoff],
+          when: `$${priorGate}.output.verdict == 'fix'`,
+          output_format: coderOutputFormat,
+        });
+        previous = fix;
+      }
+      integrationNodes.push(
+        check(
+          accepted,
+          [previous],
+          {
+            ...acceptInputs,
+            kind: 'accept',
+            base: ref.required(readyHandle, 'merge_base'),
+            target_tip: ref.required(readyHandle, 'target_tip'),
+            sync_generation: ref.required(readyHandle, 'generation'),
+            acceptance_evidence:
+              round === 1
+                ? `$ARTIFACTS_DIR/accepted-${m.id}.json`
+                : `$ARTIFACTS_DIR/${acceptId(round - 1)}.json`,
+            context_node: reviewContract,
+            context_counter: attemptPath(gen, `review-resync-${m.id}-r${String(round)}`),
+            tag: accepted,
+            ...(round === 1
+              ? {
+                  delta_remerge: '1',
+                  terminal: 'unless_resolved',
+                  sync_status: ref.required(readyHandle, 'status'),
+                }
+              : {
+                  coder: ref.optionalValue(
+                    conditionalOutput<CoderOutput>(`fix-resync-${m.id}-r${String(round)}`),
+                    null
+                  ),
+                  delta_base: `$${gateId(round - 1)}.output.head`,
+                  reviewed_diff_hash: `$${gateId(round - 1)}.output.reviewed_diff_hash`,
+                }),
+          },
+          { output_format: acceptOutputFormat, ...acceptTimeout(m.packages, plan) }
+        )
+      );
+      integrationNodes.push({
+        id: reviewAttempt,
+        when: reviewRequired ? reviewWhen : `$${syncReady}.output.status == '__never__'`,
+        depends_on: [accepted],
+        ...attemptInputs(attemptPath(gen, `review-resync-${m.id}-r${String(round)}`)),
+        output_format: attemptOutputFormat,
+      });
+      if (!fake)
+        integrationNodes.push({
+          id: reviewContext,
+          when: reviewRequired ? reviewWhen : `$${syncReady}.output.status == '__never__'`,
+          always_run: true,
+          depends_on: [reviewAttempt],
+          ...attemptInputs(
+            attemptPath(gen, `review-resync-${m.id}-r${String(round)}`),
+            '',
+            reviewContract,
+            gate
+          ),
+          output_format: attemptOutputFormat,
+        });
+      integrationNodes.push({
+        id: reviewer,
+        when: reviewRequired ? reviewWhen : `$${syncReady}.output.status == '__never__'`,
         ...(fake
-          ? { bash: fakeReview(1) }
+          ? { bash: fakeReview(round) }
           : {
               command: 'sa-review-delta',
               retry: { on_error: 'transient' },
@@ -620,52 +710,84 @@ export function buildWorkflow(
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
-                risk: ref.optional(finalHandle, 'risk', ''),
-                round: 1,
+                risk: ref.optional(acceptedHandle, 'risk', ''),
+                round,
                 context: `$ARTIFACTS_DIR/${reviewContract}.context.json`,
                 briefs: m.packages.map(brief).join(' '),
-                accept_log: ref.optional(finalHandle, 'log', ''),
-                diff: ref.optional(finalHandle, 'delta', ''),
-                full_diff: ref.optional(finalHandle, 'patch', ''),
-                ledger: '',
+                accept_log: ref.optional(acceptedHandle, 'log', ''),
+                diff: ref.optional(acceptedHandle, 'delta', ''),
+                full_diff: ref.optional(acceptedHandle, 'patch', ''),
+                ledger: round === 1 ? '' : `$${gateId(round - 1)}.output.ledger_file`,
               },
             }),
-        depends_on: [finalAccept, fake ? reviewAttempt : reviewContext],
+        depends_on: [accepted, fake ? reviewAttempt : reviewContext],
         output_format: reviewerOutputFormat,
-      },
-      check(
-        gateId,
-        [finalAccept, reviewId],
-        {
-          kind: 'gate',
-          review: '1',
-          review_node: reviewId,
-          round: 1,
-          R1: ref.optionalValue(reviewHandle, null),
-          C1: `$ARTIFACTS_DIR/${finalAccept}.json`,
-          C1_HEAD: ref.optional(finalHandle, 'head', ''),
-          C1_DIFF_HASH: ref.optional(finalHandle, 'diff_hash', ''),
-          C1_SHA256: ref.optional(finalHandle, 'artifact_sha256', ''),
-          risk: m.risk,
-          milestone: m.id,
-          pkgs: m.packages.map(p => p.id).join(','),
-          plan: planPath,
-          policy: policyPath,
-          tag: gateId,
-          ...ledger,
-        },
-        {
-          trigger_rule: 'none_failed_min_one_success',
-          when: reviewRequired
-            ? `$${syncReady}.output.status == 'resolved'`
-            : `$${syncReady}.output.status == '__never__'`,
-        }
-      ),
+      });
+      resyncRounds[`R${String(round)}`] = ref.optionalValue(reviewerHandle, null);
+      resyncRounds[`C${String(round)}`] = `$ARTIFACTS_DIR/${accepted}.json`;
+      resyncRounds[`C${String(round)}_HEAD`] = ref.optional(acceptedHandle, 'head', '');
+      resyncRounds[`C${String(round)}_DIFF_HASH`] = ref.optional(acceptedHandle, 'diff_hash', '');
+      resyncRounds[`C${String(round)}_SHA256`] = ref.optional(
+        acceptedHandle,
+        'artifact_sha256',
+        ''
+      );
+      integrationNodes.push(
+        check(
+          gate,
+          [accepted, reviewer],
+          {
+            kind: 'gate',
+            review: reviewRequired ? '1' : '0',
+            review_node: reviewer,
+            round,
+            ...resyncRounds,
+            risk: m.risk,
+            milestone: m.id,
+            pkgs: m.packages.map(p => p.id).join(','),
+            plan: planPath,
+            policy: policyPath,
+            tag: gate,
+            ...ledger,
+          },
+          {
+            trigger_rule: 'none_failed_min_one_success',
+            when: `$${syncReady}.output.status == 'resolved'`,
+          }
+        )
+      );
+      previous = gate;
+    }
+    integrationNodes.push(
       {
         id: integrationReady,
-        depends_on: [finalAccept, gateId],
+        depends_on: [finalAccept, ...Array.from({ length: maxRounds }, (_, i) => gateId(i + 1))],
         trigger_rule: 'none_failed_min_one_success',
-        bash: 'true',
+        script: [
+          "const status = process.env.INPUTS_STATUS ?? '';",
+          "const disposition = process.env.INPUTS_DISPOSITION ?? '';",
+          `const gates = [${Array.from(
+            { length: maxRounds },
+            (_, i) => `process.env.INPUTS_GATE_${String(i + 1)} ?? ''`
+          ).join(', ')}];`,
+          "const ok = status === 'resolved' ? gates.includes('pass') : ['advance', 'debt'].includes(disposition);",
+          "if (!ok) throw new Error('integration candidate is not approved');",
+        ].join('\n'),
+        runtime: 'bun',
+        with: {
+          status: ref.required(readyHandle, 'status'),
+          disposition: ref.optional(
+            conditionalOutput<AcceptOutput>(finalAccept),
+            'disposition',
+            'fail'
+          ),
+          ...Object.fromEntries(
+            Array.from({ length: maxRounds }, (_, i) => [
+              `gate_${String(i + 1)}`,
+              ref.optional(conditionalOutput<{ verdict: string }>(gateId(i + 1)), 'verdict', ''),
+            ])
+          ),
+        },
       },
       {
         id: publishId,
@@ -692,8 +814,8 @@ export function buildWorkflow(
             }),
         timeout: integrationNodeTimeout(),
         output_format: publishOutputFormat,
-      },
-    ];
+      }
+    );
     return {
       id: `integrate-${m.id}`,
       ...approved,

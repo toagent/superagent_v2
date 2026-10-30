@@ -40,7 +40,7 @@ import { cancelWorkflowRun, failWorkflowRun } from '../../../packages/core/src/d
 import { createCodebase } from '../../../packages/core/src/db/codebases';
 
 // prettier-ignore
-export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16' | 'S17' | 'S18' | 'S19';
+export type ScenarioId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S12' | 'S13' | 'S14a' | 'S14b' | 'S14c' | 'S15' | 'S16' | 'S17' | 'S18' | 'S19' | 'S20' | 'S21';
 
 export interface ScenarioSpec {
   id: ScenarioId;
@@ -72,6 +72,7 @@ export interface ScenarioFixture {
   engineSnapshot?: string;
   omitNewFindingOnRetry?: boolean;
   reviewCalls?: Record<string, number>;
+  agentCalls?: Record<string, number>;
 }
 
 export interface GeneratedContinuation {
@@ -162,6 +163,7 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
     getCapabilities: () => ({ ...base.getCapabilities(), sessionFork: true }),
     async *sendQuery(_prompt: string, cwd: string, _resume?: string, options?: SendQueryOptions) {
       const id = options?.nodeConfig?.nodeId ?? '';
+      const agentCall = ((f.agentCalls ??= {})[id] = (f.agentCalls?.[id] ?? 0) + 1);
       f.roles.push(options?.env?.SUPERAGENT_ROLE ?? '');
       if (id.startsWith('code-')) {
         const edit =
@@ -182,9 +184,17 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         const targetTip = sh('git rev-parse scenario-target', f.target).trim();
         sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
       }
-      if (id === 'resolve-resync-m1' && ['S18', 'S19'].includes(f.spec.id)) {
+      if (
+        id === 'resolve-resync-m1' &&
+        ['S18', 'S19', 'S20', 'S21'].includes(f.spec.id) &&
+        !(f.spec.id === 'S21' && agentCall === 1)
+      ) {
         const targetTip = sh('git rev-parse scenario-target', f.target).trim();
         sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
+        if (f.spec.id === 'S20') {
+          writeFileSync(join(cwd, 'require-fix.txt'), 'required\n');
+          sh('git add require-fix.txt && git commit --amend --no-edit -q', cwd);
+        }
       }
       if (id.startsWith('fix-')) {
         writeFileSync(join(cwd, 'fix.txt'), `${f.spec.id}-${String(f.roles.length)}\n`);
@@ -259,6 +269,11 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
         id,
         editFiles(f)
       ) as Record<string, unknown>;
+      if (f.spec.id === 'S21' && id === 'resolve-resync-m1' && agentCall === 1) {
+        sample.status = 'blocked';
+        sample.error_class = 'task';
+        sample.blockers = ['injected conflict resolution failure'];
+      }
       const reviewCall = id.startsWith('review-')
         ? ((f.reviewCalls ??= {})[id] = (f.reviewCalls?.[id] ?? 0) + 1)
         : 0;
@@ -292,6 +307,14 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
             carry_over: true,
           },
         ];
+      if (f.spec.id === 'S18' && /^review-resync-m1-r[12]$/.test(id)) {
+        const closed = id.endsWith('r2');
+        sample.status = closed ? 'PASS' : 'FAIL';
+        // prettier-ignore
+        sample.findings = [{ id: 'scenario-resync-r1', severity: 'high', file: f.spec.agents.code.path,
+          line: 1, status: closed ? 'closed' : 'open', evidence: closed ? 'fixed in round two' : 'scripted finding',
+          failure_class: 'product', command: null, carry_over: closed }];
+      }
       if (f.spec.id === 'S17' && id.startsWith('review-m1-r')) {
         const finding = (findingId: string, status: 'open' | 'closed') => ({
           id: findingId,
@@ -432,7 +455,7 @@ export async function runInProcess(
     if (
       event.event_type === 'node_completed' &&
       event.step_name === 'gate-m1-r1' &&
-      ['S18', 'S19'].includes(f.spec.id)
+      ['S18', 'S19', 'S20', 'S21'].includes(f.spec.id)
     ) {
       writeFileSync(join(f.target, f.spec.agents.code.path), 'target-side\n');
       sh(`git add '${f.spec.agents.code.path}' && git commit -qm target-resync-conflict`, f.target);
@@ -455,7 +478,7 @@ export async function runInProcess(
             id: 'p',
             title: f.spec.id,
             goal: f.spec.plan.goal,
-            scope: { write: [f.spec.agents.code.path, 'fix.txt'] },
+            scope: { write: [f.spec.agents.code.path, 'fix.txt', 'require-fix.txt'] },
             accept: [{ cmd: f.spec.plan.accept, timeout_s: 5 }],
             risk: f.spec.risk,
             size: 'S',
@@ -897,7 +920,11 @@ export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvide
 }
 
 /** Exercise the public retry command while the real scenario store remains the execution owner. */
-export function retryScenario(f: ScenarioFixture, result: ScenarioEvidence): string {
+export function retryScenario(
+  f: ScenarioFixture,
+  result: ScenarioEvidence,
+  options: { package?: boolean } = {}
+): string {
   const ledger = loadLedger(result.runId);
   const states = new Map<string, 'completed' | 'failed'>();
   for (const event of result.events)
@@ -924,9 +951,11 @@ export function retryScenario(f: ScenarioFixture, result: ScenarioEvidence): str
   );
   try {
     const state = classifyRun(ledger, view).state;
-    expect(main(['decide', result.runId, 'retry', '--pkg', 'p', '--hint', 'close findings'])).toBe(
-      0
-    );
+    const args =
+      options.package === false
+        ? ['decide', result.runId, 'retry']
+        : ['decide', result.runId, 'retry', '--pkg', 'p', '--hint', 'close findings'];
+    expect(main(args)).toBe(0);
     return state;
   } finally {
     stub.mockRestore();

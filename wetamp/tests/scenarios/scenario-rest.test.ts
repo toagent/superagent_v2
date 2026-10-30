@@ -322,7 +322,7 @@ test('S5/S7/S9/S10: generated scenarios use executor facts, never local counters
 }, 300_000);
 
 test.each([
-  ['S18', 'G2', 1],
+  ['S18', 'G2', 2],
   ['S19', 'G1', 0],
 ] as const)(
   '%s: integration resync conflict resolves, rechecks, and publishes',
@@ -342,19 +342,73 @@ test.each([
         counts: {
           'integrate-m1.resolve-resync-m1': 1,
           'integrate-m1.final-accept-m1': 1,
-          'integrate-m1.review-resync-m1': reviews,
+          'integrate-m1.review-resync-m1-r1': reviews > 0 ? 1 : 0,
+          'integrate-m1.fix-resync-m1-r2': reviews > 1 ? 1 : 0,
+          'integrate-m1.diff-resync-m1-r2': reviews > 1 ? 1 : 0,
+          'integrate-m1.review-resync-m1-r2': reviews > 1 ? 1 : 0,
           'integrate-m1.publish-m1': 1,
         },
         published: true,
       });
       expect(readFileSync(join(f.worker, 'scenario.txt'), 'utf8')).toBe(`${id}\n`);
-      expect(existsSync(join(result.artifactsDir, 'gate-m1-rresync.json'))).toBe(reviews === 1);
+      expect(existsSync(join(result.artifactsDir, 'gate-m1-rresync1.json'))).toBeTrue();
+      expect(existsSync(join(result.artifactsDir, 'gate-m1-rresync2.json'))).toBe(reviews > 1);
     } finally {
       restore(f);
     }
   },
   120_000
 );
+
+const repairableResync = (id: 'S20' | 'S21', accept: string) =>
+  // prettier-ignore
+  scenario({
+    id, risk: 'G1', passRound: 1, plan: { goal: id, accept },
+    agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
+    expected: { terminal: 'completed', publishCount: 1 } });
+
+test('S20: failed post-resync acceptance enters fix and then publishes', async () => {
+  const f = repairableResync(
+    'S20',
+    'test "$(cat scenario.txt)" = S20 && { test ! -e require-fix.txt || test -e fix.txt; }'
+  );
+  try {
+    const result = await runInProcess(f);
+    expectOutcome(f, result, {
+      terminal: 'completed',
+      counts: {
+        'integrate-m1.final-accept-m1': 1,
+        'integrate-m1.fix-resync-m1-r2': 1,
+        'integrate-m1.diff-resync-m1-r2': 1,
+        'integrate-m1.publish-m1': 1,
+      },
+      published: true,
+    });
+  } finally {
+    restore(f);
+  }
+}, 120_000);
+
+test('S21: blocked resync resolve is typed and decide retry advances it', async () => {
+  const f = repairableResync('S21', 'test "$(cat scenario.txt)" = S21');
+  try {
+    const first = await runInProcess(f);
+    expect(first.terminal.failed).toEqual([first.runId]);
+    expect(retryScenario(f, first, { package: false })).toBe('held:gate');
+    const retried = await resumeInProcess(f);
+    expect(retried.terminal.completed).toEqual([first.runId]);
+    expect(
+      retried.events.filter(
+        event =>
+          event.event_type === 'node_completed' &&
+          event.step_name === 'integrate-m1.resolve-resync-m1'
+      )
+    ).toHaveLength(2);
+    expect(existsSync(join(retried.artifactsDir, 'publish-m1.json'))).toBeTrue();
+  } finally {
+    restore(f);
+  }
+}, 120_000);
 
 test('S6/S13: acceptance regression and stale coordination ownership block publish', async () => {
   for (const id of ['S6', 'S13'] as const) {

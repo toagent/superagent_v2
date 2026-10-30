@@ -283,7 +283,7 @@ const integrationSync = (): void => { reclaimAdmission(process.env.INPUTS_RUN ??
 const lastGate = (milestone: string): Record<string, unknown> => {
   const artifacts = process.env.ARTIFACTS_DIR ?? '';
   const record = (file: string): Record<string, unknown> | undefined => {
-    const round = /-r(\d+|resync)\.json$/.exec(file)?.[1];
+    const round = /-r(\d+|resync\d+)\.json$/.exec(file)?.[1];
     if (!round) throw new Error(`integration: invalid gate evidence name ${file}`);
     const expected = gateHashes(round);
     if (!expected.length) return undefined;
@@ -297,10 +297,12 @@ const lastGate = (milestone: string): Record<string, unknown> => {
     return value as Record<string, unknown>;
   };
   const selected = readdirSync(artifacts)
-    .filter(name => new RegExp(`^gate-${milestone}-r(?:\\d+|resync)\\.json$`).test(name))
+    .filter(name => new RegExp(`^gate-${milestone}-r(?:\\d+|resync\\d+)\\.json$`).test(name))
     .sort((a, b) => {
       const rank = (name: string): number =>
-        name.endsWith('-rresync.json') ? Number.MAX_SAFE_INTEGER : Number(/r(\d+)/.exec(name)?.[1]);
+        name.includes('-rresync')
+          ? 1_000_000 + Number(/rresync(\d+)/.exec(name)?.[1])
+          : Number(/r(\d+)/.exec(name)?.[1]);
       return rank(a) - rank(b);
     })
     .map(file => ({ file, value: record(file) }))

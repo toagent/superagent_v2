@@ -1429,6 +1429,16 @@ describe('buildWorkflow', () => {
     expect(allNodesOf(workflow).some(node => 'interactive' in node)).toBeFalse();
   });
   test('multi-milestone delivery publishes each cumulative prefix before the next sync', () => {
+    const resyncRounds = Array.from({ length: MAX_ROUNDS }, (_, i) => i + 1).flatMap(round => [
+      ...(round > 1
+        ? [`handoff-resync-m1-r${String(round)}`, `fix-resync-m1-r${String(round)}`]
+        : []),
+      round === 1 ? 'final-accept-m1' : `diff-resync-m1-r${String(round)}`,
+      `attempt-review-resync-m1-r${String(round)}`,
+      `review-context-resync-m1-r${String(round)}`,
+      `review-resync-m1-r${String(round)}`,
+      `gate-m1-rresync${String(round)}`,
+    ]);
     const nodes = nodesOf(build(false));
     const integration = nodes.find(n => n.id === 'integrate-m1') as N & {
       loop_group: { nodes: N[] };
@@ -1443,11 +1453,7 @@ describe('buildWorkflow', () => {
       'resync-base-m1',
       'resync-m1',
       'resync-m1-ready',
-      'final-accept-m1',
-      'attempt-review-resync-m1',
-      'review-context-resync-m1',
-      'review-resync-m1',
-      'gate-m1-rresync',
+      ...resyncRounds,
       'integration-ready-m1',
       'publish-m1',
     ]);
@@ -1477,11 +1483,7 @@ describe('buildWorkflow', () => {
       'resolve-resync-m1',
       'resolve-resync-m1-decision',
       'resync-m1-ready',
-      'final-accept-m1',
-      'attempt-review-resync-m1',
-      'review-context-resync-m1',
-      'review-resync-m1',
-      'gate-m1-rresync',
+      ...resyncRounds,
       'integration-ready-m1',
       'publish-m1',
     ]);
@@ -1491,25 +1493,29 @@ describe('buildWorkflow', () => {
     expect(
       deliveryIntegration.loop_group.nodes.find(n => n.id === 'final-accept-m1')?.with
     ).toMatchObject({
-      delta_base: '$resync-base-m1.output',
+      delta_remerge: '1',
       context_node: 'review-m1-r1',
     });
     expect(
       deliveryIntegration.loop_group.nodes.find(n => n.id === 'resolve-context-resync-m1')?.with
     ).toMatchObject({ context_node: 'resolve-sync-m1' });
     expect(
-      deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-context-resync-m1')?.with
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-context-resync-m1-r1')?.with
     ).toMatchObject({ review: 'review-m1-r1' });
     expect(
-      deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-resync-m1')?.with
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-resync-m1-r1')?.with
     ).toMatchObject({ context: '$ARTIFACTS_DIR/review-m1-r1.context.json' });
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {
         gate_1_sha256: { from: '$gate-m1-r1.output.artifact_sha256', if_skipped: '' },
         gate_2_sha256: { from: '$gate-m1-r2.output.artifact_sha256', if_skipped: '' },
-        gate_resync_sha256: {
-          from: '$gate-m1-rresync.output.artifact_sha256',
+        gate_resync1_sha256: {
+          from: '$gate-m1-rresync1.output.artifact_sha256',
+          if_skipped: '',
+        },
+        gate_resync2_sha256: {
+          from: '$gate-m1-rresync2.output.artifact_sha256',
           if_skipped: '',
         },
       },
@@ -2471,8 +2477,10 @@ test('DURABLE_DELIVERY generated sync receives run id through real Archon execut
     'INPUTS_OUTPUT=sync-review-m1'
   );
   expect(allNodesOf(workflow).find(n => n.id === 'final-accept-m1')?.with).toMatchObject({
-    terminal: '1',
     acceptance_evidence: '$ARTIFACTS_DIR/accepted-m1.json',
+    delta_remerge: '1',
+    terminal: 'unless_resolved',
+    sync_status: '$resync-m1-ready.output.status',
   });
   const observed = join(root, 'received-run.json');
   const preload = join(root, 'delivery-probe.ts');

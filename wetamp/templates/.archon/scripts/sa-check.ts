@@ -1040,7 +1040,29 @@ async function acceptOnce(
     return join(artifacts, name);
   };
   const patch = save(`${tag}.patch`, base);
-  const delta = env('DELTA_BASE') ? save(`${tag}.delta.patch`, env('DELTA_BASE')) : patch;
+  const delta =
+    env('DELTA_REMERGE') === '1'
+      ? (() => {
+          if (!base) return '';
+          const path = join(artifacts, `${tag}.delta.patch`);
+          writeFileSync(
+            path,
+            git(
+              'show',
+              '--remerge-diff',
+              '--format=',
+              '--no-ext-diff',
+              '--no-textconv',
+              '--binary',
+              'HEAD',
+              '--'
+            )
+          );
+          return path;
+        })()
+      : env('DELTA_BASE')
+        ? save(`${tag}.delta.patch`, env('DELTA_BASE'))
+        : patch;
   const noChanges = delta ? readFileSync(delta, 'utf8').length === 0 : undefined;
   const hash = patch ? diffHash(readFileSync(patch)) : '';
   const head = git('rev-parse', 'HEAD').trim();
@@ -1335,7 +1357,11 @@ async function accept(): Promise<void> {
     attempt = env('ATTEMPT');
   if (!carried || attempt !== '0') {
     const out = await acceptOnce(tag, env('CODER'));
-    if (env('TERMINAL') === '1' && out.disposition === 'repair')
+    if (
+      (env('TERMINAL') === '1' ||
+        (env('TERMINAL') === 'unless_resolved' && env('SYNC_STATUS') !== 'resolved')) &&
+      out.disposition === 'repair'
+    )
       Object.assign(out, {
         disposition: 'fail',
         decision: { ...out.decision, kind: 'block' },

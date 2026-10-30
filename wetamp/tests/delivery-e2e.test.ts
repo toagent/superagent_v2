@@ -468,7 +468,7 @@ const executorWorkflow = (f: ReturnType<typeof setup>, passRound: 1 | 2) => {
   delete finalAccept.runtime;
   delete finalAccept.with;
   delete finalAccept.output_format;
-  finalAccept.bash = 'printf accepted';
+  finalAccept.bash = `printf '%s' '{"disposition":"advance"}'`;
 
   const head = sh('git rev-parse HEAD', f.worker).trim();
   const target = sh('git rev-parse delivery-target', f.repo).trim();
