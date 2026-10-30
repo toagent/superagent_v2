@@ -3833,7 +3833,7 @@ function dispose(
   const reauthorize = reauthorizationHint(l, run, c);
   if (reauthorize)
     return { run_id: l.run_id, action: 'none', ok: false, state: c.state, next: reauthorize };
-  if (holdOf(l, run, c) === 'false_handback') {
+  if (nodeReason(l, run, c) === 'false_handback') {
     const scope = retryScope(l, c.node ?? '');
     const reason = `false_handback:${scope}`;
     if (!(l.auto_retries ?? []).some(entry => entry.reason === reason)) {

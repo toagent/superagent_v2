@@ -4370,15 +4370,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       }),
       first: {},
     }),
-    false_handback: () => {
-      const s = held('verify-core', { 'verify-core.json': gate('false_handback') });
-      patchLedger(s.root, {
-        auto_retries: [
-          { milestone: 'pkg/core', reason: 'false_handback:pkg/core', at: '2026-10-30T00:00:00Z' },
-        ],
-      });
-      return { s, first: { action: 'none', held: true, ok: true } };
-    },
     review_limit: () => ({
       s: held('gate-m1-r3', { 'gate-m1-r3.json': gate('review_failed+review_limit') }),
       first: {},

@@ -169,7 +169,7 @@
   },
   {
     "code": "false_handback",
-    "hold": "false_handback",
+    "hold": "coder",
     "determinism": "deterministic",
     "owner": "coder",
     "description": "编码节点零工具调用且短时交回未完成"
