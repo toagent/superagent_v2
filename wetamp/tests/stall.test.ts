@@ -45,6 +45,8 @@ test('assessGeneral tracks progress, idle, stalled episodes, restart, and handof
   expect(stalled.state).toBe('stalled'); expect(stalled.episode?.id).toBe(idleAgain.episode?.id);
   const restarted = assessGeneral(stalled, observation({ startedAt: new Date(now + 303_000).toISOString() }), now + 303_000);
   expect(restarted).toMatchObject({ state: 'working', idle_s: 0 }); expect(restarted.episode).toBeUndefined();
+  const fresh = assessGeneral(undefined, observation({ startedAt: ago(1), lastActivityAt: ago(10) }), now);
+  expect(fresh.state).toBe('working');
   expect(assessGeneral(restarted, observation({ coder: false }), now + 304_000).state).toBe('handed_back');
 });
 

@@ -1421,6 +1421,29 @@ describe('waitRun (archon stub)', () => {
       expect(Number(waits[0]!.split('--timeout ')[1])).toBeGreaterThan(0);
     }
   );
+  // prettier-ignore
+  test('wait slices notifications and acknowledges each general episode per marshal', () => {
+    const s = stub([run('running')]), who = coordModule.caller(), other = { ...who, pid: who.pid + 1 };
+    const stall = (at: number, runs: Record<string, object>) => writeFileSync(join(s.root, 'home/stall.json'), JSON.stringify({ at: new Date(at).toISOString(), runs }));
+    const episode = (id: string) => ({ node: 'code-core', startedAt: new Date().toISOString(), entries: '', mtime: 0, progressAt: 0,
+      state: 'idle', idle_s: 301, waiting_command: true, cpu: 12, root: { pid: 7, command: 'bun test' }, episode: { id, since: new Date().toISOString() } });
+    const nativeWait = archonMod.waitNotification; let waits = 0;
+    const sliced = spyOn(archonMod, 'waitNotification').mockImplementation((...args) => {
+      const result = nativeWait(...args); if (++waits === 1) stall(Date.now(), { sa1: episode('e1') }); return result;
+    });
+    try {
+      expect(waitRun(s.ledger, 120, who)).toMatchObject({ attention: { kind: 'general_idle', node: 'code-core', episode_id: 'e1', root: { pid: 7 } } });
+      expect(sliced.mock.calls[0]?.[2]).toBeLessThanOrEqual(60);
+      expect(waitRun(s.ledger, 10, who).attention).toBeUndefined();
+      stall(Date.now(), { sa1: episode('e2') });
+      expect(waitRun(s.ledger, 0, who)).toMatchObject({ attention: { episode_id: 'e2' } });
+      const ack = readdirSync(join(s.root, 'home/stall-acks')).map(file => readFileSync(join(s.root, 'home/stall-acks', file), 'utf8')).join('');
+      expect(ack).toContain('e2'); expect(ack).not.toContain('e1');
+      expect(waitRun(s.ledger, 0, other)).toMatchObject({ attention: { episode_id: 'e2' } });
+      stall(Date.now(), { other: episode('e3') }); expect(waitRun(s.ledger, 0, who).attention).toBeUndefined();
+      stall(Date.now() - 181_000, { sa1: episode('e4') }); expect(waitRun(s.ledger, 0, who).attention).toBeUndefined();
+    } finally { sliced.mockRestore(); }
+  });
   test('running then completed: native wait returns 0 with land commands', () => {
     const s = stub([
       run('running', { nodes: [{ nodeId: 'a', state: 'running' }] }),
@@ -1457,9 +1480,9 @@ describe('waitRun (archon stub)', () => {
       heartbeat: { available: true, line: 'mine', running: [{ id: 'mine' }], waiting: [{ id: 'wait' }], warnings: ['心跳过期 19m', '未收到巡检心跳 4m'] },
       timeout_capped: { requested: 3000, effective: 900 },
     });
-    const cappedWait = Number(s.calls().filter(c => c.startsWith('workflow wait')).at(-1)!.split('--timeout ')[1]);
-    expect(cappedWait).toBeGreaterThan(899);
-    expect(cappedWait).toBeLessThanOrEqual(900);
+    const cappedWaits = s.calls().filter(c => c.startsWith('workflow wait'));
+    expect(cappedWaits).toHaveLength(15);
+    expect(cappedWaits.every(call => Number(call.split('--timeout ')[1]) <= 60)).toBe(true);
     stub([run('running')]);
     const short = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '60'])).out);
     expect(short).toMatchObject({ state: 'running', exit: EXIT.running, heartbeat: { available: false } });

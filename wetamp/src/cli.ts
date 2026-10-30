@@ -42,10 +42,10 @@ import {
   recoverySnapshot,
 } from './recovery';
 // prettier-ignore
-import { caller, control, coord, repoScope, runScope, same, presence, type Controller } from './coord';
+import { caller, control, coord, identityKey, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
-import { collectGenerals } from './stall';
+import { collectGenerals, generalAttention } from './stall';
 // prettier-ignore
 import { HEARTBEAT_INTERVAL_MS, heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
@@ -1333,9 +1333,12 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
     const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running) return summary(l, run, c);
+    const general = generalAttention(l.run_id, identityKey(who), waitClock.now());
+    if (general)
+      return { ...summary(l, run, c), attention: general, heartbeat: waitHeartbeat(who) };
     // prettier-ignore
     if (left <= 0) return { ...summary(l, run, c), heartbeat: waitHeartbeat(who), ...(effective < timeoutS ? { timeout_capped: { requested: timeoutS, effective } } : {}) };
-    const notification = waitNotification(l.archon_run_id, l.repo, left);
+    const notification = waitNotification(l.archon_run_id, l.repo, Math.min(left, 60));
     if (notification.kind !== 'attention') continue;
     const refreshedInbox = coord()
       .surfaced(who)
