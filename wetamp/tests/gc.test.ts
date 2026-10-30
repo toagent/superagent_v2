@@ -38,7 +38,10 @@ const keys = [
 const originalEnv = keys.map(k => process.env[k]);
 const gc = (dryRun = false, ruleVersion?: string) =>
   collect(dryRun, [process.env.TMPDIR!], ruleVersion);
-const realTrees = () => Bun.spawnSync(['git', 'worktree', 'list', '--porcelain']).stdout.toString();
+const realTrees = () =>
+  Bun.spawnSync(['git', 'worktree', 'list', '--porcelain'])
+    .stdout.toString()
+    .replace(/^HEAD [^\n]*\n/gm, '');
 const initialTrees = realTrees();
 afterAll(() => expect(realTrees()).toBe(initialTrees));
 const views = new Map<string, archon.RunView>();
