@@ -289,30 +289,75 @@ class AcceptanceFailed extends Error {
 
 export function runAcceptance(
   snapshot: string,
-  timeoutMs = 40 * 60_000
+  timeoutMs = 40 * 60_000,
+  waitTimeoutMs = 60 * 60_000,
+  holderLogDelayMs = 60_000
 ): EngineReceipt['results'][number] {
+  const timedRunner = `
+    const timeout = Number(process.argv[1]);
+    const grace = Number(process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS ?? 2000);
+    const child = Bun.spawn(process.argv.slice(2), {
+      stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', detached: true,
+    });
+    const completed = child.exited.then(exit => ({ exit }));
+    const result = await Promise.race([completed, Bun.sleep(timeout).then(() => null)]);
+    if (result !== null) process.exit(result.exit);
+    try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+    await Bun.sleep(grace);
+    try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+    await child.exited;
+    process.exit(124);
+  `;
   const script = join(snapshot, 'wetamp', 'scripts', 'engine-acceptance.sh');
+  const heavySlot = join(snapshot, 'wetamp', 'scripts', 'heavy-slot.sh');
   const scratch = join(tmpdir(), `sa-engine-${crypto.randomUUID()}`);
+  const coordination = join(tmpdir(), `sa-engine-control-${crypto.randomUUID()}`);
   mkdirSync(promotionDir(), { recursive: true });
   const evidencePath = join(promotionDir(), `${basename(snapshot)}.acceptance.log`);
+  const ready = join(coordination, 'heavy.ready');
+  const exhausted = join(coordination, 'heavy.exhausted');
+  mkdirSync(coordination, { recursive: true });
   const output = openSync(evidencePath, 'w');
   const started = Date.now();
   try {
-    const result = Bun.spawnSync(['bash', script], {
-      cwd: join(snapshot, 'wetamp'),
-      env: {
-        ...process.env,
-        SA_ENGINE_PROMOTER_TOKEN: '',
-        SA_SERVED_RUN: '',
-        SA_HISTORICAL_RUN: '',
-        SUPERAGENT_HOME: join(scratch, 'sa'),
-        ARCHON_HOME: join(scratch, 'sa', 'archon'),
-      },
-      stdout: output,
-      stderr: output,
-      timeout: timeoutMs,
-      killSignal: 'SIGKILL',
-    });
+    const result = Bun.spawnSync(
+      [
+        'bash',
+        '-c',
+        '. "$1"; shift; heavy_exec "$@"',
+        '_',
+        heavySlot,
+        process.execPath,
+        '-e',
+        timedRunner,
+        String(timeoutMs),
+        'bash',
+        script,
+      ],
+      {
+        cwd: join(snapshot, 'wetamp'),
+        env: {
+          ...process.env,
+          SA_ENGINE_PROMOTER_TOKEN: '',
+          SA_SERVED_RUN: '',
+          SA_HISTORICAL_RUN: '',
+          SUPERAGENT_HOME: join(scratch, 'sa'),
+          ARCHON_HOME: join(scratch, 'sa', 'archon'),
+          SA_HEAVY_LOCK_HELD: '',
+          SA_HEAVY_READY_FILE: ready,
+          SA_HEAVY_WAIT_EXHAUSTED_FILE: exhausted,
+          SA_HEAVY_WAIT_TIMEOUT_SECONDS: String(Math.max(1, Math.ceil(waitTimeoutMs / 1_000))),
+          SA_HEAVY_WAIT_LOG_SECONDS: String(Math.max(1, Math.ceil(holderLogDelayMs / 1_000))),
+        },
+        stdout: output,
+        stderr: output,
+      }
+    );
+    if (existsSync(exhausted))
+      throw new AcceptanceFailed(
+        evidencePath,
+        `heavy_slot_wait_exhausted, see ${evidencePath}: ${readFileSync(evidencePath, 'utf8').trim().slice(-500)}`
+      );
     if (result.exitCode !== 0)
       throw new AcceptanceFailed(
         evidencePath,
@@ -325,7 +370,11 @@ export function runAcceptance(
     };
   } finally {
     closeSync(output);
-    removeAcceptanceScratch(scratch);
+    try {
+      removeAcceptanceScratch(scratch);
+    } finally {
+      rmSync(coordination, { recursive: true, force: true });
+    }
   }
 }
 

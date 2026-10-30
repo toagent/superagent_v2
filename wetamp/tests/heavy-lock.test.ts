@@ -155,3 +155,25 @@ test('selectors and an inherited heavy slot bypass the lock', async () => {
   );
   expect(await nested.exited).toBe(0);
 });
+
+test('heavy slot publishes live holder metadata and ignores a stale holder', async () => {
+  const { env } = fixture();
+  const holderFile = `${env.SA_HEAVY_LOCK_FILE}.holder`;
+  const holder = run({ ...env, DURATION: '0.5' }, 'metadata');
+  for (let i = 0; i < 100 && !existsSync(holderFile); i++) await Bun.sleep(10);
+  const metadata = readFileSync(holderFile, 'utf8');
+  expect(metadata).toContain('pid=');
+  expect(metadata).toContain('command=');
+  expect(metadata).toContain(`cwd=${wetamp}`);
+  expect(metadata).toContain('started_at=');
+  expect(await holder.exited).toBe(0);
+  expect(existsSync(holderFile)).toBe(false);
+
+  writeFileSync(holderFile, 'pid=99999999\ncommand=stale\n');
+  const inspected = Bun.spawnSync(['sh', '-c', '. "$1"; heavy_holder || true', '_', slot], {
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(inspected.stdout.toString()).toBe('');
+});

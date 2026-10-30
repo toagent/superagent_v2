@@ -66,6 +66,7 @@ function sourceFixture(): { root: string; source: string; evidence: string; sha:
     SA_ENGINE_SOURCE: source,
     SA_ENGINE_AUTO_PROMOTE: '0',
     SA_ENGINE_PROMOTER_TOKEN: '',
+    SA_HEAVY_LOCK_FILE: join(root, 'heavy.lock'),
   });
   return { root, source, evidence, sha: () => sh('git rev-parse HEAD', source).trim() };
 }
@@ -85,11 +86,17 @@ test('engine acceptance removes success, failure, and timeout scratch but refuse
     script = join(snapshot, 'wetamp/scripts/engine-acceptance.sh'),
     trace = join(root, 'trace');
   mkdirSync(join(snapshot, 'wetamp/scripts'), { recursive: true });
+  writeFileSync(
+    join(snapshot, 'wetamp/scripts/heavy-slot.sh'),
+    readFileSync(join(import.meta.dir, '../scripts/heavy-slot.sh'))
+  );
   process.env.TMPDIR = root;
   process.env.SUPERAGENT_HOME = join(root, 'home');
   process.env.TRACE = trace;
   process.env.SA_SERVED_RUN = 'served';
   process.env.SA_HISTORICAL_RUN = 'historical';
+  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock');
+  process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
   const log = join(root, 'home/engine/promotions/snapshot.acceptance.log');
   for (const body of ['exit 0', 'exit 7', 'sleep 2']) {
     writeFileSync(
@@ -111,6 +118,59 @@ test('engine acceptance removes success, failure, and timeout scratch but refuse
   );
   expect(() => runAcceptance(snapshot, 1_000)).toThrow('scratch symlink retained');
   expect(existsSync(target)).toBe(true);
+});
+
+test('engine acceptance waits outside its timeout and reports holder exhaustion', async () => {
+  const root = tmp(),
+    snapshot = join(root, 'snapshot'),
+    scripts = join(snapshot, 'wetamp/scripts');
+  mkdirSync(scripts, { recursive: true });
+  for (const name of ['engine-acceptance.sh', 'heavy-slot.sh'])
+    writeFileSync(join(scripts, name), readFileSync(join(import.meta.dir, '../scripts', name)));
+  process.env.SUPERAGENT_HOME = join(root, 'home');
+  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock');
+  const holder = Bun.spawn(
+    ['sh', '-c', '. "$1"; heavy_exec sleep 2', '_', join(scripts, 'heavy-slot.sh')],
+    { env: { ...process.env, SA_HEAVY_LOCK_HELD: '' } }
+  );
+  for (let i = 0; i < 100 && !existsSync(`${process.env.SA_HEAVY_LOCK_FILE}.holder`); i++)
+    await Bun.sleep(10);
+  writeFileSync(join(scripts, 'engine-acceptance.sh'), '#!/bin/sh\nsleep 0.05\n');
+  expect(runAcceptance(snapshot, 200, 4_000, 1_000).exit).toBe(0);
+  expect(
+    readFileSync(join(root, 'home/engine/promotions/snapshot.acceptance.log'), 'utf8')
+  ).toContain('heavy slot wait: holder');
+  expect(await holder.exited).toBe(0);
+
+  const blocker = Bun.spawn(
+    ['sh', '-c', '. "$1"; heavy_exec sleep 3', '_', join(scripts, 'heavy-slot.sh')],
+    { env: { ...process.env, SA_HEAVY_LOCK_HELD: '' } }
+  );
+  for (let i = 0; i < 100 && !existsSync(`${process.env.SA_HEAVY_LOCK_FILE}.holder`); i++)
+    await Bun.sleep(10);
+  expect(() => runAcceptance(snapshot, 200, 1_000, 1_000)).toThrow('heavy_slot_wait_exhausted');
+  blocker.kill('SIGKILL');
+  await blocker.exited;
+});
+
+test('engine acceptance timeout kills its descendant process group', () => {
+  const root = tmp(),
+    snapshot = join(root, 'snapshot'),
+    scripts = join(snapshot, 'wetamp/scripts');
+  mkdirSync(scripts, { recursive: true });
+  for (const name of ['engine-acceptance.sh', 'heavy-slot.sh'])
+    writeFileSync(join(scripts, name), readFileSync(join(import.meta.dir, '../scripts', name)));
+  const descendant = join(root, 'descendant.pid');
+  writeFileSync(
+    join(scripts, 'engine-acceptance.sh'),
+    `#!/bin/sh\nsleep 30 & echo $! > '${descendant}'\nwait\n`
+  );
+  process.env.SUPERAGENT_HOME = join(root, 'home');
+  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock');
+  process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
+  expect(() => runAcceptance(snapshot, 100, 1_000, 1_000)).toThrow('engine acceptance failed');
+  const pid = Number(readFileSync(descendant, 'utf8'));
+  expect(() => process.kill(pid, 0)).toThrow();
 });
 
 test('current console follows only a loaded launchd job', () => {
