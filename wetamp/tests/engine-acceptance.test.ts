@@ -22,6 +22,7 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
   writeFileSync(join(bin, 'bun'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\n');
   chmodSync(join(bin, 'bun'), 0o755);
   const invoke = (...args: string[]) => {
+    writeFileSync(trace, '');
     const result = Bun.spawnSync(['bash', 'scripts/engine-acceptance.sh', ...args], {
       cwd: wetamp,
       env: {
@@ -38,7 +39,6 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
     'run type-check',
     'test --timeout 900000 tests/scenarios/scenario-core.test.ts',
   ]);
-  writeFileSync(trace, '');
   const scenarios = readdirSync(join(wetamp, 'tests/scenarios'))
     .filter(name => name.endsWith('.test.ts'))
     .sort()
