@@ -43,6 +43,7 @@ test('net lines exclude tests, golden paths and generator-declared outputs', () 
     '3\t0\tsrc/main.test.ts',
     '9\t0\ttests/golden/result.yaml',
     '7\t0\tgenerated/types.ts',
+    '-\t-\tsrc/web/icon.png',
   ].join('\0');
   expect(netLinesFromNumstat(raw, ['generated/types.ts'])).toBe(7);
 });
