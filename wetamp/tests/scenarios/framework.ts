@@ -68,6 +68,7 @@ export interface ScenarioFixture {
   blockMs?: number;
   runId?: string;
   targetAfterInjection?: string;
+  targetAdvancedAfterResync?: boolean;
   carried?: Carried;
   engineSnapshot?: string;
   omitNewFindingOnRetry?: boolean;
@@ -161,7 +162,7 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
   return {
     ...base,
     getCapabilities: () => ({ ...base.getCapabilities(), sessionFork: true }),
-    async *sendQuery(_prompt: string, cwd: string, _resume?: string, options?: SendQueryOptions) {
+    async *sendQuery(prompt: string, cwd: string, _resume?: string, options?: SendQueryOptions) {
       const id = options?.nodeConfig?.nodeId ?? '';
       const agentCall = ((f.agentCalls ??= {})[id] = (f.agentCalls?.[id] ?? 0) + 1);
       f.roles.push(options?.env?.SUPERAGENT_ROLE ?? '');
@@ -308,12 +309,26 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
           },
         ];
       if (f.spec.id === 'S18' && /^review-resync-m1-r[12]$/.test(id)) {
-        const closed = id.endsWith('r2');
-        sample.status = closed ? 'PASS' : 'FAIL';
-        // prettier-ignore
-        sample.findings = [{ id: 'scenario-resync-r1', severity: 'high', file: f.spec.agents.code.path,
+        const repeatedFirstRound = id.endsWith('r1') && reviewCall > 1;
+        const pointerPath = /职责证据指针 `([^`]+)`/.exec(prompt)?.[1];
+        const pointer = pointerPath
+          ? (JSON.parse(readFileSync(pointerPath, 'utf8')) as { path: string })
+          : undefined;
+        const context = pointer
+          ? (JSON.parse(readFileSync(pointer.path, 'utf8')) as { carry_over?: unknown })
+          : undefined;
+        const closed =
+          id.endsWith('r2') && JSON.stringify(context?.carry_over).includes('scenario-resync-r1');
+        if (repeatedFirstRound) {
+          sample.status = 'PASS';
+          sample.findings = [];
+        } else {
+          sample.status = closed ? 'PASS' : 'FAIL';
+          // prettier-ignore
+          sample.findings = [{ id: 'scenario-resync-r1', severity: 'high', file: f.spec.agents.code.path,
           line: 1, status: closed ? 'closed' : 'open', evidence: closed ? 'fixed in round two' : 'scripted finding',
           failure_class: 'product', command: null, carry_over: closed }];
+        }
       }
       if (f.spec.id === 'S17' && id.startsWith('review-m1-r')) {
         const finding = (findingId: string, status: 'open' | 'closed') => ({
@@ -460,6 +475,16 @@ export async function runInProcess(
       writeFileSync(join(f.target, f.spec.agents.code.path), 'target-side\n');
       sh(`git add '${f.spec.agents.code.path}' && git commit -qm target-resync-conflict`, f.target);
       f.targetAfterInjection = sh('git rev-parse scenario-target', f.target).trim();
+    }
+    if (
+      event.event_type === 'node_completed' &&
+      event.step_name === 'integrate-m1.gate-m1-rresync2' &&
+      f.spec.id === 'S18' &&
+      !f.targetAdvancedAfterResync
+    ) {
+      writeFileSync(join(f.target, 'post-resync-target.txt'), 'advanced\n');
+      sh('git add post-resync-target.txt && git commit -qm target-advanced-after-resync', f.target);
+      f.targetAdvancedAfterResync = true;
     }
     if (event.event_type === 'node_completed' && event.step_name === f.blockAfterCompletedNode) {
       if (!f.blockMarker) throw new Error('scenario completion block marker missing');

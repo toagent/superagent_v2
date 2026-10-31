@@ -58,7 +58,7 @@ import reasonMirror from '../templates/.archon/scripts/reasons.json';
 import { integrationLockTimeout, integrationNodeTimeout } from '../src/integration';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
-const RESYNC_MAX_ROUNDS = Math.max(1, MAX_ROUNDS - 1);
+const RESYNC_MAX_ROUNDS = MAX_ROUNDS;
 const ACCEPTANCE_FIXED_BUDGET_MS =
   CHECK_AUX_BUDGET_MS +
   5_000 +
@@ -1603,7 +1603,10 @@ describe('buildWorkflow', () => {
     ).toMatchObject({ delta_base: '$resync-base-m1.output' });
     expect(
       deliveryIntegration.loop_group.nodes.find(n => n.id === 'diff-resync-m1-r2')?.with
-    ).toMatchObject({ delta_base: '$gate-m1-rresync1.output.reviewed_head' });
+    ).toMatchObject({
+      context_ledger: '$gate-m1-rresync1.output.ledger_file',
+      delta_base: '$gate-m1-rresync1.output.reviewed_head',
+    });
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {

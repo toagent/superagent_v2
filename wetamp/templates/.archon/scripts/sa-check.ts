@@ -1478,6 +1478,7 @@ function finish(
         head: out.head ?? '',
         deltaBase: env('DELTA_BASE'),
         scopeBase: env('SCOPE_BASE'),
+        priorLedger: env('CONTEXT_LEDGER') || undefined,
         acceptance: out,
         patch: out.patch ?? '',
         delta: out.delta ?? '',

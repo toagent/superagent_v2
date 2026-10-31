@@ -441,9 +441,7 @@ export function buildWorkflow(
     gateBindings: { round: number; node: string; carried?: boolean }[]
   ): Node => {
     const reviewRequired = m.review || m.risk === 'G2';
-    // A resync happens only after the milestone gate passed, so at least one round of the
-    // package-wide repair/review budget is already spent.
-    const resyncMaxRounds = Math.max(1, maxRounds - 1);
+    const resyncMaxRounds = maxRounds;
     const resyncBase = `resync-base-${m.id}`;
     const syncId = `resync-${m.id}`;
     const resolveId = `resolve-${syncId}`;
@@ -558,10 +556,12 @@ export function buildWorkflow(
         depends_on: [syncId, ...(delivery && !fake ? [resolveDecision] : [])],
         trigger_rule: 'none_failed_min_one_success',
         script: [
+          "import { existsSync } from 'node:fs';",
           "const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };",
           "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
           "let status = process.env.INPUTS_STATUS ?? '';",
           "if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }",
+          `if (status === 'merged' && existsSync(process.env.ARTIFACTS_DIR + '/${gateId(1)}.json')) status = 'resolved';`,
           "const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };",
           'process.stdout.write(JSON.stringify(output));',
         ].join('\n'),
@@ -676,6 +676,7 @@ export function buildWorkflow(
                     conditionalOutput<CoderOutput>(`fix-resync-${m.id}-r${String(round)}`),
                     null
                   ),
+                  context_ledger: `$${gateId(round - 1)}.output.ledger_file`,
                   delta_base: `$${gateId(round - 1)}.output.reviewed_head`,
                   reviewed_diff_hash: `$${gateId(round - 1)}.output.reviewed_diff_hash`,
                 }),

@@ -341,12 +341,12 @@ test.each([
         terminal: 'completed',
         counts: {
           'integrate-m1.resolve-resync-m1': 1,
-          'integrate-m1.final-accept-m1': 1,
-          'integrate-m1.review-resync-m1-r1': reviews > 0 ? 1 : 0,
+          'integrate-m1.final-accept-m1': id === 'S18' ? 2 : 1,
+          'integrate-m1.review-resync-m1-r1': id === 'S18' ? 2 : 0,
           'integrate-m1.fix-resync-m1-r2': reviews > 1 ? 1 : 0,
           'integrate-m1.diff-resync-m1-r2': reviews > 1 ? 1 : 0,
           'integrate-m1.review-resync-m1-r2': reviews > 1 ? 1 : 0,
-          'integrate-m1.publish-m1': 1,
+          'integrate-m1.publish-m1': id === 'S18' ? 2 : 1,
         },
         published: true,
       });
