@@ -658,7 +658,7 @@ test('SHIFT_LEFT_ACCEPT HF3 fingerprint is stable and changes with template byte
     const file = join(root, `templates/.archon/commands/${command}.md`);
     const original = fs.readFileSync(file, 'utf8');
     expect(original).toContain('所有 shell 命令遵循你的 AGENTS.md 命令规则');
-    expect(original).toContain('交付前运行任务书验收命令');
+    expect(original).toContain('交付前运行 brief 中列给你的验收命令');
     fs.writeFileSync(file, original + '\nchanged command guidance\n');
     expect(engineHash(root)).not.toBe(hash);
     fs.writeFileSync(file, original);
@@ -1819,11 +1819,9 @@ describe('renderBrief', () => {
     );
   });
   test('carries goal, write scope, accept commands and hint path verbatim', () => {
-    const b = renderBrief(
-      fixture.packages[0],
-      '/H/core.md',
-      capsOf(fixture, fixture.packages[0], [])
-    );
+    const p = structuredClone(fixture.packages[0]);
+    p.accept.push({ cmd: 'bun run test', timeout_s: 900, resource: 'heavy-test' });
+    const b = renderBrief(p, '/H/core.md', capsOf(fixture, p, []));
     for (const s of [
       '$HOME and $ARTIFACTS_DIR literal',
       '`core.txt`',
@@ -1832,7 +1830,11 @@ describe('renderBrief', () => {
       '/H/core.md',
     ])
       expect(b).toContain(s);
-    expect(b).toContain('交付前在当前 worktree 按原样运行本包全部命令一次');
+    const own = b.split('### 你要运行的验收命令')[1]?.split('### 引擎验收会运行')[0];
+    const engine = b.split('### 引擎验收会运行（你不要运行）')[1]?.split('## 你的权限')[0];
+    expect(own).toContain('`test -f core.txt`');
+    expect(own).not.toContain('`bun run test`');
+    expect(engine).toContain('`bun run test`');
     expect(b).toContain('命令通过不代替逐项核对需求的实现位置与对应测试');
     expect(b).not.toContain('跑长时测试（全量、E2E）');
   });
@@ -2015,7 +2017,7 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
       const prompt = readFileSync(join(gen.dir, '.archon/commands', `${command}.md`), 'utf8');
       for (const requirement of [
         '$$INPUTS.context_node.output.context_pack',
-        '交付前运行任务书验收命令',
+        '交付前运行 brief 中列给你的验收命令',
         '在当前 worktree、commit 前',
         '保持相同 cwd 与环境前缀',
         '失败就在本会话继续修，直到全部通过',
@@ -2039,10 +2041,9 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
       ])
         expect(prompt).not.toContain(stale);
       expect(prompt).toContain(
-        command === 'sa-code'
-          ? '按任务书原样运行全部 `accept` 命令'
-          : '失败的验收命令及受影响的其余验收命令'
+        command === 'sa-code' ? '按原样各运行一次' : '失败的命令及受影响的其余命令'
       );
+      expect(prompt).toContain('标为引擎运行的检查不要运行');
     }
   } finally {
     boundary.mockRestore();
