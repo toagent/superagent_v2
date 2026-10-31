@@ -14,6 +14,7 @@ import { lock } from '../src/archon';
 import { isWithinWriteRoots } from '../src/plan';
 import {
   autoPromote,
+  autoVerify,
   currentEngineSnapshot,
   engineCommand,
   engineStatus,
@@ -21,6 +22,7 @@ import {
   promote,
   rollback,
   runAcceptance,
+  runVerify,
   runSnapshotProbe,
 } from '../src/engine';
 import type { ProbeEvidence } from '../src/probe';
@@ -417,3 +419,96 @@ test('auto promotion waits for the promotion lock before spawning', () => {
   expect(spawned).toBe(1);
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('running');
 }, testTimeout(60_000));
+
+test(
+  'post-promotion verify retries only failed files and accepts a transient failure',
+  () => {
+    const f = sourceFixture(),
+      base = f.sha(),
+      sha = commit(f.source, 'verify-target');
+    const commands: string[][] = [];
+    const result = runVerify(sha, base, {
+      prepare: () => {},
+      cleanup: () => {},
+      execute: (_worktree, args, report) => {
+        commands.push(args);
+        const failed = args[0]?.startsWith('--changed=');
+        writeFileSync(
+          report,
+          `<testsuites><testsuite file="tests/caller.test.ts" failures="${failed ? '1' : '0'}"><testcase name="caller"${failed ? '><failure/></testcase>' : '/>'}</testsuite></testsuites>`
+        );
+        return failed ? 1 : 0;
+      },
+    });
+    expect(commands).toEqual([[`--changed=${base}`], ['tests/caller.test.ts']]);
+    expect(result).toMatchObject({
+      sha,
+      base,
+      status: 'passed',
+      files: ['tests/caller.test.ts'],
+      failed_files: [],
+    });
+  },
+  testTimeout(60_000)
+);
+
+test(
+  'auto verify keeps one live process, advances from the last pass, and reports once',
+  () => {
+    const f = sourceFixture(),
+      first = f.sha();
+    promote(first, f.evidence);
+    const second = commit(f.source, 'verify-second');
+    promote(second, undefined, { probe: successfulProbe });
+    const engine = join(process.env.SUPERAGENT_HOME!, 'engine'),
+      promotions = join(engine, 'promotions');
+    let spawned = 0,
+      detached = 0,
+      handoffs = 0,
+      alerts = 0;
+    const dependencies = {
+      spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }),
+      inspect: () => ({ state: 'online', start: 'Mon Oct 20 00:00:00 2026' }) as const,
+      handoff: () => handoffs++,
+      alert: () => alerts++,
+    };
+    expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({
+      sha: second,
+      base: first,
+      started: true,
+    });
+    expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({
+      sha: second,
+      started: false,
+    });
+    expect({ spawned, detached }).toEqual({ spawned: 1, detached: 1 });
+    const secondRecord = join(promotions, `${second}.verify.json`);
+    writeFileSync(
+      secondRecord,
+      JSON.stringify({ ...JSON.parse(readFileSync(secondRecord, 'utf8')), status: 'passed' })
+    );
+    const third = commit(f.source, 'verify-third');
+    promote(third, undefined, { probe: successfulProbe });
+    expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({
+      sha: third,
+      base: second,
+      started: true,
+    });
+    const thirdRecord = join(promotions, `${third}.verify.json`);
+    writeFileSync(
+      thirdRecord,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(thirdRecord, 'utf8')),
+        status: 'failed',
+        failed_files: ['tests/caller.test.ts'],
+      })
+    );
+    autoVerify(currentEngineSnapshot(), dependencies);
+    autoVerify(currentEngineSnapshot(), dependencies);
+    expect({ handoffs, alerts }).toEqual({ handoffs: 1, alerts: 1 });
+    expect(engineStatus()).toMatchObject({
+      verify: { sha: third, status: 'failed', reported: true },
+    });
+  },
+  testTimeout(120_000)
+);

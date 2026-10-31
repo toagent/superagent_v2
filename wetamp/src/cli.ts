@@ -173,6 +173,7 @@ import { capabilityDrift } from './capabilities';
 import {
   assertEngineAccess,
   autoPromote,
+  autoVerify,
   currentEngineSnapshot,
   engineCommand,
   fixedEngineSnapshot,
@@ -3268,6 +3269,7 @@ export function superviseTick(mode: TickMode = {}):
   | (ReturnType<typeof scheduleTickGroups> & {
       global: ReturnType<typeof tick>;
       promotion?: ReturnType<typeof autoPromote>;
+      verify?: ReturnType<typeof autoVerify>;
     }) {
   const { sa } = home();
   mkdirSync(sa, { recursive: true });
@@ -3321,7 +3323,8 @@ export function superviseTick(mode: TickMode = {}):
   } finally {
     l.release();
   }
-  return { ...scheduled, promotion: autoPromote() };
+  const promotion = autoPromote();
+  return { ...scheduled, promotion, verify: autoVerify(currentEngineSnapshot()) };
 }
 
 const optional = <T>(read: () => T): T | undefined => {
@@ -4113,7 +4116,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'scratch-clean', flags: ['session', 'dry-run'] },
   { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
   { command: 'maintenance-tick', flags: [] },
-  { command: 'engine', positionals: 'promote <sha> | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence'] },
+  { command: 'engine', positionals: 'promote <sha> | verify <sha> --base <base-sha> | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence', 'base'] },
   { command: 'health', flags: ['cwd', 'verbose'] },
   { command: 'heartbeat', flags: ['watch', 'cwd', 'all'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
@@ -4750,6 +4753,7 @@ export function main(argv: string[]): number {
         ...(a.flags['bootstrap-evidence']
           ? ['--bootstrap-evidence', a.flags['bootstrap-evidence']]
           : []),
+        ...(a.flags.base ? ['--base', a.flags.base] : []),
       ]);
       print(result);
       return ['gate-legacy', 'probe'].includes(a._[1] ?? '') && !(result as { ok?: boolean }).ok

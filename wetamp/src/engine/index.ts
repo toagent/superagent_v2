@@ -22,6 +22,9 @@ import { inspectProcess } from '../launcher';
 import { SCRATCH_ROOT } from '../plan';
 import { runProbe, type ProbeEvidence } from '../probe';
 import { printLaunchd, type LaunchctlRunner } from '../launchd';
+import { runVerify, verifyRecord } from './verify';
+
+export { autoVerify, runVerify, verifyRecord } from './verify';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
 
@@ -732,6 +735,7 @@ export function engineStatus(): Record<string, unknown> {
   const verified = receipts();
   return {
     current,
+    verify: currentSha ? (verifyRecord(currentSha) ?? null) : null,
     hold: engineHold(),
     protocol_version: ENGINE_PROTOCOL_VERSION,
     snapshots: verified.map(item => ({
@@ -764,6 +768,12 @@ export function engineCommand(args: string[]): unknown {
     sha = args.at(1);
   if (action === 'promote')
     return promote(sha ?? '', args[2] === '--bootstrap-evidence' ? args[3] : undefined);
+  if (action === 'verify') {
+    const baseIndex = args.indexOf('--base');
+    if (baseIndex < 0 || !args[baseIndex + 1])
+      throw new Error('usage: superagent engine verify <sha> --base <base-sha>');
+    return runVerify(sha ?? '', args[baseIndex + 1]);
+  }
   if (action === 'rollback') return rollback();
   if (action === 'status') return engineStatus();
   if (action === 'continuation') return continuationOnCurrent(sha ?? '');
@@ -792,7 +802,7 @@ export function engineCommand(args: string[]): unknown {
     return runProbe(level);
   }
   throw new Error(
-    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | probe [G1|G2] | rollback | status | continuation <run> | hold <on|off|status> | adopt <run> <sha> | gate-legacy'
+    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | verify <sha> --base <base-sha> | probe [G1|G2] | rollback | status | continuation <run> | hold <on|off|status> | adopt <run> <sha> | gate-legacy'
   );
 }
 
