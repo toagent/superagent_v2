@@ -59,6 +59,14 @@ const mutations: Mutation[] = [
     expectedError: 'Received: "events:code-a:0"',
   },
   {
+    file: 'templates/.archon/scripts/env-precheck.ts',
+    from: "readFileSync(record.path, 'utf8').trim() !== record.digest",
+    to: 'false',
+    test: 'tests/env-precheck.test.ts',
+    name: 'dependency lock change',
+    expectedError: 'dependency lock change',
+  },
+  {
     file: 'src/generate.ts',
     from: "ref.optional(\n          conditionalOutput<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256',\n          ''\n        ),",
     to: "ref.required(\n          output<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256'\n        ),",

@@ -48,6 +48,7 @@ import {
   quickPlan,
   superviseTickCli,
   updateLedger,
+  waitForRunAdmission,
   waitRun,
   type Hold,
   type Ledger,
@@ -168,6 +169,25 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
 });
 
 describe('P3 engine lifecycle contracts', () => {
+  test('run admission waits for capacity and returns a typed timeout', () => {
+    let elapsed = 0,
+      attempts = 0;
+    fixtureSpies.push(
+      spyOn(cliMod.waitClock, 'now').mockImplementation(() => elapsed),
+      spyOn(cliMod.waitClock, 'sleep').mockImplementation(ms => {
+        elapsed += ms;
+      })
+    );
+    const admit = (): ReturnType<typeof archonMod.admitRun> =>
+      ++attempts === 3
+        ? { ok: true, active: 0, launch: () => ({}), release: () => {} }
+        : { ok: false, reason: 'admission_busy' };
+    expect(waitForRunAdmission(admit)).toMatchObject({ ok: true });
+    expect(waitForRunAdmission(() => ({ ok: false, reason: 'admission_busy' }))).toEqual({
+      ok: false,
+      reason: 'admission_timeout',
+    });
+  });
   test('delivery defaults: concurrent admission launches exactly once and pending work retains capacity', () => {
     const root = tmp();
     let active = 0,
