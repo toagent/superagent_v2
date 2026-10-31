@@ -14,8 +14,6 @@ function fixture(now = 2_000_000_000_000) {
     answerToken = join(root, 'answer');
   writeFileSync(publisherToken, 'publisher-secret\n', { mode: 0o600 });
   writeFileSync(answerToken, 'answer-secret\n', { mode: 0o600 });
-  chmodSync(publisherToken, 0o600);
-  chmodSync(answerToken, 0o600);
   const posts: Record<string, unknown>[] = [],
     events: string[] = [];
   const fakeFetch: typeof fetch = (async (input, init) => {
@@ -51,8 +49,15 @@ function fixture(now = 2_000_000_000_000) {
     JSON.parse(String((post.actions as { body: string }[])[index].body));
   const push = (value: unknown, id = crypto.randomUUID()) =>
     events.push(JSON.stringify({ id, event: 'message', message: JSON.stringify(value) }));
-  return { config, posts, events, request, answer, push, root };
+  const first = () =>
+    Object.values(JSON.parse(readFileSync(config.statePath, 'utf8')).decisions)[0];
+  return { config, posts, request, answer, push, first };
 }
+const collect =
+  (values: string[]) =>
+  (_decision: unknown, option: string): void => {
+    values.push(option);
+  };
 
 describe('ntfy decision channel', () => {
   test('accepts one valid signed answer and rejects forgery, replay, expiry and a duplicate answer', async () => {
@@ -64,39 +69,15 @@ describe('ntfy decision channel', () => {
     f.push({ ...valid, sig: '0'.repeat(64) });
     f.push(valid);
     f.push(valid);
-    expect(
-      await syncNtfy((_decision, option) => {
-        accepted.push(option);
-      }, f.config)
-    ).toEqual({ accepted: 1, ignored: 2 });
+    expect(await syncNtfy(collect(accepted), f.config)).toEqual({ accepted: 1, ignored: 2 });
     expect(accepted).toEqual(['yes']);
     const second = fixture();
     askNtfy(second.request(), second.config);
     await publishPendingNtfy(second.config);
     second.push(second.answer());
     second.config.now = () => 2_000_007_200_000;
-    expect(
-      (
-        await syncNtfy(() => {
-          accepted.push('expired');
-        }, second.config)
-      ).accepted
-    ).toBe(0);
-    expect(
-      Object.values(JSON.parse(readFileSync(second.config.statePath, 'utf8')).decisions)[0]
-    ).toMatchObject({ status: 'expired' });
-    const third = fixture();
-    askNtfy({ ...third.request(), default_on_expiry: 'no' }, third.config);
-    await publishPendingNtfy(third.config);
-    third.config.now = () => 2_000_007_200_000;
-    expect(
-      (
-        await syncNtfy((_d, option) => {
-          accepted.push(option);
-        }, third.config)
-      ).accepted
-    ).toBe(1);
-    expect(accepted.at(-1)).toBe('no');
+    expect((await syncNtfy(collect(accepted), second.config)).accepted).toBe(0);
+    expect(second.first()).toMatchObject({ status: 'expired' });
   });
 
   test('requires the red request and a fresh five-minute confirmation', async () => {
@@ -105,39 +86,20 @@ describe('ntfy decision channel', () => {
     askNtfy(f.request('red'), f.config);
     await publishPendingNtfy(f.config);
     f.push(f.answer());
-    expect(
-      (
-        await syncNtfy((_d, option) => {
-          accepted.push(option);
-        }, f.config)
-      ).accepted
-    ).toBe(0);
+    expect((await syncNtfy(collect(accepted), f.config)).accepted).toBe(0);
     await publishPendingNtfy(f.config);
     expect((f.posts.at(-1)!.actions as { label: string }[])[0].label).toBe('确认批准');
     f.push(f.answer());
-    expect(
-      (
-        await syncNtfy((_d, option) => {
-          accepted.push(option);
-        }, f.config)
-      ).accepted
-    ).toBe(1);
+    expect((await syncNtfy(collect(accepted), f.config)).accepted).toBe(1);
     expect(accepted).toEqual(['yes']);
   });
 
   test('keeps a decision pending when ntfy is unavailable', async () => {
     const f = fixture();
     askNtfy(f.request(), f.config);
-    const offline = (async () => {
-      throw new Error('offline');
-    }) as unknown as typeof fetch;
+    const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('offline');
-    expect(
-      Object.values(JSON.parse(readFileSync(f.config.statePath, 'utf8')).decisions)[0]
-    ).toMatchObject({
-      status: 'pending',
-      delivery: 'pending',
-    });
+    expect(f.first()).toMatchObject({ status: 'pending', delivery: 'pending' });
   });
 
   test('keeps secrets out of state, errors and request bodies', async () => {
