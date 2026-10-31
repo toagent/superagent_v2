@@ -670,7 +670,7 @@ test('SHIFT_LEFT_ACCEPT HF3 fingerprint is stable and changes with template byte
     expect(engineHash(root)).toBe(hash);
   }
   const resident = residentHash(root);
-  for (const path of ['src/board/App.tsx', 'src/panel.ts']) {
+  for (const path of ['src/board/App.tsx', 'src/web/server.ts']) {
     fs.appendFileSync(join(root, path), '\n// UI-only change\n');
     expect(engineHash(root)).toBe(hash);
     expect(residentHash(root)).not.toBe(resident);
@@ -711,7 +711,7 @@ test('EV reflection and memory views are read live; lesson data is outside both 
   );
   const workflow = engineHash(root),
     resident = residentHash(root);
-  for (const path of ['src/memory-reflect.ts', 'src/panel.ts']) {
+  for (const path of ['src/memory-reflect.ts', 'src/web/memory.ts']) {
     fs.appendFileSync(join(root, path), '\n// execution-time change\n');
     expect(engineHash(root)).toBe(workflow);
     expect(residentHash(root)).not.toBe(resident);

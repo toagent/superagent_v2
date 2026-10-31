@@ -181,6 +181,14 @@ import {
   staleEngineSnapshot,
 } from './engine';
 
+export const consoleLaunchdLabel = (): string =>
+  process.env.SA_CONSOLE_LABEL ?? 'com.wetamp.superagent-console';
+export const consoleLaunchdPlist = (): string =>
+  join(
+    process.env.SA_LAUNCHD_DIR ?? join(homedir(), 'Library/LaunchAgents'),
+    `${consoleLaunchdLabel()}.plist`
+  );
+
 const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
 if (
   inheritedTmp &&
@@ -4084,6 +4092,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
   { command: 'quota', flags: [] },
   { command: 'usage', flags: ['since', 'repo', 'refresh'] },
+  { command: 'console', positionals: 'start|stop|status|url', flags: ['open'] },
   { command: 'gc', flags: ['dry-run'] },
   { command: 'scratch-clean', flags: ['session', 'dry-run'] },
   { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
@@ -4136,8 +4145,9 @@ function tickOutput(
   return actions.actions.some(x => !x.ok && x.busy !== true) ? 1 : 0;
 }
 
+/** Console availability must not gate the unattended heartbeat. */
 // prettier-ignore
-export async function superviseTickCli(sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined, syncDecisions = syncDecisionChannel, publishDecisions = publishPendingNtfy): Promise<number> {
+export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined, syncDecisions = syncDecisionChannel, publishDecisions = publishPendingNtfy): Promise<number> {
   const errors: string[] = [];
   const stages = {} as Omit<NtfyTickRecord, 'at'>;
   const result = async (stage: keyof typeof stages, run: () => unknown, errorLabel: string = stage): Promise<unknown> => {
@@ -4169,6 +4179,7 @@ export async function superviseTickCli(sync = async (snapshot: Snapshot): Promis
       return changed ? undefined : { skipped: 'unchanged' };
     });
   else stages.publish = { ok: true, duration_ms: 0, skipped: mode.noGlobal ? 'no-global' : 'collect-failed' };
+  await result('console', () => mode.noGlobal ? { skipped: 'no-global' } : refresh(), 'console refresh');
   let output: Record<string, unknown> = {};
   await result('ntfy_sync', async () => {
     if (mode.noGlobal) return { skipped: 'no-global' };
@@ -5005,9 +5016,18 @@ async function runCli(): Promise<void> {
       }
     })();
     if (
-      ['board', 'usage', 'heartbeat', 'ask', 'supervise-tick', 'job', 'jobs', 'rollover'].includes(
-        verb ?? ''
-      )
+      [
+        'board',
+        'usage',
+        'heartbeat',
+        'ask',
+        'supervise-tick',
+        'console',
+        'web',
+        'job',
+        'jobs',
+        'rollover',
+      ].includes(verb ?? '')
     )
       assertEngineAccess(argv);
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
@@ -5017,13 +5037,15 @@ async function runCli(): Promise<void> {
     if (verb === 'supervise-tick') {
       const parsed = parseArgs(argv);
       process.exit(
-        await superviseTickCli(undefined, {
+        await superviseTickCli(undefined, undefined, {
           schedule: parsed.flags.schedule,
           runs: parsed.flags.runs,
           noGlobal: parsed.flags['no-global'],
         })
       );
     }
+    if (verb === 'console' || verb === 'web')
+      process.exit(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs') process.exit(await jobCli(argv));
     if (verb === 'rollover') {
       const parsed = parseArgs(argv),

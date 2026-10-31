@@ -180,6 +180,7 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     publish: { ok: true },
     reclaim: { ok: true },
     orca: { ok: false, error: 'down' },
+    console: { ok: true },
     failover: { ok: true },
     actions: { ok: true },
   } satisfies TickRecord;

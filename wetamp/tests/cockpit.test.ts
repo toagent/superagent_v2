@@ -8,6 +8,7 @@ import { HOLD_POLICY, type Ledger } from '../src/cli';
 import { rowOf, type BoardRow, type Snapshot } from '../src/board/data';
 import { cockpit, stages, reasonText, REASONS } from '../src/board/cockpit';
 import { Frame } from '../src/board/App';
+import { overview } from '../src/web/server';
 import { tmp } from './helpers';
 import { refreshUsage } from '../src/usage';
 
@@ -368,6 +369,16 @@ test('row source resolves relative plan, milestone and first-pass from actual ga
     ).engine!.currentMilestone
   ).toBe('m2');
 });
+test('supplementary panel projects the shared model and drops prompt/argv', () => {
+  const s = snapshot([row('a')]);
+  s.summary.prompt = 'SECRET';
+  const data = overview(s),
+    text = JSON.stringify(data);
+  expect(text).not.toMatch(/prompt|argv|SECRET/);
+  expect(data.metrics).toEqual(cockpit(s, now).metrics);
+  expect(data.runs).toMatchObject([{ project: 'sinan', role: '军师·astra' }]);
+});
+
 test('missing achievement, first-pass and debt evidence remains unknown', () => {
   const done = row('legacy', 'completed');
   delete done.interventions;

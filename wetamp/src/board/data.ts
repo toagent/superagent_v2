@@ -104,6 +104,7 @@ export interface Snapshot {
   asks?: Record<string, { status: string }>;
   coordMessages?: Message[];
   usage?: UsageCache;
+  web_url?: string;
   summary: Record<string, unknown>;
   rows: BoardRow[];
   at: string;

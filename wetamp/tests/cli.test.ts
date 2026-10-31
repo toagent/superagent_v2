@@ -112,6 +112,7 @@ const engineRecoverLock = () => {
   mkdirSync(root, { recursive: true });
   return archonMod.lock(join(root, 'r.lock'));
 };
+const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
 const fixtureDecision = (
   kind: 'advance' | 'debt' | 'repair' | 'block',
   reason: string | null = null
@@ -2559,8 +2560,20 @@ test('supervise tick reports due query errors without waking', () => {
 describe('supervise-tick (archon + supervisor stubs)', () => {
   const syncDecisions = async () => ({ accepted: 0, ignored: 0, failed: 0 });
   const publishDecisions = async () => undefined;
-  const supervised = (sync?: (snapshot: Snapshot) => Promise<unknown>): Promise<number> =>
-    superviseTickCli(sync, {}, undefined, undefined, undefined, syncDecisions, publishDecisions);
+  const supervised = (
+    refresh?: () => Promise<unknown>,
+    sync?: (snapshot: Snapshot) => Promise<unknown>
+  ): Promise<number> =>
+    superviseTickCli(
+      refresh,
+      sync,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      syncDecisions,
+      publishDecisions
+    );
   test('fast tick excludes cleanup and maintenance retains cleanup tasks', () => {
     const s = stub([run('completed')]);
     s.gc.mockReturnValue([
@@ -2738,12 +2751,13 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
   });
   test('snapshot tick CLI leaves global console and Orca work to the scheduler', async () => {
     const s = stub([run('completed')]),
-      calls = { sync: 0 },
+      calls = { refresh: 0, sync: 0 },
       out = spyOn(console, 'log').mockImplementation(() => undefined),
+      refresh = async () => void calls.refresh++,
       sync = async () => void calls.sync++,
       snapshot = { at: new Date().toISOString(), summary: {}, rows: [] } as Snapshot;
     try {
-      await superviseTickCli(sync, {}, async () => snapshot);
+      await superviseTickCli(refresh, sync, {}, async () => snapshot);
       expect(existsSync(join(s.root, 'home/heartbeat.json'))).toBe(true);
       expect(JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'))).toMatchObject({
         collect: { ok: true },
@@ -2752,8 +2766,8 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       });
       const globalTick = readFileSync(join(s.root, 'home/tick.json'), 'utf8');
       activateEngineFixture(s);
-      await superviseTickCli(sync, { runs: ['sa1'], noGlobal: true });
-      expect(calls).toEqual({ sync: 1 });
+      await superviseTickCli(refresh, sync, { runs: ['sa1'], noGlobal: true });
+      expect(calls).toEqual({ refresh: 1, sync: 1 });
       expect(readFileSync(join(s.root, 'home/tick.json'), 'utf8')).toBe(globalTick);
     } finally {
       out.mockRestore();
@@ -2772,6 +2786,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     try {
       const tick = () =>
         superviseTickCli(
+          async () => undefined,
           async () => undefined,
           {},
           async () => snapshot,
@@ -2805,10 +2820,18 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     const s = stub([run('completed')]),
       out = spyOn(console, 'log').mockImplementation(() => undefined);
     try {
-      await superviseTickCli(async () => undefined, { schedule: true });
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined,
+        { schedule: true }
+      );
       expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).not.toHaveProperty('groups');
       const snapshot = activateEngineFixture(s);
-      await superviseTickCli(async () => undefined, { schedule: true });
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined,
+        { schedule: true }
+      );
       expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({
         groups: [{ snapshot, runs: ['sa1'] }],
       });
@@ -2823,7 +2846,11 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
             engine_snapshot: join(s.root, 'missing'),
           })
         );
-      await superviseTickCli(async () => undefined, { schedule: true });
+      await superviseTickCli(
+        async () => undefined,
+        async () => undefined,
+        { schedule: true }
+      );
       expect(JSON.parse(String(out.mock.calls.at(-1)?.[0])).unavailable).toEqual({
         count: 2,
         runs: ['sa1', 'sa2'],
@@ -2839,6 +2866,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     try {
       await superviseTickCli(
         async () => undefined,
+        async () => undefined,
         {},
         undefined,
         undefined,
@@ -2850,6 +2878,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
           'reclaim',
           'collect',
           'publish',
+          'console',
           'ntfy_sync',
           'actions',
           'ntfy_publish',
@@ -2881,17 +2910,25 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       const out = spyOn(console, 'log').mockImplementation(() => undefined);
       const err = spyOn(console, 'error').mockImplementation(() => undefined);
       try {
-        const baseline = await supervised(async () => undefined);
+        const baseline = await supervised(
+          async () => undefined,
+          async () => undefined
+        );
         expect(baseline).toBe(failed ? 1 : 0);
         for (const returned of [false, true]) {
           const printed = out.mock.calls.length;
-          const exit = await supervised(async () => {
-            expect(out.mock.calls.length).toBe(printed);
-            if (!failed)
-              expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')).toContain('pending');
-            if (returned) return { error: 'injected\nreason' };
-            throw new Error('injected\nreason');
-          });
+          const exit = await supervised(
+            async () => undefined,
+            async () => {
+              expect(out.mock.calls.length).toBe(printed);
+              if (!failed)
+                expect(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')).toContain(
+                  'pending'
+                );
+              if (returned) return { error: 'injected\nreason' };
+              throw new Error('injected\nreason');
+            }
+          );
           expect(exit).toBe(0);
           expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({
             error_count: failed ? 2 : 1,
@@ -2912,6 +2949,35 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       expect(s.calls()).not.toContain('workflow wake --json');
     }
   });
+  for (const failed of [false, true]) {
+    test(`HF8 injected console failure preserves tick exit ${failed ? 1 : 0}`, async () => {
+      const s = stub([humanWait()]);
+      if (failed) writeFileSync(join(s.root, 'home', 'asks.json'), '{');
+      const out = spyOn(console, 'log').mockImplementation(() => undefined);
+      const err = spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const message = 'refresh injected\noriginal error';
+        expect(
+          await supervised(() => {
+            throw new Error(message);
+          })
+        ).toBe(failed ? 1 : 0);
+        const result = JSON.parse(String(out.mock.calls[0]?.[0]));
+        expect(result).toMatchObject({ action_count: 1, error_count: failed ? 3 : 1 });
+        expect(result.errors).toEqual([
+          `console refresh failed: ${message}`,
+          ...(failed ? [expect.stringContaining('commander failover failed: asks ')] : []),
+        ]);
+        expect(result.details[0]).toMatchObject({ action: failed ? 'error' : 'ask', ok: !failed });
+        expect(err).not.toHaveBeenCalled();
+        expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+      } finally {
+        out.mockRestore();
+        err.mockRestore();
+      }
+      expect(s.calls()).not.toContain('workflow wake --json');
+    });
+  }
   test('supervise tick rotates three generations and refuses a symlink log', async () => {
     const s = stub([humanWait()]),
       log = join(s.root, 'home/supervise-tick.log'),
@@ -2921,15 +2987,61 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     writeFileSync(`${log}.3`, 'old');
     writeFileSync(log, '');
     fs.truncateSync(log, 10 * 1024 * 1024 + 1);
-    await superviseTickCli(async () => undefined);
+    await superviseTickCli(
+      async () => undefined,
+      async () => undefined
+    );
     expect(statSync(`${log}.1`).size).toBe(10 * 1024 * 1024 + 1);
     expect(readFileSync(`${log}.2`, 'utf8')).toBe('one');
     expect(readFileSync(`${log}.3`, 'utf8')).toBe('two');
     writeFileSync(target, '');
     fs.truncateSync(target, 10 * 1024 * 1024 + 1);
     symlinkSync(target, log);
-    await superviseTickCli(async () => undefined);
+    await superviseTickCli(
+      async () => undefined,
+      async () => undefined
+    );
     expect(fs.lstatSync(log).isSymbolicLink()).toBe(true);
+  });
+  test('HF8 CLI still ticks when refreshConsole rejects an ambiguous legacy owner', async () => {
+    const s = stub([humanWait()]);
+    // Parent spies do not cross the CLI process boundary. Keep real cleanup confined
+    // to this fixture, as scratch.test.ts does, rather than scanning operator sessions.
+    const preload = join(s.root, 'scratch-preload.cjs');
+    writeFileSync(
+      preload,
+      `const scratch = require(${JSON.stringify(join(WETAMP, 'hooks/scratch.cjs'))});
+Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scratch'))}));\n`
+    );
+    writeFileSync(
+      join(s.root, 'home', 'web.json'),
+      JSON.stringify({
+        pid: process.pid,
+        port: 0,
+        token: 'synthetic',
+        started_at: new Date().toISOString(),
+      })
+    );
+    const p = Bun.spawn([BIN, 'supervise-tick', '--json'], {
+      env: {
+        ...process.env,
+        BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${preload}`.trim(),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const out = await new Response(p.stdout).text();
+    const err = await new Response(p.stderr).text();
+    expect(await p.exited).toBe(0);
+    const result = JSON.parse(out);
+    expect(result.errors).toEqual([
+      'console refresh failed: console owner ambiguous; legacy PID migration refused: argv',
+    ]);
+    expect(result).toMatchObject({ action_count: 1, error_count: 1 });
+    expect(result.details[0]).toMatchObject({ action: 'ask', ok: true });
+    expect(err).toBe('');
+    expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
+    expect(s.calls()).not.toContain('workflow wake --json');
   });
   test('maintenance is nonblocking and never owns supervise.lock', () => {
     const sa = join(tmp(), 'home');
