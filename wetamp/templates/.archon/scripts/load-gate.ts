@@ -19,7 +19,7 @@ export async function waitForLoad(log?: string): Promise<void> {
   let load = currentLoad();
   const report = (message: string): void => {
     if (log) appendFileSync(log, `# ${message}\n`);
-    console.error(message);
+    console.log(message);
   };
   if (load <= limit) return;
   while (load > limit) {
