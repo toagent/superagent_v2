@@ -75,6 +75,14 @@ const mutations: Mutation[] = [
     expectedError: 'Expected length: 3',
   },
   {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'return { owned: prior.id === adoption && ownsCheckout(prior, cwd) };',
+    to: 'return { owned: false };',
+    test: 'tests/sa-check.test.ts',
+    name: 'RUN_PROVISION',
+    expectedError: 'Expected: 0',
+  },
+  {
     file: 'templates/.archon/scripts/env-precheck.ts',
     from: "readFileSync(record.path, 'utf8').trim() !== record.digest",
     to: 'false',
