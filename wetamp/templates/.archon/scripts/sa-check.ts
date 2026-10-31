@@ -43,6 +43,7 @@ import { FAILURE_CLASSES, failureClass, type FailureClass } from './failure-clas
 import { nativeEvidence } from './native-models';
 import type { OwnedWorktree } from '@archon/workflows/schemas/workflow-run';
 import { envPrecheck, provisionEnvironment } from './env-precheck';
+import { waitForLoad } from './load-gate';
 import type { StreamedSubprocessError } from '@archon/workflows/subprocess-output';
 
 type ContractFinding = ReviewerOutput['findings'][number];
@@ -699,6 +700,7 @@ async function run(
         continue;
       }
     }
+    await waitForLoad(log);
     let lease: ResourceLease | undefined;
     // prettier-ignore
     if (c.resource) {

@@ -128,6 +128,13 @@ test('project rules type-check and require the scenario companion for every muta
     expect(required?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
     expect(companion?.when.some(pattern => new Bun.Glob(pattern).match(file))).toBe(true);
   }
+  const check = readFileSync(join(repo, 'wetamp/templates/.archon/scripts/sa-check.ts'), 'utf8');
+  expect(check).toContain('await waitForLoad(log);\n    let lease: ResourceLease | undefined;');
+  const context = readFileSync(
+    join(repo, 'wetamp/templates/.archon/scripts/sa-context.ts'),
+    'utf8'
+  );
+  expect(context).toContain('if (pkg || review) await waitForLoad();');
 });
 
 test('known accident mutations each fail a real generated scenario', () => {
