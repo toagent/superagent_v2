@@ -22,9 +22,8 @@ import { inspectProcess } from '../launcher';
 import { SCRATCH_ROOT } from '../plan';
 import { runProbe, type ProbeEvidence } from '../probe';
 import { printLaunchd, type LaunchctlRunner } from '../launchd';
-import { runVerify, verifyRecord } from './verify';
-
-export { autoVerify, runVerify, verifyRecord } from './verify';
+import { caller, coord, repoScope } from '../coord';
+import { queueNtfyAlert } from '../ntfy';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
 
@@ -36,6 +35,8 @@ export interface EngineReceipt {
   at: string;
   bootstrap_evidence?: string;
 }
+// prettier-ignore
+export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed'; files: string[]; failed_files: string[]; log: string; at: string; pid?: number; pid_start?: string; host?: string; token?: string; error?: string; reported?: boolean; }
 
 const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
@@ -290,25 +291,23 @@ class AcceptanceFailed extends Error {
   }
 }
 
+const timedRunner = `
+  const timeout = Number(process.argv[1]), grace = Number(process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS ?? 2000);
+  const child = Bun.spawn(process.argv.slice(2), { stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', detached: true });
+  const result = await Promise.race([child.exited, Bun.sleep(timeout).then(() => null)]);
+  if (result !== null) process.exit(result);
+  try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+  await Bun.sleep(grace);
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+  await child.exited; process.exit(124);
+`;
+// prettier-ignore
+const runTimed = (command: string[], cwd: string, output: number, timeoutMs: number, env = process.env): number => Bun.spawnSync([process.execPath, '-e', timedRunner, String(timeoutMs), ...command], { cwd, env, stdout: output, stderr: output }).exitCode;
+
 export function runAcceptance(
   snapshot: string,
   timeoutMs = 40 * 60_000
 ): EngineReceipt['results'][number] {
-  const timedRunner = `
-    const timeout = Number(process.argv[1]);
-    const grace = Number(process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS ?? 2000);
-    const child = Bun.spawn(process.argv.slice(2), {
-      stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', detached: true,
-    });
-    const completed = child.exited.then(exit => ({ exit }));
-    const result = await Promise.race([completed, Bun.sleep(timeout).then(() => null)]);
-    if (result !== null) process.exit(result.exit);
-    try { process.kill(-child.pid, 'SIGTERM'); } catch {}
-    await Bun.sleep(grace);
-    try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-    await child.exited;
-    process.exit(124);
-  `;
   const script = join(snapshot, 'wetamp', 'scripts', 'engine-acceptance.sh');
   const scratch = join(tmpdir(), `sa-engine-${crypto.randomUUID()}`);
   mkdirSync(promotionDir(), { recursive: true });
@@ -316,26 +315,18 @@ export function runAcceptance(
   const output = openSync(evidencePath, 'w');
   const started = Date.now();
   try {
-    const result = Bun.spawnSync(
-      [process.execPath, '-e', timedRunner, String(timeoutMs), 'bash', script],
-      {
-        cwd: join(snapshot, 'wetamp'),
-        env: {
-          ...process.env,
-          SA_ENGINE_PROMOTER_TOKEN: '',
-          SA_SERVED_RUN: '',
-          SA_HISTORICAL_RUN: '',
-          SUPERAGENT_HOME: join(scratch, 'sa'),
-          ARCHON_HOME: join(scratch, 'sa', 'archon'),
-        },
-        stdout: output,
-        stderr: output,
-      }
-    );
-    if (result.exitCode !== 0)
+    const exit = runTimed(['bash', script], join(snapshot, 'wetamp'), output, timeoutMs, {
+      ...process.env,
+      SA_ENGINE_PROMOTER_TOKEN: '',
+      SA_SERVED_RUN: '',
+      SA_HISTORICAL_RUN: '',
+      SUPERAGENT_HOME: join(scratch, 'sa'),
+      ARCHON_HOME: join(scratch, 'sa', 'archon'),
+    });
+    if (exit !== 0)
       throw new AcceptanceFailed(
         evidencePath,
-        `engine acceptance failed (${String(result.exitCode)}), see ${evidencePath}: ${readFileSync(evidencePath, 'utf8').trim().slice(-500)}`
+        `engine acceptance failed (${String(exit)}), see ${evidencePath}: ${readFileSync(evidencePath, 'utf8').trim().slice(-500)}`
       );
     return {
       command: 'wetamp/scripts/engine-acceptance.sh',
@@ -346,6 +337,138 @@ export function runAcceptance(
     closeSync(output);
     removeAcceptanceScratch(scratch);
   }
+}
+
+const verifyRoot = (): string => join(root(), 'verify');
+const verifyPath = (sha: string): string => join(promotionDir(), `${sha}.verify.json`);
+// prettier-ignore
+const writeVerify = (value: EngineVerifyRecord): void => { mkdirSync(promotionDir(), { recursive: true }); writeAtomic(verifyPath(value.sha), JSON.stringify(value, null, 2) + '\n'); };
+// prettier-ignore
+export const verifyRecord = (sha: string): EngineVerifyRecord | undefined => { try { return JSON.parse(readFileSync(verifyPath(sha), 'utf8')) as EngineVerifyRecord; } catch { return; } };
+// prettier-ignore
+const verifyRecords = (): EngineVerifyRecord[] => (existsSync(promotionDir()) ? readdirSync(promotionDir()).filter(x => x.endsWith('.verify.json')) : []).flatMap(file => { try { return [JSON.parse(readFileSync(join(promotionDir(), file), 'utf8')) as EngineVerifyRecord]; } catch { return []; } });
+// prettier-ignore
+const objects = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.flatMap(objects) : value && typeof value === 'object' ? [value as Record<string, unknown>] : [];
+// prettier-ignore
+const junit = (path: string): { files: string[]; failed: string[] } => { const xml = (Bun as unknown as { XML: { parse(value: string): unknown } }).XML.parse(readFileSync(path, 'utf8')) as Record<string, unknown>, root = xml.testsuites as Record<string, unknown> | undefined; if (!root) throw new Error('verify junit: missing testsuites'); const suites = objects(root.testsuite), files = suites.flatMap(s => typeof s['@file'] === 'string' ? [s['@file']] : []), failed = suites.flatMap(s => { const file = typeof s['@file'] === 'string' ? s['@file'] : undefined, cases = objects(s.testcase); return file && (Number(s['@failures'] ?? 0) > 0 || Number(s['@errors'] ?? 0) > 0 || cases.some(c => c.failure !== undefined || c.error !== undefined)) ? [file] : []; }); return { files: [...new Set(files)], failed: [...new Set(failed)] }; };
+// prettier-ignore
+export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): number { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'); try { return runTimed(['bash', '-c', '. "$1"; shift; heavy_exec "$@"', 'verify', heavy, process.execPath, 'test', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs); } finally { closeSync(output); } }
+// prettier-ignore
+export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; now?: () => number; }
+// prettier-ignore
+const beginVerify = (sha: string, base: string, log: string): EngineVerifyRecord => { const expected = process.env.SA_ENGINE_VERIFY_TOKEN; if (expected) { for (let i = 0; i < 500; i++) { const record = verifyRecord(sha), identity = inspectProcess(process.pid); if (record?.status === 'running' && record.base === base && record.token === expected && record.pid === process.pid && identity.state === 'online' && identity.start === record.pid_start) return record; Bun.sleepSync(10); } throw new Error('engine verify: process identity mismatch'); } const identity = inspectProcess(process.pid); if (identity.state !== 'online') throw new Error('engine verify: process identity unavailable'); const record: EngineVerifyRecord = { sha, base, status: 'running', files: [], failed_files: [], log, at: new Date().toISOString(), pid: process.pid, pid_start: identity.start, host: hostname() }; writeVerify(record); return record; };
+// prettier-ignore
+export function runVerify(inputSha: string, inputBase: string, dependencies: VerifyDependencies = {}): EngineVerifyRecord {
+  if (!/^[0-9a-f]{7,40}$/i.test(inputSha) || !/^[0-9a-f]{7,40}$/i.test(inputBase))
+    throw new Error('usage: superagent engine verify <sha> --base <base-sha>');
+  const sha = canonicalSha(inputSha),
+    base = canonicalSha(inputBase);
+  if (!isAncestor(base, sha)) throw new Error('engine verify: base is not an ancestor');
+  const worktree = join(verifyRoot(), sha),
+    log = join(promotionDir(), `${sha}.verify.log`),
+    deadline = (dependencies.now ?? Date.now)() + 60 * 60_000,
+    report = join(promotionDir(), `${sha}.verify.junit.xml`),
+    running = beginVerify(sha, base, log),
+    remaining = (): number => Math.max(1, deadline - (dependencies.now ?? Date.now)()),
+    execute = dependencies.execute ?? executeVerifyTests;
+  let result = running,
+    prepared = false;
+  try {
+    mkdirSync(verifyRoot(), { recursive: true });
+    rmSync(report, { force: true });
+    if (dependencies.prepare) {
+      dependencies.prepare(worktree, sha, log, remaining());
+      prepared = true;
+    } else {
+      git(['worktree', 'add', '--detach', worktree, sha]);
+      prepared = true;
+      const install = (() => { const output = openSync(log, 'a'); try { return Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: worktree, stdout: output, stderr: output, timeout: remaining() }); } finally { closeSync(output); } })();
+      if (install.exitCode !== 0)
+        throw new Error(`bun install failed (${String(install.exitCode)})`);
+    }
+    const initialExit = execute(worktree, [`--changed=${base}`], report, log, remaining()),
+      initial = existsSync(report) ? junit(report) : { files: [], failed: [] },
+      failed: string[] = [];
+    if (initialExit !== 0) {
+      if (!initial.failed.length) failed.push(...initial.files);
+      for (const [i, file] of initial.failed.entries()) {
+        const rerun = join(promotionDir(), `${sha}.verify.rerun-${String(i)}.xml`);
+        rmSync(rerun, { force: true });
+        const exit = execute(worktree, [file], rerun, log, remaining());
+        try {
+          if (exit !== 0 || !existsSync(rerun) || junit(rerun).failed.length) failed.push(file);
+        } catch {
+          failed.push(file);
+        }
+      }
+    }
+    result = { ...running, status: initialExit === 0 || (initial.failed.length > 0 && failed.length === 0) ? 'passed' : 'failed', files: initial.files, failed_files: [...new Set(failed)], at: new Date().toISOString() };
+  } catch (error) { result = { ...running, status: 'failed', files: [], failed_files: [], error: error instanceof Error ? error.message : String(error), at: new Date().toISOString() };
+  } finally {
+    try {
+      if (prepared && dependencies.cleanup) dependencies.cleanup(worktree);
+      else if (prepared || existsSync(worktree)) {
+        git(['worktree', 'remove', '--force', worktree]);
+        if (existsSync(worktree)) rmSync(worktree, { recursive: true, force: true });
+      }
+    } catch (error) {
+      result.status = 'failed';
+      result.error = `cleanup: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  writeVerify(result);
+  return result;
+}
+// prettier-ignore
+export interface AutoVerifyDependencies { spawn?: (command: string[], env: Record<string, string | undefined>) => { pid: number; unref(): void }; inspect?: typeof inspectProcess; handoff?: (record: EngineVerifyRecord) => void; alert?: (record: EngineVerifyRecord) => void; }
+// prettier-ignore
+const reportVerifyFailure = (record: EngineVerifyRecord, dependencies: AutoVerifyDependencies): void => { (dependencies.alert ?? (item => { queueNtfyAlert(`engine-verify-${item.sha}`, `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, {}, `post-promotion regression: ${item.sha}`); }))(record); (dependencies.handoff ?? (item => { coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: `post-promotion regression: ${item.sha}`, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.log], severity: 'normal' }, 0, false); }))(record); writeVerify({ ...record, reported: true }); };
+// prettier-ignore
+export function autoVerify(current: string | undefined, dependencies: AutoVerifyDependencies = {}): { sha: string; base?: string; started: boolean; error?: string } | undefined {
+  if (!current) return;
+  const inspect = dependencies.inspect ?? inspectProcess,
+    currentSha = basename(current);
+  try {
+    let records = verifyRecords();
+    for (const record of records.filter(r => r.status === 'failed' && !r.reported))
+      reportVerifyFailure(record, dependencies);
+    records = verifyRecords();
+    for (const record of records.filter(r => r.status === 'running')) {
+      if (!record.pid || !record.pid_start || !record.host || record.host !== hostname())
+        return { sha: record.sha, started: false };
+      const identity = inspect(record.pid);
+      if (identity.state === 'unknown' || (identity.state === 'online' && identity.start === record.pid_start)) return { sha: record.sha, started: false };
+      writeVerify({ ...record, status: 'failed', error: 'verify_process_lost', at: new Date().toISOString() });
+    }
+    if (verifyRecord(currentSha)) return { sha: currentSha, started: false };
+    const passed = records
+        .filter(r => r.status === 'passed' && isAncestor(r.sha, currentSha))
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .at(-1),
+      base =
+        passed?.sha ??
+        receipts()
+          .filter(r => r.sha !== currentSha && isAncestor(r.sha, currentSha))
+          .at(-1)?.sha;
+    if (!base) return { sha: currentSha, started: false };
+    const token = crypto.randomUUID(), command = [process.execPath, join(current, 'wetamp/src/cli.ts'), 'engine', 'verify', currentSha, '--base', base],
+      spawned = dependencies.spawn
+        ? dependencies.spawn(command, { ...process.env, SA_ENGINE_VERIFY_TOKEN: token })
+        : Bun.spawn(command, {
+            cwd: current,
+            env: { ...process.env, SA_ENGINE_VERIFY_TOKEN: token },
+            stdin: 'ignore',
+            stdout: 'ignore',
+            stderr: 'ignore',
+            detached: true,
+          }),
+      identity = inspect(spawned.pid);
+    if (identity.state !== 'online')
+      throw new Error('engine auto-verify: process identity unavailable');
+    writeVerify({ sha: currentSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${currentSha}.verify.log`), at: new Date().toISOString(), pid: spawned.pid, pid_start: identity.start, host: hostname(), token });
+    spawned.unref();
+    return { sha: currentSha, base, started: true };
+  } catch (error) { return { sha: currentSha, started: false, error: error instanceof Error ? error.message : String(error) }; }
 }
 
 interface PromotionMarker {

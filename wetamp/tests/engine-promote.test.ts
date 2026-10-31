@@ -18,6 +18,7 @@ import {
   currentEngineSnapshot,
   engineCommand,
   engineStatus,
+  executeVerifyTests,
   followCurrentConsole,
   promote,
   rollback,
@@ -420,95 +421,41 @@ test('auto promotion waits for the promotion lock before spawning', () => {
   expect(JSON.parse(readFileSync(marker, 'utf8')).status).toBe('running');
 }, testTimeout(60_000));
 
-test(
-  'post-promotion verify retries only failed files and accepts a transient failure',
-  () => {
-    const f = sourceFixture(),
-      base = f.sha(),
-      sha = commit(f.source, 'verify-target');
-    const commands: string[][] = [];
-    const result = runVerify(sha, base, {
-      prepare: () => {},
-      cleanup: () => {},
-      execute: (_worktree, args, report) => {
-        commands.push(args);
-        const failed = args[0]?.startsWith('--changed=');
-        writeFileSync(
-          report,
-          `<testsuites><testsuite file="tests/caller.test.ts" failures="${failed ? '1' : '0'}"><testcase name="caller"${failed ? '><failure/></testcase>' : '/>'}</testsuite></testsuites>`
-        );
-        return failed ? 1 : 0;
-      },
-    });
-    expect(commands).toEqual([[`--changed=${base}`], ['tests/caller.test.ts']]);
-    expect(result).toMatchObject({
-      sha,
-      base,
-      status: 'passed',
-      files: ['tests/caller.test.ts'],
-      failed_files: [],
-    });
-  },
-  testTimeout(60_000)
-);
+// prettier-ignore
+test('post-promotion verify handles retries, no affected tests, persistent failure, and timeout', () => {
+  const f = sourceFixture(), base = f.sha(), xml = (failed: boolean) => `<testsuites><testsuite file="tests/caller.test.ts" failures="${failed ? 1 : 0}"><testcase name="caller"${failed ? '><failure/></testcase>' : '/>'}</testsuite></testsuites>`;
+  const run = (name: string, exits: number[], reports: boolean[]) => {
+    const sha = commit(f.source, name), commands: string[][] = [], timeouts: number[] = [];
+    const result = runVerify(sha, base, { prepare: () => {}, cleanup: () => {}, now: () => 0, execute: (_worktree, args, report, _log, timeout) => { const i = commands.length; commands.push(args); timeouts.push(timeout); if (reports[i]) writeFileSync(report, xml(exits[i] !== 0)); return exits[i] ?? 0; } });
+    return { result, commands, timeouts };
+  };
+  const transient = run('transient', [1, 0], [true, true]);
+  expect(transient.result.status).toBe('passed'); expect(transient.commands).toEqual([[`--changed=${base}`], ['tests/caller.test.ts']]);
+  expect(run('persistent', [1, 1], [true, true]).result).toMatchObject({ status: 'failed', failed_files: ['tests/caller.test.ts'] });
+  expect(run('no-tests', [0], [false]).result).toMatchObject({ status: 'passed', files: [], failed_files: [] });
+  const timeout = run('timeout', [124], [false]); expect(timeout.result.status).toBe('failed'); expect(timeout.timeouts).toEqual([60 * 60_000]);
+}, testTimeout(60_000));
 
-test(
-  'auto verify keeps one live process, advances from the last pass, and reports once',
-  () => {
-    const f = sourceFixture(),
-      first = f.sha();
-    promote(first, f.evidence);
-    const second = commit(f.source, 'verify-second');
-    promote(second, undefined, { probe: successfulProbe });
-    const engine = join(process.env.SUPERAGENT_HOME!, 'engine'),
-      promotions = join(engine, 'promotions');
-    let spawned = 0,
-      detached = 0,
-      handoffs = 0,
-      alerts = 0;
-    const dependencies = {
-      spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }),
-      inspect: () => ({ state: 'online', start: 'Mon Oct 20 00:00:00 2026' }) as const,
-      handoff: () => handoffs++,
-      alert: () => alerts++,
-    };
-    expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({
-      sha: second,
-      base: first,
-      started: true,
-    });
-    expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({
-      sha: second,
-      started: false,
-    });
-    expect({ spawned, detached }).toEqual({ spawned: 1, detached: 1 });
-    const secondRecord = join(promotions, `${second}.verify.json`);
-    writeFileSync(
-      secondRecord,
-      JSON.stringify({ ...JSON.parse(readFileSync(secondRecord, 'utf8')), status: 'passed' })
-    );
-    const third = commit(f.source, 'verify-third');
-    promote(third, undefined, { probe: successfulProbe });
-    expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({
-      sha: third,
-      base: second,
-      started: true,
-    });
-    const thirdRecord = join(promotions, `${third}.verify.json`);
-    writeFileSync(
-      thirdRecord,
-      JSON.stringify({
-        ...JSON.parse(readFileSync(thirdRecord, 'utf8')),
-        status: 'failed',
-        failed_files: ['tests/caller.test.ts'],
-      })
-    );
-    autoVerify(currentEngineSnapshot(), dependencies);
-    autoVerify(currentEngineSnapshot(), dependencies);
-    expect({ handoffs, alerts }).toEqual({ handoffs: 1, alerts: 1 });
-    expect(engineStatus()).toMatchObject({
-      verify: { sha: third, status: 'failed', reported: true },
-    });
-  },
-  testTimeout(120_000)
-);
+// prettier-ignore
+test('verify executor uses heavy slot and kills a timed-out test process', () => {
+  const root = tmp(), wetamp = join(root, 'wetamp'), scripts = join(wetamp, 'scripts'), report = join(root, 'junit.xml'), log = join(root, 'verify.log');
+  mkdirSync(scripts, { recursive: true }); writeFileSync(join(scripts, 'heavy-slot.sh'), readFileSync(join(import.meta.dir, '../scripts/heavy-slot.sh')));
+  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock'); process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
+  writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test, expect } from 'bun:test'; test('ok', () => expect(1).toBe(1));`);
+  expect(executeVerifyTests(root, ['fixture.test.ts'], report, log, 10_000)).toBe(0); expect(existsSync(report)).toBe(true);
+  writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test } from 'bun:test'; test('hang', async () => Bun.sleep(30_000));`);
+  expect(executeVerifyTests(root, ['fixture.test.ts'], report, log, 100)).toBe(124);
+}, testTimeout(60_000));
+
+// prettier-ignore
+test('auto verify preserves unknown ownership, detects loss, advances base, and reports once', () => {
+  const f = sourceFixture(), first = f.sha(); promote(first, f.evidence); const second = commit(f.source, 'verify-second'); promote(second, undefined, { probe: successfulProbe });
+  const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); let spawned = 0, detached = 0, handoffs = 0, alerts = 0, state: 'online' | 'offline' | 'unknown' = 'online', start = 'start';
+  const dependencies = { spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start } as const) : ({ state } as const), handoff: () => handoffs++, alert: () => alerts++ };
+  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, base: first, started: true }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, started: false });
+  const secondRecord = join(promotions, `${second}.verify.json`); writeFileSync(secondRecord, JSON.stringify({ ...JSON.parse(readFileSync(secondRecord, 'utf8')), status: 'passed' }));
+  const third = commit(f.source, 'verify-third'); promote(third, undefined, { probe: successfulProbe }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true });
+  state = 'unknown'; autoVerify(currentEngineSnapshot(), dependencies); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8')).status).toBe('running');
+  state = 'online'; start = 'reused'; autoVerify(currentEngineSnapshot(), dependencies); autoVerify(currentEngineSnapshot(), dependencies); autoVerify(currentEngineSnapshot(), dependencies);
+  expect({ spawned, detached, handoffs, alerts }).toEqual({ spawned: 2, detached: 2, handoffs: 1, alerts: 1 }); expect(engineStatus()).toMatchObject({ verify: { sha: third, status: 'failed', reported: true, error: 'verify_process_lost' } });
+}, testTimeout(120_000));
