@@ -1,6 +1,15 @@
 import { approvalContextSchema } from '@archon/workflows/schemas/workflow-run';
-import { getRun, archonJson, reportRunRevisions, type RunView } from './archon';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { getRun, archonJson, lock, reportRunRevisions, type RunView } from './archon';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   classifyRun,
@@ -12,19 +21,58 @@ import {
   type Ledger,
 } from './cli';
 import { coord, runScope, same, type Controller } from './coord';
-import {
-  BoundaryError,
-  DeviceStore,
-  digest,
-  isAuthorizedDevice,
-  isOperatorDevice,
-  operatorGrant,
-  requireThat,
-  type Device,
-  type Receipt,
-} from './web/device-store';
 import type { Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
+
+export class DecisionError extends Error {}
+function requireDecision(ok: unknown, message: string): asserts ok {
+  if (!ok) throw new DecisionError(message);
+}
+export const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
+export interface DecisionReceipt {
+  id: string;
+  run: string;
+  engine: string;
+  node: string;
+  pause: string;
+  decision: string;
+  at: string;
+  stage: 'intent' | 'accepted' | 'rejected' | 'resuming' | 'unknown';
+  error?: { phase: string; name: string; code?: string; message?: string };
+}
+interface DecisionState {
+  receipts: DecisionReceipt[];
+}
+export class DecisionStore {
+  constructor(readonly root = join(home().sa, 'decisions')) {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    chmodSync(root, 0o700);
+  }
+  transaction<T>(fn: (state: DecisionState) => T): T {
+    const guard = lock(join(this.root, 'state.lock'));
+    if (!guard.ok) throw new DecisionError('决策状态忙，请重读');
+    try {
+      const file = join(this.root, 'state.json');
+      const state: DecisionState = existsSync(file)
+        ? (JSON.parse(readFileSync(file, 'utf8')) as DecisionState)
+        : { receipts: [] };
+      const result = fn(state);
+      const temporary = file + '.tmp';
+      writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
+      chmodSync(temporary, 0o600);
+      renameSync(temporary, file);
+      return result;
+    } finally {
+      guard.release();
+    }
+  }
+  decisionLock(id: string) {
+    requireDecision(/^[a-f0-9]{64}$/.test(id), '决策 ID 无效');
+    const guard = lock(join(this.root, `decision-${id}.lock`));
+    if (!guard.ok) throw new DecisionError('决策正在处理，请重读');
+    return guard;
+  }
+}
 
 export interface Decision {
   id: string;
@@ -275,60 +323,46 @@ export function applyCoordIntents(
   asks: Partial<Record<string, { status: string; context?: unknown }>>,
   answer = (id: string, generation: number, persist: (key: string) => void): boolean =>
     coord().answerEscalation(id, generation, persist),
-  store = new DeviceStore()
+  store = new DecisionStore()
 ) {
-  let intents: { receipt: Receipt; authorized: boolean }[];
+  let intents: DecisionReceipt[];
   try {
     intents = store.transaction(state =>
       state.receipts
         .filter(r => r.stage === 'intent' && /^(coord|failover):/.test(r.run))
-        .map(receipt => ({
-          receipt: { ...receipt },
-          authorized: state.devices.some(
-            device => device.id === receipt.device && isAuthorizedDevice(device)
-          ),
-        }))
+        .map(receipt => ({ ...receipt }))
     );
   } catch {
     return [{ run_id: 'coord', action: 'error', ok: false, error: 'coord intent read failed' }];
   }
   const actions: { run_id: string; action: string; ok: boolean; error: string }[] = [];
-  for (const intent of intents) {
-    let guard: ReturnType<DeviceStore['deviceLock']> | undefined;
+  for (const receipt of intents) {
+    let guard: ReturnType<DecisionStore['decisionLock']> | undefined;
     try {
-      guard = store.deviceLock(intent.receipt.device);
-      const authorized =
-        intent.authorized &&
-        store.transaction(state =>
-          state.devices.some(
-            device => device.id === intent.receipt.device && isAuthorizedDevice(device)
-          )
-        );
-      const choice = intent.receipt.decision;
+      guard = store.decisionLock(receipt.id);
+      const choice = receipt.decision;
       let accepted: boolean;
-      if (intent.receipt.run.startsWith('failover:')) {
-        const ask = asks[intent.receipt.node],
+      if (receipt.run.startsWith('failover:')) {
+        const ask = asks[receipt.node],
           latest = latestFailover(asks)?.[0];
         accepted =
-          authorized &&
           (choice === 'yes' || choice === 'no') &&
-          latest === intent.receipt.node &&
+          latest === receipt.node &&
           ['pending', 'unknown', choice].includes(ask?.status ?? '') &&
-          intent.receipt.id === digest(JSON.stringify(['failover', latest, ask?.context]));
+          receipt.id === digest(JSON.stringify(['failover', latest, ask?.context]));
         if (accepted && ask) ask.status = choice;
       } else {
         const staleAsk = new Error('stale coord ask');
-        const keyPrefix = `${intent.receipt.run}:${intent.receipt.pause}:`,
+        const keyPrefix = `${receipt.run}:${receipt.pause}:`,
           validChoice = choice === 'yes' || choice === 'no';
         accepted =
-          authorized &&
           validChoice &&
           Object.entries(asks).some(
             ([key, ask]) => key.startsWith(keyPrefix) && ask?.status === choice
           );
-        if (!accepted && authorized && validChoice)
+        if (!accepted && validChoice)
           try {
-            accepted = answer(intent.receipt.run.slice(6), Number(intent.receipt.pause), key => {
+            accepted = answer(receipt.run.slice(6), Number(receipt.pause), key => {
               const ask = asks[key];
               if (!ask || !['pending', 'unknown'].includes(ask.status)) throw staleAsk;
               ask.status = choice;
@@ -338,7 +372,7 @@ export function applyCoordIntents(
           }
       }
       store.transaction(state => {
-        const current = state.receipts.find(r => r.id === intent.receipt.id);
+        const current = state.receipts.find(r => r.id === receipt.id);
         if (current?.stage === 'intent') current.stage = accepted ? 'accepted' : 'rejected';
       });
     } catch {
@@ -355,7 +389,7 @@ export function applyCoordIntents(
   return actions;
 }
 
-/** The mobile hot path shares the board's bounded, cached, parallel and timed loader. */
+/** Notification publishing shares the board's bounded, cached, parallel and timed loader. */
 export async function loadCurrentDecisions(): Promise<DecisionInbox> {
   return (inboxPending ??= (async () => {
     const { createLoader } = await import('./board/data');
@@ -368,46 +402,28 @@ export async function loadCurrentDecisions(): Promise<DecisionInbox> {
     inboxPending = undefined;
   }));
 }
-export function authorizeDecision(run: string): Decision {
-  const l = loadLedger(run),
-    d = describeDecision(l, getRun(l.archon_run_id, l.repo));
-  requireThat(d && !d.disabled && d.controller, 409, '当前没有可授权的手机决策');
-  return d;
-}
 export async function answerDecision(
-  store: DeviceStore,
-  device: Device,
+  store: DecisionStore,
   id: string,
   choice: string,
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions
-): Promise<Receipt> {
-  const deferredCandidate = isOperatorDevice(device)
-    ? [...coordinationDecisions(), ...failoverDecisions()].find(d => d.id === id)
-    : undefined;
-  const candidate = isOperatorDevice(device)
-    ? (deferredCandidate ?? (await loadInbox()).decisions.find(d => d.id === id))
-    : undefined;
-  if (isOperatorDevice(device)) requireThat(candidate, 409, '决定已变化，请重读');
-  if (candidate?.coordination ?? candidate?.engine === 'failover') {
-    requireThat(['yes', 'no'].includes(choice), 400, '不支持此选项');
-    const deviceGuard = store.deviceLock(device.id);
+): Promise<DecisionReceipt> {
+  const deferredCandidate = [...coordinationDecisions(), ...failoverDecisions()].find(
+    decision => decision.id === id
+  );
+  const candidate = deferredCandidate ?? (await loadInbox()).decisions.find(d => d.id === id);
+  requireDecision(candidate, '决定已变化，请重读');
+  if (candidate.coordination ?? candidate.engine === 'failover') {
+    requireDecision(['yes', 'no'].includes(choice), '不支持此选项');
+    const decisionGuard = store.decisionLock(id);
     try {
       const current = [...coordinationDecisions(), ...failoverDecisions()].find(d => d.id === id);
-      if (!current) throw new BoundaryError(409, '决定已变化，请重读');
-      requireThat(current.coordination ?? current.engine === 'failover', 409, '决定已变化，请重读');
+      requireDecision(current, '决定已变化，请重读');
+      requireDecision(current.coordination ?? current.engine === 'failover', '决定已变化，请重读');
       return store.transaction(s => {
-        requireThat(
-          s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
-          401
-        );
-        requireThat(
-          !s.receipts.some(r => r.id === id),
-          409,
-          '该决定已有答复；请查看回执，不会重放'
-        );
-        const receipt: Receipt = {
+        requireDecision(!s.receipts.some(r => r.id === id), '该决定已有答复；请查看回执，不会重放');
+        const receipt: DecisionReceipt = {
           id,
-          device: device.id,
           run: current.run,
           engine: current.engine,
           node: current.node,
@@ -420,54 +436,30 @@ export async function answerDecision(
         return receipt;
       });
     } finally {
-      deviceGuard.release();
+      decisionGuard.release();
     }
   }
-  const l = loadLedger(candidate?.run ?? device.grant.run),
+  const l = loadLedger(candidate.run),
     c = coord(),
     scope = runScope(l);
-  const deviceGuard = store.deviceLock(device.id);
+  const decisionGuard = store.decisionLock(id);
   try {
     return await c.scoped(
       scope,
       async () => {
-        // Re-read revocation inside the same bounded operation before the CAS.
-        store.transaction(s => {
-          requireThat(
-            s.devices.some(d => d.id === device.id && isAuthorizedDevice(d)),
-            401
-          );
-        });
         const old = store.transaction(s => s.receipts.find(r => r.id === id));
-        requireThat(!old, 409, '该决定已有答复；请查看回执，不会重放');
+        requireDecision(!old, '该决定已有答复；请查看回执，不会重放');
         const run = getRun(l.archon_run_id, l.repo),
           d = describeDecision(l, run, c.owner(scope));
-        requireThat(
-          d &&
-            !d.disabled &&
-            d.id === id &&
-            d.controller &&
-            (isOperatorDevice(device) || d.engine === device.grant.engine),
-          409,
-          '决定已变化，请重读'
-        );
-        if (!isOperatorDevice(device))
-          requireThat(
-            same(d.controller, device.grant.controller) &&
-              d.controller.generation === device.grant.controller.generation,
-            409,
-            '授权 owner 已变化'
-          );
-        requireThat(
+        requireDecision(d && !d.disabled && d.id === id && d.controller, '决定已变化，请重读');
+        requireDecision(
           d.options.some(o => o.id === choice),
-          400,
           '不支持此选项'
         );
-        const controller = isOperatorDevice(device) ? d.controller : device.grant.controller;
+        const controller = d.controller;
         c.admit(scope, controller, controller.generation);
-        const receipt: Receipt = {
+        const receipt: DecisionReceipt = {
           id,
-          device: device.id,
           run: d.run,
           engine: d.engine,
           node: d.node,
@@ -477,14 +469,14 @@ export async function answerDecision(
           stage: 'intent',
         };
         store.transaction(s => {
-          requireThat(!s.receipts.some(r => r.id === id), 409);
+          requireDecision(!s.receipts.some(r => r.id === id), '该决定已有答复');
           s.receipts.push(receipt);
         });
-        const stage = (value: Receipt['stage']) => {
+        const stage = (value: DecisionReceipt['stage']) => {
           receipt.stage = value;
           store.transaction(s => {
             const r = s.receipts.find(r => r.id === id);
-            requireThat(r, 500);
+            requireDecision(r, '决策回执缺失');
             r.stage = value;
           });
         };
@@ -510,7 +502,7 @@ export async function answerDecision(
               ok: true,
               reason: 'human_decision',
               key: id,
-              ask_id: device.id,
+              ask_id: 'ntfy',
             });
           });
           phase = 'resume';
@@ -521,7 +513,7 @@ export async function answerDecision(
               controller,
               () => {
                 const ack = archonJson(['workflow', 'resume', d.engine, '--detach'], l.repo);
-                requireThat(ack.ok === true, 503, '引擎已接收，续跑尚未确认');
+                requireDecision(ack.ok === true, '引擎已接收，续跑尚未确认');
               },
               controller.generation
             );
@@ -532,7 +524,7 @@ export async function answerDecision(
           // Keep machine diagnostics, never provider bodies, request contents or credentials.
           store.transaction(s => {
             const r = s.receipts.find(r => r.id === id);
-            requireThat(r, 500);
+            requireDecision(r, '决策回执缺失');
             r.error = {
               phase,
               name: error instanceof Error ? error.name : 'UnknownError',
@@ -543,7 +535,7 @@ export async function answerDecision(
                 typeof error.code === 'string'
                   ? error.code
                   : undefined,
-              message: error instanceof BoundaryError ? error.message : undefined,
+              message: error instanceof DecisionError ? error.message : undefined,
             };
           });
           throw error;
@@ -553,172 +545,16 @@ export async function answerDecision(
       0
     );
   } finally {
-    deviceGuard.release();
+    decisionGuard.release();
   }
 }
 
-/** HMAC verification happens in ntfy.ts; this durable operator identity reuses the same CAS path. */
+/** HMAC verification happens in ntfy.ts; durable receipts enforce one accepted answer. */
 export async function answerNtfyDecision(
   id: string,
   choice: string,
-  store = new DeviceStore(),
+  store = new DecisionStore(),
   answer = answerDecision
-): Promise<Receipt> {
-  const channelId = digest('ntfy-channel');
-  const device = store.transaction(state => {
-    const existing = state.devices.find(candidate => candidate.id === channelId);
-    if (existing) {
-      existing.authorized = true;
-      existing.revoked = false;
-      existing.grant = operatorGrant();
-      return { ...existing };
-    }
-    const created: Device = {
-      id: channelId,
-      session: '',
-      csrf: '',
-      authorized: true,
-      grant: operatorGrant(),
-    };
-    state.devices.push(created);
-    return { ...created };
-  });
-  return answer(store, device, id, choice);
-}
-export async function decisionState(
-  device: Device,
-  id?: string,
-  store = new DeviceStore(),
-  operatorInbox?: DecisionInbox
-) {
-  const receipt = store.transaction(s =>
-    s.receipts.filter(r => (!id || r.id === id) && r.device === device.id).at(-1)
-  );
-  const deferredDecisions =
-    isOperatorDevice(device) && id
-      ? [...coordinationDecisions(), ...failoverDecisions()]
-      : undefined;
-  const inbox = isOperatorDevice(device)
-    ? (operatorInbox ??
-      (id &&
-      (deferredDecisions?.some(d => d.id === id) || /^(coord|failover):/.test(receipt?.run ?? ''))
-        ? { decisions: deferredDecisions ?? [], unknown: [] }
-        : await loadCurrentDecisions()))
-    : (() => {
-        try {
-          const l = loadLedger(device.grant.run),
-            decision = describeDecision(l, getRun(device.grant.engine, l.repo));
-          return { decisions: decision ? [decision] : [], unknown: [] };
-        } catch {
-          return { decisions: [], unknown: [device.grant.run] };
-        }
-      })();
-  const selectedDeferred = id
-    ? inbox.decisions.find(d => d.id === id && (d.coordination ?? d.engine === 'failover'))
-    : inbox.decisions.find(d => (d.coordination ?? d.engine === 'failover') && !d.disabled);
-  const deferredReceipt =
-    receipt &&
-    /^(coord|failover):/.test(receipt.run) &&
-    (id
-      ? receipt.id === id
-      : selectedDeferred
-        ? receipt.id === selectedDeferred.id
-        : inbox.decisions.length === 0)
-      ? receipt
-      : undefined;
-  if (selectedDeferred || deferredReceipt) {
-    const lastRead = new Date().toISOString();
-    store.transaction(s => {
-      const current = s.devices.find(d => d.id === device.id);
-      requireThat(current && isAuthorizedDevice(current), 401);
-      current.lastRead = lastRead;
-    });
-    return {
-      decision: selectedDeferred,
-      decisions: inbox.decisions,
-      unknown: inbox.unknown.length,
-      receipt: deferredReceipt,
-      status: selectedDeferred ? 'paused' : 'completed',
-      lastRead,
-      events: [],
-      stale: false,
-      note: selectedDeferred
-        ? '等待操作者决定'
-        : deferredReceipt?.stage === 'rejected'
-          ? '决定已变化，答复未执行'
-          : '决定已接收，后续由监督 tick 执行',
-    };
-  }
-  if (isOperatorDevice(device) && !id && !receipt && !inbox.decisions.length) {
-    const lastRead = new Date().toISOString();
-    store.transaction(s => {
-      const current = s.devices.find(d => d.id === device.id);
-      requireThat(current && isAuthorizedDevice(current), 401);
-      current.lastRead = lastRead;
-    });
-    return {
-      decision: undefined,
-      decisions: [],
-      unknown: inbox.unknown.length,
-      receipt: undefined,
-      status: inbox.unknown.length ? 'unknown' : 'idle',
-      lastRead,
-      events: [],
-      stale: false,
-      note: inbox.unknown.length
-        ? '部分 ledger 无法读取；不推断没有待处理事项'
-        : '当前没有待处理的 Archon 受管审批',
-    };
-  }
-  try {
-    const selected = id
-        ? inbox.decisions.find(d => d.id === id)
-        : (inbox.decisions.find(d => !d.disabled) ?? inbox.decisions[0]),
-      l = loadLedger(selected?.run ?? receipt?.run ?? device.grant.run),
-      engine = selected?.engine ?? receipt?.engine ?? device.grant.engine,
-      run = getRun(engine, l.repo);
-    requireThat(run.id === engine && l.archon_run_id === run.id, 409);
-    const d = selected ?? describeDecision(l, run);
-    if (
-      !isOperatorDevice(device) &&
-      d &&
-      (!d.controller ||
-        !same(d.controller, device.grant.controller) ||
-        d.controller.generation !== device.grant.controller.generation)
-    )
-      d.disabled = '授权 owner 已变化，请在 Mac 重新授权';
-    const decision = d && (!id || d.id === id) ? d : undefined;
-    const { listWorkflowEvents } = await import('../../packages/core/src/db/workflow-events');
-    const events = (await listWorkflowEvents(run.id))
-      .slice(-50)
-      .map(e => ({ type: e.event_type, node: e.step_name, at: e.created_at }));
-    const lastRead = new Date().toISOString();
-    store.transaction(s => {
-      const d = s.devices.find(d => d.id === device.id);
-      requireThat(d && isAuthorizedDevice(d), 401);
-      d.lastRead = lastRead;
-    });
-    return {
-      decision,
-      decisions: inbox.decisions,
-      unknown: inbox.unknown.length,
-      receipt: receipt?.id === decision?.id || !decision ? receipt : undefined,
-      status: run.status,
-      lastRead,
-      events,
-      stale: !!id && !decision && !receipt,
-      note: '引擎完成不等于已合入、部署或交付验收通过',
-    };
-  } catch {
-    return {
-      receipt,
-      decisions: inbox.decisions,
-      unknown: inbox.unknown.length,
-      lastRead: device.lastRead,
-      status: id || receipt ? 'unknown' : 'idle',
-      events: [],
-      stale: !!id && !receipt,
-      note: '观察丢失；不自动重放答复',
-    };
-  }
+): Promise<DecisionReceipt> {
+  return answer(store, id, choice);
 }

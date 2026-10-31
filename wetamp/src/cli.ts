@@ -2516,7 +2516,7 @@ function brief(l: Ledger, json = false): number {
 }
 
 // supervise-tick：无人值守巡检（cron/launchd 周期调用 `superagent supervise-tick`）：唤醒到期的事件门、恢复 owner-lost，
-// 其余非终态按 HOLD_POLICY 处置；需要拍板的投到 agent-supervisor（iPhone 提醒事项：勾选=是、删除=否），按回答执行。
+// 其余非终态按 HOLD_POLICY 处置；需要拍板的通过 ntfy 投递，按回答执行。
 export const ANSWERS = ['pending', 'yes', 'no', 'expired', 'superseded'];
 type Action = Record<string, unknown> & { run_id: string; action: string; ok: boolean };
 type DecisionEffect =
@@ -2854,7 +2854,7 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
 /** A stable marker keeps old ask titles recognizable while ntfy owns delivery. */
 const askMarker = (key: string): string =>
   `[sa:${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}]`;
-function pollAsk(
+function dispatchAsk(
   key: string,
   text: () => string,
   hours: number,
@@ -2934,7 +2934,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   const base = { run_id: l.run_id, event: w.event };
   // Native approval and legacy event gates share the plan's absolute deadline.
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
-  const p = pollAsk(
+  const p = dispatchAsk(
     key,
     () => decisionQuestion(l, run, classifyRun(l, run), 'signoff'),
     ttlHours(Date.parse(w.resumeAt ?? '')),
@@ -3017,7 +3017,7 @@ function askHold(
   const episode = holdEpisode(l, run, c, hold);
   const key = askKey(l.run_id, hold, episode);
   const base = { run_id: l.run_id, state: c.state, reason: hold, ...extra };
-  const r = pollAsk(
+  const r = dispatchAsk(
     key,
     () => decisionQuestion(l, run, c, hold, key),
     ttlHours(Date.parse(planOf(l).deadline ?? '')),
@@ -4161,7 +4161,7 @@ function tickOutput(
 
 /** Console availability must not gate the unattended heartbeat. */
 // prettier-ignore
-export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined): Promise<number> {
+export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined, syncDecisions = syncDecisionChannel, publishDecisions = publishPendingNtfy): Promise<number> {
   const errors: string[] = [];
   const stages = {} as Omit<NtfyTickRecord, 'at'>;
   const result = async (stage: keyof typeof stages, run: () => unknown, errorLabel: string = stage): Promise<unknown> => {
@@ -4197,12 +4197,12 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   let output: Record<string, unknown> = {};
   await result('ntfy_sync', async () => {
     if (mode.noGlobal) return { skipped: 'no-global' };
-    const synced = await syncDecisionChannel();
+    const synced = await syncDecisions();
     if (synced.failed) throw new Error(`ntfy callback failures: ${String(synced.failed)}`);
     return synced;
   });
   const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
-  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishPendingNtfy());
+  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishDecisions());
   if (exit)
     stages.actions = {
       ok: false,

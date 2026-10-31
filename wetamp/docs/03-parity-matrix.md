@@ -61,7 +61,7 @@
 | E5/E9 杀进程留幽灵、槽位永久占用、wait 永不返回 | 无全局槽位账本（Archon 并发上限在 worker 进程内，进程死即释放）；`wait` 返回 `owner_lost`；`recover` 续跑 |
 | E6 一次通过率 21%                               | hint 机制 + probe 证据 + 粗粒度包                                                                         |
 | E7 排队 41%                                     | run 内串行、run 间并行（独立 worktree）；plan lint 对纯依赖链只告警                                       |
-| E8 决策等待                                     | 无人值守：G2 评审过即放行、红线投提醒事项、其余 AI 投票                                                   |
+| E8 决策等待                                     | 无人值守：G2 评审过即放行、红线走 ntfy 两段确认、其余 AI 投票                                             |
 
 ## D. 由 Archon 原生承担（不写代码，selftest 验证）
 

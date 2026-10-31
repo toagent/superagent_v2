@@ -64,7 +64,7 @@ export function memoryOverview(s: Snapshot, data = memoryData(Date.parse(s.at)),
       c.runs.filter(r => ['completed', 'failed', 'cancelled'].includes(r.state)).length
     ),
     人工干预次数: c.runs.every(r => r.interventions !== undefined)
-      ? c.runs.reduce((n, r) => n + r.interventions!, 0)
+      ? c.runs.reduce((n, r) => n + (r.interventions ?? 0), 0)
       : '未知',
     '每个交付包 token': packageTokens.length
       ? fmtTokens(

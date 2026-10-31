@@ -9,7 +9,7 @@
 | 2026-10-09 | 放弃两版自研方案（改造 superagent v2 守护进程 / v4 从零重写）：都是重复造轮子。                                                                                                                                           |
 | 2026-10-09 | 基于本仓库（`coleam00/Archon` 的 fork，v0.11.1，upstream `dev` 7009a90a）改造；**必须能无缝升级 upstream**；实现与自定义方案全部放 `wetamp/`。                                                                            |
 | 2026-10-09 | **不做沙箱**。Codex 直接用 Archon 原生 provider（线程以 `danger-full-access` 启动，`packages/providers/src/codex/provider.ts:1072`），Claude 用原生 provider。v2 的 `adapters/*`、`sandbox-policy`、bash 包装层全部不要。 |
-| 2026-10-08 | 评审模型 ≠ 作者模型（硬约束）；G2 合格独立评审通过即放行集成；红线问题投 iPhone 提醒事项（勾选=是、删除=否），其余决策 AI 投票过半。                                                                                      |
+| 2026-10-08 | 评审模型 ≠ 作者模型（硬约束）；G2 合格独立评审通过即放行集成；红线问题通过 ntfy 两段确认，其余决策 AI 投票过半。                                                                                                          |
 | 2026-10-09 | 效率主因是拆包过细、评审过频：评审按**里程碑**一次，不按包。                                                                                                                                                              |
 | 2026-10-09 | 早期 owner-lost overlay 决策已由 P3 取代：恢复接纳与 fence 下沉 Archon，wetamp 不自动恢复。                                                                                                                               |
 
@@ -17,7 +17,7 @@
 
 Archon 拥有 DAG、run/attempt/retry/resume、detach、approval、worktree 与终态；生命周期能力位于引擎，通过注入契约使用。
 `wetamp/` 是薄胶水：把三端协议里的 `plan.json` 变成 Archon 工作流，把 `superagent run/wait/decide/...` 映射成 `archon workflow ...`，
-把 iPhone 提醒事项桥接到原生审批（历史事件门继续兼容）。
+把 ntfy 决策通道桥接到原生审批（历史事件门继续兼容）。
 
 ```
 三端协议（元帅写 plan.json，调 superagent run/wait/decide/brief/report/land）
@@ -31,7 +31,7 @@ Archon CLI（bun 源码运行，packages/cli）  ──▶ ~/.superagent/archon/
         │
         ├─ prompt 节点 → 原生 codex / claude provider（无沙箱）
         ├─ bash/script 节点 → 验收命令、diff 汇总、投票计数、合入命令
-        └─ approval 节点 → agent-supervisor tick：提醒事项 ⇄ approve（是）/ abandon（否）
+        └─ approval 节点 → supervise tick：ntfy 答复 ⇄ approve（是）/ abandon（否）
 ```
 
 ## 2. 分层与 upstream 安全
@@ -164,12 +164,12 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 
 ## 5. 门禁与无人值守
 
-| 情形                          | 机制                                                                                                                                                                                                         |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| G0/G1 + auto                  | 默认跳过评审，主控聚焦实测；运行期发现 G2 风险才升级；没有默认人工节点                                                                                                                                       |
-| G2 / strict / review:true     | 合格独立评审通过且主控实测后放行；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                                                                 |
-| 红线（包 `signoff: "human"`） | `human-<M>` 原生 `approval` 持久暂停；supervisor 按 run+node 去重投提醒事项。勾选 → `workflow approve --detach --json`；删除 → `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
-| 超 6 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                                                             |
+| 情形                          | 机制                                                                                                                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G0/G1 + auto                  | 默认跳过评审，主控聚焦实测；运行期发现 G2 风险才升级；没有默认人工节点                                                                                                  |
+| G2 / strict / review:true     | 合格独立评审通过且主控实测后放行；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                            |
+| 红线（包 `signoff: "human"`） | `human-<M>` 原生 `approval` 持久暂停；ntfy 按 run+node 去重投递，两段确认后才批准，否决则 `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
+| 超 6 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                        |
 
 显式后台启动支持顶层原生审批；交互循环与组合内隐藏审批继续拒绝后台派发。
 历史 `wait` 事件门的输出仍为 `status/event/waited_ms`，拒绝通过 abandon 表达。
@@ -182,7 +182,7 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 - **范围是预期不是围栏**：将军越出 `scope.write` 时直接改，在输出 `deviations[]` 登记 `{path, why}`；评审对未登记的越界记 `medium`。`blocked` 只在命中红线（`error_class:"redline"`）或 `needs[]` 非空（`{cap, why, minimal_ask}`）时合法，否则按 `partial` 送回修复循环。
 - **两条底线**（所有角色，`hooks/redline.cjs`）：仅拒绝凭据隐私，以及 force push、reset --hard、对家目录/仓库根/`/` 的 rm -rf。其余动作放行；未知效果、解析或内部异常为 advisory。删除效果登记、MCP 名称归一、写入归属与 reviewer hook 判定；provider 沙箱另行保留，详见 `04-hooks-and-nesting.md`。Codex 仍要求底线 hook 受信任。
 - **执行生命周期**：Archon 拥有 run/attempt/retry/resume/审批与终态。环境与编码/修复/评审节点的原生 `retry` 复用 `tiers.json` `policy.auto_retry`；接纳锁与恢复 fence 在 `packages/workflows/src/execution-lifecycle.ts`，预算派发在 `policy-dispatch.ts`，通过注入契约调用。ledger 的 `recoveries/auto_retries/progress_fp/stalled` 仅供历史只读展示，不热迁移。
-- **挂起处置表**（`src/reasons.ts` `HOLD_POLICY`）：signoff 桥接 Archon 原生审批（旧 run 的事件签收仍可读）；deadline 按 plan 截止终止；paused 等待引擎唤醒；gate/coder/environment 等失败只投一条明确决定。owner live/unknown 不接管，owner-lost 仅观察；`recover` 要求副作用对账，lost-ack 留引擎 admission fence、不得重派。提问沿用 `pollAsk` 的持久化/对账，明确 retry/resume/approve 交引擎执行，dispositions 保留审计。
+- **挂起处置表**（`src/reasons.ts` `HOLD_POLICY`）：signoff 桥接 Archon 原生审批（旧 run 的事件签收仍可读）；deadline 按 plan 截止终止；paused 等待引擎唤醒；gate/coder/environment 等失败只投一条明确决定。owner live/unknown 不接管，owner-lost 仅观察；`recover` 要求副作用对账，lost-ack 留引擎 admission fence、不得重派。提问沿用 `dispatchAsk` 的持久化/对账，明确 retry/resume/approve 交引擎执行，dispositions 保留审计。
 - **隔离与原子写**：ledger 逐条解析校验（必备字符串字段、历史 `recoveries` 若存在须为数组、`run_id` 与文件名一致），坏记录在 tick 里报 `action:error`、在 `report` 里计入 `unreadable`，不影响其他 run；asks.json 读不出时不当空表、不覆盖，需要提问的 run 报错。ledger、asks、attempts、config 一律同目录唯一临时文件 + rename；ledger 读改写与 recover 同锁（`updateLedger`）。
 - **投送闸**：twin-toolkit 只把本机 `scripts/verify-local.sh` 通过的提交投送到 twin 机（见 `PROGRESS.md` wpE）。
 
@@ -255,7 +255,7 @@ token 计量与计费；v2 内部状态机/账本兼容；Archon container 模�
   - launchd：`launchd/com.wetamp.superagent.supervise-tick.plist.tmpl`（`__HOME__`、`__REPO__`、`__PATH__`，XML 转义后代入；PATH = bun 目录 + 安装时 PATH，tick 触发的 resume 要找到各家 CLI）；`install.sh` 渲染到 `SA_LAUNCHD_DIR`（默认 `~/Library/LaunchAgents`），相同不动、不同先备份再覆盖，只打印 `launchctl bootstrap/bootout`；selftest 与测试把目录指到临时目录。
   - 预算（硬规则 7）由 1500/300/25 调为 TS 1800 行、shell 400 行、文件 28 个（R2 TS 调为 2000）。
   - N1（R2）：同一份评审出现重复 finding ID 即 `escalate invalid_review`；关闭判定中同 ID 的 open 优先于 closed。
-  - H4（R3 定稿）：引擎 `wait.deadline_ms` 从进入等待起计时，生成值只是上限；`supervise-tick` 遇到已过 plan 绝对 deadline 的 held:human run 直接终止（R4 起为 `cancelRun`，暂停的 run 走 `workflow abandon`），ledger 记 `state:failed, reason:deadline`，签收账目标 `expired`（不调 ask、不碰提醒事项），`brief` 显示“plan 截止已过，已取消”；`signoff-<M>` 节点仍按绝对时刻再核验。
+  - H4（R3 定稿）：引擎 `wait.deadline_ms` 从进入等待起计时，生成值只是上限；`supervise-tick` 遇到已过 plan 绝对 deadline 的 held:human run 直接终止（R4 起为 `cancelRun`，暂停的 run 走 `workflow abandon`），ledger 记 `state:failed, reason:deadline`，签收账目标 `expired`（不调 ask、不发 ntfy），`brief` 显示“plan 截止已过，已取消”；`signoff-<M>` 节点仍按绝对时刻再核验。
 - 修复轮 R4 实现记录：
   - H4：终止 run 只有 `cancelRun` 一个入口（`cancel`、`decide reject`、`supervise-tick` 的截止与“否”）。引擎 `cancelWorkflow` 只接受 running，否则拒绝 `not_running`；paused/failed 走 `workflow abandon`（同样记 cancelled、释放 worktree 与 slot）。cancel 被拒不解析拒绝文本，重读状态，已离开 running 即改走 abandon。测试桩按引擎契约执行 cancel/abandon；`selftest --fake` 增 sa-abandon 段（停在事件门 → `superagent cancel` → cancelled，`abandon_ms`）。
   - M4a：`lock()` 为内核 `flock(LOCK_EX|LOCK_NB)`（`bun:ffi` 调 libc），持锁进程死亡（含 SIGKILL）时内核随 fd 释放；被占返回 `{ok:false,reason:'locked'}`，没有判死、夺锁、`lock_unreadable`。锁文件内容 `{pid,host,at}` 只供诊断，`release` 只关 fd、不删文件（删除会让两个进程分别锁住新旧 inode）。recover 的 `runs/<id>.lock` 与 `supervise.lock` 共用它，tick 被占即 `{"skipped":"locked"}` 退出 0。

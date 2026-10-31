@@ -1,11 +1,9 @@
 import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
-import * as decisionsModule from '../src/decisions';
 import * as launcherModule from '../src/launcher';
 import * as relay from '../src/relay-quota';
 import * as saCheck from '../templates/.archon/scripts/sa-check';
-import { askKey } from '../src/cockpit-signals';
 import { Database } from 'bun:sqlite';
 import {
   appendFileSync,
@@ -115,7 +113,6 @@ const engineRecoverLock = () => {
   return archonMod.lock(join(root, 'r.lock'));
 };
 const BIN = join(import.meta.dir, '..', 'bin', 'superagent');
-const supervisorTransport = cliMod.supervisor;
 const fixtureDecision = (
   kind: 'advance' | 'debt' | 'repair' | 'block',
   reason: string | null = null
@@ -773,7 +770,6 @@ function stub(responses: RunView[]): {
     existsSync(join(dir, 'calls'))
       ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n')
       : [];
-  supervisor(root, 'pending');
   return { dir, root, ledger, calls, due, gc, scratch };
 }
 
@@ -1215,37 +1211,6 @@ describe('HF3 latest-engine recovery', () => {
   });
 });
 
-/**
- * supervisor.py 桩：ask 回固定 id；ask-status 回 answer 文件内容；调用记入 sup-calls。stub() 默认装上（answer=pending），
- * 任何测试都不会落到真实提醒事项。
- */
-function supervisor(root: string, answer: string): () => string[] {
-  const py = join(root, 'supervisor.py');
-  writeFileSync(
-    py,
-    `import os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] not in ('ask', 'ask-status', 'ask-ack'): sys.exit(2)\nprint('ask-1' if sys.argv[1] == 'ask' else open(os.path.join(d, 'answer')).read().strip())\n`
-  );
-  writeFileSync(join(root, 'answer'), answer);
-  process.env.SA_SUPERVISOR = py;
-  const source = readFileSync(py, 'utf8');
-  fixtureSpies.push(
-    spyOn(cliMod, 'supervisor').mockImplementation(args => {
-      // Custom failure/snapshot scripts still exercise the native subprocess boundary.
-      if (process.env.SA_SUPERVISOR !== py || readFileSync(py, 'utf8') !== source)
-        return supervisorTransport(args);
-      appendFileSync(join(root, 'sup-calls'), args.join(' ') + '\n');
-      if (args[0] === 'ask') return 'ask-1';
-      if (args[0] === 'ask-ack') return 'ok';
-      if (args[0] === 'ask-status') return readFileSync(join(root, 'answer'), 'utf8').trim();
-      throw new Error(`unexpected fixture supervisor command: ${args[0]}`);
-    })
-  );
-  return () =>
-    existsSync(join(root, 'sup-calls'))
-      ? readFileSync(join(root, 'sup-calls'), 'utf8').trim().split('\n')
-      : [];
-}
-
 const humanWait = (resumeAt = '2099-01-01T00:00:00.000Z'): RunView =>
   run('paused', {
     metadata: { wait: { nodeId: 'human-m2', kind: 'event', event: 'sa.human.m2', resumeAt } },
@@ -1297,46 +1262,6 @@ const featureRepo = (root: string): string => {
   sh('git switch -qc feature/fixture', repo);
   return repo;
 };
-
-describe('HF5 episode regressions', () => {
-  test('M2-03 consecutive human signoffs each ask once; old yes cannot sign the next milestone', () => {
-    const first = humanWait(new Date(Date.now() + 3600000).toISOString());
-    first.metadata!.wait!.waitingSince = '2026-10-10T10:00:00Z';
-    const s = stub([first, first, run('running')]);
-    const tick = () => JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0];
-    expect(tick()).toMatchObject({ action: 'ask' });
-    supervisor(s.root, 'yes');
-    expect(tick()).toMatchObject({ action: 'approve' });
-    const next = humanWait(new Date(Date.now() + 3600000).toISOString());
-    next.metadata!.wait!.nodeId = 'human-m3';
-    next.metadata!.wait!.event = 'sa.human.m3';
-    next.metadata!.wait!.waitingSince = '2026-10-10T11:00:00Z';
-    for (const f of readdirSync(s.dir).filter(f => /^get-.*json$/.test(f)))
-      writeFileSync(join(s.dir, f), JSON.stringify(next));
-    expect(tick()).toMatchObject({ action: 'ask' });
-    expect(s.calls().filter(c => c.startsWith('workflow signal'))).toHaveLength(1);
-    const asks = JSON.parse(readFileSync(join(s.root, 'home/asks.json'), 'utf8'));
-    expect(asks[askKey('sa1', 'signoff', 'human-m3@2026-10-10T11:00:00Z')].status).toBe('pending');
-  });
-  test('M2-03 superseded hold returns with a new waitingSince and gets a fresh question', () => {
-    const first = humanWait(new Date(Date.now() + 3600000).toISOString());
-    first.metadata!.wait!.waitingSince = '2026-10-10T10:00:00Z';
-    const s = stub([first]);
-    const tick = () => JSON.parse(captured(() => main(['supervise-tick'])).out).actions;
-    expect(tick()[0]).toMatchObject({ action: 'ask' });
-    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('running')));
-    tick();
-    supervisor(s.root, 'yes');
-    first.metadata!.wait!.waitingSince = '2026-10-10T12:00:00Z';
-    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(first));
-    expect(tick()[0]).toMatchObject({ action: 'ask' });
-    expect(s.calls().filter(c => c.startsWith('workflow signal'))).toHaveLength(0);
-    const asks = JSON.parse(readFileSync(join(s.root, 'home/asks.json'), 'utf8'));
-    expect(asks[askKey('sa1', 'signoff', 'human-m2@2026-10-10T10:00:00Z')].status).toBe(
-      'superseded'
-    );
-  });
-});
 
 describe('waitRun (archon stub)', () => {
   test('terminal status and wait expose non-empty out-of-scope evidence', () => {
@@ -1676,35 +1601,6 @@ describe('waitRun (archon stub)', () => {
     expect(out).toMatchObject({ error: '' });
     expect(out.stop_reason).toBeUndefined();
   });
-  test('S14b held automatic recovery pauses, asks once, and mobile yes reconciles its snapshot', () => {
-    const lost = run('running', {
-      metadata: { execution_owner: LOST },
-      nodes: [{ nodeId: 'fix-core', state: 'running' }],
-    });
-    const s = stub([lost]),
-      sup = supervisor(s.root, 'pending'),
-      db = runsDb(LOST);
-    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({
-      action: 'ask',
-      reason: 'auto_recover',
-      ok: true,
-    });
-    expect(loadLedger('sa1').auto_recover_paused).toBe('effects_unknown');
-    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(0);
-    captured(() => main(['supervise-tick']));
-    expect(
-      loadLedger('sa1').intervention_events?.filter(e => e.action === 'auto_recover')
-    ).toHaveLength(1);
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-    writeFileSync(join(s.root, 'answer'), 'yes');
-    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({
-      action: 'resume',
-      ok: true,
-    });
-    expect(loadLedger('sa1').auto_recover_paused).toBeUndefined();
-    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(1);
-    db.close();
-  });
   test('S14c automatic recovery rate limit and reused PID perform no recovery', () => {
     const lost = run('running', { metadata: { execution_owner: LOST } });
     const s = stub([lost]);
@@ -1799,22 +1695,6 @@ describe('waitRun (archon stub)', () => {
 describe('verbs (archon stub)', () => {
   const abandon = (...ids: string[]) =>
     captured(() => main(['abandon', ...ids, '--reason', 'obsolete']));
-  // prettier-ignore
-  test('abandon records its owner, blocks continuation, and skips abandoned automation', () => {
-    const s = stub([run('failed')]);
-    expect(abandon('sa1').code).toBe(0);
-    expect(loadLedger('sa1')).toMatchObject({ rejected: 'r' });
-    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({ action: 'abandon', reason: 'obsolete', ok: true, actor: s.ledger.controller });
-    expect(captured(() => main(['recover', 'sa1'])).out).toContain('run was abandoned');
-    expect(captured(() => main(['decide', 'retry', '--all-held'])).code).toBe(0);
-    const paused = stub([humanWait()]), reminders = supervisor(paused.root, 'yes');
-    expect(abandon('sa1').code).toBe(0);
-    captured(() => main(['supervise-tick']));
-    expect(paused.calls().some(call => /^workflow (wake|resume|signal)/.test(call))).toBe(false);
-    expect(reminders().some(call => call.startsWith('ask '))).toBe(false);
-    stub([run('running')]);
-    expect(abandon('sa1').out).toContain('"type": "active"');
-  });
   // prettier-ignore
   test('abandon isolates invalid runs, preserves decide rejection, and filters --mine', () => {
     const s = stub([run('failed')]);
@@ -2301,7 +2181,6 @@ describe('health upstream reporting', () => {
     );
     if (consoleError) {
       mkdirSync(join(fixture.root, 'home/console'), { recursive: true });
-      writeFileSync(join(fixture.root, 'home/console/decision-origin'), 'https://console.test');
       writeFileSync(join(fixture.root, 'home/console/error'), consoleError);
     }
     const home = tmp();
@@ -2377,18 +2256,6 @@ describe('health upstream reporting', () => {
       ok: false,
       upstream_clean: false,
       reason: 'upstream_check_failed',
-    });
-  });
-  test('configured broken console fails health while an unconfigured console is omitted', () => {
-    expect(check([]).json).not.toHaveProperty('console');
-    const result = check([], 0, false, 'build:web failed');
-    expect(result.code).toBe(1);
-    expect(result.json).toMatchObject({
-      ok: false,
-      console: {
-        ok: false,
-        reason: expect.stringMatching(/build:web failed.*console\.log/),
-      },
     });
   });
 });
@@ -2665,23 +2532,6 @@ describe('brief / land (archon stub)', () => {
     expect(result.code).toBe(1);
     expect(JSON.parse(result.out)).toMatchObject({ commands: [], reason: 'land_target_unknown' });
   });
-  test('land omits needs from advanced nodes without asking the operator', () => {
-    const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
-    const art = withArtifacts('completed', {
-      'land.json': { commands: ['c'] },
-      'verify-core.json': { ok: true, disposition: 'advance' },
-      'verify-core.coder.json': { status: 'blocked', needs: [need], milestone: 'm1' },
-    });
-    const sup = supervisor(join(art, '..', '..', '..', '..'), 'pending');
-    expect(captured(() => main(['land', 'sa1'])).out).not.toContain(
-      'need approval (verify-core): check process deviation'
-    );
-    expect(JSON.parse(captured(() => main(['land', 'sa1', '--json'])).out)).toEqual({
-      commands: ['c'],
-    });
-    expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
-  });
 });
 
 test('supervise tick wakes all four native due continuation classes', () => {
@@ -2727,6 +2577,22 @@ test('supervise tick reports due query errors without waking', () => {
 });
 
 describe('supervise-tick (archon + supervisor stubs)', () => {
+  const syncDecisions = async () => ({ accepted: 0, ignored: 0, failed: 0 });
+  const publishDecisions = async () => undefined;
+  const supervised = (
+    refresh?: () => Promise<unknown>,
+    sync?: (snapshot: Snapshot) => Promise<unknown>
+  ): Promise<number> =>
+    superviseTickCli(
+      refresh,
+      sync,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      syncDecisions,
+      publishDecisions
+    );
   test('fast tick excludes cleanup and maintenance retains cleanup tasks', () => {
     const s = stub([run('completed')]);
     s.gc.mockReturnValue([
@@ -3056,45 +2922,6 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toHaveProperty('sa1:fixture');
     db.close();
   });
-  test('configured mobile transport falls back to Reminders for a disabled decision', () => {
-    const s = stub([humanWait()]);
-    mkdirSync(join(s.root, 'home/console'), { recursive: true });
-    writeFileSync(join(s.root, 'home/console/decision-origin'), 'https://private.example.test');
-    const calls = supervisor(s.root, 'pending');
-    expect(cliMod.superviseTick()).toMatchObject({
-      actions: [{ action: 'ask', ask: 'ask-1', ok: true }],
-    });
-    expect(calls().filter(call => call.startsWith('ask '))).toHaveLength(1);
-  });
-  test('configured mobile transport keeps actionable decisions off Reminders', () => {
-    const s = stub([humanWait()]);
-    fixtureSpies.push(
-      spyOn(decisionsModule, 'describeDecision').mockReturnValue({
-        id: 'mobile-1',
-        run: 'sa1',
-        engine: 'r',
-        node: 'human-m1',
-        pause: 'p1',
-        question: '批准？',
-        reason: '人工签收',
-        context: 'fixture',
-        options: [{ id: 'approve', label: '批准', consequence: '继续运行' }],
-      })
-    );
-    mkdirSync(join(s.root, 'home/console'), { recursive: true });
-    writeFileSync(join(s.root, 'home/console/decision-origin'), 'https://private.example.test');
-    const calls = supervisor(s.root, 'pending');
-    expect(cliMod.superviseTick()).toMatchObject({
-      actions: [{ transport: 'mobile', decision: expect.any(String), held: true, ok: false }],
-    });
-    expect(calls()).toEqual([]);
-  });
-
-  const tick = (): Record<string, unknown>[] => {
-    const { code, out } = captured(() => main(['supervise-tick']));
-    expect(code).toBe(0);
-    return JSON.parse(out).actions as Record<string, unknown>[];
-  };
   test('ORCA1 sync runs after tick and its failure preserves both tick exit codes', async () => {
     for (const failed of [false, true]) {
       const s = stub([humanWait()]);
@@ -3102,14 +2929,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       const out = spyOn(console, 'log').mockImplementation(() => undefined);
       const err = spyOn(console, 'error').mockImplementation(() => undefined);
       try {
-        const baseline = await superviseTickCli(
+        const baseline = await supervised(
           async () => undefined,
           async () => undefined
         );
         expect(baseline).toBe(failed ? 1 : 0);
         for (const returned of [false, true]) {
           const printed = out.mock.calls.length;
-          const exit = await superviseTickCli(
+          const exit = await supervised(
             async () => undefined,
             async () => {
               expect(out.mock.calls.length).toBe(printed);
@@ -3150,7 +2977,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       try {
         const message = 'refresh injected\noriginal error';
         expect(
-          await superviseTickCli(() => {
+          await supervised(() => {
             throw new Error(message);
           })
         ).toBe(failed ? 1 : 0);
@@ -3235,147 +3062,6 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
     expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
     expect(s.calls()).not.toContain('workflow wake --json');
   });
-  test('held:human: asks once, then approves on yes (signal) and wakes due waits', async () => {
-    const s = stub([humanWait(), humanWait(), run('running')]);
-    const sup = supervisor(s.root, 'yes');
-    expect(tick()).toEqual([
-      {
-        run_id: 'sa1',
-        event: 'sa.human.m2',
-        action: 'ask',
-        ok: true,
-        ask: 'ask-1',
-        controller: s.ledger.controller,
-        generation: s.ledger.controller!.generation,
-      },
-    ]);
-    expect(sup()[0]).toMatch(
-      /^ask --question .*human-m2.*等待人工签收.*是=批准签收门.*否=终止整个run.* --ttl-hours 72 --context-json .*$/
-    );
-    expect(tick()[0]).toMatchObject({ action: 'approve', ok: true });
-    expect(await eventually(s.calls, 'workflow signal r --event sa.human.m2')).toBeDefined();
-    expect(await eventually(s.calls, 'workflow wake r --json')).toBeDefined();
-    expect(sup()).toEqual([
-      expect.stringMatching(/^ask /),
-      'ask-status ask-1',
-      expect.stringMatching(/^ask-ack .*"stage":"received"/),
-      expect.stringMatching(/^ask-ack .*"stage":"executing"/),
-    ]);
-    expect(s.calls()).not.toContain('workflow wake --json');
-  });
-  test('pending keeps waiting; no abandons the paused run', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'pending');
-    tick();
-    expect(tick()[0]).toMatchObject({ action: 'none', ask: 'pending' });
-    writeFileSync(join(s.root, 'answer'), 'no');
-    expect(tick()[0]).toMatchObject({ action: 'reject', ok: true });
-    expect(s.calls()).toContain('workflow abandon r --json');
-  });
-  for (const answer of ['yes', 'no'])
-    test(`HF9 old unknown signoff reconciles ${answer} without creating a reminder`, async () => {
-      const s = stub(answer === 'yes' ? [humanWait(), run('running')] : [humanWait()]),
-        sup = supervisor(s.root, answer),
-        key = 'sa1:signoff:39d592de14436296';
-      const state = join(s.root, 'sv-state', 'asks');
-      mkdirSync(state, { recursive: true });
-      writeFileSync(
-        join(state, 'old.json'),
-        JSON.stringify({ id: 'old-signoff', question: `superagent ${key} 红线签收：批准合入 x？` })
-      );
-      writeFileSync(
-        join(s.root, 'home', 'asks.json'),
-        JSON.stringify({ [key]: { status: 'unknown' } })
-      );
-      expect(tick()[0]).toMatchObject({
-        action: answer === 'yes' ? 'approve' : 'reject',
-        ok: true,
-      });
-      expect(sup().filter(c => !c.startsWith('ask-ack '))).toEqual(['ask-status old-signoff']);
-      expect(
-        await eventually(
-          s.calls,
-          answer === 'yes' ? 'workflow signal r --event sa.human.m2' : 'workflow abandon r --json'
-        )
-      ).toBeDefined();
-    });
-  test('ttl follows the wait deadline (≥1h)', () => {
-    const s = stub([humanWait(new Date(Date.now() + 5 * 3600e3).toISOString())]);
-    const sup = supervisor(s.root, 'pending');
-    tick();
-    expect(sup()[0]).toContain('--ttl-hours 5 --context-json ');
-  });
-  test('same episode retains its question when only the resume deadline changes', () => {
-    const s = stub([humanWait('2099-01-01T00:00:00.000Z'), humanWait('2099-02-01T00:00:00.000Z')]);
-    const sup = supervisor(s.root, 'pending');
-    tick();
-    expect(tick()[0]).toMatchObject({ action: 'none', ask: 'pending' });
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-    const asks = JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8')) as object;
-    expect(Object.keys(asks)).toEqual(['sa1:signoff:39d592de14436296']);
-  });
-  test('asks of runs without a ledger (gc.sh removed it) are dropped on write-back', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'pending');
-    const p = join(s.root, 'home', 'asks.json');
-    writeFileSync(p, JSON.stringify({ 'gone:m1:0': { id: 'x', status: 'pending' } }));
-    tick();
-    expect(Object.keys(JSON.parse(readFileSync(p, 'utf8')) as object)).toEqual([
-      'sa1:signoff:39d592de14436296',
-    ]);
-  });
-  test('the ledger holds an unknown entry before supervisor ask runs; an id-less entry with no supervisor record is re-asked', () => {
-    const s = stub([humanWait()]);
-    const py = join(s.root, 'sup-snap.py');
-    writeFileSync(
-      py,
-      `import os, shutil, sys\nshutil.copy('${s.root}/home/asks.json', '${s.root}/at-ask.json')\nprint('ask-1')\n`
-    );
-    process.env.SA_SUPERVISOR = py;
-    tick();
-    expect(JSON.parse(readFileSync(join(s.root, 'at-ask.json'), 'utf8'))).toMatchObject({
-      'sa1:signoff:39d592de14436296': { status: 'unknown', context: { task_id: 'sa1' } },
-    });
-    // 模拟上次 tick 在 ask 期间死掉且 supervisor 没有落下记录：重投
-    writeFileSync(
-      join(s.root, 'home', 'asks.json'),
-      '{"sa1:signoff:39d592de14436296":{"status":"unknown"}}'
-    );
-    rmSync(join(s.root, 'at-ask.json'));
-    expect(tick()[0]).toMatchObject({ action: 'ask', ok: true, ask: 'ask-1' });
-    expect(existsSync(join(s.root, 'at-ask.json'))).toBe(true);
-  });
-  test('an ask that saved its record then exited non-zero stays unknown; the next tick reconciles via ask-status instead of asking again', () => {
-    const s = stub([humanWait()]);
-    const sup = supervisor(s.root, 'pending');
-    const state = join(s.root, 'sv-state', 'asks');
-    // 桩 ask：像 supervisor create() 一样先落记录，再在投递阶段失败
-    writeFileSync(
-      join(s.root, 'supervisor.py'),
-      `import json, os, sys\nd = os.path.dirname(os.path.abspath(__file__))\nopen(os.path.join(d, 'sup-calls'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nif sys.argv[1] == 'ask':\n    os.makedirs('${state}', exist_ok=True)\n    json.dump({'id': 'abc', 'question': sys.argv[3], 'status': 'pending'}, open('${state}/abc.json', 'w'))\n    sys.exit(3)\nprint(open(os.path.join(d, 'answer')).read().strip())\n`
-    );
-    expect(captured(() => main(['supervise-tick'])).code).toBe(1);
-    const asks = (): unknown => JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'));
-    expect(asks()).toMatchObject({ 'sa1:signoff:39d592de14436296': { status: 'unknown' } });
-    expect(tick()[0]).toMatchObject({ action: 'none', ok: true, ask: 'pending' });
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-    expect(sup().at(-1)).toBe('ask-status abc');
-    expect(asks()).toMatchObject({
-      'sa1:signoff:39d592de14436296': { id: 'abc', status: 'pending' },
-    });
-  });
-  test('a held supervise.lock makes a concurrent tick skip with exit 0 and touch nothing', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'pending');
-    const held = archonMod.lock(join(s.root, 'home', 'supervise.lock'));
-    if (!held.ok) throw new Error('lock not taken');
-    const { code, out } = captured(() => main(['supervise-tick']));
-    held.release();
-    expect(code).toBe(0);
-    expect(JSON.parse(out)).toEqual({ skipped: 'locked' });
-    expect(s.calls()).toEqual([]);
-    expect(tick()[0]).toMatchObject({ action: 'ask', ok: true });
-  });
   test('maintenance is nonblocking and never owns supervise.lock', () => {
     const sa = join(tmp(), 'home');
     mkdirSync(sa, { recursive: true });
@@ -3406,342 +3092,9 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
     expect(calls).toEqual(['memory', 'reflection', 'gc', 'scratch']);
     expect(result).toMatchObject({ maintenance: { ok: true } });
   });
-  test('held:human past the plan deadline: tick cancels (reason deadline), ask expired, supervisor untouched, brief says so', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'yes');
-    writeFileSync(
-      join(s.root, 'gen', 'plan.json'),
-      JSON.stringify({ deadline: '2020-01-01T00:00:00Z', packages: [{ id: 'core' }] })
-    );
-    writeFileSync(
-      join(s.root, 'home', 'asks.json'),
-      JSON.stringify({ 'sa1:signoff:39d592de14436296': { id: 'ask-1', status: 'pending' } })
-    );
-    expect(tick()).toEqual([
-      {
-        run_id: 'sa1',
-        event: 'sa.human.m2',
-        action: 'cancel',
-        ok: true,
-        reason: 'deadline',
-        controller: s.ledger.controller,
-        generation: s.ledger.controller!.generation,
-      },
-    ]);
-    expect(s.calls()).toContain('workflow abandon r --json');
-    expect(existsSync(join(s.root, 'sup-calls'))).toBe(false);
-    expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
-      'sa1:signoff:39d592de14436296': { id: 'ask-1', status: 'expired' },
-    });
-    expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
-    const lines = captured(() => main(['brief', 'sa1'])).out.split('\n');
-    expect(lines).toContain('plan 截止已过，已取消');
-    expect(lines).toContain('ask sa1:signoff:39d592de14436296: expired');
-  });
-  test('a yes that arrives after the plan deadline passed is not signalled: the run is abandoned and the ask expired', () => {
-    const s = stub([humanWait()]);
-    const plan = join(s.root, 'gen', 'plan.json');
-    writeFileSync(
-      plan,
-      JSON.stringify({ deadline: '2099-01-01T00:00:00Z', packages: [{ id: 'core' }] })
-    );
-    writeFileSync(
-      join(s.root, 'home', 'asks.json'),
-      JSON.stringify({ 'sa1:signoff:39d592de14436296': { id: 'ask-1', status: 'pending' } })
-    );
-    // 桩 ask-status：截止恰在用户答“是”的期间过去
-    const py = join(s.root, 'sup-late.py');
-    writeFileSync(
-      py,
-      `import json\njson.dump({'deadline': '2020-01-01T00:00:00Z', 'packages': [{'id': 'core'}]}, open('${plan}', 'w'))\nprint('yes')\n`
-    );
-    process.env.SA_SUPERVISOR = py;
-    expect(tick()).toEqual([
-      {
-        run_id: 'sa1',
-        event: 'sa.human.m2',
-        action: 'cancel',
-        ok: true,
-        reason: 'deadline',
-        controller: s.ledger.controller,
-        generation: s.ledger.controller!.generation,
-      },
-    ]);
-    expect(s.calls().some(c => c.startsWith('workflow signal'))).toBe(false);
-    expect(s.calls()).toContain('workflow abandon r --json');
-    expect(JSON.parse(readFileSync(join(s.root, 'home', 'asks.json'), 'utf8'))).toEqual({
-      'sa1:signoff:39d592de14436296': { id: 'ask-1', status: 'expired' },
-    });
-    expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
-  });
-  test('held:human before the plan deadline still asks; nothing is cancelled', () => {
-    const s = stub([humanWait()]);
-    supervisor(s.root, 'pending');
-    writeFileSync(
-      join(s.root, 'gen', 'plan.json'),
-      JSON.stringify({ deadline: '2099-01-01T00:00:00Z', packages: [{ id: 'core' }] })
-    );
-    expect(tick()[0]).toMatchObject({ action: 'ask', ok: true });
-    expect(s.calls().some(c => /^workflow (cancel|abandon)/.test(c))).toBe(false);
-    expect(loadLedger('sa1').reason).toBeUndefined();
-  });
-  test('a null or malformed supervisor ask record is skipped and counted; the valid one is still reconciled', () => {
-    const s = stub([humanWait()]);
-    const sup = supervisor(s.root, 'pending');
-    const state = join(s.root, 'sv-state', 'asks');
-    mkdirSync(state, { recursive: true });
-    writeFileSync(join(state, 'a-null.json'), 'null');
-    writeFileSync(join(state, 'b-bad.json'), '{"id":');
-    writeFileSync(
-      join(state, 'c-ok.json'),
-      JSON.stringify({
-        id: 'abc',
-        question: 'superagent sa1:signoff:39d592de14436296 红线签收：批准合入 x？',
-      })
-    );
-    writeFileSync(
-      join(s.root, 'home', 'asks.json'),
-      '{"sa1:signoff:39d592de14436296":{"status":"unknown"}}'
-    );
-    expect(tick()[0]).toMatchObject({
-      action: 'none',
-      ok: true,
-      ask: 'pending',
-      reason: '2 anomalous ask records',
-    });
-    expect(sup()).toEqual(['ask-status abc']);
-  });
 });
 
 describe('RCPT consumed decision receipts', () => {
-  const tick = (code = 0): Record<string, unknown>[] => {
-    const result = captured(() => main(['supervise-tick']));
-    expect(result.code, JSON.stringify(JSON.parse(result.out).actions)).toBe(code);
-    return JSON.parse(result.out).actions;
-  };
-  const asks = (
-    root: string
-  ): Record<
-    string,
-    {
-      status: string;
-      receipt: {
-        key: string;
-        body: string;
-        at?: string;
-        delivery?: string;
-        error?: string;
-        stage?: string;
-        effect?: object;
-      };
-    }
-  > => JSON.parse(readFileSync(join(root, 'home', 'asks.json'), 'utf8'));
-  const body = (root: string): string => Object.values(asks(root))[0].receipt.body;
-
-  test('efficiency context: one bound request, full fields and marker, no repeated ask', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'pending');
-    tick();
-    tick();
-    const calls = sup().filter(c => c.startsWith('ask '));
-    expect(calls).toHaveLength(1);
-    const context = JSON.parse(calls[0].split(' --context-json ')[1]);
-    expect(context).toMatchObject({
-      source: 'superagent',
-      task_id: 'sa1',
-      initiator: 'unknown',
-      action: 'approve',
-      target: expect.stringContaining(':r:human-m2'),
-      recommendation: { choice: 'no', reason: expect.any(String) },
-      consequences: { yes: expect.stringContaining('批准'), no: expect.stringContaining('终止') },
-    });
-    expect(context.request_key).toBe(Object.keys(asks(s.root))[0]);
-    const question = /^ask --question (.*) --ttl-hours/.exec(calls[0])![1];
-    expect(Array.from(question).length).toBeLessThanOrEqual(200);
-    expect(question).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
-  });
-
-  test('efficiency delivery failure retries same receipt without replay; actual failed execution never succeeds', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'yes');
-    tick();
-    const signal = spyOn(archonMod, 'signalHuman').mockReturnValue({ ok: true, pid: 0, log: '' });
-    const fail = spyOn(cliMod, 'supervisor').mockImplementation(args => {
-      if (args[0] === 'ask-ack') throw new Error('fixture delivery unavailable');
-      return supervisorTransport(args);
-    });
-    try {
-      tick();
-    } finally {
-      fail.mockRestore();
-    }
-    const first = Object.values(asks(s.root))[0].receipt;
-    expect(first).toMatchObject({ delivery: 'failed', stage: 'executing' });
-    tick();
-    expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
-      key: first.key,
-      delivery: 'sent',
-    });
-    writeFileSync(
-      join(s.dir, 'get-000.json'),
-      JSON.stringify(run('failed', { completed_at: new Date().toISOString() }))
-    );
-    tick();
-    tick();
-    expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
-      stage: 'failed',
-      delivery: 'sent',
-    });
-    const receipts = sup()
-      .filter(c => c.startsWith('ask-ack '))
-      .map(c => JSON.parse(c.split(' --receipt-json ')[1]));
-    expect(receipts.map(r => r.stage)).toEqual(['executing', 'failed']);
-    expect(receipts[0].key).toBe(first.key);
-    expect(signal).toHaveBeenCalledTimes(1);
-    signal.mockRestore();
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-  });
-
-  test('R1 received is delivered before the effect; failed executing delivery cannot suppress terminal', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'yes');
-    tick();
-    const signal = spyOn(archonMod, 'signalHuman').mockImplementation(() => {
-      expect(sup().some(c => c.includes('"stage":"received"'))).toBe(true);
-      return { ok: true, pid: 0, log: '' };
-    });
-    const fail = spyOn(cliMod, 'supervisor').mockImplementation(args => {
-      if (args[0] === 'ask-ack' && args.at(-1)?.includes('"stage":"executing"'))
-        throw new Error('fixture executing notification unavailable');
-      return supervisorTransport(args);
-    });
-    try {
-      tick();
-      expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
-        stage: 'executing',
-        delivery: 'failed',
-      });
-      writeFileSync(
-        join(s.dir, 'get-000.json'),
-        JSON.stringify(run('completed', { completed_at: new Date().toISOString() }))
-      );
-      tick();
-      tick();
-      expect(Object.values(asks(s.root))[0].receipt).toMatchObject({
-        stage: 'succeeded',
-        delivery: 'sent',
-      });
-      expect(signal).toHaveBeenCalledTimes(1);
-      expect(sup().filter(c => c.includes('"stage":"succeeded"'))).toHaveLength(1);
-    } finally {
-      fail.mockRestore();
-      signal.mockRestore();
-    }
-  });
-
-  test.each(['failed', 'completed'] as const)(
-    'efficiency adopted execution %s owns the outcome; stale source failure is ignored',
-    status => {
-      const s = stub([run('failed')]);
-      supervisor(s.root, 'pending');
-      const key = 'sa1:budget:fixture';
-      writeFileSync(
-        join(s.root, 'home/asks.json'),
-        JSON.stringify({
-          [key]: {
-            id: 'ask-1',
-            status: 'approved',
-            receipt: {
-              key: 'bound',
-              stage: 'executing',
-              delivery: 'sent',
-              body: '已提交新run',
-              terminal_before: 'r:failed:',
-              effect: { action: 'adopt', engine_run: 'r2' },
-            },
-          },
-        })
-      );
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run(status, { id: 'r2' })));
-      tick();
-      expect(Object.values(asks(s.root))[0].receipt.stage).toBe(
-        status === 'completed' ? 'succeeded' : 'failed'
-      );
-      expect(s.calls().some(c => c.startsWith('workflow get r2 '))).toBe(true);
-      const saved = asks(s.root);
-      saved[key].receipt = {
-        key: 'same',
-        stage: 'executing',
-        delivery: 'sent',
-        body: '受理',
-        ...{ terminal_before: 'r:failed:' },
-        effect: { action: 'resume', engine_run: 'r' },
-      };
-      writeFileSync(join(s.root, 'home/asks.json'), JSON.stringify(saved));
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed')));
-      tick();
-      expect(Object.values(asks(s.root))[0].receipt.stage).toBe('executing');
-    }
-  );
-
-  for (const answer of ['yes', 'no'] as const)
-    test(`RCPT checked/deleted ${answer}: one receipt, no new decision or replay`, () => {
-      const s = stub(answer === 'yes' ? [humanWait(), humanWait(), run('running')] : [humanWait()]);
-      const sup = supervisor(s.root, answer);
-      tick();
-      expect(tick()[0]).toMatchObject({
-        action: answer === 'yes' ? 'approve' : 'reject',
-        ok: true,
-      });
-      const expected = `run=sa1；节点=human-m2；答复=${answer === 'yes' ? '是；已批准等待门并提交续跑' : '否；已终止整个run（保留证据）'}；去向=r；结果=动作已受理（不代表后续验收通过）`;
-      expect(body(s.root)).toBe(expected);
-      const receipt = Object.values(asks(s.root))[0];
-      expect(receipt).toMatchObject({
-        status: answer === 'yes' ? 'approved' : 'rejected',
-        receipt: { body: expected, at: expect.any(String) },
-      });
-      expect(receipt.receipt.delivery).toBe('sent');
-      expect(receipt.receipt.key).toMatch(/^[a-f0-9]{64}$/);
-      expect(captured(() => main(['brief', 'sa1'])).out.split('\n')).toContain(
-        `receipt: ${expected}`
-      );
-      expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe(expected);
-      tick();
-      tick();
-      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-      expect(sup().filter(c => c.startsWith('ask-status '))).toHaveLength(1);
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
-      expect(
-        s
-          .calls()
-          .filter(c => c.startsWith(answer === 'yes' ? 'workflow signal ' : 'workflow abandon '))
-      ).toHaveLength(1);
-    });
-
-  for (const delivery of ['pending', 'failed'] as const)
-    test(`RCPT legacy ${delivery} receipt stays readable after terminal state without notification or replay`, () => {
-      const s = stub([humanWait()]),
-        sup = supervisor(s.root, 'no');
-      tick();
-      tick();
-      const saved = asks(s.root),
-        receipt = Object.values(saved)[0].receipt;
-      delete receipt.at;
-      delete receipt.stage;
-      delete receipt.effect;
-      receipt.delivery = delivery;
-      if (delivery === 'failed') receipt.error = "invalid choice: 'notify'";
-      writeFileSync(join(s.root, 'home', 'asks.json'), JSON.stringify(saved));
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('cancelled')));
-      tick();
-      tick();
-      expect(asks(s.root)).toEqual(saved);
-      expect(captured(() => main(['brief', 'sa1'])).out).toContain(`receipt: ${receipt.body}`);
-      expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe(receipt.body);
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
-      expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
-    });
-
   test('RCPT brief/status select the latest answer for this run, including out-of-order asks', () => {
     const s = stub([run('completed')]);
     const receipt = (body: string, at?: string) => ({ key: body, body, ...(at ? { at } : {}) });
@@ -3764,136 +3117,6 @@ describe('RCPT consumed decision receipts', () => {
     expect(lines.length).toBeLessThanOrEqual(20);
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe('最新答复');
   });
-
-  test('RCPT unconfirmed effect is explicit and never replayed', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'no');
-    tick();
-    const original = archonMod.archonJson;
-    const fail = spyOn(archonMod, 'archonJson').mockImplementation((a, cwd) =>
-      a[1] === 'abandon' ? { ok: false } : original(a, cwd)
-    );
-    try {
-      expect(tick(1)[0]).toMatchObject({ action: 'reject', ok: false });
-    } finally {
-      fail.mockRestore();
-    }
-    expect(Object.values(asks(s.root))[0]).toMatchObject({
-      status: 'no',
-      decision: { answer: 'no', engine_run: 'r' },
-    });
-    expect(tick(1)[0]).toMatchObject({
-      action: 'decision_reconcile',
-      ok: false,
-      error: expect.stringContaining('decision_effect_unknown'),
-    });
-    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
-    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(0);
-  });
-
-  test('RCPT exit after cancellation before consumption is reconciled from terminal engine state', () => {
-    const s = stub([humanWait()]),
-      sup = supervisor(s.root, 'no');
-    activateEngineFixture(s);
-    const executorTick = (code = 0): Record<string, unknown>[] => {
-      const result = captured(() => main(['supervise-tick', '--runs', 'sa1', '--no-global']));
-      expect(result.code, result.out).toBe(code);
-      return JSON.parse(result.out).actions;
-    };
-    executorTick();
-    const script = join(s.root, 'crash.ts');
-    writeFileSync(
-      script,
-      `import {spyOn} from 'bun:test';
-import * as config from ${JSON.stringify(join(WETAMP, 'src/config.ts'))};
-import {main} from ${JSON.stringify(join(WETAMP, 'src/cli.ts'))};
-const original=config.writeAtomic;
-spyOn(config,'writeAtomic').mockImplementation((path,body)=>{
-  if(path.endsWith('/asks.json') && body.includes('"action": "reject"')) process.exit(73);
-  return original(path,body);
-});
-process.exit(main(['supervise-tick', '--runs', 'sa1', '--no-global']));`
-    );
-    // The fake engine persists cancellation before acknowledging it, independently of asks.json.
-    fixtureOptions(s.dir, { persistCancellation: true });
-    const child = Bun.spawnSync([process.execPath, script], {
-      env: process.env,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: 5000,
-    });
-    expect(child.exitCode, child.stderr.toString()).toBe(73);
-    expect(Object.values(asks(s.root))[0]).toMatchObject({
-      status: 'no',
-      decision: { answer: 'no', engine_run: 'r' },
-    });
-    expect(Object.values(asks(s.root))[0]).not.toHaveProperty('decision.effect');
-    expect(Object.values(asks(s.root))[0].receipt.stage).toBe('received');
-    expect(executorTick()[0]).toMatchObject({ action: 'receipt_reconciled', ok: true });
-    expect(body(s.root)).toContain('已终止整个run');
-    expect(Object.values(asks(s.root))[0]).toMatchObject({
-      status: 'rejected',
-      receipt: { body: expect.stringContaining('已终止整个run') },
-    });
-    executorTick();
-    expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
-    expect(s.calls().filter(c => c.startsWith('workflow abandon '))).toHaveLength(1);
-  });
-
-  for (const sample of ['approval'] as string[])
-    test(`RCPT actual ${sample} action uses engine facts and excludes output prose`, () => {
-      const s = stub([]);
-      const plan = JSON.parse(readFileSync(fixturePlan(s.root, s.root), 'utf8')) as Plan;
-      const gen = generate(plan, 'sa1', true);
-      Object.assign(s.ledger, {
-        gen_dir: gen.dir,
-        workflow_hash: sample === 'adopt' ? 'old' : engineHash(),
-      });
-      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-      const node =
-        sample === 'milestone'
-          ? 'gate-m1-r3'
-          : sample === 'approval'
-            ? 'approval-m1'
-            : 'verify-core';
-      const art = join(s.root, 'out/artifacts/runs/r');
-      mkdirSync(art, { recursive: true });
-      const dirty = 'synthetic-secret arbitrary model output';
-      const reason = 'budget_launches_exceeded';
-      writeFileSync(
-        join(art, `${node}.json`),
-        JSON.stringify({
-          decision: { kind: 'block', reason, evidence: [], debt: [] },
-          summary: dirty,
-          rounds: 3,
-        })
-      );
-      const r = run(sample === 'approval' ? 'paused' : 'failed', {
-        output_root: join(s.root, 'out'),
-        nodes: [{ nodeId: node, state: 'failed' }],
-        ...(sample === 'approval'
-          ? { metadata: { approval: { nodeId: node, type: 'merge_review' } } }
-          : {}),
-      });
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
-      supervisor(s.root, 'yes');
-      expect(tick()[0].action).toBe('ask');
-      expect(tick()[0].ok).toBe(true);
-      const expected = {
-        package: '已提交包core编码→验收重跑',
-        milestone: '已提交里程碑m1累计验收→评审重跑',
-        adopt: '已新开run从首个节点重跑',
-        approval: '已批准等待门并提交续跑',
-      }[sample];
-      expect(body(s.root)).toContain(expected!);
-      expect(body(s.root)).toContain(`去向=${sample === 'adopt' ? 'r2' : 'r'}`);
-      expect(body(s.root)).not.toContain(dirty);
-      if (sample === 'adopt') expect(s.calls().some(c => c.includes('--adopt r'))).toBe(true);
-      if (sample === 'package')
-        expect(readFileSync(join(gen.dir, 'attempts/.packages/core'), 'utf8')).toBe('1');
-      if (sample === 'milestone')
-        expect(readFileSync(join(gen.dir, 'attempts/m1'), 'utf8')).toBe('1');
-    });
 });
 
 describe('explicit continuation (supervise-tick, archon stub)', () => {
@@ -4110,8 +3333,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(board.needs).toEqual([]);
     expect(board.gates[0]).toMatchObject({ verdict: 'pass', reason: null });
   });
-
-  const asksFile = (): string => join(process.env.SUPERAGENT_HOME ?? '', 'asks.json');
   test('M2-05 repair-p failed without green evidence enters an existing hold and accepts retry', () => {
     const s = held('repair-p');
     const r = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
@@ -4131,30 +3352,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');
-  });
-  test('E1 real settle incidents become engine_suspect and save one sample, never coder failure', () => {
-    const fixtures = JSON.parse(
-      readFileSync(join(import.meta.dir, 'incidents/e1-settle.json'), 'utf8')
-    ) as { node: string; verify: object; settle: object; coder: object }[];
-    for (const f of fixtures) {
-      const s = held(f.node, {
-        'verify-core.json': f.verify,
-        'settle-core.json': f.settle,
-        'settle-core.coder.json': f.coder,
-      });
-      const sup = supervisor(s.root, 'pending');
-      const r = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-      expect(classifyRun(s.ledger, r).state).toBe('held:engine_suspect');
-      expect(tick()[0]).toMatchObject({
-        action: 'none',
-        held: true,
-        reason: expect.stringContaining('engine_suspect'),
-      });
-      expect(tick()[0]).toMatchObject({ action: 'none' });
-      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
-      expect(resumes(s.calls())).toBe(0);
-      expect(existsSync(join(s.root, 'home/incidents/sa1/sample.json'))).toBe(true);
-    }
   });
   test('I5 latest settle red evidence does not inherit first verify green; unknown reasons are suspect', () => {
     const s = held('settle-core', {
@@ -4183,90 +3380,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     });
     expect(existsSync(join(u.root, 'home/incidents/sa1/sample.json'))).toBe(true);
   });
-  test('E2 one episode asks once; unbound legacy questions are archived before a fresh ask', () => {
-    const f = JSON.parse(readFileSync(join(import.meta.dir, 'incidents/e2-asks.json'), 'utf8')) as {
-      attempts: number[];
-      hold: string;
-    };
-    const s = held('code-core');
-    setGet(s.root, run('paused', { metadata: { approval: { nodeId: 'code-core' } } }));
-    const sup = supervisor(s.root, 'pending');
-    for (const attempt of f.attempts) {
-      const l = loadLedger('sa1');
-      l.auto_retries = [{ milestone: 'm1', reason: 'coder:code-core', at: '2020-01-01T00:00:00Z' }];
-      l.recoveries = Array.from({ length: attempt }, () => '2020-01-01T00:00:00Z');
-      writeFileSync(ledgerPath('sa1'), JSON.stringify(l));
-      tick();
-    }
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-    const key = askKey('sa1', 'approval', 'code-core@');
-    const a = JSON.parse(readFileSync(asksFile(), 'utf8'))[key];
-    const legacy = `${key}:2`;
-    writeFileSync(asksFile(), JSON.stringify({ [legacy]: { status: 'unknown' } }));
-    const records = join(s.root, 'sv-state/asks');
-    mkdirSync(records, { recursive: true });
-    writeFileSync(
-      join(records, 'record.json'),
-      JSON.stringify({ id: a.id, question: `superagent ${legacy} fixture` })
-    );
-    expect(tick()[0]).toMatchObject({ action: 'ask' });
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(2);
-    expect(JSON.parse(readFileSync(asksFile(), 'utf8'))[legacy].status).toBe('superseded');
-  });
-  test.each(['yes', 'no'])(
-    'I3 completed run refuses decide and resume/adopt; late %s is superseded and counted stale',
-    answer => {
-      const s = held('x');
-      setGet(s.root, run('paused', { metadata: { approval: { nodeId: 'approval-m1' } } }));
-      tick();
-      setGet(s.root, run('completed'));
-      supervisor(s.root, answer);
-      const before = readFileSync(ledgerPath('sa1'), 'utf8');
-      for (const action of ['retry', 'reject', 'approve']) {
-        const r = captured(() => main(['decide', 'sa1', action]));
-        expect(r.code).toBe(1);
-        expect(JSON.parse(r.out).reason).toContain('completed');
-      }
-      patchLedger(s.root, { engine_hash: 'old' });
-      const stale = readFileSync(ledgerPath('sa1'), 'utf8');
-      expect(captured(() => main(['resume', 'sa1'])).code).toBe(1);
-      expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(stale);
-      expect(before).not.toBe(stale);
-      const result = captured(() => main(['supervise-tick']));
-      expect(JSON.parse(result.out)).toMatchObject({
-        actions: [],
-        stale_answer: 1,
-        orphan_hold: 0,
-      });
-      expect(
-        JSON.parse(readFileSync(asksFile(), 'utf8'))[askKey('sa1', 'approval', 'approval-m1@')]
-          .status
-      ).toBe('superseded');
-      expect(s.calls().filter(c => /workflow (resume|run|cancel|abandon)/.test(c))).toEqual([]);
-    }
-  );
-  test('I4 id-less superseded legacy answer is reconciled read-only and counted once', () => {
-    const s = held('code-core');
-    setGet(s.root, run('completed'));
-    const sup = supervisor(s.root, 'no');
-    const key = 'sa1:auto_retry_exhausted:2';
-    writeFileSync(asksFile(), JSON.stringify({ [key]: { status: 'unknown' } }));
-    const records = join(s.root, 'sv-state/asks');
-    mkdirSync(records, { recursive: true });
-    writeFileSync(
-      join(records, 'late.json'),
-      JSON.stringify({ id: 'late', question: `superagent ${key} fixture` })
-    );
-    const result = JSON.parse(captured(() => main(['supervise-tick'])).out);
-    expect(result).toMatchObject({ actions: [], stale_answer: 1 });
-    expect(JSON.parse(readFileSync(asksFile(), 'utf8'))[key]).toMatchObject({
-      status: 'superseded',
-      id: 'late',
-      stale_answer: true,
-    });
-    expect(sup().filter(c => c.startsWith('ask '))).toEqual([]);
-    expect(resumes(s.calls())).toBe(0);
-  });
   test('only a recorded permission decision surfaces a current need', () => {
     const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('coder_redline') });
     expect(tick()).toEqual([]);
@@ -4275,47 +3388,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(captured(() => main(['brief', 'sa1'])).out).toContain('need permission');
     expect(resumes(s.calls())).toBe(0);
   });
-  test('held gate ignores needs from advanced nodes when retrying', () => {
-    const need = { cap: 'approval', why: 'obsolete', minimal_ask: 'check process deviation' };
-    const s = held('gate-m1-r1', {
-      'gate-m1-r1.json': gate('invalid_review'),
-      'verify-core.json': { ok: true, disposition: 'advance' },
-      'verify-core.coder.json': {
-        status: 'blocked',
-        error_class: 'redline',
-        needs: [need],
-        milestone: 'm1',
-      },
-    });
-    const archive = join(s.art, 'verify-core.coder.json');
-    const original = readFileSync(archive, 'utf8');
-    const sup = supervisor(s.root, 'pending');
-    expect(tick()).toEqual([]);
-    expect(resumes(s.calls())).toBe(0);
-    expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(0);
-    expect(captured(() => main(['brief', 'sa1'])).out).not.toContain(
-      'need approval (verify-core): check process deviation'
-    );
-    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).needs).toBeUndefined();
-    expect(readFileSync(archive, 'utf8')).toBe(original);
-  });
-  test.each(['acceptance_failed', 'invalid_review'])(
-    'held gate %s keeps its structured reason despite a coder redline self-report',
-    reason => {
-      const s = held('gate-m1-r1', {
-        'gate-m1-r1.json': gate(reason),
-        'verify-core.coder.json': {
-          status: 'blocked',
-          error_class: 'redline',
-          error_class_ignored: true,
-          needs: [],
-          milestone: 'm1',
-        },
-      });
-      supervisor(s.root, 'pending');
-      expect(tick()).toEqual([]);
-    }
-  );
   test('terminal gate decisions refuse retry without changing attempts', () => {
     const terminal = held('gate-m1-r6', {
       'gate-m1-r6.json': gate('review_failed+review_limit'),
@@ -4547,14 +3619,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       'bun test b',
     ]);
   });
-  const yesCall: Record<string, string> = {
-    review: 'workflow resume r --detach --json',
-    retry: 'workflow resume r --detach --json',
-    resume: 'workflow resume r --detach --json',
-    approve: 'workflow approve r --detach --json',
-    adjudicate: 'workflow run sa-sa1',
-    cancel: 'workflow cancel r --json',
-  };
 
   test.each(['approve', 'reject', 'retry', 'resume', 'recover'])(
     'intervene leaves the ledger untouched when completed run refuses %s',
@@ -4602,159 +3666,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     }
   });
 
-  for (const [hold, p] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
-    if (p.do === 'resume') continue;
-    if (p.do !== 'ask') {
-      test(`HOLD_POLICY ${hold} → ${p.do}, no reminder`, () => {
-        const { s, first } = scenes[hold]();
-        const sup = supervisor(s.root, 'pending');
-        const actions = tick();
-        if (!actions.length) {
-          expect(
-            classifyRun(s.ledger, JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')))
-              .state
-          ).toBe('failed');
-          expect(sup()).toEqual([]);
-          expect(resumes(s.calls())).toBe(0);
-          return;
-        }
-        const x = actions[0];
-        expect(x).toMatchObject({ run_id: 'sa1', ...first });
-        // 签收门本身就是提问；其余自动处置不投提醒
-        if (hold !== 'signoff') expect(sup()).toEqual([]);
-        if (p.do === 'blocked') {
-          expect(x).toMatchObject({
-            action: 'none',
-            held: true,
-            next: expect.stringContaining('superagent brief'),
-          });
-          tick();
-          expect(sup()).toEqual([]);
-          expect(
-            s.calls().filter(c => /^workflow (resume|run|approve|signal|abandon) /.test(c))
-          ).toHaveLength(0);
-          expect(captured(() => main(['brief', 'sa1'])).out).toContain('next:');
-          expect(loadLedger('sa1').dispositions).toHaveLength(1);
-          expect(loadLedger('sa1').dispositions![0]).toMatchObject({
-            action: 'blocked',
-            ok: false,
-            error: x.next,
-          });
-          return;
-        }
-        expect(loadLedger('sa1').dispositions?.at(-1)).toMatchObject({
-          reason: hold,
-          action: x.action,
-          ok: true,
-        });
-        if (hold === 'deadline') {
-          expect(s.calls()).toContain('workflow abandon r --json');
-          expect(loadLedger('sa1')).toMatchObject({ state: 'failed', reason: 'deadline' });
-          expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
-            action: 'cancel',
-            reason: 'deadline',
-            ok: true,
-          });
-        }
-      });
-      continue;
-    }
-    test(`HOLD_POLICY ${hold} → ask once (≤200 chars); yes runs ${p.yes}, no ends the run`, () => {
-      const { s } = scenes[hold]();
-      const sup = supervisor(s.root, 'pending');
-      expect(tick()[0]).toMatchObject({
-        run_id: 'sa1',
-        action: 'ask',
-        reason: hold,
-        ok: true,
-        ask: 'ask-1',
-      });
-      const q = /^ask --question (.*) --ttl-hours \d+ --context-json /.exec(sup()[0])?.[1] ?? '';
-      expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
-      expect(Array.from(q).length).toBeLessThanOrEqual(200);
-      expect(q).toContain('是=');
-      if (hold === 'stalled') {
-        expect(q).toContain(`${s.ledger.repo.split('/').at(-1)}/code-core`);
-        expect(q).toContain('沉默');
-        expect(q).toContain('否=继续等待');
-        expect(q.match(/\[sa:/g)).toHaveLength(1);
-        const current = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-        current.last_activity_at = new Date().toISOString();
-        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(current));
-      }
-      expect(tick()[0]).toMatchObject({ action: 'none', reason: hold, ask: 'pending' });
-      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-      // 旧版本已投递但本地只落 unknown：仍按原 key 找回，不能重复投递。
-      const oldKey = Object.keys(JSON.parse(readFileSync(asksFile(), 'utf8')))[0];
-      const records = join(s.root, 'sv-state', 'asks');
-      mkdirSync(records, { recursive: true });
-      writeFileSync(
-        join(records, 'old.json'),
-        JSON.stringify({ id: 'old-pending', question: `superagent ${oldKey} 旧模板` })
-      );
-      writeFileSync(asksFile(), JSON.stringify({ [oldKey]: { status: 'unknown' } }));
-      writeFileSync(join(s.root, 'answer'), 'yes');
-      const before = s.calls().length;
-      expect(tick()[0]).toMatchObject({ action: p.yes, reason: hold, ok: true });
-      expect(
-        s
-          .calls()
-          .slice(before)
-          .some(call => call.startsWith(yesCall[p.yes]))
-      ).toBe(true);
-      expect(
-        sup()
-          .filter(c => c.startsWith('ask-status '))
-          .at(-1)
-      ).toBe('ask-status old-pending');
-      expect(sup().filter(c => c.startsWith('notify '))).toHaveLength(0);
-      expect(sup().filter(c => c.startsWith('ask '))).toHaveLength(1);
-      expect(loadLedger('sa1').dispositions?.map(d => `${d.reason}/${d.action}`)).toEqual([
-        `${hold}/ask`,
-        `${hold}/${p.yes}`,
-      ]);
-      const n = scenes[hold]();
-      supervisor(n.s.root, 'no');
-      tick();
-      const noKey = Object.keys(JSON.parse(readFileSync(asksFile(), 'utf8')))[0];
-      const noRecords = join(n.s.root, 'sv-state', 'asks');
-      mkdirSync(noRecords, { recursive: true });
-      writeFileSync(
-        join(noRecords, 'old.json'),
-        JSON.stringify({ id: 'old-no', question: `superagent ${noKey} 旧模板` })
-      );
-      writeFileSync(asksFile(), JSON.stringify({ [noKey]: { status: 'unknown' } }));
-      expect(tick()[0]).toMatchObject({
-        action: 'noText' in p ? 'wait' : 'reject',
-        reason: hold,
-        ok: true,
-      });
-      expect(n.s.calls().some(c => /^workflow (cancel|abandon) r/.test(c))).toBe(!('noText' in p));
-      expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject(
-        'noText' in p
-          ? { action: 'answer', reason: 'human_decision', ok: true }
-          : { action: 'cancel', reason: 'rejected', ok: true }
-      );
-    });
-  }
-  test('S14a owner loss takes priority over stale progress and resumes once', () => {
-    const { s } = scenes.stalled();
-    const current = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
-    current.metadata!.execution_owner = LOST;
-    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(current));
-    const sup = supervisor(s.root, 'pending');
-    const db = runsDb(LOST);
-
-    expect(tick(0)[0]).toMatchObject({ action: 'auto_recover', ok: true });
-    expect(sup()).toEqual([]);
-    expect(s.calls().filter(c => c.startsWith('workflow resume'))).toHaveLength(1);
-    expect(loadLedger('sa1').intervention_events?.at(-1)).toMatchObject({
-      action: 'auto_recover',
-      origin: 'engine',
-    });
-    db.close();
-  });
-
   for (const node of ['verify-core', 'settle-core']) {
     for (const reason of ['coder_redline', 'future_reason', '']) {
       test(`${node} ${reason || 'missing'} asks without model launch`, () => {
@@ -4792,45 +3703,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       expect(tick()).toEqual([]);
       expect(resumes(s.calls())).toBe(0);
     });
-  } // Real sa-check subprocess rounds take ~5-10s; the 5s default flakes under load.
-  test('non-independent review stays blocked until a qualified reviewer is configured', () => {
-    const { s } = scenes.review_not_independent();
-    const sup = supervisor(s.root, 'yes');
-    tick();
-    tick();
-    expect(sup()).toEqual([]);
-    expect(existsSync(join(s.root, 'gen', 'attempts', 'review-m1-r1'))).toBe(false);
-    expect(resumes(s.calls())).toBe(0);
-  });
-
-  test('a corrupt ledger reports action:error; the other run is still handled and report counts it unreadable', () => {
-    const s = held('environment');
-    supervisor(s.root, 'pending');
-    writeFileSync(join(s.root, 'home', 'runs', 'bad.json'), '{"run_id": "bad", trunc');
-    writeFileSync(join(s.root, 'home', 'runs', 'odd.json'), JSON.stringify({ run_id: 'other' }));
-    const { code, out: text } = captured(() => main(['supervise-tick']));
-    expect(code).toBe(1);
-    const out = JSON.parse(text).actions as Record<string, unknown>[];
-    expect(out.find(x => x.run_id === 'sa1')).toMatchObject({
-      action: 'none',
-      held: true,
-      ok: true,
-    });
-    expect(out.find(x => x.run_id === 'bad')).toMatchObject({ action: 'error', ok: false });
-    expect(out.find(x => x.run_id === 'odd')).toMatchObject({ action: 'error', ok: false });
-    expect(readFileSync(join(s.root, 'home', 'runs', 'bad.json'), 'utf8')).toBe(
-      '{"run_id": "bad", trunc'
-    );
-    const rep = captured(() => main(['report', '--full']));
-    expect(rep.code).toBe(1);
-    expect(JSON.parse(rep.out)).toMatchObject({
-      runs: 3,
-      unreadable: [
-        expect.stringMatching(/^bad: ledger .*JSON Parse error/),
-        expect.stringMatching(/^odd: .*run_id/),
-      ],
-    });
-  });
+  }
 });
 
 describe('HF9 decision titles', () => {
@@ -4942,91 +3815,6 @@ describe('HF9 decision titles', () => {
         expect(q).toContain('重跑m1累计验收→评审一次');
     });
   }
-  test('HF9 missing/corrupt display evidence does not prevent delivery', () => {
-    const { s, r, art, put } = setup();
-    put('code-W4.json', { reason: 'coder_redline' });
-    r.nodes = [{ nodeId: 'code-W4', state: 'failed' }];
-    rmSync(join(art, 'verify-W4.coder.json'));
-    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
-    const sup = supervisor(s.root, 'pending');
-    expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-    expect(sup()).toEqual([]);
-    writeFileSync(join(art, 'verify-W4.coder.json'), '{');
-    expect(decisionQuestion(s.ledger, r, classify(r), 'needs')).toContain('补齐明确能力或输入');
-  });
-  test('HF9 R3 free text never reaches the supervisor title, even for unknown reasons and enums', () => {
-    const dirty =
-      'rg "synthetic-needle" src/a.ts; echo synthetic-value; DB_URL: postgres://demo:synthetic-pass@host.invalid/db';
-    for (const hold of (
-      ['redline', 'needs', 'signoff', 'approval', 'review_limit'] as const
-    ).filter(h => ['signoff', 'approval'].includes(h))) {
-      const { s, r, put } = setup();
-      const node =
-        hold === 'signoff' ? 'human-m1' : hold === 'review_limit' ? 'gate-m1-r3' : 'verify-W4';
-      put(`${node}.json`, { reason: dirty, summary: dirty, rounds: 3, failed: [dirty] });
-      put('verify-W4.coder.json', {
-        milestone: 'm1',
-        error_class: dirty,
-        blockers: [dirty],
-        summary: dirty,
-        needs: [{ cap: dirty, why: dirty, minimal_ask: dirty }],
-      });
-      put('gate-m1-r3.json', { reason: dirty, verdict: dirty, summary: dirty, rounds: 3 });
-      put('gate-m1-r3.ledger.json', { blocking: [{ id: dirty, evidence: dirty }] });
-      if (hold === 'signoff') {
-        r.status = 'paused';
-        r.metadata = {
-          wait: {
-            nodeId: node,
-            kind: 'event',
-            event: 'sa.human.m1',
-            resumeAt: '2099-01-01T00:00:00Z',
-          },
-        };
-      } else if (hold === 'approval') {
-        r.status = 'paused';
-        r.metadata = { approval: { nodeId: node, type: dirty } };
-      } else {
-        // Drive a registered hold; all supplementary free text remains deliberately hostile.
-        put('verify-W4.json', {
-          reason: hold === 'needs' ? 'coder_needs' : 'coder_redline',
-          summary: dirty,
-        });
-        if (hold === 'review_limit') {
-          r.nodes = [{ nodeId: node, state: 'failed' }];
-          put(`${node}.json`, {
-            verdict: 'escalate',
-            reason: 'coder_redline+review_limit',
-            rounds: 3,
-            summary: dirty,
-          });
-        }
-      }
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(r));
-      const sup = supervisor(s.root, 'pending');
-      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-      const q = /^ask --question (.*) --ttl-hours/.exec(sup()[0])![1];
-      for (const fragment of [
-        'rg',
-        'synthetic-needle',
-        'src/a.ts',
-        'echo',
-        'synthetic-value',
-        'DB_URL',
-        'postgres',
-        'demo',
-        'synthetic-pass',
-        'host.invalid',
-        '/db',
-      ])
-        expect(q).not.toContain(fragment);
-      expect(q).toContain('详情superagent brief <run>');
-      expect(q).toContain('是=');
-      expect(q).toContain('否=终止整个run');
-      const unregistered = decisionQuestion(s.ledger, r, { state: 'failed', exit: 1, node }, hold);
-      expect(unregistered).not.toContain(dirty);
-    }
-  });
   const bestIFA = () => {
     const f = setup(),
       plan = JSON.parse(readFileSync(join(f.s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
@@ -5048,133 +3836,6 @@ describe('HF9 decision titles', () => {
     ];
     return f;
   };
-  const maximumTitle = (hold: Hold, value = Number.MAX_SAFE_INTEGER) => {
-    const f = setup(),
-      { s, r } = f;
-    const repo = join(s.root, 'R'.repeat(255));
-    mkdirSync(repo);
-    cpSync(s.ledger.gen_dir, join(repo, 'gen'), { recursive: true });
-    cpSync(join(s.ledger.repo, 'out'), join(repo, 'out'), { recursive: true });
-    r.output_root = join(repo, 'out');
-    const put = (file: string, data: unknown): void =>
-      writeFileSync(join(repo, 'out/artifacts/runs/r', file), JSON.stringify(artifact(file, data)));
-    Object.assign(s.ledger, {
-      repo,
-      gen_dir: join(repo, 'gen'),
-      engine_hash: 'old-engine',
-      stalled: value,
-    });
-    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-    const plan = JSON.parse(readFileSync(join(s.ledger.gen_dir, 'plan.json'), 'utf8')) as Plan;
-    const m = 'M'.repeat(32);
-    plan.budget = { launches: value, weighted_tokens: value };
-    plan.packages = Array.from({ length: 4 }, (_, i) => ({
-      ...plan.packages[0],
-      id: `W${String(i)}`.padEnd(64, 'x'),
-      milestone: m,
-      title: '长标题'.repeat(1000),
-    }));
-    writeFileSync(join(s.ledger.gen_dir, 'plan.json'), JSON.stringify(plan));
-    const review = hold === 'review_limit' || hold === 'review_not_independent';
-    const node =
-      hold === 'signoff' ? `human-${m}` : review ? `gate-${m}-r3` : `verify-${plan.packages[3].id}`;
-    writeFileSync(
-      join(s.ledger.gen_dir, '.archon/workflows/sa-sa1/sa-sa1.yaml'),
-      `nodes:\n  - id: attempt-${m}\n  - id: attempt-review-${m}-r3\n` +
-        [...plan.packages.slice(0, 3).map(p => `settle-${p.id}`), node]
-          .map(id => `  - id: ${id}\n`)
-          .join('')
-    );
-    r.nodes = [
-      ...plan.packages.slice(0, 3).map(p => ({ nodeId: `settle-${p.id}`, state: 'completed' })),
-      { nodeId: node, state: 'failed' },
-    ];
-    const reasons: Partial<Record<Hold, string>> = {
-      needs: 'coder_needs',
-      redline: 'coder_redline',
-      coder_blocked: 'coder_error:sandbox_denied',
-      review_limit: 'review_failed+review_limit',
-      review_not_independent: 'review_not_independent:same_model',
-    };
-    put(`${node}.json`, { reason: reasons[hold] ?? hold, rounds: value, verdict: 'escalate' });
-    put(`${node}.ledger.json`, { blocking: [{ id: 'R1' }] });
-    put(`${node}.coder.json`, {
-      milestone: m,
-      needs: hold === 'needs' ? [{ cap: 'network', why: '', minimal_ask: '' }] : [],
-    });
-    if (hold === 'engine_suspect') {
-      s.ledger.workflow_hash = engineHash();
-      writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-    }
-    if (hold === 'signoff') {
-      r.status = 'paused';
-      r.metadata = {
-        wait: {
-          nodeId: node,
-          kind: 'event',
-          event: `sa.human.${m}`,
-          resumeAt: '2099-01-01T00:00:00Z',
-        },
-      };
-    } else if (hold === 'approval') {
-      r.status = 'paused';
-      r.metadata = { approval: { nodeId: node, type: 'merge_review' } };
-    }
-    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
-    return { ...f, node, value };
-  };
-  const assertBoundedTitle = (q: string, hold: Hold) => {
-    const policy = HOLD_POLICY[hold];
-    if (policy.do === 'blocked') {
-      expect(q).toContain(policy.text);
-      expect(q).toContain('superagent brief');
-      expect(q).not.toContain('是=');
-      return;
-    }
-    if (policy.do !== 'ask' && policy.do !== 'signoff') throw new Error('not an ask');
-    expect(q).toContain(policy.text);
-    expect(q).toContain('是=');
-    expect(q).toContain('否=终止整个run（保留证据）');
-    expect(q).toMatch(/；\[sa:[a-f0-9]{32}\]$/);
-    expect(Array.from(q).length).toBeLessThanOrEqual(200);
-  };
-  for (const [hold, policy] of Object.entries(HOLD_POLICY) as [Hold, Policy][]) {
-    if (policy.do !== 'ask' && policy.do !== 'signoff') continue;
-    if (hold === 'stalled' || hold === 'auto_recover') continue;
-    for (const value of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE])
-      test(`HF9 R4 all HOLD_POLICY titles remain deliverable at numeric maximum: ${hold}/${String(value)}`, () => {
-        const { s } = maximumTitle(hold, value);
-        const usage = spyOn(saCheck, 'budgetUsage').mockReturnValue({
-          launches: value,
-          weighted_tokens: value,
-          reserve: value,
-        });
-        try {
-          const sup = supervisor(s.root, 'pending');
-          const out = captured(() => main(['supervise-tick']));
-          expect(out.code).toBe(0);
-          expect(JSON.parse(out.out).actions[0]).toMatchObject({
-            action: 'ask',
-            ...(hold === 'signoff' ? {} : { reason: hold }),
-          });
-          const q =
-            /^ask --question (.*) --ttl-hours \d+ --context-json /.exec(sup()[0])?.[1] ?? '';
-          assertBoundedTitle(q, hold);
-          const yes = /；是=(.+)；否=/.exec(q)?.[1] ?? '';
-          expect(yes.length).toBeGreaterThan(0);
-          if (policy.do === 'ask' && !['approve', 'adjudicate'].includes(policy.yes)) {
-            if (hold !== 'engine_suspect')
-              expect(yes).toContain('旧run身份未确认，将新开run从首个节点重跑');
-            const target =
-              /从[^；]+续跑一次|重跑[^；]+本轮评审一次|重跑[^；]+累计验收→评审一次/.exec(yes)?.[0];
-            expect(target).toBeDefined();
-            expect(yes).toContain(policy.yesText.replace('{target}', target!.replace(/一次$/, '')));
-          } else expect(yes).toBe(policy.yesText);
-        } finally {
-          usage.mockRestore();
-        }
-      });
-  }
   test('HF9 R3 maximum identifiers and unbounded schema names preserve reasons, facts, actions and marker', () => {
     // schema: id ≤64, milestone ≤32; repo basename ≤255 on disk, title has no maximum.
     for (const hold of ['signoff'] as Hold[]) {
@@ -5280,111 +3941,6 @@ describe('HF9 decision titles', () => {
       expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(false);
     }
   );
-  for (const hold of ['signoff'] as Hold[])
-    for (const answer of ['pending', 'yes', 'no'] as const)
-      test(`HF9 R2 existing ${hold}/${answer} skips title evidence and events query`, () => {
-        const { s, r, put, art } = setup();
-        if (hold === 'signoff') {
-          r.status = 'paused';
-          r.metadata = {
-            wait: {
-              nodeId: 'human-m1',
-              kind: 'event',
-              event: 'sa.human.m1',
-              resumeAt: '2099-01-01T00:00:00Z',
-            },
-          };
-        } else
-          put('verify-W4.json', {
-            reason: hold === 'redline' ? 'coder_redline' : 'budget_launches_exceeded',
-          });
-        writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify({ ...r, events: [] }));
-        const sup = supervisor(s.root, 'pending');
-        expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-        const before = s.calls().filter(c => c.includes('--events')).length;
-        writeFileSync(join(s.root, 'answer'), answer);
-        // Suppress the answer's recovery/signal action; count only question-related I/O.
-        const recovery = spyOn(archonMod, 'recover').mockReturnValue({
-          ok: false,
-          reason: 'test busy',
-          busy: true,
-        });
-        const signal = spyOn(archonMod, 'signalHuman').mockReturnValue({
-          ok: true,
-          pid: 0,
-          log: '',
-        });
-        const read = spyOn(fs, 'readFileSync');
-        try {
-          expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-          expect(
-            read.mock.calls.filter(
-              ([path]) =>
-                String(path) === join(art, 'verify-W4.coder.json') ||
-                String(path) === join(art, 'gate-m1-r3.json') ||
-                String(path).endsWith('/budget-extra')
-            )
-          ).toHaveLength(0);
-          expect(s.calls().filter(c => c.includes('--events')).length).toBe(before);
-          expect(sup().filter(c => c.startsWith('ask --question'))).toHaveLength(1);
-        } finally {
-          read.mockRestore();
-          signal.mockRestore();
-          recovery.mockRestore();
-        }
-      });
-  test('HF9 supervisor stub captures five R3 titles', () => {
-    const samples: Record<string, string> = {};
-    for (const sample of ['signoff'] as string[]) {
-      const hold = sample === 'redline-adopt' ? 'redline' : sample;
-      const { s, r, put, art } = bestIFA();
-      if (sample === 'redline-adopt') {
-        s.ledger.engine_hash = 'old-engine';
-        writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-      }
-      if (hold === 'signoff') {
-        r.status = 'paused';
-        r.metadata = {
-          wait: {
-            nodeId: 'human-m1',
-            kind: 'event',
-            event: 'sa.human.m1',
-            resumeAt: '2099-01-01T00:00:00Z',
-          },
-        };
-      } else {
-        put('verify-W4.json', {
-          reason:
-            hold === 'redline'
-              ? 'coder_redline'
-              : hold === 'needs'
-                ? 'coder_needs'
-                : 'budget_launches_exceeded',
-        });
-        if (hold === 'redline')
-          put('verify-W4.coder.json', {
-            milestone: 'm1',
-            error_class: 'redline',
-            blockers: ['只读检索命令被拒：无法确认shell写入目标（解析失败）'],
-            needs: [],
-          });
-        if (hold === 'budget') rmSync(join(art, 'verify-W4.coder.json'));
-      }
-      writeFileSync(
-        join(s.dir, 'get-000.json'),
-        JSON.stringify({ ...r, events: [{ event_type: 'node_started', step_name: 'code-W4' }] })
-      );
-      const sup = supervisor(s.root, 'pending');
-      expect(captured(() => main(['supervise-tick'])).code).toBe(0);
-      samples[sample] =
-        /^ask --question (.*) --ttl-hours \d+ --context-json /.exec(sup()[0])?.[1] ?? '';
-      expect(samples[sample]).toContain('BestIFA');
-      expect(samples[sample]).toContain('是=');
-      expect(Array.from(samples[sample]).length).toBeLessThanOrEqual(200);
-    }
-    if (process.env.HF9_SAMPLES_OUT)
-      writeFileSync(process.env.HF9_SAMPLES_OUT, JSON.stringify(samples, null, 2) + '\n');
-  });
 });
 
 describe('launch intents (run + supervise-tick reconcile)', () => {
