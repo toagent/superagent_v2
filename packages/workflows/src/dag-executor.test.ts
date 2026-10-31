@@ -8092,7 +8092,12 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
                 name: 'contradictory-settlement',
                 nodes: [
                   kind === 'agent'
-                    ? { id: 'step1', kind, source: { kind: 'command', name: 'step1' } }
+                    ? {
+                        id: 'step1',
+                        kind,
+                        source: { kind: 'command', name: 'step1' },
+                        retry: { max_attempts: 0 },
+                      }
                     : {
                         id: 'step1',
                         kind,
@@ -8110,7 +8115,7 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
           );
           if (backgroundWork === 'reported') {
             const failed = persistedEvents(store).find(event => event.event_type === 'node_failed');
-            expect(failed?.data?.failure_kind).toBe('unknown');
+            expect(failed?.data?.failure_kind).toBe(kind === 'agent' ? 'transient' : 'unknown');
             expect(failed?.data?.error).toContain('Subtask(s) still running: still-live.');
             expect(findCompletedEvent(store)).toBeUndefined();
             expect(store.completeWorkflowRun).not.toHaveBeenCalled();
@@ -8309,7 +8314,14 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
           cwd: testDir,
           workflow: {
             name: 'bg-task-test',
-            nodes: [{ id: 'step1', kind: 'agent', source: { kind: 'command', name: 'step1' } }],
+            nodes: [
+              {
+                id: 'step1',
+                kind: 'agent',
+                source: { kind: 'command', name: 'step1' },
+                retry: { max_attempts: 0 },
+              },
+            ],
           },
           workflowRun: makeWorkflowRun('bg-incomplete-run'),
         })
@@ -16100,10 +16112,13 @@ describe('executeDagWorkflow -- terminal node output selection', () => {
     expect(persistedEvents(store).some(event => event.event_type === 'node_completed')).toBe(false);
   });
 
-  it('fails a node whose provider stream ends after its result without settling — #3524', async () => {
+  it('retries a node whose provider stream ends after its result without settling — #3524', async () => {
+    let attempts = 0;
     mockSendQueryDag.mockImplementation(async function* () {
+      attempts++;
       yield { type: 'agent_message_chunk', text: 'Here is the analysis result.' };
       yield { type: 'result', sessionId: 'sid' };
+      if (attempts > 1) yield { type: 'settled' };
     });
 
     const store = createMockStore();
@@ -16121,10 +16136,9 @@ describe('executeDagWorkflow -- terminal node output selection', () => {
     );
 
     const failed = persistedEvents(store).find(event => event.event_type === 'node_failed');
-    expect(failed?.data?.failure_kind).toBe('unknown');
-    expect(failed?.data?.error).toBe(
-      "Node 'step1' failed: the provider stream ended without signalling that its turn settled. Its work may be incomplete."
-    );
+    expect(failed?.data?.failure_kind).toBe('transient');
+    expect(attempts).toBe(2);
+    expect(store.completeWorkflowRun).toHaveBeenCalled();
   });
 
   it('fails the run when a node specifies an unknown provider (defense-in-depth at execution time)', async () => {
@@ -29158,20 +29172,28 @@ describe('executeDagWorkflow -- addressable session resume', () => {
             prompt === 'source'
               ? 'S'
               : prompt === 'owner'
-                ? owners === 2 && failure === 'missing'
+                ? owners >= 2 && failure === 'missing'
                   ? undefined
-                  : owners === 2 && failure === 'replacement'
+                  : owners >= 2 && failure === 'replacement'
                     ? 'replacement'
                     : 'O'
                 : 'R',
           ...(options?.outputFormat ? { structuredOutput: { done: false } } : {}),
-          ...(session ? { resumed: !(owners === 2 && failure === 'cold') } : {}),
+          ...(session ? { resumed: !(owners >= 2 && failure === 'cold') } : {}),
         };
       });
-      const store = await runAddressableWorkflow(ownerWorkflow());
+      const nodes = ownerWorkflow();
+      const group = nodes[1];
+      if (group?.kind !== 'loop_group') throw new Error('missing group');
+      const owner = group.loop_group.nodes[0];
+      if (owner?.kind !== 'agent') throw new Error('missing owner');
+      owner.retry = { max_attempts: 2, delay_ms: 0 };
+      const store = await runAddressableWorkflow(nodes);
       expect(store.failWorkflowRun).toHaveBeenCalled();
       expect(mockSendQueryDag.mock.calls.filter(c => c[0] === 'owner').map(c => c[2])).toEqual([
         'S',
+        'O',
+        'O',
         'O',
       ]);
     });
@@ -29519,9 +29541,95 @@ describe('executeDagWorkflow -- addressable session resume', () => {
     expect(failedEvents[0]?.data).toMatchObject({ session_source_node_id: 'source' });
   });
 
-  it('fails a named fork on cold fallback, a missing branch ID, or source ID reuse', async () => {
+  it('retries a failed named resume once with an observable fresh session', async () => {
+    let consumerAttempts = 0;
+    mockSendQueryDag.mockImplementation(async function* (prompt, _cwd, resumeSessionId) {
+      yield { type: 'agent_message_chunk', text: prompt };
+      if (prompt === 'source') {
+        yield { type: 'result', sessionId: 'source-session' };
+        return;
+      }
+      consumerAttempts++;
+      yield {
+        type: 'result',
+        sessionId: `consumer-${String(consumerAttempts)}`,
+        ...(resumeSessionId !== undefined ? { resumed: false } : {}),
+      };
+    });
+    const store = await runAddressableWorkflow([
+      { id: 'source', kind: 'agent', source: { kind: 'inline', prompt: 'source' } },
+      {
+        id: 'consumer',
+        kind: 'agent',
+        source: { kind: 'inline', prompt: 'consumer' },
+        context: { resume: 'source' },
+        depends_on: ['source'],
+        retry: { max_attempts: 1, delay_ms: 0 },
+      },
+    ]);
+
+    expect(mockSendQueryDag.mock.calls.map(call => call[2])).toEqual([
+      undefined,
+      'source-session',
+      undefined,
+    ]);
+    const events = persistedEvents(store);
+    expect(
+      events.some(
+        event =>
+          event.event_type === 'node_session_not_continued' &&
+          event.data?.reason === 'resume_failed_fresh_retry'
+      )
+    ).toBe(true);
+    expect(
+      events.some(
+        event =>
+          event.event_type === 'node_completed' && event.data?.session_fallback_fresh === true
+      )
+    ).toBe(true);
+    expect(store.completeWorkflowRun).toHaveBeenCalled();
+  });
+
+  it('exhausts a named resume failure as typed transient without falling back', async () => {
+    mockSendQueryDag.mockImplementation(async function* (prompt) {
+      yield { type: 'agent_message_chunk', text: prompt };
+      yield {
+        type: 'result',
+        sessionId: prompt === 'source' ? 'source-session' : 'cold-branch',
+        ...(prompt !== 'source' ? { resumed: false } : {}),
+      };
+    });
+    const store = await runAddressableWorkflow([
+      { id: 'source', kind: 'agent', source: { kind: 'inline', prompt: 'source' } },
+      {
+        id: 'consumer',
+        kind: 'agent',
+        source: { kind: 'inline', prompt: 'consumer' },
+        context: { resume: 'source' },
+        depends_on: ['source'],
+        retry: { max_attempts: 0 },
+      },
+    ]);
+
+    const failed = persistedEvents(store).find(
+      event => event.event_type === 'node_failed' && event.step_name === 'consumer'
+    );
+    expect(failed?.data).toMatchObject({
+      failure_kind: 'transient',
+      session_resume_failed: true,
+    });
+    expect(
+      persistedEvents(store).some(
+        event =>
+          event.event_type === 'node_session_not_continued' &&
+          event.data?.reason === 'resume_failed_fresh_retry'
+      )
+    ).toBe(false);
+    expect(store.failWorkflowRun).toHaveBeenCalled();
+  });
+
+  it('fails a named fork on a missing branch ID or source ID reuse without retry', async () => {
     const cases = [
-      { name: 'cold fallback', sessionId: 'cold-branch', resumed: false },
       { name: 'missing branch', sessionId: undefined, resumed: true },
       { name: 'source reuse', sessionId: 'source-session', resumed: true },
     ];
@@ -29548,6 +29656,7 @@ describe('executeDagWorkflow -- addressable session resume', () => {
           source: { kind: 'inline', prompt: 'consumer' },
           context: { resume: 'source' },
           depends_on: ['source'],
+          retry: { max_attempts: 0 },
         },
       ]);
 

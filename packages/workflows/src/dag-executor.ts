@@ -869,7 +869,7 @@ export function childOutcomeFromRun(run: WorkflowRun): ChildWorkflowOutcome {
 }
 
 type SequentialSessionCursor = SessionCursor;
-type SessionResumeIntent = 'ordinary' | 'source-fork' | 'owner-continuation';
+type SessionResumeIntent = 'ordinary' | 'source-fork' | 'owner-continuation' | 'fresh-fallback';
 
 /** Makes a provider session durable before its node becomes authoritatively complete. */
 type SessionCheckpoint = (sessionId: string) => Promise<void>;
@@ -2196,7 +2196,7 @@ async function executeNodeInternal(
       ...(namedResumeSourceNodeId !== undefined
         ? {
             sessionSourceNodeId: namedResumeSourceNodeId,
-            sessionForkRequested: resumeIntent !== 'owner-continuation',
+            sessionForkRequested: resumeIntent === 'source-fork',
           }
         : {}),
     },
@@ -2219,7 +2219,11 @@ async function executeNodeInternal(
   const failAgentNode = async (
     error: string,
     failureKind: NodeFailureKind,
-    extras: { output?: string; providerFailure?: ProviderFailure } = {}
+    extras: {
+      output?: string;
+      providerFailure?: ProviderFailure;
+      diagnostics?: NodeExecutionRecord['diagnostics'];
+    } = {}
   ): Promise<NodeExecutionResult> => {
     const result = await recordNodeState(
       { store: deps.store, logDir },
@@ -2241,6 +2245,7 @@ async function executeNodeInternal(
           numTurns: nodeNumTurns,
           resolvedModel: nodeResolvedModel?.id,
           sessionId: newSessionId,
+          diagnostics: { ...execution.diagnostics, ...extras.diagnostics },
         }
       )
     );
@@ -2780,7 +2785,7 @@ async function executeNodeInternal(
       (nodeOutputText.trim() !== '' || structuredOutput !== undefined)
     ) {
       throw new NodeFailure(
-        nodeIdleTimedOut ? 'timeout' : 'unknown',
+        nodeIdleTimedOut ? 'timeout' : 'transient',
         `Node '${node.id}' failed: ${unsettledTurnError(
           nodeIdleTimedOut ? effectiveIdleTimeout : undefined,
           lastWatchdogReset,
@@ -2827,24 +2832,24 @@ async function executeNodeInternal(
       };
     }
 
-    if (namedResumeSourceNodeId !== undefined) {
+    if (namedResumeSourceNodeId !== undefined && resumeIntent !== 'fresh-fallback') {
       if (nodeResumed !== true) {
-        throw new Error(
+        throw new SessionResumeFailure(
           `Node '${node.id}' could not resume the exact session from '${namedResumeSourceNodeId}'. The provider reported that prior context was not restored.`
         );
       }
       if (newSessionId === undefined || newSessionId.trim() === '') {
-        throw new Error(
+        throw new SessionResumeFailure(
           `Node '${node.id}' resumed '${namedResumeSourceNodeId}' but the provider returned no branch session ID.`
         );
       }
       if (resumeIntent === 'owner-continuation' && newSessionId !== resumeSessionId) {
-        throw new Error(
+        throw new SessionResumeFailure(
           `Node '${node.id}' did not continue its private owner session: the provider replaced the session ID.`
         );
       }
       if (resumeIntent !== 'owner-continuation' && newSessionId === resumeSessionId) {
-        throw new Error(
+        throw new SessionResumeFailure(
           `Node '${node.id}' did not create an immutable fork of '${namedResumeSourceNodeId}': the provider reused the source session ID.`
         );
       }
@@ -2902,6 +2907,11 @@ async function executeNodeInternal(
       !cancelled && err instanceof NodeFailure ? err.providerFailure : undefined;
     return failAgentNode(failureMessage, failureKind, {
       ...(providerFailure !== undefined ? { providerFailure } : {}),
+      ...(namedResumeSourceNodeId !== undefined &&
+      resumeIntent !== 'fresh-fallback' &&
+      err instanceof SessionResumeFailure
+        ? { diagnostics: { sessionResumeFailed: true } }
+        : {}),
     });
   }
   if (result.state === 'failed') {
@@ -2933,7 +2943,10 @@ async function executeNodeInternal(
           ...execution.diagnostics,
           ...(node.output_type !== undefined ? { outputType: node.output_type } : {}),
           ...(namedResumeSourceNodeId !== undefined
-            ? { sessionForked: resumeIntent !== 'owner-continuation' }
+            ? {
+                sessionForked: resumeIntent === 'source-fork',
+                ...(resumeIntent === 'fresh-fallback' ? { sessionFallbackFresh: true } : {}),
+              }
             : {}),
           ...(backgroundTasksIncomplete.length > 0 ? { backgroundTasksIncomplete } : {}),
         },
@@ -3268,6 +3281,13 @@ class NodeFailure extends Error {
     readonly providerFailure?: ProviderFailure
   ) {
     super(message);
+  }
+}
+
+/** A provider failed the exact-session contract; a retry may deliberately start fresh. */
+class SessionResumeFailure extends NodeFailure {
+  constructor(message: string) {
+    super('transient', message);
   }
 }
 
@@ -10532,6 +10552,8 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
               ctx.logDir
             );
             const treeBefore = await snapshotGuardedNode(ctx, node, checkoutExcludes);
+            let resumeFallbackFresh = false;
+            let resumeFallbackAnnounced = false;
             const retriedOutput = await runNodeRetryLoop(
               node,
               ctx.platform,
@@ -10541,6 +10563,23 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
               ctx.stepNamePrefix + node.id,
               getEffectiveNodeRetryConfig(node),
               async () => {
+                if (resumeFallbackFresh && !resumeFallbackAnnounced) {
+                  getLog().warn(
+                    { nodeId: node.id, sourceNodeId: namedResumeSourceNodeId },
+                    'dag.node_session_resume_fallback_fresh'
+                  );
+                  await ctx.deps.store.createWorkflowEvent({
+                    workflow_run_id: ctx.workflowRun.id,
+                    event_type: 'node_session_not_continued',
+                    step_name: ctx.stepNamePrefix + node.id,
+                    data: {
+                      nodeId: node.id,
+                      source_node_id: namedResumeSourceNodeId,
+                      reason: 'resume_failed_fresh_retry',
+                    },
+                  });
+                  resumeFallbackAnnounced = true;
+                }
                 // Fresh per attempt: an attempt after a transient failure observes
                 // artifacts published in the interval, and never reuses the
                 // listing handed to AI-configuration substitution above.
@@ -10548,12 +10587,12 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
                   ctx.artifactsDir,
                   ctx.workflowRun.id
                 );
-                return executeNodeInternal(
+                const attemptOutput = await executeNodeInternal(
                   ctx,
                   node,
                   provider,
                   nodeOptions,
-                  resumeSessionId,
+                  resumeFallbackFresh ? undefined : resumeSessionId,
                   resolvedNodeModel,
                   resolvedTier,
                   resolvedEffort,
@@ -10561,8 +10600,12 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
                   iteration,
                   checkpointSessionForProvider(provider),
                   attemptTypedArtifactsFile,
-                  resumeIntent
+                  resumeFallbackFresh ? 'fresh-fallback' : resumeIntent
                 );
+                if (resumeIntent === 'source-fork' && attemptOutput.sessionResumeFailed === true) {
+                  resumeFallbackFresh = true;
+                }
+                return attemptOutput;
               },
               { state: 'failed', output: '', error: 'Node did not execute' },
               iteration
