@@ -36,7 +36,7 @@ interface SignedAnswer {
 
 interface StoredDecision extends NtfyAsk {
   id: string;
-  status: 'pending' | 'answered' | 'expired';
+  status: 'pending' | 'answered' | 'expired' | 'failed';
   delivery: 'pending' | 'sent';
   actions: SignedAnswer[];
   answer?: string;
@@ -50,6 +50,7 @@ interface NtfyState {
   used_nonces: Record<string, number>;
   alerts: { id: string; message: string }[];
   ignored: number;
+  callback_failures: number;
 }
 
 export interface NtfyConfig {
@@ -78,6 +79,7 @@ const emptyState = (): NtfyState => ({
   used_nonces: {},
   alerts: [],
   ignored: 0,
+  callback_failures: 0,
 });
 
 function secureSecret(path: string, name: string, create = false): string {
@@ -119,7 +121,7 @@ function readState(path: string): NtfyState {
       !Array.isArray(value.alerts)
     )
       return emptyState();
-    return value as NtfyState;
+    return { ...value, callback_failures: value.callback_failures ?? 0 } as NtfyState;
   } catch {
     return emptyState();
   }
@@ -233,11 +235,16 @@ async function publish(
   body: Record<string, unknown>
 ): Promise<void> {
   const publisher = secureSecret(config.publisherToken, 'publisher token');
-  const response = await config.fetch(`${config.baseUrl}/${topic}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${publisher}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await config.fetch(config.baseUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${publisher}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic, ...body }),
+    });
+  } catch {
+    throw new Error('ntfy publish unavailable');
+  }
   if (!response.ok) throw new Error(`ntfy publish failed (${String(response.status)})`);
 }
 
@@ -278,13 +285,15 @@ function parseAnswer(message: unknown): SignedAnswer | undefined {
 
 export async function syncNtfy(
   onAnswer: (decision: NtfyAsk & { id: string }, option: string) => void | Promise<void>,
-  supplied: Partial<NtfyConfig> = {}
-): Promise<{ accepted: number; ignored: number }> {
+  supplied: Partial<NtfyConfig> = {},
+  onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined
+): Promise<{ accepted: number; ignored: number; failed: number }> {
   const config = { ...defaultConfig(), ...supplied };
   const guard = lock(config.statePath + '.lock');
-  if (!guard.ok) return { accepted: 0, ignored: 0 };
+  if (!guard.ok) return { accepted: 0, ignored: 0, failed: 0 };
   let accepted = 0;
   let ignored = 0;
+  let failed = 0;
   try {
     const state = readState(config.statePath);
     try {
@@ -292,9 +301,14 @@ export async function syncNtfy(
       const url = new URL(`${config.baseUrl}/sa-answers/json`);
       url.searchParams.set('poll', '1');
       if (state.cursor) url.searchParams.set('since', state.cursor);
-      const response = await config.fetch(url, {
-        headers: { Authorization: `Bearer ${publisher}` },
-      });
+      let response: Response;
+      try {
+        response = await config.fetch(url, {
+          headers: { Authorization: `Bearer ${publisher}` },
+        });
+      } catch {
+        throw new Error('ntfy poll unavailable');
+      }
       if (!response.ok) throw new Error(`ntfy poll failed (${String(response.status)})`);
       const key = secureSecret(config.answerKey, 'answer key', true);
       const lines = (await response.text()).split('\n').filter(Boolean);
@@ -350,16 +364,22 @@ export async function syncNtfy(
           state.cursor = event.id;
           continue;
         }
-        await onAnswer(decision, answer.option);
         state.used_nonces[answer.nonce] = config.now();
-        decision.status = 'answered';
-        decision.answer = answer.option;
-        state.alerts.push({
-          id: decision.id,
-          message: `已记录：${decision.options.find(option => option.id === answer.option)?.label ?? answer.option}`,
-        });
         state.cursor = event.id;
-        accepted++;
+        try {
+          await onAnswer(decision, answer.option);
+          decision.status = 'answered';
+          decision.answer = answer.option;
+          state.alerts.push({
+            id: decision.id,
+            message: `已记录：${decision.options.find(option => option.id === answer.option)?.label ?? answer.option}`,
+          });
+          accepted++;
+        } catch {
+          decision.status = 'failed';
+          failed++;
+          state.callback_failures++;
+        }
       }
       for (const decision of Object.values(state.decisions)) {
         const expires = Math.min(
@@ -368,15 +388,29 @@ export async function syncNtfy(
         );
         if (decision.status !== 'pending' || expires >= Math.floor(config.now() / 1000)) continue;
         if (decision.risk === 'normal' && decision.default_on_expiry) {
-          await onAnswer(decision, decision.default_on_expiry);
-          decision.status = 'answered';
-          decision.answer = decision.default_on_expiry;
-          state.alerts.push({
-            id: decision.id,
-            message: `已记录：${decision.options.find(option => option.id === decision.default_on_expiry)?.label ?? decision.default_on_expiry}`,
-          });
-          accepted++;
-        } else decision.status = 'expired';
+          try {
+            await onAnswer(decision, decision.default_on_expiry);
+            decision.status = 'answered';
+            decision.answer = decision.default_on_expiry;
+            state.alerts.push({
+              id: decision.id,
+              message: `已记录：${decision.options.find(option => option.id === decision.default_on_expiry)?.label ?? decision.default_on_expiry}`,
+            });
+            accepted++;
+          } catch {
+            decision.status = 'expired';
+            failed++;
+            state.callback_failures++;
+          }
+        } else {
+          decision.status = 'expired';
+          try {
+            await onExpire(decision);
+          } catch {
+            failed++;
+            state.callback_failures++;
+          }
+        }
       }
       state.ignored += ignored;
       for (const [nonce, usedAt] of Object.entries(state.used_nonces))
@@ -385,10 +419,44 @@ export async function syncNtfy(
     } finally {
       saveState(config.statePath, state);
     }
-    return { accepted, ignored };
+    return { accepted, ignored, failed };
   } finally {
     guard.release();
   }
+}
+
+export function queueNtfyAlert(
+  id: string,
+  message: string,
+  supplied: Partial<NtfyConfig> = {}
+): void {
+  const config = { ...defaultConfig(), ...supplied };
+  const guard = lock(config.statePath + '.lock');
+  if (!guard.ok) throw new Error('ntfy state busy');
+  try {
+    const state = readState(config.statePath);
+    if (!state.alerts.some(alert => alert.id === id)) state.alerts.push({ id, message });
+    saveState(config.statePath, state);
+  } finally {
+    guard.release();
+  }
+}
+
+export function ntfyDecisionStatus(
+  id: string,
+  supplied: Partial<NtfyConfig> = {}
+): { id: string; status: StoredDecision['status']; answer?: string } | undefined {
+  const config = { ...defaultConfig(), ...supplied };
+  const decision = Reflect.get(readState(config.statePath).decisions, id) as
+    | StoredDecision
+    | undefined;
+  return (
+    decision && {
+      id,
+      status: decision.status,
+      ...(decision.answer ? { answer: decision.answer } : {}),
+    }
+  );
 }
 
 export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {

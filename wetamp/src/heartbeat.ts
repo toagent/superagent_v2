@@ -143,13 +143,26 @@ export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): 
 
 // prettier-ignore
 export interface TickStage { ok: boolean; duration_ms?: number; error?: string; skipped?: string }
-type Stage = 'collect' | 'publish' | 'reclaim' | 'orca' | 'console' | 'failover' | 'actions';
+type Stage =
+  | 'collect'
+  | 'publish'
+  | 'reclaim'
+  | 'orca'
+  | 'console'
+  | 'failover'
+  | 'ntfy_sync'
+  | 'ntfy_publish'
+  | 'actions';
 export type TickRecord = { at: string } & Partial<Record<Stage, TickStage>>;
 // prettier-ignore
 export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; messages: string[] } {
   const parsed = Date.parse(tick?.at ?? ''), minutes = Number.isFinite(parsed) ? Math.floor((now - parsed) / 60_000) : Infinity;
   const messages = minutes > 3 ? [`未收到巡检心跳${Number.isFinite(minutes) ? ` ${String(minutes)}m` : ''}`] : [];
   if (tick?.collect && !tick.collect.ok) messages.push(`巡检采集失败：${tick.collect.error ?? 'unknown'}`);
+  if (tick?.ntfy_sync && !tick.ntfy_sync.ok)
+    messages.push(`ntfy 回收失败：${tick.ntfy_sync.error ?? 'unknown'}`);
+  if (tick?.ntfy_publish && !tick.ntfy_publish.ok)
+    messages.push(`ntfy 发布失败：${tick.ntfy_publish.error ?? 'unknown'}`);
   if (tick) for (const stage of ['publish', 'reclaim', 'orca', 'console', 'failover', 'actions'] as const) { const record = tick[stage]; if (record && !record.ok) messages.push(`${stage}异常：${record.error ?? 'unknown'}`); }
   return { ok: messages.length === 0, messages };
 }

@@ -561,10 +561,12 @@ export async function answerDecision(
 export async function answerNtfyDecision(
   id: string,
   choice: string,
-  store = new DeviceStore()
+  store = new DeviceStore(),
+  answer = answerDecision
 ): Promise<Receipt> {
+  const channelId = digest('ntfy-channel');
   const device = store.transaction(state => {
-    const existing = state.devices.find(candidate => candidate.id === 'ntfy-channel');
+    const existing = state.devices.find(candidate => candidate.id === channelId);
     if (existing) {
       existing.authorized = true;
       existing.revoked = false;
@@ -572,7 +574,7 @@ export async function answerNtfyDecision(
       return { ...existing };
     }
     const created: Device = {
-      id: 'ntfy-channel',
+      id: channelId,
       session: '',
       csrf: '',
       authorized: true,
@@ -581,7 +583,7 @@ export async function answerNtfyDecision(
     state.devices.push(created);
     return { ...created };
   });
-  return answerDecision(store, device, id, choice);
+  return answer(store, device, id, choice);
 }
 export async function decisionState(
   device: Device,

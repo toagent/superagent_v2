@@ -193,10 +193,17 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
         ...tick,
         at: new Date(now).toISOString(),
         collect: { ok: false, error: 'bad ledger' },
+        ntfy_sync: { ok: false, error: 'bad answer' },
+        ntfy_publish: { ok: false, error: 'offline' },
         reclaim: { ok: false, error: 'broken' },
         orca: { ok: true },
       },
       now
     ).messages
-  ).toEqual(['巡检采集失败：bad ledger', 'reclaim异常：broken']);
+  ).toEqual([
+    '巡检采集失败：bad ledger',
+    'ntfy 回收失败：bad answer',
+    'ntfy 发布失败：offline',
+    'reclaim异常：broken',
+  ]);
 });

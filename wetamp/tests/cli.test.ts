@@ -2998,9 +2998,17 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       );
       const record = JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'));
       expect(
-        ['reclaim', 'collect', 'publish', 'console', 'actions', 'failover', 'orca'].every(
-          stage => typeof record[stage]?.duration_ms === 'number'
-        )
+        [
+          'reclaim',
+          'collect',
+          'publish',
+          'console',
+          'ntfy_sync',
+          'actions',
+          'ntfy_publish',
+          'failover',
+          'orca',
+        ].every(stage => typeof record[stage]?.duration_ms === 'number')
       ).toBe(true);
       expect(launched).toBe(1);
     } finally {

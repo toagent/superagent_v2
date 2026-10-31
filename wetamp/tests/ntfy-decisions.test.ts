@@ -2,11 +2,24 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { askNtfy, publishPendingNtfy, syncNtfy, type NtfyConfig } from '../src/ntfy';
+import { answerNtfyDecision } from '../src/decisions';
+import { askCli, syncDecisionChannel } from '../src/cli';
+import { DeviceStore, type Receipt } from '../src/web/device-store';
+import { tickHealth } from '../src/heartbeat';
+import {
+  askNtfy,
+  publishPendingNtfy,
+  queueNtfyAlert,
+  syncNtfy,
+  type NtfyConfig,
+} from '../src/ntfy';
 
-const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
-
+const roots: string[] = [],
+  servers: Bun.Server<unknown>[] = [];
+afterEach(() => {
+  servers.splice(0).forEach(s => s.stop(true));
+  roots.splice(0).forEach(r => rmSync(r, { recursive: true, force: true }));
+});
 function fixture(now = 2_000_000_000_000) {
   const root = mkdtempSync(join(tmpdir(), 'ntfy-decisions-'));
   roots.push(root);
@@ -14,26 +27,28 @@ function fixture(now = 2_000_000_000_000) {
     answerToken = join(root, 'answer');
   writeFileSync(publisherToken, 'publisher-secret\n', { mode: 0o600 });
   writeFileSync(answerToken, 'answer-secret\n', { mode: 0o600 });
-  const posts: Record<string, unknown>[] = [],
+  const posts: { url: string; body: Record<string, unknown> }[] = [],
     events: string[] = [];
-  const fakeFetch: typeof fetch = (async (input, init) => {
-    if (String(input).includes('/sa-answers/json')) {
-      const body = events.splice(0).join('\n');
-      return new Response(body, { status: 200 });
-    }
-    posts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-    return new Response('{}', { status: 200 });
-  }) as typeof fetch;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      if (new URL(request.url).pathname === '/sa-answers/json')
+        return new Response(events.splice(0).join('\n'));
+      posts.push({ url: request.url, body: (await request.json()) as Record<string, unknown> });
+      return new Response('{}');
+    },
+  });
+  servers.push(server);
   const config: NtfyConfig = {
-    baseUrl: 'http://ntfy.test',
+    baseUrl: server.url.origin,
     publisherToken,
     answerToken,
     answerKey: join(root, 'answer.key'),
     statePath: join(root, 'state.json'),
-    fetch: fakeFetch,
+    fetch,
     now: () => now,
   };
-  const request = (risk: 'normal' | 'red' = 'normal') => ({
+  const request = (ref: string, risk: 'normal' | 'red' = 'normal') => ({
     source: 'test',
     title: 'Decision',
     body: 'Choose',
@@ -43,78 +58,182 @@ function fixture(now = 2_000_000_000_000) {
       { id: 'no', label: 'No' },
     ],
     expires_at: new Date(now + 3_600_000).toISOString(),
-    callback: { kind: 'ask' as const, key: 'r:hold' },
+    callback: { kind: 'external' as const, ref },
+    dedupe_key: ref,
   });
-  const answer = (post = posts.at(-1)!, index = 0) =>
-    JSON.parse(String((post.actions as { body: string }[])[index].body));
-  const push = (value: unknown, id = crypto.randomUUID()) =>
-    events.push(JSON.stringify({ id, event: 'message', message: JSON.stringify(value) }));
-  const first = () =>
-    Object.values(JSON.parse(readFileSync(config.statePath, 'utf8')).decisions)[0];
-  return { config, posts, request, answer, push, first };
+  const action = (post = posts.at(-1)!, index = 0) =>
+    JSON.parse(String((post.body.actions as { body: string }[])[index].body));
+  const push = (value: unknown) =>
+    events.push(
+      JSON.stringify({ id: crypto.randomUUID(), event: 'message', message: JSON.stringify(value) })
+    );
+  const state = () =>
+    JSON.parse(readFileSync(config.statePath, 'utf8')) as {
+      decisions: Record<string, { status: string }>;
+    };
+  return { root, config, posts, request, action, push, state };
 }
-const collect =
-  (values: string[]) =>
-  (_decision: unknown, option: string): void => {
-    values.push(option);
-  };
 
 describe('ntfy decision channel', () => {
-  test('accepts one valid signed answer and rejects forgery, replay, expiry and a duplicate answer', async () => {
+  test('uses ntfy JSON protocol and advances past forged, replayed and callback-failed events', async () => {
     const f = fixture(),
       accepted: string[] = [];
-    askNtfy(f.request(), f.config);
+    const first = askNtfy(f.request('first'), f.config);
     await publishPendingNtfy(f.config);
-    const valid = f.answer();
+    expect(new URL(f.posts[0].url).pathname).toBe('/');
+    expect(f.posts[0].body.topic).toBe('sa-decisions');
+    const valid = f.action();
     f.push({ ...valid, sig: '0'.repeat(64) });
     f.push(valid);
     f.push(valid);
-    expect(await syncNtfy(collect(accepted), f.config)).toEqual({ accepted: 1, ignored: 2 });
-    const second = fixture();
-    askNtfy(second.request(), second.config);
-    await publishPendingNtfy(second.config);
-    second.push(second.answer());
-    second.config.now = () => 2_000_007_200_000;
-    expect((await syncNtfy(collect(accepted), second.config)).accepted).toBe(0);
-    expect(second.first()).toMatchObject({ status: 'expired' });
+    expect(
+      await syncNtfy((_d, option) => {
+        accepted.push(option);
+      }, f.config)
+    ).toEqual({ accepted: 1, ignored: 2, failed: 0 });
+    const bad = askNtfy(f.request('bad'), f.config),
+      live = askNtfy(f.request('live'), f.config);
+    await publishPendingNtfy(f.config);
+    f.push(f.action(f.posts.at(-2)));
+    f.push(f.action());
+    expect(
+      await syncNtfy(d => {
+        if (d.id === bad) throw new Error('stale');
+        accepted.push(d.id);
+      }, f.config)
+    ).toMatchObject({ accepted: 1, failed: 1 });
+    expect(f.state().decisions).toMatchObject({
+      [first]: { status: 'answered' },
+      [bad]: { status: 'failed' },
+      [live]: { status: 'answered' },
+    });
+    queueNtfyAlert('receipt', 'done', f.config);
+    await publishPendingNtfy(f.config);
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
   });
 
-  test('requires the red request and a fresh five-minute confirmation', async () => {
+  test('requires a fresh red confirmation and expires without one', async () => {
     const f = fixture(),
       accepted: string[] = [];
-    askNtfy(f.request('red'), f.config);
+    askNtfy(f.request('red', 'red'), f.config);
     await publishPendingNtfy(f.config);
-    f.push(f.answer());
-    expect((await syncNtfy(collect(accepted), f.config)).accepted).toBe(0);
-    await publishPendingNtfy(f.config);
-    expect((f.posts.at(-1)!.actions as { label: string }[])[0].label).toBe('确认批准');
-    f.push(f.answer());
-    expect((await syncNtfy(collect(accepted), f.config)).accepted).toBe(1);
+    f.push(f.action());
+    expect(
+      (
+        await syncNtfy((_d, option) => {
+          accepted.push(option);
+        }, f.config)
+      ).accepted
+    ).toBe(0);
+    expect((f.posts.at(-1)!.body.actions as { label: string }[])[0].label).toBe('确认批准');
+    f.push(f.action());
+    expect(
+      (
+        await syncNtfy((_d, option) => {
+          accepted.push(option);
+        }, f.config)
+      ).accepted
+    ).toBe(1);
     expect(accepted).toEqual(['yes']);
   });
 
-  test('keeps a decision pending when ntfy is unavailable', async () => {
-    const f = fixture();
-    askNtfy(f.request(), f.config);
+  test('keeps outages pending and external asks queryable through the supervise sync path', async () => {
+    const f = fixture(),
+      output: unknown[] = [];
+    await askCli(
+      [
+        'ask',
+        '--source',
+        'agent',
+        '--title',
+        'T',
+        '--body',
+        'B',
+        '--option',
+        'yes=Yes',
+        '--expires-at',
+        f.request('x').expires_at,
+        '--callback',
+        'external:x',
+      ],
+      f.config,
+      value => output.push(value)
+    );
+    const id = (output[0] as { id: string }).id;
+    f.push(f.action());
+    await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }));
+    await askCli(['ask', 'status', id], f.config, value => output.push(value));
+    expect(output.at(-1)).toMatchObject({ id, status: 'answered', answer: 'yes' });
+    const expires = askNtfy(f.request('expires'), f.config);
+    await publishPendingNtfy(f.config);
+    let expired = '';
+    f.config.now = () => 2_000_007_200_000;
+    await syncNtfy(
+      () => undefined,
+      f.config,
+      decision => {
+        expired = decision.id;
+      }
+    );
+    expect(expired).toBe(expires);
+    f.config.now = () => 2_000_000_000_000;
+    askNtfy(f.request('offline'), f.config);
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
-    await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('offline');
-    expect(f.first()).toMatchObject({ status: 'pending', delivery: 'pending' });
+    await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow(
+      'ntfy publish unavailable'
+    );
+    expect(
+      tickHealth(
+        { at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } },
+        Date.now()
+      ).messages
+    ).toContain('ntfy 发布失败：offline');
   });
 
-  test('keeps secrets out of state, errors and request bodies', async () => {
+  test('keeps secrets out of state and uses a valid answerDecision channel identity', async () => {
     const f = fixture();
-    askNtfy(f.request(), f.config);
+    askNtfy(f.request('secret'), f.config);
     await publishPendingNtfy(f.config);
-    const state = readFileSync(f.config.statePath, 'utf8');
-    const buttonBodies = (f.posts[0].actions as { body: string }[])
-      .map(action => action.body)
-      .join('');
-    expect(state + buttonBodies).not.toContain('publisher-secret');
-    expect(state + buttonBodies).not.toContain('answer-secret');
+    const key = readFileSync(f.config.answerKey, 'utf8').trim(),
+      visible =
+        readFileSync(f.config.statePath, 'utf8') +
+        JSON.stringify(f.posts[0].body) +
+        process.argv.join(' ');
+    expect(visible).not.toContain(key);
+    expect(visible).not.toContain('publisher-secret');
+    const leaking = (async (...args: Parameters<typeof fetch>) => {
+      throw new Error(JSON.stringify(args[1]));
+    }) as unknown as typeof fetch;
+    askNtfy(f.request('leak'), f.config);
+    await expect(publishPendingNtfy({ ...f.config, fetch: leaking })).rejects.toThrow(
+      'ntfy publish unavailable'
+    );
     chmodSync(f.config.publisherToken, 0o644);
-    askNtfy({ ...f.request(), callback: { kind: 'ask', key: 'r:second' } }, f.config);
     await expect(publishPendingNtfy(f.config)).rejects.toThrow(
       'publisher token file must be mode 600'
     );
+    let device = '';
+    const receipt: Receipt = {
+      id: 'd',
+      device: '',
+      run: '',
+      engine: '',
+      node: '',
+      pause: '',
+      decision: 'yes',
+      at: '',
+      stage: 'accepted',
+    };
+    await answerNtfyDecision(
+      'd',
+      'yes',
+      new DeviceStore(join(f.root, 'devices')),
+      async (store, value) => {
+        device = value.id;
+        store.deviceLock(value.id).release();
+        return receipt;
+      }
+    );
+    expect(device).toMatch(/^[a-f0-9]{64}$/);
   });
 });

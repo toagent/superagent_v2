@@ -6,7 +6,15 @@ import {
   type DecisionInbox,
 } from './decisions';
 import { FAILOVER_PREFIX, latestFailover } from './decisions';
-import { askNtfy, publishPendingNtfy, syncNtfy, type NtfyOption } from './ntfy';
+import {
+  askNtfy,
+  ntfyDecisionStatus,
+  publishPendingNtfy,
+  queueNtfyAlert,
+  syncNtfy,
+  type NtfyConfig,
+  type NtfyOption,
+} from './ntfy';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { runAttention } from '../../packages/workflows/src/schemas/workflow-run';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
@@ -2808,17 +2816,7 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
       }
     }
     if (r.delivery === 'sent') return;
-    supervisor([
-      'ask-ack',
-      a.id,
-      '--receipt-json',
-      JSON.stringify({
-        key: r.key,
-        request_key: a.context?.request_key ?? key,
-        stage: r.stage,
-        body: r.body,
-      }),
-    ]);
+    queueNtfyAlert(r.key, r.body);
     r.delivery = 'sent';
     delete r.error;
   } catch (e) {
@@ -3184,6 +3182,58 @@ const rotateTickLog = (sa: string): void => {
   }
   renameSync(file, `${file}.1`);
 };
+
+export async function syncDecisionChannel(
+  supplied: Partial<NtfyConfig> = {},
+  loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
+  answer: typeof answerNtfyDecision = answerNtfyDecision
+) {
+  const inbox = await loadInbox();
+  for (const decision of inbox.decisions) {
+    if (decision.disabled) continue;
+    askNtfy(
+      {
+        source: 'superagent',
+        title: decision.question,
+        body: `${decision.reason}\n对象：${decision.context}`,
+        options: decision.options,
+        risk: 'normal',
+        expires_at: new Date(Date.now() + MAX_TTL_H * 3600e3).toISOString(),
+        callback: { kind: 'decision', id: decision.id },
+        dedupe_key: `decision:${decision.id}`,
+      },
+      supplied
+    );
+  }
+  return syncNtfy(
+    async (decision, option) => {
+      if (decision.callback.kind === 'decision') {
+        await answer(decision.callback.id, option);
+        return;
+      }
+      if (decision.callback.kind !== 'ask') return;
+      const asks = loadAsks(),
+        current = asks[decision.callback.key];
+      if (
+        !current ||
+        current.id !== decision.id ||
+        !['pending', 'unknown'].includes(current.status)
+      )
+        throw new Error('ntfy decision changed');
+      current.status = option;
+      saveAsk(asks, decision.callback.key);
+    },
+    supplied,
+    decision => {
+      if (decision.callback.kind !== 'ask') return;
+      const asks = loadAsks(),
+        current = asks[decision.callback.key];
+      if (!current || current.id !== decision.id) return;
+      current.status = 'expired';
+      saveAsk(asks, decision.callback.key);
+    }
+  );
+}
 
 /** Activated engines separate the global scheduler from snapshot-scoped executors. */
 export function superviseTick(mode: TickMode = {}):
@@ -4025,7 +4075,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
-  { command: 'ask', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback'] },
+  { command: 'ask', positionals: '[status <id>]', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
@@ -4120,47 +4170,14 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   else stages.publish = { ok: true, duration_ms: 0, skipped: mode.noGlobal ? 'no-global' : 'collect-failed' };
   await result('console', () => mode.noGlobal ? { skipped: 'no-global' } : refresh(), 'console refresh');
   let output: Record<string, unknown> = {};
-  const exit = ((await result('actions', async () => {
-    if (!mode.noGlobal)
-      try {
-        const inbox = await loadCurrentDecisions();
-        for (const decision of inbox.decisions) {
-          if (decision.disabled) continue;
-          askNtfy({
-            source: 'superagent',
-            title: decision.question,
-            body: `${decision.reason}\n对象：${decision.context}`,
-            options: decision.options,
-            risk: 'normal',
-            expires_at: new Date(Date.now() + MAX_TTL_H * 3600e3).toISOString(),
-            callback: { kind: 'decision', id: decision.id },
-            dedupe_key: `decision:${decision.id}`,
-          });
-        }
-        await syncNtfy(async (decision, option) => {
-          if (decision.callback.kind === 'decision') {
-            await answerNtfyDecision(decision.callback.id, option);
-            return;
-          }
-          if (decision.callback.kind !== 'ask') return;
-          const asks = loadAsks(), current = asks[decision.callback.key];
-          if (!current || current.id !== decision.id || !['pending', 'unknown'].includes(current.status))
-            throw new Error('ntfy decision changed');
-          current.status = option;
-          saveAsk(asks, decision.callback.key);
-        });
-      } catch {
-        // Network and ntfy failures leave the persisted decision pending.
-      }
-    const code = tickOutput(mode, value => (output = value));
-    if (!mode.noGlobal)
-      try {
-        await publishPendingNtfy();
-      } catch {
-        // The outbox is retried by the next supervise tick.
-      }
-    return code;
-  })) as number | undefined) ?? 1;
+  await result('ntfy_sync', async () => {
+    if (mode.noGlobal) return { skipped: 'no-global' };
+    const synced = await syncDecisionChannel();
+    if (synced.failed) throw new Error(`ntfy callback failures: ${String(synced.failed)}`);
+    return synced;
+  });
+  const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
+  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishPendingNtfy());
   if (exit)
     stages.actions = {
       ok: false,
@@ -4778,8 +4795,19 @@ function need<T>(v: T | undefined, usage: string): T {
   return v;
 }
 
-async function askCli(argv: string[]): Promise<number> {
+export async function askCli(
+  argv: string[],
+  supplied: Partial<NtfyConfig> = {},
+  emit: (value: unknown) => void = print
+): Promise<number> {
   const a = parseArgs(argv);
+  if (a._[1] === 'status') {
+    if (a._.length !== 3) throw new Error('usage: superagent ask status <id>');
+    const status = ntfyDecisionStatus(a._[2], supplied);
+    if (!status) throw new Error('ask: unknown decision');
+    emit(status);
+    return 0;
+  }
   if (a._.length !== 1) throw new Error('usage: superagent ask [structured flags]');
   const parseOption = (value: string): NtfyOption => {
     const [id, label, ...consequence] = value.split('=');
@@ -4793,26 +4821,27 @@ async function askCli(argv: string[]): Promise<number> {
     expiresAt = need(a.flags['expires-at'], 'ask --expires-at <ISO time>'),
     risk = a.flags.risk ?? 'normal';
   if (risk !== 'normal' && risk !== 'red') throw new Error('--risk must be normal or red');
-  const id = askNtfy({
-    source,
-    title,
-    body,
-    options: (a.flags.option ?? []).map(parseOption),
-    risk,
-    expires_at: expiresAt,
-    default_on_expiry: a.flags['default-on-expiry'],
-    callback: { kind: 'ask', key: callback },
-    dedupe_key: callback,
-  });
-  const asks = loadAsks();
-  asks[callback] ??= { id, status: 'pending' };
-  saveAsk(asks, callback);
+  const id = askNtfy(
+    {
+      source,
+      title,
+      body,
+      options: (a.flags.option ?? []).map(parseOption),
+      risk,
+      expires_at: expiresAt,
+      default_on_expiry: a.flags['default-on-expiry'],
+      callback: { kind: 'external', ref: callback },
+      dedupe_key: `external:${callback}`,
+    },
+    supplied
+  );
+  let delivery = 'sent';
   try {
-    await publishPendingNtfy();
+    await publishPendingNtfy(supplied);
   } catch {
-    // A durable pending decision is the truthful result when ntfy is unavailable.
+    delivery = 'pending';
   }
-  print({ id, status: 'pending' });
+  emit({ id, status: 'pending', delivery });
   return 0;
 }
 
