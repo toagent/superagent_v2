@@ -1,10 +1,9 @@
 import { expect, test } from 'bun:test';
-import { EventEmitter } from 'node:events';
 import { mkdirSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
-import { HeartbeatFrame, registerHeartbeatResizeClear } from '../src/board/HeartbeatView';
+import { HeartbeatFrame } from '../src/board/HeartbeatView';
 import { heartbeatEngineExitCode } from '../src/cli';
 import { unknownProgress } from '../src/board/eta';
 import { panelModel } from '../src/panel';
@@ -236,14 +235,4 @@ test('手机宽度使用两行标题、短徽标、两行提醒、三行卡片�
   expect(
     frame(value, 40, 24, quota, undefined, { at: new Date(now - 240_000).toISOString() })
   ).toContain('⚠ 巡检可能停了');
-});
-
-test('resize 先清屏再触发组件重渲染', () => {
-  const stdout = new EventEmitter();
-  const calls: string[] = [];
-  const unregister = registerHeartbeatResizeClear(stdout, () => calls.push('clear'));
-  stdout.on('resize', () => calls.push('render'));
-  stdout.emit('resize');
-  expect(calls).toEqual(['clear', 'render']);
-  unregister();
 });

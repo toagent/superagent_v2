@@ -1,5 +1,5 @@
-import { Box, Text, useStdout, type TextProps } from 'ink';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { Box, Text, type TextProps } from 'ink';
+import type { ReactElement } from 'react';
 import {
   panelDuration,
   shortRunId,
@@ -511,61 +511,5 @@ export function HeartbeatFrame({
         </Text>
       ))}
     </Box>
-  );
-}
-
-interface ResizeSource {
-  on(event: 'resize', listener: () => void): unknown;
-  off(event: 'resize', listener: () => void): unknown;
-}
-export const registerHeartbeatResizeClear = (
-  stdout: ResizeSource,
-  clear: () => void
-): (() => void) => {
-  stdout.on('resize', clear);
-  return () => stdout.off('resize', clear);
-};
-
-export interface HeartbeatViewProps {
-  initial: PanelModel;
-  load: () => PanelModel;
-  initialQuota?: string;
-  loadQuota: () => string | undefined;
-}
-export function HeartbeatView({
-  initial,
-  load,
-  initialQuota,
-  loadQuota,
-}: HeartbeatViewProps): ReactElement {
-  const stdout = useStdout().stdout as NodeJS.WriteStream;
-  const [model, setModel] = useState(initial),
-    [quota, setQuota] = useState(initialQuota),
-    [now, setNow] = useState(Date.now()),
-    [size, setSize] = useState({ width: stdout.columns || 100, rows: stdout.rows || 30 }),
-    fingerprint = useRef(JSON.stringify(initial));
-  const refresh = useCallback(() => {
-    const next = load(),
-      serialized = JSON.stringify(next);
-    if (serialized !== fingerprint.current) {
-      fingerprint.current = serialized;
-      setModel(next);
-    }
-  }, [load]);
-  useEffect(() => {
-    const dataTimer = setInterval(refresh, 15_000),
-      clockTimer = setInterval(() => setNow(Date.now()), 500),
-      quotaTimer = setInterval(() => setQuota(loadQuota()), 300_000),
-      resize = (): void => setSize({ width: stdout.columns || 100, rows: stdout.rows || 30 });
-    stdout.on('resize', resize);
-    return () => {
-      clearInterval(dataTimer);
-      clearInterval(clockTimer);
-      clearInterval(quotaTimer);
-      stdout.off('resize', resize);
-    };
-  }, [loadQuota, refresh, stdout]);
-  return (
-    <HeartbeatFrame model={model} quota={quota} now={now} width={size.width} rows={size.rows} />
   );
 }
