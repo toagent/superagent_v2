@@ -2781,7 +2781,7 @@ async function executeNodeInternal(
       (nodeOutputText.trim() !== '' || structuredOutput !== undefined)
     ) {
       throw new NodeFailure(
-        unsettledFailureKind(nodeIdleTimedOut),
+        interruptedStreamFailureKind(nodeIdleTimedOut),
         `Node '${node.id}' failed: ${unsettledTurnError(
           nodeIdleTimedOut ? effectiveIdleTimeout : undefined,
           lastWatchdogReset,
@@ -3263,7 +3263,8 @@ function unsettledTurnError(
   return `${cause}${tasks} Its work may be incomplete.`;
 }
 
-function unsettledFailureKind(idleTimedOut: boolean): NodeFailureKind {
+// Agent and loop streams must classify the same provider interruption identically.
+function interruptedStreamFailureKind(idleTimedOut: boolean): NodeFailureKind {
   return idleTimedOut ? 'timeout' : 'transient';
 }
 
@@ -6355,7 +6356,7 @@ async function executeLoopNode(
             .catch((evtErr: Error) => {
               logEventStoreError(evtErr, i);
             });
-          const failureKind = unsettledFailureKind(iterationIdleTimedOut);
+          const failureKind = interruptedStreamFailureKind(iterationIdleTimedOut);
           if (await tryIterationTransientRetry({ failureKind, error: emptyError }, iterRetry)) {
             continue iterationAttempt;
           }
@@ -6400,7 +6401,7 @@ async function executeLoopNode(
             .catch((evtErr: Error) => {
               logEventStoreError(evtErr, i);
             });
-          const failureKind = unsettledFailureKind(iterationIdleTimedOut);
+          const failureKind = interruptedStreamFailureKind(iterationIdleTimedOut);
           if (await tryIterationTransientRetry({ failureKind, error: unsettledError }, iterRetry)) {
             continue iterationAttempt;
           }
