@@ -103,7 +103,7 @@ describe('install.sh', () => {
     const xml = readFileSync(plist, 'utf8');
     for (const s of [
       '<integer>60</integer>',
-      '<string>Background</string>',
+      '<string>Interactive</string>',
       `<string>${home.replace('&', '&amp;')}</string>`,
       `<string>${home.replace('&', '&amp;')}/supervise-tick.log</string>`,
       `<string>${dirname(Bun.which('bun') ?? '')}:`,
