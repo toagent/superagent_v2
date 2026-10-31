@@ -3,9 +3,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerNtfyDecision } from '../src/decisions';
-import { askCli, syncDecisionChannel } from '../src/cli';
+import { askCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
 import { DeviceStore, type Receipt } from '../src/web/device-store';
-import { tickHealth } from '../src/heartbeat';
 import {
   askNtfy,
   publishPendingNtfy,
@@ -75,7 +74,7 @@ describe('ntfy decision channel', () => {
     f.config.now = () => 2_000_000_000_000; askNtfy(f.request('offline'), f.config);
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
-    expect(tickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
+    expect(ntfyTickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
   });
   test('keeps secrets out of state and uses a valid answerDecision channel identity', async () => {
     const f = fixture(); askNtfy(f.request('secret'), f.config); await publishPendingNtfy(f.config);

@@ -2278,7 +2278,13 @@ describe('health upstream reporting', () => {
       warn.mockRestore();
     }
   });
-  const check = (files: string[], exitCode = 0, verbose = false, consoleError?: string) => {
+  const check = (
+    files: string[],
+    exitCode = 0,
+    verbose = false,
+    consoleError?: string,
+    tick: Record<string, unknown> = {}
+  ) => {
     const fixture = stub([]);
     writeFileSync(
       join(fixture.root, 'home/tick.json'),
@@ -2290,6 +2296,7 @@ describe('health upstream reporting', () => {
         console: { ok: true },
         failover: { ok: true },
         actions: { ok: true },
+        ...tick,
       })
     );
     if (consoleError) {
@@ -2359,6 +2366,9 @@ describe('health upstream reporting', () => {
     const result = check([]);
     expect(result.json).toMatchObject({ upstream_clean: true, upstream_file_count: 0 });
     expect(result.json).not.toHaveProperty('reason');
+    const failed = check([], 0, false, undefined, { ntfy_sync: { ok: false, error: 'offline' } });
+    expect(failed.code).toBe(1);
+    expect(failed.json.tick.messages).toContain('ntfy 回收失败：offline');
   });
   test('failed upstream check with empty output cannot report clean', () => {
     const result = check([], 1);

@@ -72,7 +72,7 @@ import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord } from './heartbeat';
+import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { reclaimOnce, reclaimTick } from './reclaim';
 import {
@@ -1325,6 +1325,17 @@ export function waitForRunAdmission(
   }
 }
 
+type NtfyTickRecord = TickRecord & Partial<Record<'ntfy_sync' | 'ntfy_publish', TickStage>>;
+
+export function ntfyTickHealth(tick: NtfyTickRecord | undefined, now: number) {
+  const messages = [...tickHealth(tick, now).messages];
+  if (tick?.ntfy_sync && !tick.ntfy_sync.ok)
+    messages.push(`ntfy 回收失败：${tick.ntfy_sync.error ?? 'unknown'}`);
+  if (tick?.ntfy_publish && !tick.ntfy_publish.ok)
+    messages.push(`ntfy 发布失败：${tick.ntfy_publish.error ?? 'unknown'}`);
+  return { ok: messages.length === 0, messages };
+}
+
 const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
   const now = Date.now();
   try {
@@ -1332,13 +1343,13 @@ const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
     if (!value) return { available: false, reason: 'heartbeat.json missing' };
     const summary = heartbeatSummary(value, who, now);
     if (!summary.available) return summary;
-    let tick: TickRecord | undefined;
+    let tick: NtfyTickRecord | undefined;
     try {
-      tick = readJson(join(home().sa, 'tick.json')) as TickRecord | undefined;
+      tick = readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined;
     } catch {
       /* reported as a missing tick */
     }
-    const warnings = [...(summary.warnings ?? []), ...tickHealth(tick, now).messages];
+    const warnings = [...(summary.warnings ?? []), ...ntfyTickHealth(tick, now).messages];
     return { ...summary, ...(warnings.length ? { warnings } : {}) };
   } catch (error) {
     return {
@@ -1985,8 +1996,8 @@ function health(cwd?: string, verbose = false): number {
   const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
   const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
-  const tick = tickHealth(
-    readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
+  const tick = ntfyTickHealth(
+    readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
     Date.now()
   );
   const ok =
@@ -4138,7 +4149,7 @@ function tickOutput(
 // prettier-ignore
 export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined): Promise<number> {
   const errors: string[] = [];
-  const stages = {} as Omit<TickRecord, 'at'>;
+  const stages = {} as Omit<NtfyTickRecord, 'at'>;
   const result = async (stage: keyof typeof stages, run: () => unknown, errorLabel: string = stage): Promise<unknown> => {
     const started = Date.now();
     try {
