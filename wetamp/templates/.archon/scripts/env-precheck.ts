@@ -18,6 +18,12 @@ interface PackageDeclaration {
   workspaces?: string[] | { packages?: string[] };
   scripts?: Record<string, string>;
 }
+export interface EnvironmentFailure {
+  failure_class: 'test_env';
+  evidence: string;
+  recovery: string[];
+  reason?: 'dependency_record_stale';
+}
 const dependencyRecord = (cwd: string, pkg: PackageDeclaration, locks: string[]) => {
   const patterns = Array.isArray(pkg.workspaces)
     ? pkg.workspaces
@@ -42,9 +48,9 @@ const dependencyRecord = (cwd: string, pkg: PackageDeclaration, locks: string[])
 /** Shared, portable observation only. Recovery is a separate, explicitly authorized operation. */
 // prettier-ignore
 export function envPrecheck(cwd: string) {
-  const failures: { failure_class: 'test_env'; evidence: string; recovery: string[] }[] = [];
-  const fail = (evidence: string, recovery: string[] = []) =>
-    failures.push({ failure_class: 'test_env', evidence, recovery });
+  const failures: EnvironmentFailure[] = [];
+  const fail = (evidence: string, recovery: string[] = [], reason?: EnvironmentFailure['reason']) =>
+    failures.push({ failure_class: 'test_env', evidence, recovery, ...(reason ? { reason } : {}) });
   const git = (...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' });
   let dependencies: 'unknown' | 'not_required' = 'not_required';
   let hookStatus: 'unknown' | 'observed' | 'not_configured' = 'not_configured';
@@ -72,7 +78,7 @@ export function envPrecheck(cwd: string) {
         const record = dependencyRecord(cwd, pkg, present.map(([file]) => file));
         if (!existsSync(record.path) || readFileSync(record.path, 'utf8').trim() !== record.digest)
           fail(`dependency declarations changed: ${record.path}`,
-            manager && installs[manager] ? [installs[manager]] : []);
+            manager && installs[manager] ? [installs[manager]] : [], 'dependency_record_stale');
       }
     }
     // Exit 1 is git-config's structured "unset" result, not an error-text heuristic.

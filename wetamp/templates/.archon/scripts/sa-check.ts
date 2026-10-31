@@ -1141,9 +1141,7 @@ async function acceptOnce(
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
   const ownership = checkoutOwnership();
-  const dependency = ownership.owned
-    ? await provisionEnvironment(process.cwd())
-    : { environment: envPrecheck(process.cwd()), provisioned: [] };
+  const dependency = await dependencyEnvironment(process.cwd(), ownership.owned);
   appendFileSync(log, `# dependency precheck: ${JSON.stringify(dependency)}\n`);
   // 后续里程碑的 BASE 是前序 land head；前序包的已批准写入范围对本次增量仍有效。
   const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
@@ -1691,6 +1689,21 @@ function checkoutOwnership(): { owned: boolean; error?: string } {
       realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim()) };
   } catch (e) { return { owned: false, error: String(e) }; }
 }
+const staleDependencyRecordNote =
+  'Dependency record is missing or stale, but this run does not own the checkout; automatic install skipped.';
+// prettier-ignore
+async function dependencyEnvironment(cwd: string, owned: boolean) {
+  const result = owned ? await provisionEnvironment(cwd) :
+    { environment: envPrecheck(cwd), provisioned: [] };
+  if (owned) return { ...result, notes: [] };
+  const failures = result.environment.failures.filter(f => f.reason !== 'dependency_record_stale');
+  const ignored = failures.length !== result.environment.failures.length;
+  return {
+    ...result,
+    environment: { ...result.environment, ok: failures.length === 0, failures },
+    notes: ignored ? [staleDependencyRecordNote] : [],
+  };
+}
 // prettier-ignore
 async function environment(): Promise<void> {
   const log = join(artifacts, 'environment.log');
@@ -1698,7 +1711,9 @@ async function environment(): Promise<void> {
   const ownership = checkoutOwnership();
   if (ownership.error) notes.push(`worktree ownership unavailable: ${ownership.error}`);
   if (!ownership.owned) notes.push('Recovery skipped: current checkout is not proven to be created and owned by this run.');
-  const out = { ...await prepareEnvironment(process.cwd(), plan(), log, ownership.owned), notes, head: git('rev-parse', 'HEAD').trim() };
+  const prepared = await prepareEnvironment(process.cwd(), plan(), log, ownership.owned);
+  notes.push(...prepared.notes);
+  const out = { ...prepared, notes, head: git('rev-parse', 'HEAD').trim() };
   writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
   emit(out);
   if (!out.ok) process.exit(1);
@@ -1707,15 +1722,14 @@ async function environment(): Promise<void> {
 // prettier-ignore
 export async function prepareEnvironment(cwd: string, p: Parameters<typeof environmentChecks>[0], log: string, owned: boolean) {
   writeFileSync(log, '');
-  const { environment: precheck, provisioned } = owned ? await provisionEnvironment(cwd) :
-    { environment: envPrecheck(cwd), provisioned: [] };
+  const { environment: precheck, provisioned, notes } = await dependencyEnvironment(cwd, owned);
   appendFileSync(log, `${JSON.stringify(precheck)}\n`);
   const failures: CheckFailure[] = precheck.failures.map(f => ({
     command: 'env-precheck', failure_class: f.failure_class, evidence: log,
   }));
   // prettier-ignore
   const failed = precheck.ok ? await run(environmentChecks(p), log, cwd, '', failures) : ['env-precheck'];
-  return { ok: failed.length === 0, failed, failures, precheck, provisioned, log };
+  return { ok: failed.length === 0, failed, failures, precheck, provisioned, notes, log };
 }
 
 const severities = (risk: string): string[] =>
