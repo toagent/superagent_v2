@@ -1,7 +1,15 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { lock } from './archon';
 import { home, writeAtomic } from './config';
 
@@ -48,7 +56,7 @@ interface NtfyState {
   cursor?: string;
   decisions: Record<string, StoredDecision>;
   used_nonces: Record<string, number>;
-  alerts: { id: string; message: string }[];
+  alerts: { id: string; title?: string; message: string }[];
   ignored: number;
   callback_failures: number;
 }
@@ -72,6 +80,23 @@ const defaultConfig = (): NtfyConfig => ({
   fetch,
   now: Date.now,
 });
+
+const canonical = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
+
+const ntfyEnabled = (supplied: Partial<NtfyConfig>): boolean =>
+  (supplied.baseUrl !== undefined &&
+    supplied.publisherToken !== undefined &&
+    supplied.answerToken !== undefined &&
+    supplied.answerKey !== undefined &&
+    supplied.statePath !== undefined &&
+    supplied.fetch !== undefined) ||
+  canonical(home().sa) === canonical(join(process.env.HOME ?? homedir(), '.superagent'));
 
 const emptyState = (): NtfyState => ({
   version: 1,
@@ -226,7 +251,12 @@ function actionFor(
     method: 'POST',
     headers: { Authorization: `Bearer ${answerToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(signed),
+    clear: true,
   };
+}
+
+function receipt(state: NtfyState, id: string, title: string, message: string): void {
+  state.alerts.push({ id, title, message });
 }
 
 async function publish(
@@ -263,7 +293,10 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
     decision.delivery = 'sent';
   }
   while (state.alerts.length) {
-    await publish(config, 'sa-alerts', { message: state.alerts[0].message });
+    await publish(config, 'sa-alerts', {
+      ...(state.alerts[0].title ? { title: state.alerts[0].title } : {}),
+      message: state.alerts[0].message,
+    });
     state.alerts.shift();
   }
 }
@@ -288,6 +321,7 @@ export async function syncNtfy(
   supplied: Partial<NtfyConfig> = {},
   onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined
 ): Promise<{ accepted: number; ignored: number; failed: number }> {
+  if (!ntfyEnabled(supplied)) return { accepted: 0, ignored: 0, failed: 0 };
   const config = { ...defaultConfig(), ...supplied };
   const guard = lock(config.statePath + '.lock');
   if (!guard.ok) return { accepted: 0, ignored: 0, failed: 0 };
@@ -338,17 +372,19 @@ export async function syncNtfy(
             action.option === answer.option &&
             action.exp === answer.exp
         );
-        if (
-          !decision ||
-          !expected ||
-          answer.exp < Math.floor(config.now() / 1000) ||
-          answer.nonce in state.used_nonces ||
-          !validSignature(answer, key)
-        ) {
+        let rejection: string | undefined;
+        if (!decision) rejection = '该决策未找到或已过期，未执行';
+        else if (decision.status !== 'pending' || answer.nonce in state.used_nonces)
+          rejection = '该决策已处理，本次点按忽略';
+        else if (answer.exp < Math.floor(config.now() / 1000)) rejection = '该决策已过期，未执行';
+        else if (!expected || !validSignature(answer, key)) rejection = '回答签名无效，未执行';
+        if (rejection) {
           ignored++;
           state.cursor = event.id;
+          receipt(state, event.id, `未执行｜${decision?.title ?? '未知决策'}`, rejection);
           continue;
         }
+        if (!decision) continue;
         if (decision.risk === 'red' && decision.red_phase === 'request') {
           state.used_nonces[answer.nonce] = config.now();
           decision.red_phase = 'confirm';
@@ -362,6 +398,7 @@ export async function syncNtfy(
             ),
           ];
           state.cursor = event.id;
+          receipt(state, event.id, `已收到批准申请｜${decision.title}`, '请在新通知中确认');
           continue;
         }
         state.used_nonces[answer.nonce] = config.now();
@@ -370,13 +407,13 @@ export async function syncNtfy(
           await onAnswer(decision, answer.option);
           decision.status = 'answered';
           decision.answer = answer.option;
-          state.alerts.push({
-            id: decision.id,
-            message: `已记录：${decision.options.find(option => option.id === answer.option)?.label ?? answer.option}`,
-          });
+          const label =
+            decision.options.find(option => option.id === answer.option)?.label ?? answer.option;
+          receipt(state, event.id, `已记录：${label}｜${decision.title}`, '本次点按已执行');
           accepted++;
         } catch {
           decision.status = 'failed';
+          receipt(state, event.id, `未执行｜${decision.title}`, '处理失败，请使用命令行重试');
           failed++;
           state.callback_failures++;
         }
@@ -392,10 +429,15 @@ export async function syncNtfy(
             await onAnswer(decision, decision.default_on_expiry);
             decision.status = 'answered';
             decision.answer = decision.default_on_expiry;
-            state.alerts.push({
-              id: decision.id,
-              message: `已记录：${decision.options.find(option => option.id === decision.default_on_expiry)?.label ?? decision.default_on_expiry}`,
-            });
+            const label =
+              decision.options.find(option => option.id === decision.default_on_expiry)?.label ??
+              decision.default_on_expiry;
+            receipt(
+              state,
+              decision.id,
+              `已记录：${label}｜${decision.title}`,
+              '已按到期默认值执行'
+            );
             accepted++;
           } catch {
             decision.status = 'expired';
@@ -460,6 +502,7 @@ export function ntfyDecisionStatus(
 }
 
 export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {
+  if (!ntfyEnabled(supplied)) return;
   const config = { ...defaultConfig(), ...supplied };
   const guard = lock(config.statePath + '.lock');
   if (!guard.ok) return;
