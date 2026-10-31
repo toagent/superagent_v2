@@ -332,12 +332,11 @@ class InMemoryStore implements IWorkflowStore {
     return Promise.resolve(this.clone(row));
   };
 
-  claimPendingWorkflowRun: IWorkflowStore['claimPendingWorkflowRun'] = (id, claim) => {
+  claimPendingWorkflowRun: IWorkflowStore['claimPendingWorkflowRun'] = (id, workingPath) => {
     const row = this.runs.get(id);
     if (!row || row.status !== 'pending') return Promise.resolve(null);
     row.status = 'running';
-    row.working_path ??= claim.workingPath ?? null;
-    row.metadata = { ...row.metadata, execution_owner: claim.executionOwner };
+    row.working_path ??= workingPath ?? null;
     return Promise.resolve(this.clone(row));
   };
 

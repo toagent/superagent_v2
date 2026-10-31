@@ -393,9 +393,9 @@ describe('recovery ownership and effects', () => {
       state: 'pending',
       exit: EXIT.running,
     });
-    // A claim binds the owner with the status, so a running row recording no owner has
-    // either not reached that write (still starting, keep waiting) or lost it after a node
-    // began — only the latter is ambiguity about a live execution.
+    // The child records its execution owner after winning the claim, so a running row with
+    // no owner has either not reached that write (still starting, keep waiting) or lost it
+    // after a node began — only the latter is ambiguity about a live execution.
     expect(classify({ id: 'r', status: 'running' })).toEqual({
       state: 'running',
       exit: EXIT.running,

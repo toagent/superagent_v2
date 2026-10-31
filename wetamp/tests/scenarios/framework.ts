@@ -461,10 +461,7 @@ export async function runInProcess(
     adopted_from_run_id: continuation?.from,
     metadata: { execution_owner: { host: hostname(), pid: process.pid } },
   });
-  const run = await store.claimPendingWorkflowRun(id, {
-    executionOwner: { host: hostname(), pid: process.pid },
-    workingPath: f.worker,
-  });
+  const run = await store.claimPendingWorkflowRun(id, f.worker);
   if (!run) throw new Error(`scenario run ${id} was not claimable`);
   const d = deps(store, scriptedProvider(f));
   const persistEvent = store.persistWorkflowEvent.bind(store);

@@ -536,11 +536,12 @@ export function classify(run: RunView): Classified {
       // recovery must refuse to act on it.
       //
       // A running row that records no owner at all and has started no node is the same
-      // situation one step later: the claim now binds status and owner in one CAS, so this
-      // only remains reachable for a row a pre-fix binary started. Keep waiting instead of
-      // reporting a hold the run will outlive. A recorded owner this host cannot verify —
-      // another host, or a reused pid — is genuine ambiguity, and so is an absent owner once
-      // a node has started: that run was executing and nobody is claiming it.
+      // launch, one step later: the child wins the pending-to-running claim and records its
+      // execution owner in a separate write, sampling the checkout in between, so a wait
+      // issued right after launch can read that gap. Keep waiting instead of reporting a hold
+      // the run will outlive. A recorded owner this host cannot verify — another host, or a
+      // reused pid — is genuine ambiguity, and so is an absent owner once a node has started:
+      // that run was executing and nobody is claiming it.
       if (
         run.status === 'running' &&
         ownershipUnknown(run) &&

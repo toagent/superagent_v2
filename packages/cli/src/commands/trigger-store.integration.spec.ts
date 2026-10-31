@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { providerRegistry } from '@archon/providers';
-import { CONFORMANCE_CLAIM } from '@archon/workflows/store-conformance';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
 import { loadConfig } from '@archon/core/config/config-loader';
 import * as connection from '@archon/core/db/connection';
@@ -123,7 +122,7 @@ test('admission preserves FIFO, skips overlap, deduplicates receipts and fences 
   expect(await store.admitResourceStart(intent(skip, 'skip'))).toMatchObject({ status: 'skipped' });
   expect(await store.getWorkflowRun(second.run.id)).toBeNull();
   expect(await store.getWorkflowRun(skip.run.id)).toBeNull();
-  await store.claimPendingWorkflowRun(first.run.id, CONFORMANCE_CLAIM);
+  await store.claimPendingWorkflowRun(first.run.id);
   await store.completeWorkflowRun(first.run.id, { duration_ms: 1 });
   expect(await store.drainResourceStarts({ hostId: 'another', resource: 'one' })).toEqual([]);
   expect(await store.drainResourceStarts({ hostId: 'host', resource: 'one' })).toEqual([
@@ -328,9 +327,9 @@ test('receipt preparation and real engine execution use supplied ports without S
         submit: async (
           input: Parameters<typeof host.engine.submit>[0]
         ): ReturnType<typeof host.engine.submit> => {
-          expect(
-            (await host.deps.store.claimPendingWorkflowRun(delayedId, CONFORMANCE_CLAIM))?.status
-          ).toBe('running');
+          expect((await host.deps.store.claimPendingWorkflowRun(delayedId))?.status).toBe(
+            'running'
+          );
           return host.engine.submit(input);
         },
       },

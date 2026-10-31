@@ -45,11 +45,10 @@ function makeRaceStore(): RaceStore {
       return structuredClone(run);
     },
     getWorkflowRun: async () => structuredClone(run),
-    claimPendingWorkflowRun: async (_id, claim) => {
+    claimPendingWorkflowRun: async (_id, path) => {
       if (run.status !== 'pending') return null;
       run.status = 'running';
-      run.working_path = claim.workingPath ?? null;
-      run.metadata = { ...run.metadata, execution_owner: claim.executionOwner };
+      run.working_path = path ?? null;
       return structuredClone(run);
     },
     pauseWorkflowRun: async (_id, approval) => {
@@ -90,14 +89,10 @@ function makeRaceStore(): RaceStore {
 function breakCas(store: RaceStore): RaceStore {
   return {
     ...store,
-    claimPendingWorkflowRun: async (id, claim) => {
+    claimPendingWorkflowRun: async (id, path) => {
       const prior = await store.getWorkflowRun(id);
       if (prior?.status !== 'pending') return null;
-      await store.updateWorkflowRun(id, {
-        status: 'running',
-        working_path: claim.workingPath,
-        metadata: { execution_owner: claim.executionOwner },
-      });
+      await store.updateWorkflowRun(id, { status: 'running', working_path: path });
       return store.getWorkflowRun(id);
     },
     resolveApprovalGate: async (id, metadata, events) => {

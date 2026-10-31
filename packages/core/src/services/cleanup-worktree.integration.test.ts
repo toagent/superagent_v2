@@ -4,7 +4,6 @@
  * created, with force, and keeps its branch. Runs in its own `bun test`
  * invocation (declared by @archon-test-isolated) because it mock.module's the DB connection.
  */
-import { CONFORMANCE_CLAIM } from '@archon/workflows/store-conformance';
 import { setPlatformPolicies } from '../platforms/registry';
 import * as gitModule from '@archon/git';
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
@@ -398,10 +397,7 @@ describe('owned worktree release', () => {
     const exec = spyOn(gitModule, 'execFileAsync').mockImplementation(
       async (file, args, options) => {
         if (file === 'git' && args.includes('worktree') && args.includes('remove'))
-          claimed = await claimPendingWorkflowRun(adopter, {
-            ...CONFORMANCE_CLAIM,
-            workingPath: env.working_path,
-          });
+          claimed = await claimPendingWorkflowRun(adopter, env.working_path);
         return originalExec(file, args, options);
       }
     );
@@ -416,14 +412,9 @@ describe('owned worktree release', () => {
 
   test('a detached adoption that claimed first is seen by the claimant check', async () => {
     const adopter = await seedRunAt(null, 'pending');
-    expect(
-      (
-        await claimPendingWorkflowRun(adopter, {
-          ...CONFORMANCE_CLAIM,
-          workingPath: env.working_path,
-        })
-      )?.working_path
-    ).toBe(env.working_path);
+    expect((await claimPendingWorkflowRun(adopter, env.working_path))?.working_path).toBe(
+      env.working_path
+    );
     await expect(reclaimRunWorktree(run, store)).rejects.toThrow(`claimable run ${adopter}`);
     expect(existsSync(env.working_path)).toBe(true);
     expect(await status()).toBe('active');
@@ -440,7 +431,7 @@ describe('owned worktree release', () => {
           // Past the final claimant check: the record still names this path, so a
           // concurrent start that read it earlier inserts its run now.
           lateRun = await seedRunAt(env.working_path, 'pending');
-          claimed = await claimPendingWorkflowRun(lateRun, CONFORMANCE_CLAIM);
+          claimed = await claimPendingWorkflowRun(lateRun);
           adoption = await provider.create(request()).catch((err: unknown) => err);
         }
         return originalExec(file, args, options);
@@ -465,10 +456,7 @@ describe('owned worktree release', () => {
       branch_name: fresh.branchName,
     });
     expect(
-      await claimPendingWorkflowRun(
-        await seedRunAt(fresh.workingPath, 'pending'),
-        CONFORMANCE_CLAIM
-      )
+      await claimPendingWorkflowRun(await seedRunAt(fresh.workingPath, 'pending'))
     ).not.toBeNull();
   });
 

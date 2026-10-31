@@ -1,8 +1,6 @@
 import {
-  EXECUTION_OWNER_METADATA_KEY,
   TOOL_CALL_ATTENTION_METADATA_KEY,
   toolCallAttentionArraySchema,
-  type ExecutionOwnerRecord,
   type ToolCallAttention,
 } from '@archon/workflows/schemas/workflow-run';
 import { getWorkflowEventEmitter } from '@archon/workflows/event-emitter';
@@ -454,22 +452,16 @@ export async function createWorkflowRun(data: WorkflowRunInsert): Promise<Workfl
  * `workingPath` is stamped by the claim itself on a row created without one
  * (`run --detach`), so the check and the claimant lookup see the checkout the
  * run is about to use. An existing path is never replaced.
- *
- * `executionOwner` is bound by this same CAS rather than by a follow-up write, so no
- * reader can observe a `running` row whose owner is still unrecorded. A reader that
- * saw that window could not tell a starting run from an abandoned one.
  */
 export async function claimPendingWorkflowRun(
   id: string,
-  claim: { executionOwner: ExecutionOwnerRecord; workingPath?: string }
+  workingPath?: string
 ): Promise<WorkflowRun | null> {
-  const { executionOwner, workingPath } = claim;
   return getDatabase().withTransaction(async query => {
     const claimed = await query(
       `UPDATE remote_agent_workflow_runs
           SET status = 'running', last_activity_at = ${getDialect().now()},
-              working_path = COALESCE(working_path, CAST($2 AS TEXT)),
-              metadata = ${getDialect().jsonMerge('metadata', 3)}
+              working_path = COALESCE(working_path, CAST($2 AS TEXT))
         WHERE id = $1 AND status = 'pending'
           AND NOT EXISTS (
             SELECT 1 FROM remote_agent_isolation_environments e
@@ -489,7 +481,7 @@ export async function claimPendingWorkflowRun(
                WHERE q.id = $1 AND q.status = 'admitted'
             )
           )`,
-      [id, workingPath ?? null, JSON.stringify({ [EXECUTION_OWNER_METADATA_KEY]: executionOwner })]
+      [id, workingPath ?? null]
     );
     if (claimed.rowCount !== 1) return null;
     const selected = await query<WorkflowRunRow>(

@@ -48,8 +48,6 @@ const schedule = {
   resumeAt: wait.resumeAt,
   deadlineAt: '2026-01-03T00:00:00.000Z',
 };
-/** Every claim binds an execution owner; conformance only needs a stable stand-in. */
-export const CONFORMANCE_CLAIM = { executionOwner: { host: 'conformance-host', pid: 4242 } };
 const eight = <T>(call: (index: number) => Promise<T>): Promise<T[]> =>
   Promise.all(Array.from({ length: 8 }, (_, index) => call(index)));
 const create = (
@@ -62,7 +60,7 @@ async function running(
   input: Partial<Parameters<IWorkflowStore['createWorkflowRun']>[0]> = {}
 ): Promise<WorkflowRun> {
   const run = await create(store, input);
-  const claimed = await store.claimPendingWorkflowRun(run.id, CONFORMANCE_CLAIM);
+  const claimed = await store.claimPendingWorkflowRun(run.id);
   expect(claimed?.status).toBe('running');
   return run;
 }
@@ -94,19 +92,14 @@ export async function assertWorkflowClaimRace(
   >
 ): Promise<void> {
   const run = await create(store);
-  const results = await eight(() =>
-    store.claimPendingWorkflowRun(run.id, { ...CONFORMANCE_CLAIM, workingPath: '/checkout' })
-  );
+  const results = await eight(() => store.claimPendingWorkflowRun(run.id, '/checkout'));
   expect(results.filter(result => result !== null)).toHaveLength(1);
   expect(results.filter(result => result === null)).toHaveLength(7);
-  // The owner lands with the status, not after it: a reader that caught `running` with no
-  // owner recorded could not tell a starting run from an abandoned one.
   expect(await store.getWorkflowRun(run.id)).toMatchObject({
     status: 'running',
     working_path: '/checkout',
-    metadata: { execution_owner: CONFORMANCE_CLAIM.executionOwner },
   });
-  expect(await store.claimPendingWorkflowRun(run.id, CONFORMANCE_CLAIM)).toBeNull();
+  expect(await store.claimPendingWorkflowRun(run.id)).toBeNull();
   expect(await types(store, run.id)).toEqual([]);
 }
 
@@ -359,7 +352,6 @@ export function describeWorkflowStoreConformance(
         keep: true,
         extra: true,
         approval,
-        execution_owner: CONFORMANCE_CLAIM.executionOwner,
       });
       expect(await types(store, run.id)).toEqual(['node_suspended']);
     });
@@ -714,7 +706,7 @@ export function describeWorkflowStoreConformance(
         data: { node_output: 'ok' },
       };
       expect(await store.persistWorkflowEventIfRunning(event)).toEqual({ persisted: false });
-      await store.claimPendingWorkflowRun(run.id, CONFORMANCE_CLAIM);
+      await store.claimPendingWorkflowRun(run.id);
       expect(await store.persistWorkflowEventIfRunning(event)).toEqual({ persisted: true });
       await store.pauseWorkflowRun(run.id, approval);
       expect(await store.persistWorkflowEventIfRunning(event)).toEqual({ persisted: false });
@@ -803,7 +795,7 @@ export function describeWorkflowStoreConformance(
       for (const run of [first, second])
         await harness.backdate(run.id, { started_at: new Date(Date.now() - 600_000) });
       expect(await store.getActiveWorkflowRunByPath(path)).toBeNull();
-      await store.claimPendingWorkflowRun(first.id, CONFORMANCE_CLAIM);
+      await store.claimPendingWorkflowRun(first.id);
       expect((await store.getActiveWorkflowRunByPath(path))?.id).toBe(first.id);
       await store.pauseWorkflowRun(first.id, approval);
       expect((await store.getActiveWorkflowRunByPath(path))?.id).toBe(first.id);
