@@ -49,9 +49,10 @@ describe('ntfy decision channel', () => {
     expect(await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).toEqual({ accepted: 1, ignored: 3, failed: 0 });
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => post.body.title)).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜Decision', '未执行｜未知决策']);
     const bad = askNtfy(f.request('bad'), f.config), live = askNtfy(f.request('live'), f.config);
-    await publishPendingNtfy(f.config); f.push(f.action(f.posts.at(-2))); f.push(f.action());
+    await publishPendingNtfy(f.config); const badAction = f.action(f.posts.at(-2)); f.push(badAction); f.push(f.action());
     expect(await syncNtfy(d => { if (d.id === bad) throw new Error('stale'); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 1 });
     expect(f.state().decisions).toMatchObject({ [first]: { status: 'answered' }, [bad]: { status: 'failed' }, [live]: { status: 'answered' } });
+    f.push(badAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body.message).toBe('该决策处理失败，未执行');
     queueNtfyAlert('receipt', 'done', f.config); await publishPendingNtfy(f.config);
     expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
   });
@@ -71,9 +72,10 @@ describe('ntfy decision channel', () => {
     await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }));
     await askCli(['ask', 'status', id], f.config, value => output.push(value));
     expect(output.at(-1)).toMatchObject({ id, status: 'answered', answer: 'yes' });
-    const expires = askNtfy(f.request('expires'), f.config); await publishPendingNtfy(f.config); f.push(f.action());
+    const expires = askNtfy(f.request('expires'), f.config); await publishPendingNtfy(f.config); const expiredAction = f.action();
     let expired = ''; f.config.now = () => 2_000_007_200_000;
     await syncNtfy(() => undefined, f.config, decision => { expired = decision.id; }); expect(expired).toBe(expires);
+    f.push(expiredAction); await syncNtfy(() => undefined, f.config);
     expect(f.posts.at(-1)!.body.message).toBe('该决策已过期，未执行');
     f.config.now = () => 2_000_000_000_000; askNtfy(f.request('offline'), f.config);
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;

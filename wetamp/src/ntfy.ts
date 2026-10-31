@@ -374,7 +374,9 @@ export async function syncNtfy(
         );
         let rejection: string | undefined;
         if (!decision) rejection = '该决策未找到或已过期，未执行';
-        else if (decision.status !== 'pending' || answer.nonce in state.used_nonces)
+        else if (decision.status === 'expired') rejection = '该决策已过期，未执行';
+        else if (decision.status === 'failed') rejection = '该决策处理失败，未执行';
+        else if (decision.status === 'answered' || answer.nonce in state.used_nonces)
           rejection = '该决策已处理，本次点按忽略';
         else if (answer.exp < Math.floor(config.now() / 1000)) rejection = '该决策已过期，未执行';
         else if (!expected || !validSignature(answer, key)) rejection = '回答签名无效，未执行';
