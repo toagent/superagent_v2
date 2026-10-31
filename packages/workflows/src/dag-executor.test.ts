@@ -8128,6 +8128,13 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
               expect(store.completeWorkflowRun).not.toHaveBeenCalled();
             } else {
               expect(attempts).toBe(2);
+              expect(
+                persistedEvents(store).some(
+                  event =>
+                    event.event_type === 'node_retry_scheduled' &&
+                    event.data?.retry_class === 'transient'
+                )
+              ).toBe(true);
               expect(findCompletedEvent(store)).toBeDefined();
               expect(store.failWorkflowRun).not.toHaveBeenCalled();
             }
