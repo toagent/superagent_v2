@@ -6396,7 +6396,7 @@ async function executeLoopNode(
             .catch((evtErr: Error) => {
               logEventStoreError(evtErr, i);
             });
-          const failureKind: NodeFailureKind = iterationIdleTimedOut ? 'timeout' : 'unknown';
+          const failureKind: NodeFailureKind = iterationIdleTimedOut ? 'timeout' : 'transient';
           if (await tryIterationTransientRetry({ failureKind, error: unsettledError }, iterRetry)) {
             continue iterationAttempt;
           }

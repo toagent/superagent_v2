@@ -8072,8 +8072,12 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
     for (const kind of ['agent', 'loop'] as const) {
       for (const backgroundWork of ['reported', 'unobserved'] as const) {
         it(`handles ${backgroundWork} settlement with live work in a ${kind} node`, async () => {
+          let attempts = 0;
           mockSendQueryDag.mockImplementation(async function* () {
-            yield { type: 'subtask', taskId: 'still-live', status: 'started' };
+            attempts++;
+            if (attempts === 1) {
+              yield { type: 'subtask', taskId: 'still-live', status: 'started' };
+            }
             yield { type: 'result', sessionId: 's', text: 'Done. <promise>COMPLETE</promise>' };
             yield { type: 'settled' };
           });
@@ -8114,11 +8118,19 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
             })
           );
           if (backgroundWork === 'reported') {
-            const failed = persistedEvents(store).find(event => event.event_type === 'node_failed');
-            expect(failed?.data?.failure_kind).toBe(kind === 'agent' ? 'transient' : 'unknown');
-            expect(failed?.data?.error).toContain('Subtask(s) still running: still-live.');
-            expect(findCompletedEvent(store)).toBeUndefined();
-            expect(store.completeWorkflowRun).not.toHaveBeenCalled();
+            if (kind === 'agent') {
+              const failed = persistedEvents(store).find(
+                event => event.event_type === 'node_failed'
+              );
+              expect(failed?.data?.failure_kind).toBe('transient');
+              expect(failed?.data?.error).toContain('Subtask(s) still running: still-live.');
+              expect(findCompletedEvent(store)).toBeUndefined();
+              expect(store.completeWorkflowRun).not.toHaveBeenCalled();
+            } else {
+              expect(attempts).toBe(2);
+              expect(findCompletedEvent(store)).toBeDefined();
+              expect(store.failWorkflowRun).not.toHaveBeenCalled();
+            }
           } else {
             expect(findCompletedEvent(store)).toBeDefined();
             expect(store.failWorkflowRun).not.toHaveBeenCalled();
@@ -9046,10 +9058,13 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(settledReached).toBe(false);
     });
 
-    it('fails an iteration whose stream ends after its result without settling — #3524', async () => {
+    it('retries an iteration whose stream ends after its result without settling — #3524', async () => {
+      let attempts = 0;
       mockSendQueryDag.mockImplementation(async function* () {
+        attempts++;
         yield { type: 'agent_message_chunk', text: 'Done. <promise>COMPLETE</promise>' };
         yield { type: 'result', sessionId: 'loop-sid' };
+        if (attempts > 1) yield { type: 'settled' };
       });
 
       const store = createMockStore();
@@ -9077,20 +9092,21 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
         })
       );
 
-      const failed = persistedEvents(store).find(
-        event => event.event_type === 'node_failed' && event.step_name === 'my-loop'
+      const failedIteration = persistedEvents(store).find(
+        event => event.event_type === 'loop_iteration_failed' && event.step_name === 'my-loop'
       );
-      expect(failed?.data?.failure_kind).toBe('unknown');
-      expect(failed?.data?.error).toBe(
-        'Loop iteration 1 failed: the provider stream ended without signalling that its turn settled. Its work may be incomplete.'
+      expect(failedIteration?.data?.error).toContain(
+        'provider stream ended without signalling that its turn settled'
       );
-      expect(store.completeWorkflowRun).not.toHaveBeenCalled();
-      // Like any failed iteration, it is recorded as one.
       expect(
         persistedEvents(store).some(
-          event => event.event_type === 'loop_iteration_failed' && event.data?.iteration === 1
+          event =>
+            event.event_type === 'node_retry_scheduled' && event.data?.retry_class === 'transient'
         )
       ).toBe(true);
+      expect(attempts).toBe(2);
+      expect(store.completeWorkflowRun).toHaveBeenCalled();
+      expect(store.failWorkflowRun).not.toHaveBeenCalled();
     });
 
     it('sums per-result cost when background work wakes another turn', async () => {
