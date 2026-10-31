@@ -19,7 +19,8 @@ export async function waitForLoad(log?: string): Promise<void> {
   let load = currentLoad();
   const report = (message: string): void => {
     if (log) appendFileSync(log, `# ${message}\n`);
-    console.log(message);
+    // stderr: script nodes with an output_format must print exactly one JSON document on stdout.
+    console.error(message);
   };
   if (load <= limit) return;
   while (load > limit) {
