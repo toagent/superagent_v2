@@ -8,6 +8,7 @@ import { removeTempTree } from '@archon/paths/test-utils';
 import { closeDatabase, getDatabase, resetDatabase } from './connection';
 import { createWorkflowStore } from '../workflows/store-adapter';
 import { SourceReceiptDigestConflictError } from '@archon/workflows/resource-start-store';
+import { CONFORMANCE_CLAIM } from '@archon/workflows/store-conformance';
 const {
   listStartReceipts,
   acceptStartReceipt,
@@ -201,13 +202,13 @@ describe('durable resource starts', () => {
     // The operator's explicit terminal action, not elapsed time, releases ownership.
     const { cancelWorkflowRun } = await import('./workflows');
     await cancelWorkflowRun(stranded);
-    expect(await claimPendingWorkflowRun(stranded)).toBeNull();
+    expect(await claimPendingWorkflowRun(stranded, CONFORMANCE_CLAIM)).toBeNull();
     expect(await drainResourceStarts({ resource: 'crash', hostId: 'host' })).toEqual([
       { status: 'admitted', requestId: queued, runId: queued },
     ]);
     const claims = await Promise.all([
-      claimPendingWorkflowRun(queued),
-      claimPendingWorkflowRun(queued),
+      claimPendingWorkflowRun(queued, CONFORMANCE_CLAIM),
+      claimPendingWorkflowRun(queued, CONFORMANCE_CLAIM),
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
   });
@@ -677,7 +678,7 @@ describe('durable resource starts', () => {
       overlap: 'queue',
       launch: launch(firstId),
     });
-    expect((await claimPendingWorkflowRun(firstId))?.status).toBe('running');
+    expect((await claimPendingWorkflowRun(firstId, CONFORMANCE_CLAIM))?.status).toBe('running');
     await admitResourceStart({
       resource: 'repo:resume',
       capacity: 1,
@@ -713,7 +714,7 @@ describe('durable resource starts', () => {
     expect(await drainResourceStarts({ resource: 'repo:resume', hostId: 'host' })).toEqual([
       { status: 'admitted', requestId: secondId, runId: secondId },
     ]);
-    expect((await claimPendingWorkflowRun(secondId))?.status).toBe('running');
+    expect((await claimPendingWorkflowRun(secondId, CONFORMANCE_CLAIM))?.status).toBe('running');
 
     await expect(
       resumeWorkflowRun(firstId, {
@@ -776,7 +777,7 @@ describe('durable resource starts', () => {
     expect(await drainResourceStarts({ resource: 'pool', hostId: 'host' })).toEqual([
       { status: 'admitted', requestId: third, runId: third },
     ]);
-    expect((await claimPendingWorkflowRun(third))?.status).toBe('running');
+    expect((await claimPendingWorkflowRun(third, CONFORMANCE_CLAIM))?.status).toBe('running');
   });
 
   test('a request that declares a different capacity for a resource fails without a row', async () => {

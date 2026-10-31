@@ -1,6 +1,6 @@
 import type { IResourceStartStore } from './resource-start-store';
 import type { WorkflowEventRow } from './schemas/workflow-event';
-import type { ExpectedApprovalGate } from './schemas/workflow-run';
+import type { ExecutionOwnerRecord, ExpectedApprovalGate } from './schemas/workflow-run';
 import type { ResourceStartDisposition } from './schemas/resource-start';
 import type { ListDashboardRunsOptions, DashboardRunsResult } from './schemas/workflow-run-listing';
 import type { DeclaredOutputPaths } from './output-ref';
@@ -411,8 +411,15 @@ export interface IWorkflowStore
    * Fresh execution must win this pending-to-running CAS before doing any work.
    * `workingPath` is the checkout the run will use; the claim stamps it on a row
    * created without one.
+   *
+   * `executionOwner` is part of the claim, not a follow-up write: the row must never
+   * be observable as `running` without the owner that is executing it, or a reader
+   * cannot distinguish a starting run from an abandoned one.
    */
-  claimPendingWorkflowRun(id: string, workingPath?: string): Promise<WorkflowRun | null>;
+  claimPendingWorkflowRun(
+    id: string,
+    claim: { executionOwner: ExecutionOwnerRecord; workingPath?: string }
+  ): Promise<WorkflowRun | null>;
   /**
    * Record the run's checkout baseline (#3305). Write-once in the store: the first value
    * sticks and a later call returns it unchanged. Returns the persisted baseline.

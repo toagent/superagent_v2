@@ -534,7 +534,18 @@ export function classify(run: RunView): Classified {
       // A pending row is Archon's detached launch before its child claims it: no execution owner
       // exists yet, so that absence is not ambiguity. Report pending and keep waiting; only
       // recovery must refuse to act on it.
-      if (run.status === 'running' && ownershipUnknown(run))
+      //
+      // A running row that records no owner at all and has started no node is the same
+      // situation one step later: the claim now binds status and owner in one CAS, so this
+      // only remains reachable for a row a pre-fix binary started. Keep waiting instead of
+      // reporting a hold the run will outlive. A recorded owner this host cannot verify —
+      // another host, or a reused pid — is genuine ambiguity, and so is an absent owner once
+      // a node has started: that run was executing and nobody is claiming it.
+      if (
+        run.status === 'running' &&
+        ownershipUnknown(run) &&
+        (run.metadata?.execution_owner || run.nodes?.length)
+      )
         return { state: 'held:owner_unknown', exit: EXIT.held };
       return { state: ownerLost(run) ? 'owner_lost' : run.status, exit: EXIT.running };
   }

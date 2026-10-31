@@ -5892,8 +5892,12 @@ describe('run checkout baseline (#3305)', () => {
     );
 
     expect(order).toEqual(['claim', 'baseline', 'first node']);
-    // The claim carries the checkout so a pre-created row without a path is fenced by it.
-    expect(store.claimPendingWorkflowRun).toHaveBeenCalledWith('run-123', repo);
+    // The claim carries the checkout so a pre-created row without a path is fenced by it,
+    // and the execution owner so the row is never readable as running without one.
+    expect(store.claimPendingWorkflowRun).toHaveBeenCalledWith('run-123', {
+      executionOwner: { host: hostname(), pid: process.pid, uid: process.getuid?.() },
+      workingPath: repo,
+    });
     expect(store.recordWorkflowRunCheckoutBaseline).toHaveBeenCalledTimes(1);
     expect(store.recordWorkflowRunCheckoutBaseline).toHaveBeenCalledWith(
       'run-123',

@@ -387,14 +387,21 @@ async function until(check: () => boolean, ms = 15000): Promise<void> {
 }
 
 describe('recovery ownership and effects', () => {
-  test('missing owner, remote owner, and reused PID are held with no guessed terminal transition', () => {
+  test('owner lost after a node started, remote owner, and reused PID are held with no guessed terminal transition', () => {
     // Detached launch before the child claims the row: still starting, wait keeps waiting.
     expect(classify({ id: 'r', status: 'pending' })).toEqual({
       state: 'pending',
       exit: EXIT.running,
     });
+    // A claim binds the owner with the status, so a running row recording no owner has
+    // either not reached that write (still starting, keep waiting) or lost it after a node
+    // began — only the latter is ambiguity about a live execution.
+    expect(classify({ id: 'r', status: 'running' })).toEqual({
+      state: 'running',
+      exit: EXIT.running,
+    });
     for (const r of [
-      { id: 'r', status: 'running' },
+      { id: 'r', status: 'running', nodes: [{ nodeId: 'code', state: 'running' }] },
       { id: 'r', status: 'running', metadata: { execution_owner: { host: 'remote', pid: 10 } } },
     ] satisfies RunView[])
       expect(classify(r)).toEqual({ state: 'held:owner_unknown', exit: EXIT.held });

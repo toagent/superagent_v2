@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
   describeWorkflowStoreConformance,
+  CONFORMANCE_CLAIM,
   CONFORMANCE_CONVERSATION_ID,
   CONFORMANCE_CODEBASE_ID,
 } from '@archon/workflows/store-conformance';
@@ -94,8 +95,8 @@ describe.skipIf(!baseUrl)('scratch PostgreSQL', () => {
         ).rows
       ).toEqual([{ holder_id: winner }]);
       const claims = await Promise.all([
-        store.claimPendingWorkflowRun(winner),
-        store.claimPendingWorkflowRun(winner),
+        store.claimPendingWorkflowRun(winner, CONFORMANCE_CLAIM),
+        store.claimPendingWorkflowRun(winner, CONFORMANCE_CLAIM),
       ]);
       expect(claims.filter(Boolean)).toHaveLength(1);
       await store.completeWorkflowRun(winner, { duration_ms: 1 });
@@ -130,7 +131,7 @@ describe.skipIf(!baseUrl)('scratch PostgreSQL', () => {
         user_message: 'test',
         origin: { conversationId: CONFORMANCE_CONVERSATION_ID },
       });
-      await store.claimPendingWorkflowRun(paused.id);
+      await store.claimPendingWorkflowRun(paused.id, CONFORMANCE_CLAIM);
       await store.pauseWorkflowRun(paused.id, {
         nodeId: 'review',
         message: 'Choose',

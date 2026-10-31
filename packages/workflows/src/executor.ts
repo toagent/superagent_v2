@@ -2215,7 +2215,10 @@ export async function executeWorkflow(
     const pendingRun = workflowRun;
     let claimed: WorkflowRun | null;
     try {
-      claimed = await deps.store.claimPendingWorkflowRun(workflowRun.id, cwd);
+      claimed = await deps.store.claimPendingWorkflowRun(workflowRun.id, {
+        executionOwner,
+        workingPath: cwd,
+      });
     } catch (error) {
       getLog().error(
         { err: error, workflowRunId: workflowRun.id },

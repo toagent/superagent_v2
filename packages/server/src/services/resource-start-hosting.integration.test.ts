@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { registerBuiltinProviders, registerCommunityProviders } from '@archon/providers/in-process';
 import { saveUserProviderKey } from '@archon/core/db/user-provider-key-store';
 import { getWorkflowRun } from '@archon/core/db/workflows';
+import { CONFORMANCE_CLAIM } from '@archon/workflows/store-conformance';
 import { execFileAsync } from '@archon/git';
 /**
  * The server hosting resource starts against a real SQLite database, a real workflow
@@ -62,7 +63,7 @@ function recordingEngine(): IWorkflowEngine & {
       submitted.push(input);
       const run = input.options?.preCreatedRun;
       if (!run) throw new Error('resource starts always submit a pre-created run');
-      const claim = await claimPendingWorkflowRun(run.id);
+      const claim = await claimPendingWorkflowRun(run.id, CONFORMANCE_CLAIM);
       if (!claim) return { success: false, workflowRunId: run.id, error: 'claim lost' };
       claimed.push(run.id);
       return { success: true, workflowRunId: run.id };
@@ -296,7 +297,7 @@ describe('server resource-start host', () => {
         id,
       ]
     );
-    await sqlHost.deps.store.claimPendingWorkflowRun(blockerId);
+    await sqlHost.deps.store.claimPendingWorkflowRun(blockerId, CONFORMANCE_CLAIM);
     await sqlHost.deps.store.completeWorkflowRun(blockerId, { duration_ms: 1 });
     const engine = recordingEngine();
     let delivered = false;

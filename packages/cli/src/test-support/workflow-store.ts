@@ -357,11 +357,12 @@ export function createInMemoryWorkflowStore(
     getWorkflowRun: async id => structuredClone(runs.get(id) ?? null),
     getWorkflowRunStatus: async id => runs.get(id)?.status ?? null,
     claimPendingWorkflowRun: serialize(
-      async (id, workingPath): ReturnType<IWorkflowStore['claimPendingWorkflowRun']> => {
+      async (id, claim): ReturnType<IWorkflowStore['claimPendingWorkflowRun']> => {
         const run = row(id);
         if (run.status !== 'pending') return null;
         run.status = 'running';
-        run.working_path ??= workingPath ?? null;
+        run.working_path ??= claim.workingPath ?? null;
+        run.metadata = { ...run.metadata, execution_owner: claim.executionOwner };
         run.last_activity_at = new Date();
         return structuredClone(run);
       }

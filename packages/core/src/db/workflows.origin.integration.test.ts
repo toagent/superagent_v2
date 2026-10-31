@@ -3,6 +3,7 @@ import { afterAll, describe, expect, mock, test } from 'bun:test';
 import { SqliteAdapter, sqliteDialect } from './adapters/sqlite';
 import { WORKFLOW_ORIGIN_ANCHOR_ID } from './workflow-origin-anchor';
 import { persistScopeKey } from '@archon/workflows/schemas/workflow-node-session';
+import { CONFORMANCE_CLAIM } from '@archon/workflows/store-conformance';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { Database } from 'bun:sqlite';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -87,7 +88,7 @@ describe('optional workflow origin', () => {
     expect(run.conversation_id).toBe(conversationId);
     expect(run.user_id).toBe(userId);
     expect(persistScopeKey(run)).toBe(parentConversationId);
-    await workflows.claimPendingWorkflowRun(run.id);
+    await workflows.claimPendingWorkflowRun(run.id, CONFORMANCE_CLAIM);
     await db.query("UPDATE remote_agent_workflow_runs SET status = 'failed' WHERE id = $1", [
       run.id,
     ]);

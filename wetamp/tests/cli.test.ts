@@ -664,6 +664,16 @@ describe('classify', () => {
       ).state
     ).toBe('held:owner_unknown');
   });
+  test('running with no node events yet keeps waiting; a started node makes a missing owner a hold', () => {
+    expect(classify(run('running', { metadata: {} }))).toEqual({
+      state: 'running',
+      exit: EXIT.running,
+    });
+    expect(
+      classify(run('running', { metadata: {}, nodes: [{ nodeId: 'code', state: 'running' }] }))
+        .state
+    ).toBe('held:owner_unknown');
+  });
 });
 
 /**
