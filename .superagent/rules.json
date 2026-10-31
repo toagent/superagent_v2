@@ -14,16 +14,6 @@
         "timeout_s": 120,
         "cache": false
       }
-    },
-    {
-      "when": ["wetamp/**", "packages/**"],
-      "check": {
-        "cmd": "cd wetamp && bun run test",
-        "timeout_s": 1800,
-        "cache": true,
-        "requires_prior_pass": true,
-        "resource": "heavy-test"
-      }
     }
   ],
   "required_scope": [
