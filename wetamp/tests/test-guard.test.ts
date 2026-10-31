@@ -12,14 +12,22 @@ test('complete suite requires an sa-check ancestor in a general worktree', () =>
   mkdirSync(cwd, { recursive: true });
   mkdirSync(bin);
   writeFileSync(join(bin, 'bun'), '#!/bin/sh\nexit 0\n');
-  chmodSync(join(bin, 'bun'), 0o755);
+  writeFileSync(
+    join(bin, 'ps'),
+    '#!/bin/sh\n[ "${TEST_NO_ENGINE:-}" = 1 ] && { echo 1; exit; }\nexec /bin/ps "$@"\n'
+  );
+  for (const name of ['bun', 'ps']) chmodSync(join(bin, name), 0o755);
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
     SA_ACCEPTANCE: '1',
     SA_HEAVY_LOCK_HELD: '1',
   };
-  const blocked = Bun.spawnSync(['sh', script], { cwd, env, stderr: 'pipe' });
+  const blocked = Bun.spawnSync(['sh', script], {
+    cwd,
+    env: { ...env, TEST_NO_ENGINE: '1' },
+    stderr: 'pipe',
+  });
   expect(blocked.exitCode).toBe(2);
   expect(blocked.stderr.toString()).toContain('完整套件由引擎验收运行');
   expect(Bun.spawnSync(['sh', script, 'tests/one.test.ts'], { cwd, env }).exitCode).toBe(0);
