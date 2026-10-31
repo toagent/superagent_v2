@@ -1,7 +1,7 @@
 // superagent 确定性节点（bun）：INPUTS_KIND 选择环境/验收/交付判定/合入命令；永不 push。
 import reasons from './reasons.json';
 import { checkoutFingerprint } from './checkout-integrity';
-import { prepareContext } from './sa-context';
+import { freezeContext, roleContext } from './sa-context';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import {
   appendFileSync,
@@ -1469,7 +1469,7 @@ function finish(
           ? `repair-${env('PKGS')}`
           : '');
     if (node) {
-      const context = prepareContext({
+      const contextValue = roleContext({
         gen,
         artifacts,
         node,
@@ -1478,12 +1478,19 @@ function finish(
         head: out.head ?? '',
         deltaBase: env('DELTA_BASE'),
         scopeBase: env('SCOPE_BASE'),
-        priorLedger: env('CONTEXT_LEDGER') || undefined,
         acceptance: out,
         patch: out.patch ?? '',
         delta: out.delta ?? '',
         environment: environmentIdentity(projectEnvironment(process.env)),
       });
+      const contextLedger = artifactJsonPath(env('CONTEXT_LEDGER'));
+      if (env('CONTEXT_LEDGER') && !contextLedger)
+        throw new Error('context: invalid prior ledger path');
+      if (contextLedger) {
+        const prior = JSON.parse(readFileSync(contextLedger, 'utf8')) as Ledger;
+        contextValue.carry_over = { blocking: prior.blocking, debt: prior.debt };
+      }
+      const context = freezeContext(artifacts, contextValue);
       writeFileSync(
         join(artifacts, `${node}.context.json`),
         JSON.stringify({

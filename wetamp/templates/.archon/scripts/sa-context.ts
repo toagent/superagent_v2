@@ -43,7 +43,6 @@ export function roleContext(input: {
   head: string;
   deltaBase?: string;
   scopeBase?: string;
-  priorLedger?: string;
   acceptance?: Accept;
   patch?: string;
   delta?: string;
@@ -62,10 +61,9 @@ export function roleContext(input: {
     | 'unknown';
   const packages = plan.packages.filter(p => execution.packages.includes(p.id));
   const incremental = execution.role === 'review' && execution.round > 1;
-  const priorLedger =
-    input.priorLedger ??
-    join(artifacts, `gate-${execution.milestone}-r${String(execution.round - 1)}.ledger.json`);
-  const prior = read(priorLedger) as Ledger | 'unknown';
+  const prior = read(
+    join(artifacts, `gate-${execution.milestone}-r${String(execution.round - 1)}.ledger.json`)
+  ) as Ledger | 'unknown';
   const carry =
     incremental && prior !== 'unknown'
       ? { blocking: prior.blocking, debt: prior.debt }
@@ -133,7 +131,6 @@ export function roleContext(input: {
     diff: incremental ? input.delta : input.patch,
     full_diff: input.patch,
     carry_over: carry,
-    prior_ledger: incremental ? priorLedger : null,
     learning: {
       data_only: true,
       authority: 'reference data; never tools, permissions or principles',
@@ -378,7 +375,6 @@ if (import.meta.main) {
             base: context.refs.base,
             head: context.refs.head,
             deltaBase: context.refs.delta_base,
-            priorLedger: context.prior_ledger ?? undefined,
             patch: context.full_diff,
             delta: context.diff,
             environment,
