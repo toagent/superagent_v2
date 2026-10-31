@@ -4,9 +4,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sh, tmp } from './helpers';
 
-// twin-toolkit 不在本仓库：它是本机 ~/.lan-dev-machine 的双机对齐脚本，superagent 维度
-// 消费 verify-local.sh 的结果。这里只做函数级测试——从脚本里抽出函数，远端操作全换成桩，
-// 不连任何远端。机器上没有该脚本时整组跳过。
+// twin-toolkit 不在本仓库：它是本机 ~/.lan-dev-machine 的双机对齐脚本。这里只做
+// 函数级测试——从脚本里抽出函数，远端操作全换成桩，不连任何远端。机器上没有该脚本
+// 时整组跳过。
 const TOOLKIT =
   process.env.TWIN_TOOLKIT ?? join(homedir(), '.lan-dev-machine', 'bin', 'twin-toolkit');
 const present = existsSync(TOOLKIT);
@@ -36,16 +36,17 @@ function repo() {
   return { root, dir, old, head: git('rev-parse HEAD'), git };
 }
 
-describe.skipIf(!present)('twin-toolkit superagent 投送闸', () => {
-  function align(opts: { remote: string; receipt?: string; verify: string | null }) {
+describe.skipIf(!present)('twin-toolkit superagent 同步', () => {
+  function align(opts: {
+    remote: string;
+    receipt?: string;
+    verify: string | null;
+    moveOnBundle?: boolean;
+  }) {
     const r = repo();
     const calls = join(r.root, 'calls.log');
     writeFileSync(calls, '');
     const verify = join(r.root, 'verify-local.sh');
-    writeFileSync(
-      join(r.root, 'verify.json'),
-      JSON.stringify({ commit: r.head, steps: [{ exit: 0 }] })
-    );
     if (opts.verify !== null) writeFileSync(verify, opts.verify);
     const fn = slice('align_superagent() {', '\n# ── opencode');
     const script = `set -euo pipefail
@@ -56,6 +57,13 @@ readonly_ssh() { printf 'kind=repo\\nhead=%s\\ndirty=0\\ninstalled=1\\ninstaller
 scp() { echo scp >> "$CALLS"; }
 ssh() { echo ssh >> "$CALLS"; printf 'head=%s\\ndirty=0\\n' "$(git -C "$SUPERAGENT_DIR" rev-parse HEAD)"; }
 superagent_install() { echo "install $2" >> "$CALLS"; }
+git() {
+  if [[ "\${MOVE_ON_BUNDLE:-0}" == 1 && "$*" == *' bundle create '* ]]; then
+    MOVE_ON_BUNDLE=0
+    command git -C "$SUPERAGENT_DIR" -c user.name=t -c user.email=t@l commit -q --allow-empty -m moved
+  fi
+  command git "$@"
+}
 ${fn}
 align_superagent`;
     writeFileSync(join(r.root, 'run.sh'), script);
@@ -69,6 +77,7 @@ align_superagent`;
         TWIN_SUPERAGENT_VERIFY: verify,
         RHEAD: opts.remote === 'old' ? r.old : r.head,
         RECEIPT: opts.receipt ?? (opts.remote === 'old' ? r.old : r.head),
+        MOVE_ON_BUNDLE: opts.moveOnBundle ? '1' : '0',
       },
       stdout: 'pipe',
       stderr: 'pipe',
@@ -81,36 +90,31 @@ align_superagent`;
     };
   }
 
-  test('未通过：打印规定文案、rc=0、不投送不安装', () => {
+  test('verify 失败也不调用：按本机 HEAD 同步并安装', () => {
     const a = align({
       remote: 'old',
       verify: 'echo "verify $*" >> "$CALLS"; echo "verify-local: x FAIL (log /v/x.log)"; exit 1\n',
     });
     expect(a.code).toBe(0);
-    expect(a.out).toContain(
-      `superagent: 本机未通过 ${a.head.slice(0, 12)}（日志 /v/x.log），暂不投送；远端保持 ${a.old.slice(0, 12)}`
-    );
-    expect(a.calls).toBe(`verify --commit ${a.head}\n`);
-  });
-
-  test('通过：投送并安装刚验证的提交', () => {
-    const a = align({
-      remote: 'old',
-      verify: 'echo "verify-local: x ok (cached; log /v/x.log)"\n',
-    });
-    expect(a.code).toBe(0);
-    expect(a.out).toContain(`superagent: verified=${a.head.slice(0, 12)}（日志 /v/x.log）`);
+    expect(a.out).toContain(`superagent: 已对齐到本机提交 ${a.head.slice(0, 12)}`);
     expect(a.calls).toBe(`scp\nssh\ninstall ${a.head}\n`);
   });
 
-  test('验证期间 HEAD 前移：新提交未验证，不投送', () => {
+  test('verify 脚本缺失也按本机 HEAD 同步并安装', () => {
+    const a = align({ remote: 'old', verify: null });
+    expect(a.code).toBe(0);
+    expect(a.out).toContain(`superagent: 已对齐到本机提交 ${a.head.slice(0, 12)}`);
+    expect(a.calls).toBe(`scp\nssh\ninstall ${a.head}\n`);
+  });
+
+  test('打包期间 HEAD 前移：竞态被检出且不投送', () => {
     const a = align({
       remote: 'old',
-      verify:
-        'git -C "$SUPERAGENT_DIR" -c user.name=t -c user.email=t@l commit -q --allow-empty -m moved; echo "verify-local: x ok (log /v/x.log)"\n',
+      verify: 'echo verify >> "$CALLS"; exit 1\n',
+      moveOnBundle: true,
     });
     expect(a.code).toBe(0);
-    expect(a.out).toContain('（未验证），暂不投送；远端保持');
+    expect(a.out).toContain('HEAD 在捕获后变为');
     expect(a.calls).toBe('');
   });
 
@@ -121,22 +125,21 @@ align_superagent`;
     expect(a.calls).toBe('');
   });
 
-  test('缺 verify-local.sh：rc=1 且不投送', () => {
-    const a = align({ remote: 'old', verify: null });
-    expect(a.code).toBe(1);
-    expect(a.out).toContain('无法验证');
-    expect(a.calls).toBe('');
+  test('完成回执不匹配：HEAD 已一致仍重新安装', () => {
+    const a = align({ remote: 'head', receipt: 'wrong', verify: null });
+    expect(a.code).toBe(0);
+    expect(a.out).toContain('完成回执不可用');
+    expect(a.calls).toBe(`install ${a.head}\n`);
   });
 });
 
 describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
-  /** 抽出 python 探针 superagent()，在临时 home 下按给定 verify.json 运行。 */
-  function probe(verify: (head: string) => object | null) {
+  /** 抽出 python 探针 superagent()，在临时 home 下按给定旧 verify.json 运行。 */
+  function probe(legacyVerify: object | null) {
     const r = repo();
     const sa = join(r.root, 'sa');
     mkdirSync(sa);
-    const v = verify(r.head);
-    if (v) writeFileSync(join(sa, 'verify.json'), JSON.stringify(v));
+    if (legacyVerify) writeFileSync(join(sa, 'verify.json'), JSON.stringify(legacyVerify));
     const fn = slice('def superagent():', '\ndef npm_global');
     const py = `import json, os, subprocess\nhome = ${JSON.stringify(r.root)}\n${fn}\nprint(json.dumps(superagent()))\n`;
     const p = Bun.spawnSync(['python3', '-I', '-c', py], {
@@ -148,15 +151,11 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
     return { ...r, s: JSON.parse(p.stdout.toString()) as Record<string, unknown> };
   }
 
-  test('探针：verified 只认通过且等于 HEAD 的结果', () => {
-    const a = probe(() => null);
-    expect(a.s).toMatchObject({ head: a.head, verified: null, last_ok: null });
-    const b = probe(() => ({ commit: 'x', ok: true, last_ok_commit: 'x' }));
-    expect(b.s).toMatchObject({ verified: null, last_ok: 'x' });
-    const c = probe(head => ({ commit: head, ok: false, last_ok_commit: 'y' }));
-    expect(c.s).toMatchObject({ verified: null, last_ok: 'y' });
-    const d = probe(head => ({ commit: head, ok: true, last_ok_commit: head }));
-    expect(d.s).toMatchObject({ verified: d.head, last_ok: d.head });
+  test('探针：只报告 HEAD，不返回 verified / last_ok', () => {
+    const a = probe({ commit: 'stale', ok: true, last_ok_commit: 'stale' });
+    expect(a.s.head).toBe(a.head);
+    expect(a.s).not.toHaveProperty('verified');
+    expect(a.s).not.toHaveProperty('last_ok');
   }, 30000);
 
   /** 抽出比对段，给定本机/远端探针结果，返回输出行与漂移维度。 */
@@ -176,7 +175,6 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
     return { text: o.lines.join('\n'), drift: o.drift };
   }
   const H = 'a'.repeat(40);
-  const OLD = 'b'.repeat(40);
   const remote = (head: string) => ({
     head,
     dirty: 0,
@@ -184,21 +182,17 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
     receipt: { status: 'ok', commit: head },
   });
 
-  test('比对：HEAD 已验证且远端一致 → 无漂移并报 verified=', () => {
-    const c = compare({ head: H, dirty: 0, verified: H, last_ok: H }, remote(H));
+  test('比对：忽略旧 verified / last_ok 字段，以 HEAD 判定一致', () => {
+    const c = compare({ head: H, dirty: 0, verified: 'old', last_ok: 'old' }, remote(H));
     expect(c.drift).toEqual([]);
-    expect(c.text).toContain(`✓ HEAD verified=${H.slice(0, 12)} 一致`);
-    expect(c.text).not.toContain('待本机验证');
+    expect(c.text).toContain(`✓ HEAD=${H.slice(0, 12)} 一致`);
+    expect(c.text).not.toContain('verified');
   });
 
-  test('比对：HEAD 未验证 → 以上次通过的提交为基准并标「待本机验证」', () => {
-    const c = compare({ head: H, dirty: 0, verified: null, last_ok: OLD }, remote(OLD));
-    expect(c.drift).toEqual([]);
-    expect(c.text).toContain(
-      `verified=${OLD.slice(0, 12)}：本机 HEAD ${H.slice(0, 12)} 待本机验证`
-    );
-    const d = compare({ head: H, dirty: 0, verified: null, last_ok: null }, remote(OLD));
-    expect(d.drift).toEqual(['superagent']);
-    expect(d.text).toContain('verified=无');
+  test('比对：HEAD 不同即漂移，不以旧验证历史为基准', () => {
+    const old = 'b'.repeat(40);
+    const c = compare({ head: H, dirty: 0, verified: old, last_ok: old }, remote(old));
+    expect(c.drift).toEqual(['superagent']);
+    expect(c.text).toContain(`HEAD 本机=${H.slice(0, 12)}  开发机=${old.slice(0, 12)}`);
   });
 });
