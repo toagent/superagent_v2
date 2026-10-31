@@ -172,7 +172,7 @@ test('observer loader blocks native dotenv reload, including override:true in AR
   expect(await child.exited).toBe(0);
   expect(JSON.parse(out)).toEqual({ host: '127.0.0.1', dsn: false, adapter: false });
 });
-test('M2-07 fingerprint drift restarts the launchd console; current engine stays', async () => {
+test('M2-07 fingerprint drift or a dead loaded job restarts the launchd console', async () => {
   const root = tmp();
   process.env.SUPERAGENT_HOME = root;
   process.env.ARCHON_HOME = join(root, 'archon');
@@ -208,6 +208,26 @@ test('M2-07 fingerprint drift restarts the launchd console; current engine stays
   expect(count).toBe(0);
   expect(await refreshConsole(restart, 'new')).toMatchObject({ engine_hash: 'new' });
   expect(count).toBe(1);
+  expect(
+    await refreshConsole(
+      restart,
+      'new',
+      () => false,
+      () => false
+    )
+  ).toEqual(s);
+  expect(count).toBe(1);
+  expect(
+    await refreshConsole(
+      restart,
+      'new',
+      () => false,
+      () => true
+    )
+  ).toMatchObject({
+    engine_hash: 'new',
+  });
+  expect(count).toBe(2);
 });
 test('M2-07 previous PID state requires migration; incomplete owner identity is refused', async () => {
   const root = tmp();

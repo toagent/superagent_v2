@@ -508,10 +508,13 @@ export async function startWeb(): Promise<WebState> {
 }
 export async function refreshConsole(
   restart = startWeb,
-  current = residentHash()
+  current = residentHash(),
+  live = alive,
+  launched = loaded
 ): Promise<ConsoleState | null> {
   const s = webState();
-  return s && alive(s.pid) && needsRestart(s, current) ? await restart() : s;
+  const running = !!s && live(s.pid);
+  return (running ? needsRestart(s, current) : launched()) ? await restart() : s;
 }
 export async function webCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv),
