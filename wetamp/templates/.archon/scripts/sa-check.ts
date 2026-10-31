@@ -274,6 +274,8 @@ function validXml(xml: string): boolean {
 // prettier-ignore
 type ParsedCases = StructuredCases & { errors: string[]; report_error: boolean };
 // prettier-ignore
+interface RerunTarget { id: string; file: string; name: string; classname: string; }
+// prettier-ignore
 function junitCaseId(a: Record<string, string | undefined>): string {
   const legacy = `${a.classname ?? ''}::${a.name ?? ''}`;
   if (!a.file || !a.classname || !a.name) return legacy;
@@ -327,6 +329,78 @@ function junitCases(path: string, expected: string[], started: number): ParsedCa
   } catch {
     return;
   }
+}
+
+// prettier-ignore
+function junitRerunTargets(path: string, failures: StructuredCases['failures']): RerunTarget[] {
+  const wanted = new Set(failures.map(failure => failure.id));
+  try {
+    const xml = readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+    return [...xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
+      .map(match => attrs(match[1]))
+      .map(a => ({ id: junitCaseId(a), file: a.file ?? '', name: a.name ?? '', classname: a.classname ?? '' }))
+      .filter(target => wanted.has(target.id) && target.file && target.name);
+  } catch {
+    return [];
+  }
+}
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
+// prettier-ignore
+const exactTestPattern = (name: string): string => `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+
+function bunRerunCommand(check: Check, target: RerunTarget, report: string): string | undefined {
+  if (!/(?:^|[;&|]\s*)bun\s+test(?:\s|$)/.test(check.cmd)) return;
+  return [
+    shellQuote(process.execPath),
+    'test',
+    shellQuote(target.file),
+    '-t',
+    shellQuote(exactTestPattern([target.classname, target.name].filter(Boolean).join(' '))),
+    '--reporter=junit',
+    `--reporter-outfile=${shellQuote(report)}`,
+  ].join(' ');
+}
+
+// prettier-ignore
+function pytestRerunCommand(check: Check, target: RerunTarget, report: string,
+  attempts: string): string | undefined {
+  if (!target.file.endsWith('.py') || !/(?:^|[;&|]\s*)(?:(?:uv\s+run\s+|python\s+-m\s+))?pytest(?:\s|$)/.test(check.cmd)) return;
+  return [
+    'uv run --with pytest-rerunfailures==16.7 --with pytest-reportlog==1.0.0 pytest',
+    shellQuote(target.id),
+    '--reruns 2',
+    `--report-log=${shellQuote(attempts)}`,
+    `--junitxml=${shellQuote(report)}`,
+    '-o junit_family=xunit1',
+  ].join(' ');
+}
+
+// prettier-ignore
+function pytestAttemptCount(path: string, id: string): number {
+  try {
+    return readFileSync(path, 'utf8').trim().split('\n').filter(line => {
+      const event = JSON.parse(line) as { nodeid?: string; when?: string };
+      return event.nodeid === id && event.when === 'call';
+    }).length + 1;
+  } catch {
+    return 1;
+  }
+}
+
+// prettier-ignore
+function mergeJunit(base: string, rerun: string, ids: string[], deadline: number,
+  log: string): boolean {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
+  const script = join(import.meta.dir, 'junit_merge.py');
+  const merged = Bun.spawnSync(
+    ['uv', 'run', '--with', 'junitparser==5.0.3', 'python', script, base, rerun, ...ids],
+    { stdout: 'pipe', stderr: 'pipe', timeout: remaining }
+  );
+  if (merged.exitCode !== 0 || merged.signalCode)
+    appendFileSync(log, `# junit merge failed\n${merged.stdout.toString()}${merged.stderr.toString()}\n`);
+  return merged.exitCode === 0 && !merged.signalCode;
 }
 
 // Publish a complete private key atomically; concurrent nodes share the winner's context.
@@ -483,7 +557,8 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
 async function recordFlaky(
   check: Check,
   structured: StructuredCases | undefined,
-  log: string
+  log: string,
+  attempts: number
 ): Promise<void> {
   const home = process.env.SUPERAGENT_HOME;
   if (!home) return;
@@ -545,6 +620,7 @@ async function recordFlaky(
       repo,
       command_hash,
       test_ids,
+      attempts,
       run: basename(dirname(env('PLAN'))),
       tag: env('TAG'),
       at: new Date().toISOString(),
@@ -661,8 +737,8 @@ async function run(
             .filter(x => x.includes('::'));
       }
     }
-    const execute = async () => {
-      if (reportPath) rmSync(reportPath, { force: true });
+    const execute = async (command = c.cmd, outputReport = reportPath) => {
+      if (outputReport) rmSync(outputReport, { force: true });
       const remaining = deadline - Date.now();
       if (remaining <= 0) return [undefined, 'timeout', undefined, false, Date.now() - t0] as const;
       // prettier-ignore
@@ -676,7 +752,7 @@ async function run(
         let failure: StreamedSubprocessError | undefined;
         try {
           await runStreamingSubprocess({
-            cmd: 'bash', args: ['-c', c.cmd], cwd: cwd ?? process.cwd(), env: commandEnvironment,
+            cmd: 'bash', args: ['-c', command], cwd: cwd ?? process.cwd(), env: commandEnvironment,
             timeout: remaining, credentialValues: [], stdoutPath, stderrPath,
           });
         } catch (error) {
@@ -690,7 +766,7 @@ async function run(
           stdout: readFileSync(stdoutPath), stderr: readFileSync(stderrPath),
         };
       } else {
-        const result = Bun.spawnSync(['bash', '-c', c.cmd], {
+        const result = Bun.spawnSync(['bash', '-c', command], {
           cwd, env: commandEnvironment, stdout: 'pipe', stderr: 'pipe', timeout: remaining,
         });
         p = {
@@ -699,7 +775,7 @@ async function run(
         };
       }
       const code = p.signalCode ? `signal ${p.signalCode}` : (p.exitCode ?? 'unknown');
-      const structured = reportPath ? junitCases(reportPath, expected, t0) : undefined;
+      const structured = outputReport ? junitCases(outputReport, expected, t0) : undefined;
       const consistent =
         !structured ||
         (!p.signalCode &&
@@ -709,7 +785,7 @@ async function run(
       const duration = Date.now() - t0;
       appendFileSync(
         log,
-        `$ ${c.cmd}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(duration)}\n\n`
+        `$ ${command}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(duration)}\n\n`
       );
       return [
         p,
@@ -721,11 +797,59 @@ async function run(
     };
     let first;
     let attempt;
+    let attemptCount = 1;
     try {
       first = await execute();
+      attempt = first;
       // prettier-ignore
-      attempt =
-        !first[3] && !first[0]?.signalCode && c.cache !== false && env('KIND') !== 'env' && retryFailure && deadline > Date.now() ? await execute() : first;
+      if (
+        reportPath &&
+        first[2]?.complete &&
+        first[2].failures.length &&
+        !first[0].signalCode &&
+        env('KIND') !== 'env' &&
+        retryFailure
+      ) {
+        let merged = first[2];
+        const pytest = merged.failures.every(failure => failure.id.split('::')[0]?.endsWith('.py'));
+        for (let rerun = 1; rerun <= (pytest ? 1 : 2) && merged.failures.length && deadline > Date.now(); rerun++) {
+          const targets = junitRerunTargets(reportPath, merged.failures);
+          if (targets.length !== merged.failures.length) break;
+          let last: (typeof first)[0] = first[0];
+          let mergeFailed = false;
+          for (const target of targets) {
+            const rerunPath = `${reportPath}.rerun-${String(rerun)}.xml`,
+              attemptsPath = `${rerunPath}.attempts.jsonl`,
+              command = bunRerunCommand(c, target, rerunPath) ?? pytestRerunCommand(c, target, rerunPath, attemptsPath);
+            if (!command) { mergeFailed = true; break; }
+            const result = await execute(command, rerunPath);
+            if (result[0]) last = result[0];
+            attemptCount = Math.max(attemptCount, pytest ? pytestAttemptCount(attemptsPath, target.id) : rerun + 1);
+            if (!existsSync(rerunPath) || !mergeJunit(reportPath, rerunPath, [target.id], deadline, log))
+              mergeFailed = true;
+            rmSync(rerunPath, { force: true });
+            rmSync(attemptsPath, { force: true });
+            if (mergeFailed) break;
+          }
+          const structured = mergeFailed ? undefined : junitCases(reportPath, expected, t0);
+          if (!structured?.complete) {
+            appendFileSync(log, `# merged JUnit failed completeness: ${JSON.stringify(structured ?? null)}\n`);
+            break;
+          }
+          merged = structured;
+          const passed = merged.failures.length === 0;
+          attempt = [last, passed ? 0 : 1, merged, passed, Date.now() - t0] as const;
+        }
+      } else if (
+        !reportPath &&
+        !first[3] &&
+        !first[0]?.signalCode &&
+        c.cache !== false &&
+        env('KIND') !== 'env' &&
+        retryFailure &&
+        deadline > Date.now()
+      )
+        attempt = await execute();
     } finally {
       if (lease) await lease.release();
     }
@@ -740,7 +864,7 @@ async function run(
       ...(flaky ? { flaky: true } : {}),
       ...(structured ? { structured } : {}),
     });
-    if (flaky) await recordFlaky(c, first[2], log);
+    if (flaky) await recordFlaky(c, first[2], log, attemptCount);
     if (!passed) {
       failed.push(c.cmd);
       let classification: unknown;
@@ -1017,9 +1141,7 @@ async function acceptOnce(
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
   const ownership = checkoutOwnership();
-  const dependency = ownership.owned
-    ? await provisionEnvironment(process.cwd())
-    : { environment: envPrecheck(process.cwd()), provisioned: [] };
+  const dependency = await dependencyEnvironment(process.cwd(), ownership.owned);
   appendFileSync(log, `# dependency precheck: ${JSON.stringify(dependency)}\n`);
   // 后续里程碑的 BASE 是前序 land head；前序包的已批准写入范围对本次增量仍有效。
   const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
@@ -1593,6 +1715,21 @@ function checkoutOwnership(): { owned: boolean; error?: string } {
       realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim()) };
   } catch (e) { return { owned: false, error: String(e) }; }
 }
+const staleDependencyRecordNote =
+  'Dependency record is missing or stale, but this run does not own the checkout; automatic install skipped.';
+// prettier-ignore
+async function dependencyEnvironment(cwd: string, owned: boolean) {
+  const result = owned ? await provisionEnvironment(cwd) :
+    { environment: envPrecheck(cwd), provisioned: [] };
+  if (owned) return { ...result, notes: [] };
+  const failures = result.environment.failures.filter(f => f.reason !== 'dependency_record_stale');
+  const ignored = failures.length !== result.environment.failures.length;
+  return {
+    ...result,
+    environment: { ...result.environment, ok: failures.length === 0, failures },
+    notes: ignored ? [staleDependencyRecordNote] : [],
+  };
+}
 // prettier-ignore
 async function environment(): Promise<void> {
   const log = join(artifacts, 'environment.log');
@@ -1600,7 +1737,9 @@ async function environment(): Promise<void> {
   const ownership = checkoutOwnership();
   if (ownership.error) notes.push(`worktree ownership unavailable: ${ownership.error}`);
   if (!ownership.owned) notes.push('Recovery skipped: current checkout is not proven to be created and owned by this run.');
-  const out = { ...await prepareEnvironment(process.cwd(), plan(), log, ownership.owned), notes, head: git('rev-parse', 'HEAD').trim() };
+  const prepared = await prepareEnvironment(process.cwd(), plan(), log, ownership.owned);
+  notes.push(...prepared.notes);
+  const out = { ...prepared, notes, head: git('rev-parse', 'HEAD').trim() };
   writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
   emit(out);
   if (!out.ok) process.exit(1);
@@ -1609,15 +1748,14 @@ async function environment(): Promise<void> {
 // prettier-ignore
 export async function prepareEnvironment(cwd: string, p: Parameters<typeof environmentChecks>[0], log: string, owned: boolean) {
   writeFileSync(log, '');
-  const { environment: precheck, provisioned } = owned ? await provisionEnvironment(cwd) :
-    { environment: envPrecheck(cwd), provisioned: [] };
+  const { environment: precheck, provisioned, notes } = await dependencyEnvironment(cwd, owned);
   appendFileSync(log, `${JSON.stringify(precheck)}\n`);
   const failures: CheckFailure[] = precheck.failures.map(f => ({
     command: 'env-precheck', failure_class: f.failure_class, evidence: log,
   }));
   // prettier-ignore
   const failed = precheck.ok ? await run(environmentChecks(p), log, cwd, '', failures) : ['env-precheck'];
-  return { ok: failed.length === 0, failed, failures, precheck, provisioned, log };
+  return { ok: failed.length === 0, failed, failures, precheck, provisioned, notes, log };
 }
 
 const severities = (risk: string): string[] =>
@@ -2526,10 +2664,10 @@ export function readAuthorEvidence(
           ['node_started', 'node_completed', 'node_failed'].includes(e.event_type)
       );
       for (const e of history.filter(e => e.event_type !== 'node_started'))
-        authors.push(
-          e.event_type === 'node_completed' ? attemptIdentity([], node, e.data?.binding) : unknown
-        );
-      if (history.at(-1)?.event_type === 'node_started') authors.push(unknown);
+        authors.push(attemptIdentity([], node, e.data?.binding));
+      const interrupted = history.at(-1);
+      if (interrupted?.event_type === 'node_started')
+        authors.push(attemptIdentity([], node, interrupted.data?.binding));
     }
     const prior = run.adopted_from_run_id;
     if (!prior && seen.size > 1 && !receipts.length && !nodes.size) authors.push(unknown);

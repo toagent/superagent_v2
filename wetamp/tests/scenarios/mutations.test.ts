@@ -59,6 +59,22 @@ const mutations: Mutation[] = [
     expectedError: 'Received: "events:code-a:0"',
   },
   {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'authors.push(attemptIdentity([], node, e.data?.binding));',
+    to: 'authors.push(unknown);',
+    test: 'tests/sa-check.test.ts',
+    name: 'author evidence binds failed',
+    expectedError: 'Received: "author_unknown"',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'rerun <= (pytest ? 1 : 2) && merged.failures.length',
+    to: 'rerun < (pytest ? 1 : 2) && merged.failures.length',
+    test: 'tests/sa-check.test.ts',
+    name: 'typed Bun rerun adapter',
+    expectedError: 'Expected length: 3',
+  },
+  {
     file: 'templates/.archon/scripts/env-precheck.ts',
     from: "readFileSync(record.path, 'utf8').trim() !== record.digest",
     to: 'false',

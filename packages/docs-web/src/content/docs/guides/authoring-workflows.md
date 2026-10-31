@@ -298,7 +298,7 @@ nodes:
     depends_on: [lens-a, lens-b]
 ```
 
-`synthesize` forks the exact provider session produced by `scope`; the parallel lenses do not change that ancestry. The source must be a transitively upstream command, prompt, or plain `loop:` node, and the consumer must be a command or prompt node. Inside a `loop_group` body, the source must complete before entry into the group: name an enclosing command, prompt, or plain `loop:` ancestor, never a same-body node. The first owner turn forks that source; later iterations continue the private branch with the same session ID. Fresh reviewers and `fresh_context: true` leave that branch intact. Interactive gates, terminal body approvals, and durable waits restore its provider-tagged cursor. A missing cursor snapshot, lost session, or changed session ID fails rather than silently starting over. Failure resume still restarts the group at iteration 1. See [Named owner sessions](/guides/loop-nodes/#named-owner-sessions) for an example.
+`synthesize` forks the exact provider session produced by `scope`; the parallel lenses do not change that ancestry. The source must be a transitively upstream command, prompt, or plain `loop:` node, and the consumer must be a command or prompt node. Inside a `loop_group` body, the source must complete before entry into the group: name an enclosing command, prompt, or plain `loop:` ancestor, never a same-body node. The first owner turn forks that source; later iterations continue the private branch with the same session ID. Fresh reviewers and `fresh_context: true` leave that branch intact. Interactive gates, terminal body approvals, and durable waits restore its provider-tagged cursor. A missing source cursor fails before execution. Once a source-fork attempt starts, a resume-contract failure is recorded as transient and a configured retry may start a fresh session; private `loop_group` owner continuations remain exact-only. Failure resume still restarts the group at iteration 1. See [Named owner sessions](/guides/loop-nodes/#named-owner-sessions) for an example.
 
 Scalar `context: shared` is only for ambient session threading through a sequential layer. It is rejected on a node in a structurally parallel layer because there is no single unambiguous ambient lineage there. Use named resume as above, or add dependencies to serialize the nodes. This remains a structural rule when sibling `when:` conditions appear mutually exclusive: Archon constructs the parallel layer before evaluating those conditions.
 
@@ -306,7 +306,9 @@ This is an exact, immutable fork contract:
 
 - Source and consumer must resolve to the same provider.
 - Claude, Codex and Pi support immutable forks. A provider that omits the fork capability does not.
-- A missing source handle, unavailable prior context, missing branch handle, or provider that reuses the source session fails the node. Named resume never falls back to a fresh session.
+- A missing source handle, provider mismatch, or provider without immutable-fork support fails before execution and never falls back to a fresh session.
+- After a source-fork attempt starts, failure to restore prior context, a missing branch handle, or reuse of the source session is recorded as transient. A retry then uses a fresh session, and the fallback is visible in the node events. Set `retry.max_attempts: 0` to disable it.
+- A private owner continuation inside a `loop_group` never falls back to a fresh session. Retries keep the same owner session, and exhaustion fails the node.
 - Two parallel consumers may name the same source; each receives its own branch while the source remains unchanged.
 - Run resume restores these private handles for completed nodes, so a pause or process restart does not lose declared ancestry. Each node's full session ID is recorded on its node record; transcripts and logs carry at most an eight-character preview.
 
