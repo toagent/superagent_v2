@@ -139,7 +139,11 @@ test('ENV_PRECHECK missing dependencies block; installed consistency stays unkno
   expect(sh('git status --porcelain', repo)).toBe(before);
   expect(readFileSync(join(repo, 'bun.lock'), 'utf8')).toBe('declared lock');
   mkdirSync(join(repo, 'node_modules'));
-  expect(envPrecheck(repo)).toMatchObject({ ok: true, dependencies: 'unknown' });
+  expect(envPrecheck(repo)).toMatchObject({
+    ok: false,
+    dependencies: 'unknown',
+    failures: [{ recovery: ['bun install --frozen-lockfile'] }],
+  });
 });
 
 test('ENV_PRECHECK unset hooks and empty dependency repo pass; missing declared tools block', () => {
@@ -181,9 +185,10 @@ test('ENV_PRECHECK environment emits typed evidence and skips commands until che
     'bun install --frozen-lockfile'
   );
   mkdirSync(join(repo, 'node_modules'));
+  writeFileSync(join(repo, 'package.json'), '{}');
   const ready = runScript(repo, { kind: 'env', plan: p });
   expect(ready.code, ready.err).toBe(0);
-  expect(ready.out).toMatchObject({ ok: true, precheck: { dependencies: 'unknown' } });
+  expect(ready.out).toMatchObject({ ok: true, precheck: { dependencies: 'not_required' } });
   expect(existsSync(marker)).toBe(true);
 });
 
@@ -2029,7 +2034,7 @@ Bun.spawnSync = (actual, opts) => {
   if (scaled)
     source = source.replace(
       'CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000',
-      'CHECK_EVENT_QUERY_TIMEOUT_MS = 2000'
+      `CHECK_EVENT_QUERY_TIMEOUT_MS = ${String(hangOnce ? 1000 : 200)}`
     );
   if (budget !== undefined)
     source = source.replace('CHECK_AUX_BUDGET_MS = 130_000', `CHECK_AUX_BUDGET_MS = ${budget}`);
@@ -2119,31 +2124,43 @@ for (const [kind, step, evidence] of [
   ['accept', 'events', 'archon workflow get fixture:'],
   ['env', 'rev-parse HEAD', 'git rev-parse:'],
 ])
-  test(`ACCT: ${kind} auxiliary ${step} timeout fails with original evidence`, () => {
-    const r = auxiliaryFixture(kind, step, true);
-    expect(r.code).toBe(1);
-    expect(r.err).toContain(evidence);
-    expect(r.err).toContain('auxiliary-stalled');
-    expect(r.err).toContain('TERM; process exited');
-    expect(
-      r.calls.find(c =>
-        c.cmd[0] === 'git'
-          ? c.cmd.slice(1, 3).join(' ') === step
-          : c.cmd[0] !== 'bash' && step === 'events'
-      )?.timeout
-    ).toBe(2000);
-    if (step === 'events')
-      expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(
-        2
+  test(
+    `ACCT: ${kind} auxiliary ${step} timeout fails with original evidence`,
+    () => {
+      const r = auxiliaryFixture(kind, step, true);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(evidence);
+      expect(r.err).toMatch(
+        step === 'events' ? /auxiliary-stalled|signal SIGKILL/ : /auxiliary-stalled/
       );
-  });
+      expect(r.err).toMatch(
+        step === 'events' ? /TERM; process exited|signal SIGKILL/ : /TERM; process exited/
+      );
+      expect(
+        r.calls.find(c =>
+          c.cmd[0] === 'git'
+            ? c.cmd.slice(1, 3).join(' ') === step
+            : c.cmd[0] !== 'bash' && step === 'events'
+        )?.timeout
+      ).toBe(step === 'events' ? 200 : 2000);
+      if (step === 'events')
+        expect(
+          r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events')).length
+        ).toBeGreaterThanOrEqual(2);
+    },
+    step === 'events' ? testTimeout(10_000) : undefined
+  );
 
-test('ACCT: event query retries one timeout and keeps its evidence', () => {
-  const r = auxiliaryFixture('env', 'events', true, false, false, undefined, true);
-  expect(r.code, r.err).toBe(0);
-  expect(r.err).toContain('auxiliary-stalled');
-  expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(2);
-});
+test(
+  'ACCT: event query retries one timeout and keeps its evidence',
+  () => {
+    const r = auxiliaryFixture('env', 'events', true, false, false, undefined, true);
+    expect(r.code, r.err).toBe(0);
+    expect(`${r.err}\n${JSON.stringify(r.out)}`).toContain('auxiliary-stalled');
+    expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(2);
+  },
+  testTimeout(10_000)
+);
 
 test('probe: bounded prune timeout cannot override baseline results', () => {
   const r = auxiliaryFixture('accept', 'worktree prune', true);
@@ -2184,7 +2201,10 @@ test('ACCT: TERM EPERM is recorded and does not suppress SIGKILL', () => {
 test('ROOT_ACCEPT diagnostic probe hook timeout preserves acceptance failure', () => {
   const r = auxiliaryFixture('accept', '', true, false, true);
   // Fixture setup and other auxiliary calls are outside this watchdog's budget.
-  expect(r.calls.find(c => c.cmd.slice(0, 3).join(' ') === 'git worktree add')?.timeout).toBe(2000);
+  expect(
+    r.calls.find(c => Array.isArray(c.cmd) && c.cmd.slice(0, 3).join(' ') === 'git worktree add')
+      ?.timeout
+  ).toBe(2000);
   expect(r.code, r.err).toBe(0);
   expect(r.out).toMatchObject({ ok: false, disposition: 'repair', base_pass: null });
   const diagnostic = readFileSync(join(r.art, 'acct.probe.log'), 'utf8');

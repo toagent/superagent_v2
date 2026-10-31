@@ -17,6 +17,7 @@ import { testTimeout } from '@archon/paths/test-utils';
 import {
   Coordination,
   ACK_TIMEOUT_MS,
+  CoordRegistryWaitError,
   caller,
   cleanEngine,
   repoScope,
@@ -335,16 +336,26 @@ test('6: delivery and ack are idempotent; only recipient acks; sender receives d
   expect(s.c.messages().filter(m => m.type === 'receipt')).toHaveLength(2);
   expect(() => s.c.ack(String(one.id), a, 'accepted', 'again')).toThrow(/invalid state/);
 });
-test('handoff can fail immediately when the registry is busy', () => {
+test('registry lock waits for release and times out with a typed reason', () => {
   const s = setup();
   mkdirSync(join(s.sa, 'coord'));
-  const held = native.lock(join(s.sa, 'coord/registry.lock'));
-  expect(held.ok).toBe(true);
+  let now = 0;
+  s.c.d.now = () => now;
+  const path = join(s.sa, 'coord/registry.lock');
+  let held = native.lock(path);
+  if (!held.ok) throw new Error('fixture lock busy');
+  const sleep = spyOn(Bun, 'sleepSync').mockImplementation(ms => {
+    now += ms;
+    if (now === 50 && held.ok) held.release();
+  });
   try {
-    const started = Date.now();
-    expect(() => s.c.handoff(s.scope, b, input, 0, false)).toThrow('coord: registry busy');
-    expect(Date.now() - started).toBeLessThan(100);
+    expect(s.c.locked(() => 'ready')).toBe('ready');
+    held = native.lock(path);
+    if (!held.ok) throw new Error('fixture lock busy');
+    expect(() => s.c.locked(() => 'never')).toThrow(CoordRegistryWaitError);
+    expect(new CoordRegistryWaitError(1)).toMatchObject({ reason: 'coord_registry_timeout' });
   } finally {
+    sleep.mockRestore();
     if (held.ok) held.release();
   }
 });
