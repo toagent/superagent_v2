@@ -1,5 +1,12 @@
-import { applyCoordIntents, describeDecision, type DecisionInbox } from './decisions';
+import {
+  answerNtfyDecision,
+  applyCoordIntents,
+  describeDecision,
+  loadCurrentDecisions,
+  type DecisionInbox,
+} from './decisions';
 import { FAILOVER_PREFIX, latestFailover } from './decisions';
+import { askNtfy, publishPendingNtfy, syncNtfy, type NtfyOption } from './ntfy';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { runAttention } from '../../packages/workflows/src/schemas/workflow-run';
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
@@ -285,6 +292,12 @@ export const OPTIONS = {
   runs: { type: 'string', multiple: true },
   'no-global': { type: 'boolean' },
   'bootstrap-evidence': { type: 'string' },
+  source: { type: 'string' },
+  body: { type: 'string' },
+  option: { type: 'string', multiple: true },
+  'expires-at': { type: 'string' },
+  'default-on-expiry': { type: 'string' },
+  callback: { type: 'string' },
 } as const;
 interface Args {
   _: string[];
@@ -1964,19 +1977,6 @@ function health(cwd?: string, verbose = false): number {
   const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
   const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
-  const consoleDir = join(home().sa, 'console'),
-    consoleError = join(consoleDir, 'error');
-  let consoleProblem: string | undefined;
-  if (existsSync(join(consoleDir, 'decision-origin'))) {
-    let error = existsSync(consoleError) ? readFileSync(consoleError, 'utf8').trim() : '';
-    try {
-      const state = readJson(join(home().sa, 'web.json')) as { pid?: unknown } | undefined;
-      if (!pidAlive(Number(state?.pid))) error ||= 'console not running';
-    } catch {
-      error ||= 'console not running';
-    }
-    if (error) consoleProblem = `${error}; inspect ${join(home().sa, 'console.log')}`;
-  }
   const tick = tickHealth(
     readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
     Date.now()
@@ -1987,8 +1987,7 @@ function health(cwd?: string, verbose = false): number {
     upstreamClean &&
     !drift.length &&
     !capabilities.length &&
-    !worker &&
-    !consoleProblem;
+    !worker;
   print({
     ok,
     mode,
@@ -2004,7 +2003,6 @@ function health(cwd?: string, verbose = false): number {
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
     tick,
-    ...(consoleProblem ? { console: { ok: false, reason: consoleProblem } } : {}),
   });
   return ok ? 0 : drift.length || capabilities.length ? EXIT_ALIAS_DRIFT : 1;
 }
@@ -2830,38 +2828,9 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
   saveAsk(asks, key);
 }
 
-/**
- * supervisor 的 ask 记录（SKILL 约定位置 `$AGENT_SUPERVISOR_STATE/asks/<id>.json`），只取 id 与问题文本。
- * 读不出或缺字段的记录逐个跳过并计数，不拖垮其他提问的对账。
- */
-function askRecords(): { records: { id: string; question: string }[]; anomalous: number } {
-  const dir = join(
-    process.env.AGENT_SUPERVISOR_STATE ?? join(homedir(), '.local', 'state', 'agent-supervisor'),
-    'asks'
-  );
-  const records: { id: string; question: string }[] = [];
-  let anomalous = 0;
-  for (const f of existsSync(dir) ? readdirSync(dir).filter(x => x.endsWith('.json')) : []) {
-    try {
-      const r = readJson(join(dir, f)) as { id?: unknown; question?: unknown } | null;
-      if (typeof r?.id === 'string' && typeof r.question === 'string')
-        records.push({ id: r.id, question: r.question });
-      else anomalous++;
-    } catch {
-      anomalous++;
-    }
-  }
-  return { records, anomalous };
-}
-
-/**
- * 一条提醒的投递与对账（签收与挂起共用）。≤200字的标题末尾是 key 的128位摘要，旧前缀仍可找回。
- * 先落 unknown 再调 ask；supervisor 先落盘再投递，失败或崩溃时先对账，找不到才重投；多条匹配不猜。
- */
+/** A stable marker keeps old ask titles recognizable while ntfy owns delivery. */
 const askMarker = (key: string): string =>
   `[sa:${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}]`;
-const matchesAsk = (question: string, key: string): boolean =>
-  question.endsWith(`；${askMarker(key)}`) || question.startsWith(`superagent ${key} `);
 function pollAsk(
   key: string,
   text: () => string,
@@ -2869,73 +2838,40 @@ function pollAsk(
   asks: Asks,
   context: (question: string) => DecisionContext
 ): { a: Ask; asked?: string; note?: string } | { conflict: string } {
-  let a = asks[key];
-  let note: string | undefined;
-  if (a !== undefined && a.id === undefined) {
-    const { records, anomalous } = askRecords();
-    if (anomalous) note = `${String(anomalous)} anomalous ask records`;
-    const found = records.filter(
-      r => matchesAsk(r.question, key) || (a?.legacy_key && matchesAsk(r.question, a.legacy_key))
-    );
-    if (found.length > 1)
-      return {
-        conflict: `ask ${key}: ${String(found.length)} supervisor asks match${
-          note ? `; ${note}` : ''
-        }`,
-      };
-    a = asks[key] = found.length ? { ...a, id: found[0].id, status: 'pending' } : undefined;
-  }
-  if (!a) {
-    asks[key] = { status: 'unknown' };
-    saveAsk(asks, key);
+  const a = asks[key];
+  if (!a || ['pending', 'unknown'].includes(a.status)) {
     const title = text();
-    const ctx = context(title);
+    const ctx = a?.context ?? context(title);
     asks[key] = { status: 'unknown', context: ctx };
     saveAsk(asks, key);
-    const marker = `；${askMarker(key)}`;
-    const question = title.endsWith(marker)
-      ? title
-      : askName(title, 200 - Array.from(marker).length) + marker;
-    const id = supervisor([
-      'ask',
-      '--question',
-      question,
-      '--ttl-hours',
-      String(hours),
-      '--context-json',
-      JSON.stringify(ctx),
-    ]);
+    const id = askNtfy({
+      source: ctx.source,
+      title: askName(title, 200),
+      body: `${ctx.reason}\n对象：${ctx.target}\n影响：${ctx.action}`,
+      options: [
+        { id: 'yes', label: '是', consequence: ctx.consequences.yes },
+        { id: 'no', label: '否', consequence: ctx.consequences.no },
+      ],
+      risk: `${ctx.action}${ctx.reason}`.includes('红线') ? 'red' : 'normal',
+      expires_at: new Date(Date.now() + hours * 3600e3).toISOString(),
+      callback: { kind: 'ask', key },
+      dedupe_key: key,
+    });
+    const asked = a?.id === id ? undefined : id;
     asks[key] = { id, status: 'pending', context: ctx };
     saveAsk(asks, key);
-    return { a: asks[key], asked: id, note };
+    return { a: asks[key], asked };
   }
-  if (a.status === 'pending' && a.id) {
-    const st = supervisor(['ask-status', a.id]);
-    if (!ANSWERS.includes(st))
-      throw new Error(`supervisor ask-status: unexpected ${st.slice(0, 40)}`);
-    a.status = st;
-    saveAsk(asks, key);
-  }
-  return { a, note };
+  return { a };
 }
 
-function pollCoordAsk(sa: string, asks: Asks, key: string, title: string) {
-  if (existsSync(join(sa, 'console/decision-origin'))) {
-    const current = asks[key];
-    if (current) return { id: current.id, status: current.status };
-    asks[key] = { status: 'pending' };
-    saveAsk(asks, key);
-    return { status: 'pending' };
-  }
-  const result = pollAsk(
-    key,
-    () => title,
-    MAX_TTL_H,
-    asks,
-    () => coordinationContext(key)
-  );
-  if ('conflict' in result) throw new Error(result.conflict);
-  return { id: result.a.id, status: result.a.status };
+function pollCoordAsk(_sa: string, asks: Asks, key: string, title: string) {
+  void title;
+  const current = asks[key];
+  if (current) return { id: current.id, status: current.status };
+  asks[key] = { status: 'pending', context: coordinationContext(key) };
+  saveAsk(asks, key);
+  return { status: 'pending' };
 }
 
 /** plan 截止已过：终止 run（保留证据），该 run 未执行的提问记 expired，ledger 记 failed/deadline；不提醒。 */
@@ -3532,37 +3468,14 @@ function tick(
       console.error(`supervise-tick cache write failed: ${(e as Error).message}`);
     }
   if (global && !(asks instanceof Error)) {
-    const mobile = existsSync(join(sa, 'console/decision-origin')),
-      currentAsks = asks;
-    if (mobile) out.push(...applyCoordIntents(currentAsks));
+    const currentAsks = asks;
+    out.push(...applyCoordIntents(currentAsks));
     for (const action of coord().tick((key, title) => pollCoordAsk(sa, currentAsks, key, title)))
       out.push({ run_id: 'coord', action: 'coord', ok: true, ...action });
     // gc.sh 删掉 ledger 后留下的条目在这里丢：asks.json 只有 tick 一个写者
     asks = Object.fromEntries(
       Object.entries(asks).filter(([k]) => k.startsWith('coord:') || live.has(k.split(':')[0]))
     );
-    for (const [key, a] of mobile ? [] : Object.entries(asks)) {
-      if (a?.status !== 'superseded' || a.stale_answer) continue;
-      if (!a.id) {
-        const records = askRecords().records.filter(r => matchesAsk(r.question, key));
-        if (records.length === 1) a.id = records[0].id;
-      }
-      if (
-        !a.id ||
-        Object.values(asks).some(live => live && live.id === a.id && live.status !== 'superseded')
-      )
-        continue;
-      try {
-        a.stale_answer = ['yes', 'no'].includes(supervisor(['ask-status', a.id]));
-      } catch (e) {
-        out.push({
-          run_id: 'asks',
-          action: 'error',
-          ok: false,
-          error: tail((e as Error).message, 200),
-        });
-      }
-    }
     if (initialAsks) saveAsksDelta(initialAsks, asks);
   }
   if (!global && initialAsks && !(asks instanceof Error)) saveAsksDelta(initialAsks, asks);
@@ -3880,10 +3793,7 @@ function dispose(
         d => d.reason === hold && d.ok && Date.parse(d.at) >= Date.parse(row.since)
       ) ?? false;
     const p: Policy = HOLD_POLICY[hold];
-    if (
-      ['ask', 'signoff'].includes(p.do) &&
-      existsSync(join(home().sa, 'console/decision-origin'))
-    ) {
+    if (['ask', 'signoff'].includes(p.do)) {
       const decision = describeDecision(l, run);
       if (decision && !decision.disabled)
         return {
@@ -3891,12 +3801,11 @@ function dispose(
           action: 'none',
           ok: false,
           held: true,
-          transport: 'mobile',
+          transport: 'ntfy',
           decision: decision.id,
-          reason: '请在手机查看；未配对/未订阅不等于已通知，查看 console mobile-health',
+          reason: '等待签名 ntfy 回答；superagent decide 仍可用',
         };
     }
-
     if (
       !(asks instanceof Error) &&
       ['ask', 'signoff'].includes(p.do) &&
@@ -4116,6 +4025,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
+  { command: 'ask', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
@@ -4210,7 +4120,47 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   else stages.publish = { ok: true, duration_ms: 0, skipped: mode.noGlobal ? 'no-global' : 'collect-failed' };
   await result('console', () => mode.noGlobal ? { skipped: 'no-global' } : refresh(), 'console refresh');
   let output: Record<string, unknown> = {};
-  const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
+  const exit = ((await result('actions', async () => {
+    if (!mode.noGlobal)
+      try {
+        const inbox = await loadCurrentDecisions();
+        for (const decision of inbox.decisions) {
+          if (decision.disabled) continue;
+          askNtfy({
+            source: 'superagent',
+            title: decision.question,
+            body: `${decision.reason}\n对象：${decision.context}`,
+            options: decision.options,
+            risk: 'normal',
+            expires_at: new Date(Date.now() + MAX_TTL_H * 3600e3).toISOString(),
+            callback: { kind: 'decision', id: decision.id },
+            dedupe_key: `decision:${decision.id}`,
+          });
+        }
+        await syncNtfy(async (decision, option) => {
+          if (decision.callback.kind === 'decision') {
+            await answerNtfyDecision(decision.callback.id, option);
+            return;
+          }
+          if (decision.callback.kind !== 'ask') return;
+          const asks = loadAsks(), current = asks[decision.callback.key];
+          if (!current || current.id !== decision.id || !['pending', 'unknown'].includes(current.status))
+            throw new Error('ntfy decision changed');
+          current.status = option;
+          saveAsk(asks, decision.callback.key);
+        });
+      } catch {
+        // Network and ntfy failures leave the persisted decision pending.
+      }
+    const code = tickOutput(mode, value => (output = value));
+    if (!mode.noGlobal)
+      try {
+        await publishPendingNtfy();
+      } catch {
+        // The outbox is retried by the next supervise tick.
+      }
+    return code;
+  })) as number | undefined) ?? 1;
   if (exit)
     stages.actions = {
       ok: false,
@@ -4297,23 +4247,19 @@ export async function claudeCommanderFailover(
       recommendation: { choice: 'yes', reason: '恢复在途 run 的元帅决策能力' },
       consequences: { yes: '启动 Codex 元帅；复核后显式接管', no: 'ownership 不变' },
     });
-    const mobile = existsSync(join(home().sa, 'console/decision-origin'));
-    let polled;
-    if (mobile) {
-      const a = asks[key] ?? { status: 'pending', context: context(question) };
-      asks[key] ??= a;
+    const existing = asks[key];
+    if (!existing) {
+      asks[key] = { status: 'pending', context: context(question) };
       saveAsk(asks, key);
-      polled = { a };
-    } else polled = pollAsk(key, () => question, MAX_TTL_H, asks, context);
-    if ('conflict' in polled) throw new Error(polled.conflict);
-    const a = polled.a;
+    }
+    const a = asks[key];
+    if (!a) throw new Error('failover ask persistence failed');
     const receipt = (stage: AnswerReceipt['stage'], body: string): void => {
       a.receipt ??= { key: `${key}:result`, stage, body, at: now().toISOString() };
-      if (mobile) saveAsk(asks, key);
-      else deliverReceipt(undefined, key, a, asks);
+      saveAsk(asks, key);
     };
     if (['approved', 'rejected'].includes(a.status)) return { skipped: 'answered' };
-    if (!['yes', 'no'].includes(a.status)) return { status: a.status, asked: polled.asked };
+    if (!['yes', 'no'].includes(a.status)) return { status: a.status, asked: a.id };
     a.status = a.status === 'yes' ? 'approved' : 'rejected';
     saveAsk(asks, key);
     if (a.status === 'rejected') {
@@ -4832,6 +4778,44 @@ function need<T>(v: T | undefined, usage: string): T {
   return v;
 }
 
+async function askCli(argv: string[]): Promise<number> {
+  const a = parseArgs(argv);
+  if (a._.length !== 1) throw new Error('usage: superagent ask [structured flags]');
+  const parseOption = (value: string): NtfyOption => {
+    const [id, label, ...consequence] = value.split('=');
+    if (!id || !label) throw new Error('--option must be id=label[=consequence]');
+    return { id, label, ...(consequence.length ? { consequence: consequence.join('=') } : {}) };
+  };
+  const source = need(a.flags.source, 'ask --source <source>'),
+    title = need(a.flags.title, 'ask --title <title>'),
+    body = need(a.flags.body, 'ask --body <body>'),
+    callback = need(a.flags.callback, 'ask --callback <ref>'),
+    expiresAt = need(a.flags['expires-at'], 'ask --expires-at <ISO time>'),
+    risk = a.flags.risk ?? 'normal';
+  if (risk !== 'normal' && risk !== 'red') throw new Error('--risk must be normal or red');
+  const id = askNtfy({
+    source,
+    title,
+    body,
+    options: (a.flags.option ?? []).map(parseOption),
+    risk,
+    expires_at: expiresAt,
+    default_on_expiry: a.flags['default-on-expiry'],
+    callback: { kind: 'ask', key: callback },
+    dedupe_key: callback,
+  });
+  const asks = loadAsks();
+  asks[callback] ??= { id, status: 'pending' };
+  saveAsk(asks, callback);
+  try {
+    await publishPendingNtfy();
+  } catch {
+    // A durable pending decision is the truthful result when ntfy is unavailable.
+  }
+  print({ id, status: 'pending' });
+  return 0;
+}
+
 async function heartbeatCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv);
   if (a._.length !== 1 || (a.flags.all && a.flags.cwd))
@@ -4996,6 +4980,7 @@ async function runCli(): Promise<void> {
         'board',
         'usage',
         'heartbeat',
+        'ask',
         'supervise-tick',
         'console',
         'web',
@@ -5008,6 +4993,7 @@ async function runCli(): Promise<void> {
     if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
     if (verb === 'usage') process.exit(await usageCli(argv));
     if (verb === 'heartbeat') process.exit(await heartbeatCli(argv));
+    if (verb === 'ask') process.exit(await askCli(argv));
     if (verb === 'supervise-tick') {
       const parsed = parseArgs(argv);
       process.exit(
