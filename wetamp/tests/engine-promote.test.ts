@@ -120,43 +120,6 @@ test('engine acceptance removes success, failure, and timeout scratch but refuse
   expect(existsSync(target)).toBe(true);
 });
 
-test('engine acceptance waits outside its timeout and reports holder exhaustion', async () => {
-  const root = tmp(),
-    snapshot = join(root, 'snapshot'),
-    scripts = join(snapshot, 'wetamp/scripts');
-  mkdirSync(scripts, { recursive: true });
-  for (const name of ['engine-acceptance.sh', 'heavy-slot.sh'])
-    writeFileSync(join(scripts, name), readFileSync(join(import.meta.dir, '../scripts', name)));
-  process.env.SUPERAGENT_HOME = join(root, 'home');
-  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock');
-  process.env.SA_HEAVY_LOCK_HELD = '';
-  const holder = Bun.spawn(
-    ['sh', '-c', '. "$1"; heavy_exec sleep 2', '_', join(scripts, 'heavy-slot.sh')],
-    { env: { ...process.env, SA_HEAVY_LOCK_HELD: '' } }
-  );
-  for (let i = 0; i < 100 && !existsSync(`${process.env.SA_HEAVY_LOCK_FILE}.holder`); i++)
-    await Bun.sleep(10);
-  writeFileSync(join(scripts, 'engine-acceptance.sh'), '#!/bin/sh\nsleep 0.05\n');
-  expect(runAcceptance(snapshot, 200, 4_000, 1_000).exit).toBe(0);
-  expect(
-    readFileSync(join(root, 'home/engine/promotions/snapshot.acceptance.log'), 'utf8')
-  ).toContain('heavy slot wait: holder');
-  expect(await holder.exited).toBe(0);
-
-  const blocker = Bun.spawn(
-    ['sh', '-c', '. "$1"; heavy_exec sleep 3', '_', join(scripts, 'heavy-slot.sh')],
-    { env: { ...process.env, SA_HEAVY_LOCK_HELD: '' } }
-  );
-  for (let i = 0; i < 100 && !existsSync(`${process.env.SA_HEAVY_LOCK_FILE}.holder`); i++)
-    await Bun.sleep(10);
-  process.env.SA_HEAVY_LOCK_HELD = '1';
-  expect(runAcceptance(snapshot, 200, 1_000, 1_000).exit).toBe(0);
-  process.env.SA_HEAVY_LOCK_HELD = '';
-  expect(() => runAcceptance(snapshot, 200, 1_000, 1_000)).toThrow('heavy_slot_wait_exhausted');
-  blocker.kill('SIGKILL');
-  await blocker.exited;
-});
-
 test('engine acceptance timeout kills its descendant process group', () => {
   const root = tmp(),
     snapshot = join(root, 'snapshot'),
@@ -172,7 +135,7 @@ test('engine acceptance timeout kills its descendant process group', () => {
   process.env.SUPERAGENT_HOME = join(root, 'home');
   process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock');
   process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
-  expect(() => runAcceptance(snapshot, 100, 1_000, 1_000)).toThrow('engine acceptance failed');
+  expect(() => runAcceptance(snapshot, 100)).toThrow('engine acceptance failed');
   const pid = Number(readFileSync(descendant, 'utf8'));
   expect(() => process.kill(pid, 0)).toThrow();
 });

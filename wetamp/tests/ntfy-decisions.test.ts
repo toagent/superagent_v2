@@ -43,12 +43,15 @@ describe('ntfy decision channel', () => {
     const f = fixture(), accepted: string[] = [];
     const first = askNtfy(f.request('first'), f.config); await publishPendingNtfy(f.config);
     expect(new URL(f.posts[0].url).pathname).toBe('/'); expect(f.posts[0].body.topic).toBe('sa-decisions');
-    const valid = f.action(); f.push({ ...valid, sig: '0'.repeat(64) }); f.push(valid); f.push(valid);
-    expect(await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).toEqual({ accepted: 1, ignored: 2, failed: 0 });
+    expect((f.posts[0].body.actions as { clear: boolean }[]).every(action => action.clear)).toBeTrue();
+    const valid = f.action(); f.push({ ...valid, sig: '0'.repeat(64) }); f.push(valid); f.push(valid); f.push({ ...valid, id: 'missing' });
+    expect(await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).toEqual({ accepted: 1, ignored: 3, failed: 0 });
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => post.body.title)).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜Decision', '未执行｜未知决策']);
     const bad = askNtfy(f.request('bad'), f.config), live = askNtfy(f.request('live'), f.config);
-    await publishPendingNtfy(f.config); f.push(f.action(f.posts.at(-2))); f.push(f.action());
+    await publishPendingNtfy(f.config); const badAction = f.action(f.posts.at(-2)); f.push(badAction); f.push(f.action());
     expect(await syncNtfy(d => { if (d.id === bad) throw new Error('stale'); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 1 });
     expect(f.state().decisions).toMatchObject({ [first]: { status: 'answered' }, [bad]: { status: 'failed' }, [live]: { status: 'answered' } });
+    f.push(badAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body.message).toBe('该决策处理失败，未执行');
     queueNtfyAlert('receipt', 'done', f.config); await publishPendingNtfy(f.config);
     expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
   });
@@ -56,8 +59,9 @@ describe('ntfy decision channel', () => {
     const f = fixture(), accepted: string[] = []; askNtfy(f.request('red', 'red'), f.config);
     await publishPendingNtfy(f.config); f.push(f.action());
     expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(0);
-    expect((f.posts.at(-1)!.body.actions as { label: string }[])[0].label).toBe('确认批准');
-    f.push(f.action()); expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(1);
+    const confirmation = f.posts.filter(post => post.body.topic === 'sa-decisions').at(-1)!;
+    expect((confirmation.body.actions as { label: string }[])[0].label).toBe('确认批准');
+    f.push(f.action(confirmation)); expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(1);
     expect(accepted).toEqual(['yes']);
   });
   test('keeps outages pending and external asks queryable through the supervise sync path', async () => {
@@ -67,9 +71,11 @@ describe('ntfy decision channel', () => {
     await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }));
     await askCli(['ask', 'status', id], f.config, value => output.push(value));
     expect(output.at(-1)).toMatchObject({ id, status: 'answered', answer: 'yes' });
-    const expires = askNtfy(f.request('expires'), f.config); await publishPendingNtfy(f.config);
+    const expires = askNtfy(f.request('expires'), f.config); await publishPendingNtfy(f.config); const expiredAction = f.action();
     let expired = ''; f.config.now = () => 2_000_007_200_000;
     await syncNtfy(() => undefined, f.config, decision => { expired = decision.id; }); expect(expired).toBe(expires);
+    f.push(expiredAction); await syncNtfy(() => undefined, f.config);
+    expect(f.posts.at(-1)!.body.message).toBe('该决策已过期，未执行');
     f.config.now = () => 2_000_000_000_000; askNtfy(f.request('offline'), f.config);
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
@@ -86,5 +92,19 @@ describe('ntfy decision channel', () => {
     let observed = '';
     await answerNtfyDecision(id, 'yes', new DecisionStore(join(f.root, 'decisions')), async (_store, value) => { observed = value; return receipt; });
     expect(observed).toBe(id);
+  });
+  test('disables default ntfy network access outside the production home', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ntfy-isolation-')); roots.push(root);
+    const savedHome = process.env.HOME, savedSa = process.env.SUPERAGENT_HOME, savedFetch = globalThis.fetch;
+    process.env.HOME = root; process.env.SUPERAGENT_HOME = join(root, 'scratch');
+    let calls = 0; globalThis.fetch = (async () => { calls++; throw new Error('network'); }) as unknown as typeof fetch;
+    try {
+      await publishPendingNtfy(); expect(await syncNtfy(() => undefined)).toEqual({ accepted: 0, ignored: 0, failed: 0 }); expect(calls).toBe(0);
+      await publishPendingNtfy({ fetch: globalThis.fetch }); expect(await syncNtfy(() => undefined, { fetch: globalThis.fetch })).toEqual({ accepted: 0, ignored: 0, failed: 0 });
+    } finally {
+      globalThis.fetch = savedFetch;
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      if (savedSa === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = savedSa;
+    }
   });
 });
