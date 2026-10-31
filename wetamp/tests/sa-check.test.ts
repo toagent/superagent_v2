@@ -3011,6 +3011,70 @@ describe('sa-check script', () => {
       command_results: [{ structured: { complete: true, ids: ['suite::case'] } }],
     });
   });
+  test('P2: pytest xunit1 file ids match nodeid collect output with summary lines', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'true');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    const id = 'apps/advisor/tests/browser/test_message_actions.py::test_copy';
+    p.packages[0].accept[0] = {
+      cmd: `printf '%s' '<testsuite tests="1"><testcase classname="apps.advisor.tests.browser.test_message_actions" name="test_copy" file="apps/advisor/tests/browser/test_message_actions.py"/></testsuite>' > junit.xml`,
+      timeout_s: 5,
+      report: { junit: 'junit.xml', collect: `printf '\n${id}\n\n1 test collected in 0.01s\n'` },
+    };
+    writeFileSync(path, JSON.stringify(p));
+    expect(
+      runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', tag: 'verify-a' }).out
+    ).toMatchObject({ ok: true, command_results: [{ structured: { complete: true, ids: [id] } }] });
+  });
+  test('P2: a failing case from a pytest file absent at base remains repairable', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      path = planFile(root, 'false', ['true']);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
+    mkdirSync(join(repo, 'tests'));
+    writeFileSync(join(repo, 'tests/test_old.py'), 'old-case\n');
+    sh(
+      'git add tests/test_old.py && git -c user.name=t -c user.email=t@l commit -qm baseline',
+      repo
+    );
+    const base = sh('git rev-parse HEAD', repo).trim(),
+      file = 'tests/test_new.py';
+    writeFileSync(join(repo, file), 'new-case\n');
+    sh(`git add '${file}' && git -c user.name=t -c user.email=t@l commit -qm candidate`, repo);
+    const p = JSON.parse(readFileSync(path, 'utf8'));
+    const old = 'tests/test_old.py::test_old',
+      id = `${file}::test_new`;
+    p.packages[0].accept[0] = {
+      cmd: `if grep -q new-case '${file}'; then printf '%s' '<testsuite tests="2"><testcase classname="test_old" name="test_old" file="tests/test_old.py"/><testcase classname="test_new" name="test_new" file="${file}"><failure>new</failure></testcase></testsuite>' > junit.xml; exit 1; else printf '%s' '<testsuite tests="1"><testcase classname="test_old" name="test_old" file="tests/test_old.py"/></testsuite>' > junit.xml; fi`,
+      timeout_s: 5,
+      report: {
+        junit: 'junit.xml',
+        collect: `printf '${old}\n'; grep -q new-case '${file}' && printf '${id}\n' || true`,
+      },
+    };
+    writeFileSync(path, JSON.stringify(p));
+    const out = runScript(repo, {
+      kind: 'accept',
+      plan: path,
+      pkgs: 'a',
+      tag: 'verify-a',
+      base,
+    }).out;
+    expect(out).toMatchObject({
+      disposition: 'repair',
+      baseline: 'comparable',
+      base_pass: true,
+      base_results: [
+        {
+          cmd: p.packages[0].accept[0].cmd,
+          pass: true,
+          structured: { complete: true, ids: [old] },
+        },
+      ],
+    });
+  });
   test.each([
     [
       'stale report',
