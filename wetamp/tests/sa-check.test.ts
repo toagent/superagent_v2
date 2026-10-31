@@ -461,6 +461,36 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   ).toEqual([{ model: 'local', strength: 'pinned' }]);
 });
 
+test('author evidence binds failed and interrupted attempts while preserving true unknowns', () => {
+  type Run = Parameters<typeof readAuthorEvidence>[0];
+  const binding = {
+    model: { requested: 'author', resolved: { source: 'unavailable', reason: 'unsupported' } },
+  };
+  const event = (event_type: string, bound = true) => ({
+    event_type,
+    step_name: 'code-core',
+    ...(bound ? { data: { binding } } : {}),
+  });
+  const authors = (events: Run['events']) =>
+    readAuthorEvidence(
+      { id: 'run', codebase_id: 'repo', events },
+      [],
+      ['core'],
+      'm1',
+      MAX_ROUNDS,
+      () => {
+        throw new Error('unexpected ancestry');
+      }
+    );
+  const reviewer = { model: 'reviewer', strength: 'pinned' } as const;
+
+  expect(
+    independence(authors([event('node_failed'), event('node_completed')]), reviewer)
+  ).toBeNull();
+  expect(independence(authors([event('node_failed', false)]), reviewer)).toBe('author_unknown');
+  expect(independence(authors([event('node_started')]), reviewer)).toBeNull();
+});
+
 test('author evidence uses the frozen review ladder for late fix rounds', () => {
   const run = { id: 'current', codebase_id: 'repo', events: [] };
   const attempt = {

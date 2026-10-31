@@ -2638,10 +2638,10 @@ export function readAuthorEvidence(
           ['node_started', 'node_completed', 'node_failed'].includes(e.event_type)
       );
       for (const e of history.filter(e => e.event_type !== 'node_started'))
-        authors.push(
-          e.event_type === 'node_completed' ? attemptIdentity([], node, e.data?.binding) : unknown
-        );
-      if (history.at(-1)?.event_type === 'node_started') authors.push(unknown);
+        authors.push(attemptIdentity([], node, e.data?.binding));
+      const interrupted = history.at(-1);
+      if (interrupted?.event_type === 'node_started')
+        authors.push(attemptIdentity([], node, interrupted.data?.binding));
     }
     const prior = run.adopted_from_run_id;
     if (!prior && seen.size > 1 && !receipts.length && !nodes.size) authors.push(unknown);

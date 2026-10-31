@@ -60,6 +60,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'authors.push(attemptIdentity([], node, e.data?.binding));',
+    to: 'authors.push(unknown);',
+    test: 'tests/sa-check.test.ts',
+    name: 'author evidence binds failed',
+    expectedError: 'Received: "author_unknown"',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'rerun <= (pytest ? 1 : 2) && merged.failures.length',
     to: 'rerun < (pytest ? 1 : 2) && merged.failures.length',
     test: 'tests/sa-check.test.ts',
