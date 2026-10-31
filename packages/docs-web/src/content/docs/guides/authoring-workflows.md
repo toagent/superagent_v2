@@ -306,7 +306,9 @@ This is an exact, immutable fork contract:
 
 - Source and consumer must resolve to the same provider.
 - Claude, Codex and Pi support immutable forks. A provider that omits the fork capability does not.
-- A missing source handle, provider mismatch, or provider without immutable-fork support fails before execution. If a source-fork attempt cannot restore prior context, returns no branch handle, or reuses the source session, Archon records a transient failure and retries the node in a fresh session. This fallback is visible in the node events; set `retry.max_attempts: 0` to disable it. A private owner continuation inside a `loop_group` never degrades to a fresh session: retries keep the same owner session and exhaustion fails the node.
+- A missing source handle, provider mismatch, or provider without immutable-fork support fails before execution and never falls back to a fresh session.
+- After a source-fork attempt starts, failure to restore prior context, a missing branch handle, or reuse of the source session is recorded as transient. A retry then uses a fresh session, and the fallback is visible in the node events. Set `retry.max_attempts: 0` to disable it.
+- A private owner continuation inside a `loop_group` never falls back to a fresh session. Retries keep the same owner session, and exhaustion fails the node.
 - Two parallel consumers may name the same source; each receives its own branch while the source remains unchanged.
 - Run resume restores these private handles for completed nodes, so a pause or process restart does not lose declared ancestry. Each node's full session ID is recorded on its node record; transcripts and logs carry at most an eight-character preview.
 

@@ -2781,7 +2781,7 @@ async function executeNodeInternal(
       (nodeOutputText.trim() !== '' || structuredOutput !== undefined)
     ) {
       throw new NodeFailure(
-        nodeIdleTimedOut ? 'timeout' : 'transient',
+        unsettledFailureKind(nodeIdleTimedOut),
         `Node '${node.id}' failed: ${unsettledTurnError(
           nodeIdleTimedOut ? effectiveIdleTimeout : undefined,
           lastWatchdogReset,
@@ -3261,6 +3261,10 @@ function unsettledTurnError(
         ? ` Subtask(s) still running: ${liveTaskIds.join(', ')}.`
         : ` Stale subtask(s) no longer counted as active: ${liveTaskIds.join(', ')}.`;
   return `${cause}${tasks} Its work may be incomplete.`;
+}
+
+function unsettledFailureKind(idleTimedOut: boolean): NodeFailureKind {
+  return idleTimedOut ? 'timeout' : 'transient';
 }
 
 /** A node failure whose cause the engine detected itself, carried to the failure record. */
@@ -6351,7 +6355,7 @@ async function executeLoopNode(
             .catch((evtErr: Error) => {
               logEventStoreError(evtErr, i);
             });
-          const failureKind: NodeFailureKind = iterationIdleTimedOut ? 'timeout' : 'transient';
+          const failureKind = unsettledFailureKind(iterationIdleTimedOut);
           if (await tryIterationTransientRetry({ failureKind, error: emptyError }, iterRetry)) {
             continue iterationAttempt;
           }
@@ -6396,7 +6400,7 @@ async function executeLoopNode(
             .catch((evtErr: Error) => {
               logEventStoreError(evtErr, i);
             });
-          const failureKind: NodeFailureKind = iterationIdleTimedOut ? 'timeout' : 'transient';
+          const failureKind = unsettledFailureKind(iterationIdleTimedOut);
           if (await tryIterationTransientRetry({ failureKind, error: unsettledError }, iterRetry)) {
             continue iterationAttempt;
           }
