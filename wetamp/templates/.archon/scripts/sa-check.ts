@@ -273,12 +273,8 @@ function validXml(xml: string): boolean {
 }
 // prettier-ignore
 type ParsedCases = StructuredCases & { errors: string[]; report_error: boolean };
-interface RerunTarget {
-  id: string;
-  file: string;
-  name: string;
-  classname: string;
-}
+// prettier-ignore
+interface RerunTarget { id: string; file: string; name: string; classname: string; }
 // prettier-ignore
 function junitCaseId(a: Record<string, string | undefined>): string {
   const legacy = `${a.classname ?? ''}::${a.name ?? ''}`;
@@ -335,18 +331,14 @@ function junitCases(path: string, expected: string[], started: number): ParsedCa
   }
 }
 
+// prettier-ignore
 function junitRerunTargets(path: string, failures: StructuredCases['failures']): RerunTarget[] {
   const wanted = new Set(failures.map(failure => failure.id));
   try {
     const xml = readFileSync(path, 'utf8').replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
     return [...xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
       .map(match => attrs(match[1]))
-      .map(a => ({
-        id: junitCaseId(a),
-        file: a.file ?? '',
-        name: a.name ?? '',
-        classname: a.classname ?? '',
-      }))
+      .map(a => ({ id: junitCaseId(a), file: a.file ?? '', name: a.name ?? '', classname: a.classname ?? '' }))
       .filter(target => wanted.has(target.id) && target.file && target.name);
   } catch {
     return [];
@@ -354,8 +346,8 @@ function junitRerunTargets(path: string, failures: StructuredCases['failures']):
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
-const exactTestPattern = (name: string): string =>
-  `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+// prettier-ignore
+const exactTestPattern = (name: string): string => `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
 
 function bunRerunCommand(check: Check, target: RerunTarget, report: string): string | undefined {
   if (!/(?:^|[;&|]\s*)bun\s+test(?:\s|$)/.test(check.cmd)) return;
@@ -370,17 +362,10 @@ function bunRerunCommand(check: Check, target: RerunTarget, report: string): str
   ].join(' ');
 }
 
-function pytestRerunCommand(
-  check: Check,
-  target: RerunTarget,
-  report: string,
-  attempts: string
-): string | undefined {
-  if (
-    !target.file.endsWith('.py') ||
-    !/(?:^|[;&|]\s*)(?:(?:uv\s+run\s+|python\s+-m\s+))?pytest(?:\s|$)/.test(check.cmd)
-  )
-    return;
+// prettier-ignore
+function pytestRerunCommand(check: Check, target: RerunTarget, report: string,
+  attempts: string): string | undefined {
+  if (!target.file.endsWith('.py') || !/(?:^|[;&|]\s*)(?:(?:uv\s+run\s+|python\s+-m\s+))?pytest(?:\s|$)/.test(check.cmd)) return;
   return [
     'uv run --with pytest-rerunfailures==16.7 --with pytest-reportlog==1.0.0 pytest',
     shellQuote(target.id),
@@ -391,29 +376,21 @@ function pytestRerunCommand(
   ].join(' ');
 }
 
+// prettier-ignore
 function pytestAttemptCount(path: string, id: string): number {
   try {
-    return (
-      readFileSync(path, 'utf8')
-        .trim()
-        .split('\n')
-        .filter(line => {
-          const event = JSON.parse(line) as { nodeid?: string; when?: string };
-          return event.nodeid === id && event.when === 'call';
-        }).length + 1
-    );
+    return readFileSync(path, 'utf8').trim().split('\n').filter(line => {
+      const event = JSON.parse(line) as { nodeid?: string; when?: string };
+      return event.nodeid === id && event.when === 'call';
+    }).length + 1;
   } catch {
     return 1;
   }
 }
 
-function mergeJunit(
-  base: string,
-  rerun: string,
-  ids: string[],
-  deadline: number,
-  log: string
-): boolean {
+// prettier-ignore
+function mergeJunit(base: string, rerun: string, ids: string[], deadline: number,
+  log: string): boolean {
   const remaining = deadline - Date.now();
   if (remaining <= 0) return false;
   const script = join(import.meta.dir, 'junit_merge.py');
@@ -422,10 +399,7 @@ function mergeJunit(
     { stdout: 'pipe', stderr: 'pipe', timeout: remaining }
   );
   if (merged.exitCode !== 0 || merged.signalCode)
-    appendFileSync(
-      log,
-      `# junit merge failed\n${merged.stdout.toString()}${merged.stderr.toString()}\n`
-    );
+    appendFileSync(log, `# junit merge failed\n${merged.stdout.toString()}${merged.stderr.toString()}\n`);
   return merged.exitCode === 0 && !merged.signalCode;
 }
 
@@ -827,6 +801,7 @@ async function run(
     try {
       first = await execute();
       attempt = first;
+      // prettier-ignore
       if (
         reportPath &&
         first[2]?.complete &&
@@ -837,11 +812,7 @@ async function run(
       ) {
         let merged = first[2];
         const pytest = merged.failures.every(failure => failure.id.split('::')[0]?.endsWith('.py'));
-        for (
-          let rerun = 1;
-          rerun <= (pytest ? 1 : 2) && merged.failures.length && deadline > Date.now();
-          rerun++
-        ) {
+        for (let rerun = 1; rerun <= (pytest ? 1 : 2) && merged.failures.length && deadline > Date.now(); rerun++) {
           const targets = junitRerunTargets(reportPath, merged.failures);
           if (targets.length !== merged.failures.length) break;
           let last: (typeof first)[0] = first[0];
@@ -849,23 +820,12 @@ async function run(
           for (const target of targets) {
             const rerunPath = `${reportPath}.rerun-${String(rerun)}.xml`,
               attemptsPath = `${rerunPath}.attempts.jsonl`,
-              command =
-                bunRerunCommand(c, target, rerunPath) ??
-                pytestRerunCommand(c, target, rerunPath, attemptsPath);
-            if (!command) {
-              mergeFailed = true;
-              break;
-            }
+              command = bunRerunCommand(c, target, rerunPath) ?? pytestRerunCommand(c, target, rerunPath, attemptsPath);
+            if (!command) { mergeFailed = true; break; }
             const result = await execute(command, rerunPath);
             if (result[0]) last = result[0];
-            attemptCount = Math.max(
-              attemptCount,
-              pytest ? pytestAttemptCount(attemptsPath, target.id) : rerun + 1
-            );
-            if (
-              !existsSync(rerunPath) ||
-              !mergeJunit(reportPath, rerunPath, [target.id], deadline, log)
-            )
+            attemptCount = Math.max(attemptCount, pytest ? pytestAttemptCount(attemptsPath, target.id) : rerun + 1);
+            if (!existsSync(rerunPath) || !mergeJunit(reportPath, rerunPath, [target.id], deadline, log))
               mergeFailed = true;
             rmSync(rerunPath, { force: true });
             rmSync(attemptsPath, { force: true });
@@ -873,10 +833,7 @@ async function run(
           }
           const structured = mergeFailed ? undefined : junitCases(reportPath, expected, t0);
           if (!structured?.complete) {
-            appendFileSync(
-              log,
-              `# merged JUnit failed completeness: ${JSON.stringify(structured ?? null)}\n`
-            );
+            appendFileSync(log, `# merged JUnit failed completeness: ${JSON.stringify(structured ?? null)}\n`);
             break;
           }
           merged = structured;

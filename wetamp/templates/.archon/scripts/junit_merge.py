@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Replace selected cases in a complete JUnit report with rerun results."""
-
 import copy
 import os
 import sys
 import tempfile
 
 from junitparser import JUnitXml, TestCase, TestSuite
-
 
 def case_id(case) -> str:
     attrs = case._elem.attrib
@@ -25,7 +22,6 @@ def case_id(case) -> str:
             return "::".join([normalized, *parts[length:], name])
     return legacy
 
-
 def indexed(xml):
     result = {}
     def visit(suite):
@@ -40,7 +36,6 @@ def indexed(xml):
     for suite in xml:
         visit(suite)
     return result
-
 
 def main() -> None:
     if len(sys.argv) < 4:
@@ -64,7 +59,6 @@ def main() -> None:
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
-
 
 if __name__ == "__main__":
     main()

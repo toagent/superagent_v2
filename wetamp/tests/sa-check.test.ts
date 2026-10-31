@@ -2747,91 +2747,55 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
+  // prettier-ignore
   test('accept: JUnit failure reruns only its exact Bun case and records flaky without cache', () => {
-    const root = tmp(),
-      repo = gitRepo(root),
-      home = join(root, 'home'),
-      counts = join(root, 'counts');
+    const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts');
     writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\nfixture.test.ts\n');
-    writeFileSync(
-      join(repo, 'fixture.test.ts'),
-      `import { describe, expect, test } from 'bun:test'; import { appendFileSync, readFileSync } from 'node:fs';
+    writeFileSync(join(repo, 'fixture.test.ts'), `import { describe, expect, test } from 'bun:test'; import { appendFileSync, readFileSync } from 'node:fs';
 describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify(counts)}, 'stable\\n'); }); test('target', () => { appendFileSync(${JSON.stringify(counts)}, 'target\\n'); const n = readFileSync(${JSON.stringify(counts)}, 'utf8').split('target').length - 1; expect(n).toBeGreaterThan(1); }); });`
     );
     const command = 'bun test fixture.test.ts --reporter=junit --reporter-outfile=junit.xml';
-    const plan = planFile(root, command),
-      p = JSON.parse(readFileSync(plan, 'utf8'));
-    p.packages[0].accept[0].report = {
-      junit: 'junit.xml',
-      collect: `printf 'suite::stable\nsuite::target\n'`,
-    };
+    const plan = planFile(root, command), p = JSON.parse(readFileSync(plan, 'utf8'));
+    p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::stable\nsuite::target\n'` };
     writeFileSync(plan, JSON.stringify(p));
-    const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' }, SCRIPT, {
-      SUPERAGENT_HOME: home,
-      ARCHON_HOME: join(home, 'archon'),
-    });
-    expect(result.out, readFileSync(join(result.art, 'verify-a.log'), 'utf8')).toMatchObject({
-      ok: true,
-      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] } }],
-    });
+    const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' }, SCRIPT,
+      { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+    expect(result.out, readFileSync(join(result.art, 'verify-a.log'), 'utf8')).toMatchObject({ ok: true,
+      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] } }] });
     expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\ntarget\n');
     expect(readdirSync(join(result.art, 'accept-cache'))).toEqual(['.key']);
-    expect(JSON.parse(readFileSync(join(home, 'flaky-acceptance.jsonl'), 'utf8'))).toMatchObject({
-      test_ids: ['suite::target'],
-      attempts: 2,
-    });
-    const cases = JSON.parse(
-      '[["accept",true,"false",2],["accept",false,"false",1],["env",true,"false",1],["accept",true,"kill -TERM $$",1],["accept",true,"sleep 2; false",1]]'
-    ) as ['accept' | 'env', boolean, string, number][];
-    for (const [kind, cache, command, runs] of cases) {
-      const r = tmp(),
-        m = join(r, 'runs'),
-        trace = `echo x >> '${m}'; ${command}`;
-      const plan = planFile(
-        r,
-        kind === 'env' ? 'true' : trace,
-        kind === 'env' ? [trace] : [],
-        cache,
-        command.startsWith('sleep') ? 1 : 5
-      );
-      runScript(gitRepo(r), { kind, plan, pkgs: 'a', tag: 'verify-a' });
-      expect(readFileSync(m, 'utf8').trim().split('\n')).toHaveLength(runs);
-    }
+    expect(JSON.parse(readFileSync(join(home, 'flaky-acceptance.jsonl'), 'utf8'))).toMatchObject({ test_ids: ['suite::target'], attempts: 2 });
   });
+  // prettier-ignore
   test.each(['still-fails', 'first-pass', 'missing-rerun-id'])(
     'accept: typed Bun rerun adapter handles %s',
     mode => {
-      const root = tmp(),
-        repo = gitRepo(root),
-        counts = join(root, 'counts'),
-        fixture = join(repo, 'fixture.test.ts');
+      const root = tmp(), repo = gitRepo(root), counts = join(root, 'counts'), fixture = join(repo, 'fixture.test.ts');
       writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\nfixture.test.ts\n');
       const source = (includeTarget = true) =>
         `import { describe, expect, test } from 'bun:test'; import { appendFileSync } from 'node:fs'; describe('suite', () => { test('stable', () => appendFileSync(${JSON.stringify(counts)}, 'stable\\n')); ${includeTarget ? `test('target', () => { appendFileSync(${JSON.stringify(counts)}, 'target\\n'); expect(${JSON.stringify(mode)}).toBe('first-pass'); });` : ''} });`;
       writeFileSync(fixture, source());
-      const rewrite =
-        mode === 'missing-rerun-id'
-          ? `; code=$?; printf %s ${shellQuoteForTest(source(false))} > fixture.test.ts; exit $code`
-          : '';
+      const rewrite = mode === 'missing-rerun-id' ? `; code=$?; printf %s ${shellQuoteForTest(source(false))} > fixture.test.ts; exit $code` : '';
       const command = `bun test fixture.test.ts --reporter=junit --reporter-outfile=junit.xml${rewrite}`;
-      const plan = planFile(root, command),
-        p = JSON.parse(readFileSync(plan, 'utf8'));
-      p.packages[0].accept[0].report = {
-        junit: 'junit.xml',
-        collect: `printf 'suite::stable\nsuite::target\n'`,
-      };
+      const plan = planFile(root, command), p = JSON.parse(readFileSync(plan, 'utf8'));
+      p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::stable\nsuite::target\n'` };
       writeFileSync(plan, JSON.stringify(p));
       const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' });
       if (mode === 'first-pass') {
         expect(result.out).toMatchObject({ ok: true, command_results: [{ pass: true }] });
         expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\n');
+        const cases = JSON.parse('[["accept",true,"false",2],["accept",false,"false",1],["env",true,"false",1],["accept",true,"kill -TERM $$",1],["accept",true,"sleep 2; false",1]]') as ['accept' | 'env', boolean, string, number][];
+        for (const [kind, cache, command, runs] of cases) {
+          const r = tmp(), m = join(r, 'runs'), trace = `echo x >> '${m}'; ${command}`;
+          const plan = planFile(r, kind === 'env' ? 'true' : trace, kind === 'env' ? [trace] : [], cache, command.startsWith('sleep') ? 1 : 5);
+          runScript(gitRepo(r), { kind, plan, pkgs: 'a', tag: 'verify-a' });
+          expect(readFileSync(m, 'utf8').trim().split('\n')).toHaveLength(runs);
+        }
       } else {
         expect(result.out).toMatchObject({ ok: false, command_results: [{ pass: false }] });
         const lines = readFileSync(counts, 'utf8').trim().split('\n');
         expect(lines.filter(line => line === 'stable')).toHaveLength(1);
-        expect(lines.filter(line => line === 'target')).toHaveLength(
-          mode === 'still-fails' ? 3 : 1
-        );
+        expect(lines.filter(line => line === 'target')).toHaveLength(mode === 'still-fails' ? 3 : 1);
       }
     }
   );
