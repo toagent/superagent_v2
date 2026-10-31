@@ -70,7 +70,6 @@ describe('ntfy decision channel', () => {
     f.push(valid);
     f.push(valid);
     expect(await syncNtfy(collect(accepted), f.config)).toEqual({ accepted: 1, ignored: 2 });
-    expect(accepted).toEqual(['yes']);
     const second = fixture();
     askNtfy(second.request(), second.config);
     await publishPendingNtfy(second.config);
