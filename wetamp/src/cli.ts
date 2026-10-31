@@ -49,7 +49,7 @@ import {
   recoverySnapshot,
 } from './recovery';
 // prettier-ignore
-import { caller, control, coord, identityKey, repoScope, runScope, same, presence, type Controller } from './coord';
+import { caller, control, coord, identityKey, QUEUE_WAIT, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
 import { ENGINE_CHANGED } from './board/App';
@@ -1286,6 +1286,24 @@ export const waitClock = {
   },
 };
 
+export function waitForRunAdmission(
+  admit: typeof admitRun = admitRun
+): ReturnType<typeof admitRun> | { ok: false; reason: 'admission_timeout' } {
+  const deadline = waitClock.now() + QUEUE_WAIT.timeoutMs;
+  let nextProgress = waitClock.now() + QUEUE_WAIT.progressMs;
+  for (;;) {
+    const admission = admit();
+    if (admission.ok) return admission;
+    const now = waitClock.now();
+    if (now >= deadline) return { ok: false, reason: 'admission_timeout' };
+    if (now >= nextProgress) {
+      console.error('superagent: waiting for run admission');
+      nextProgress = now + QUEUE_WAIT.progressMs;
+    }
+    waitClock.sleep(Math.min(QUEUE_WAIT.retryMs, deadline - now));
+  }
+}
+
 const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
   const now = Date.now();
   try {
@@ -1549,7 +1567,7 @@ function startRun(planPath: string, a: Args): number {
           return EXIT_USAGE;
         }
         phase = 'admission';
-        const admission = admitRun();
+        const admission = waitForRunAdmission();
         if (!admission.ok) {
           print({
             ok: false,
