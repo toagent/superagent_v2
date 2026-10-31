@@ -1047,8 +1047,8 @@ export function netLinesFromNumstat(raw: string, generated: readonly string[]): 
     const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(row);
     if (!match) throw new Error('budget numstat: malformed git output');
     if (excluded(match[3])) continue;
-    if (match[1] === '-' || match[2] === '-')
-      throw new Error(`budget numstat: binary file cannot be measured: ${match[3]}`);
+    // Binary files have no lines; the budget measures source lines, so they count as zero.
+    if (match[1] === '-' || match[2] === '-') continue;
     net += Number(match[1]) - Number(match[2]);
   }
   return Math.max(0, net);
