@@ -306,6 +306,7 @@ export const OPTIONS = {
   'expires-at': { type: 'string' },
   'default-on-expiry': { type: 'string' },
   callback: { type: 'string' },
+  id: { type: 'string' },
 } as const;
 interface Args {
   _: string[];
@@ -4101,6 +4102,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
   { command: 'ask', positionals: '[status <id>]', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback'] },
+  { command: 'notify', flags: ['id', 'title', 'body'] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
@@ -4870,6 +4872,32 @@ export async function askCli(
   return 0;
 }
 
+export async function notifyCli(
+  argv: string[],
+  supplied: Partial<NtfyConfig> = {},
+  emit: (value: unknown) => void = print
+): Promise<number> {
+  const a = parseArgs(argv),
+    usage = 'usage: superagent notify --id <id> --title <title> --body <body>';
+  if (a._.length !== 1) throw new Error(usage);
+  const required = (value: string | undefined): string => {
+    if (!value?.trim()) throw new Error(usage);
+    return value;
+  };
+  const id = required(a.flags.id),
+    title = required(a.flags.title),
+    body = required(a.flags.body);
+  queueNtfyAlert(id, body, supplied, title);
+  let delivery: 'sent' | 'pending' = 'sent';
+  try {
+    await publishPendingNtfy(supplied);
+  } catch {
+    delivery = 'pending';
+  }
+  emit({ id, delivery });
+  return 0;
+}
+
 async function heartbeatCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv);
   if (a._.length !== 1 || (a.flags.all && a.flags.cwd))
@@ -5035,6 +5063,7 @@ async function runCli(): Promise<void> {
         'usage',
         'heartbeat',
         'ask',
+        'notify',
         'supervise-tick',
         'console',
         'web',
@@ -5048,6 +5077,7 @@ async function runCli(): Promise<void> {
     if (verb === 'usage') process.exit(await usageCli(argv));
     if (verb === 'heartbeat') process.exit(await heartbeatCli(argv));
     if (verb === 'ask') process.exit(await askCli(argv));
+    if (verb === 'notify') process.exit(await notifyCli(argv));
     if (verb === 'supervise-tick') {
       const parsed = parseArgs(argv);
       process.exit(

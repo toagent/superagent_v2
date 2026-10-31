@@ -1727,14 +1727,65 @@ async function ruler(): Promise<void> {
   if (reason) process.exit(1);
 }
 
+const ownsCheckout = (run: AuthorRun, cwd: string): boolean => {
+  const receipt = run.metadata?.owned_worktree;
+  return (
+    !!receipt?.envId &&
+    !!receipt.creationId &&
+    !!run.working_path &&
+    realpathSync(run.working_path) === cwd
+  );
+};
+
+function adoptedWorktreeSource(current: AuthorRun, source: string): string | undefined {
+  const home = process.env.SUPERAGENT_HOME;
+  if (!home) return;
+  const ledgers = readdirSync(join(home, 'runs')).flatMap(file => {
+    if (!file.endsWith('.json')) return [];
+    try {
+      const ledger = JSON.parse(readFileSync(join(home, 'runs', file), 'utf8')) as Pick<
+        OperatorLedger,
+        'run_id' | 'archon_run_id' | 'repo' | 'adoptions'
+      >;
+      const chain = ledger.adoptions ?? [];
+      const valid =
+        typeof ledger.run_id === 'string' &&
+        typeof ledger.archon_run_id === 'string' &&
+        typeof ledger.repo === 'string' &&
+        chain.length > 0 &&
+        chain.at(-1)?.to === ledger.archon_run_id &&
+        chain.every(
+          (adoption, index) =>
+            !!adoption.from &&
+            !!adoption.to &&
+            (index === 0 || chain[index - 1]?.to === adoption.from)
+        ) &&
+        new Set(chain.flatMap(adoption => [adoption.from, adoption.to])).size ===
+          chain.length + 1 &&
+        realpathSync(ledger.repo) === realpathSync(source);
+      if (!valid) return [];
+      const matches = chain.filter(adoption => adoption.to === current.id);
+      return matches.length === 1 ? [matches[0].from] : [];
+    } catch {
+      return [];
+    }
+  });
+  return ledgers.length === 1 ? ledgers[0] : undefined;
+}
+
 // prettier-ignore
 function checkoutOwnership(): { owned: boolean; error?: string } {
   try {
-    const current = runEvidence(), receipt = current.metadata?.owned_worktree, source = plan().repo;
-    return { owned: current.id === process.env.WORKFLOW_ID && !!receipt?.envId && !!receipt.creationId &&
-      !!current.working_path && realpathSync(current.working_path) === process.cwd() &&
-      !!source && realpathSync(source) !== process.cwd() &&
-      realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim()) };
+    const current = runEvidence(), source = plan().repo, cwd = realpathSync(process.cwd());
+    const worktree = !!source && realpathSync(source) !== cwd &&
+      realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim());
+    if (current.id !== process.env.WORKFLOW_ID || !worktree || !current.working_path || realpathSync(current.working_path) !== cwd)
+      return { owned: false };
+    if (ownsCheckout(current, cwd)) return { owned: true };
+    const adoption = adoptedWorktreeSource(current, source);
+    if (!adoption) return { owned: false };
+    const prior = runEvidence(adoption);
+    return { owned: prior.id === adoption && ownsCheckout(prior, cwd) };
   } catch (e) { return { owned: false, error: String(e) }; }
 }
 const staleDependencyRecordNote =

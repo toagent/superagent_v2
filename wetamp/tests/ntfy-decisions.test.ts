@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerNtfyDecision, DecisionStore, type DecisionReceipt } from '../src/decisions';
-import { askCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
+import { askCli, notifyCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
 import {
   askNtfy,
   publishPendingNtfy,
@@ -80,6 +80,21 @@ describe('ntfy decision channel', () => {
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
     expect(ntfyTickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
+  });
+  test('publishes titled notifications once and keeps outages pending without leaking tokens', async () => {
+    const f = fixture(), output: unknown[] = [];
+    await expect(notifyCli(['notify', '--id', 'missing'], f.config)).rejects.toThrow('usage: superagent notify');
+    await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
+    await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(1);
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: 'Stalled', message: 'Needs attention' });
+    expect(output).toEqual([{ id: 'alert-1', delivery: 'sent' }, { id: 'alert-1', delivery: 'sent' }]);
+    const offline = (() => Promise.reject(new Error('publisher-secret'))) as unknown as typeof fetch;
+    await notifyCli(['notify', '--id', 'alert-2', '--title', 'Offline', '--body', 'Queued'], { ...f.config, fetch: offline }, value => output.push(value));
+    expect(output.at(-1)).toEqual({ id: 'alert-2', delivery: 'pending' });
+    const persisted = readFileSync(f.config.statePath, 'utf8');
+    expect(persisted).toContain('alert-2'); expect(persisted).not.toContain('publisher-secret');
+    expect(JSON.stringify(f.posts) + JSON.stringify(output)).not.toContain('publisher-secret');
   });
   test('keeps secrets out of state and routes answers through the durable decision store', async () => {
     const f = fixture(); askNtfy(f.request('secret'), f.config); await publishPendingNtfy(f.config);

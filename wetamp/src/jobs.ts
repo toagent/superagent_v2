@@ -240,8 +240,9 @@ async function exec(
   const launched = launcher(home().sa);
   const requestRef = f.request_ref ?? process.env.SA_JOB_REQUEST_REF?.trim();
   const id = newRunId();
+  // The caller chose cwd; Codex's git-repo trust check would otherwise reject non-git dirs.
   if (f.automatic && f.execution) cmd = f.execution.provider === 'codex'
-    ? ['codex', 'exec', '--json', '-o', resolve(f.output ?? join(dir(), `${id}.output`)), '-']
+    ? ['codex', 'exec', '--json', '--skip-git-repo-check', '-o', resolve(f.output ?? join(dir(), `${id}.output`)), '-']
     : ['claude', '-p'];
   const job: Job = {
     id,
@@ -525,7 +526,7 @@ export async function jobCli(
       throw new Error(`job ${role}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
     const policy = executionLaunch(descriptor, candidate);
     roleCommandArgs(automatic
-      ? provider === 'codex' ? ['codex', 'exec', '--json', '-o', 'output', '-'] : ['claude', '-p']
+      ? provider === 'codex' ? ['codex', 'exec', '--json', '--skip-git-repo-check', '-o', 'output', '-'] : ['claude', '-p']
       : cmd, provider, candidate.model); // Validate before registering or creating a worktree.
     execution = { role: descriptor.role, risk: descriptor.risk, round: descriptor.round,
       model: candidate.model, provider, policy };

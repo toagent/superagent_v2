@@ -212,6 +212,8 @@ test.each([
   ['wrong-path', 0],
   ['wrong-run', 0],
   ['main', 0],
+  ['adopted', 0],
+  ['broken-chain', 0],
 ] as const)(
   'RUN_PROVISION %s recovery exit %s respects run ownership and records artifacts',
   (mode, status) => {
@@ -254,31 +256,66 @@ esac
 `,
       { mode: 0o755 }
     );
-    const events = join(root, 'events.json');
+    const adopted = mode === 'adopted',
+      shouldRecover = mode === 'owned' || adopted,
+      events = join(root, 'events.json'),
+      home = join(root, 'home'),
+      prior = join(root, 'prior.json');
     writeFileSync(
       events,
       JSON.stringify({
         id: mode === 'wrong-run' ? 'other-run' : 'current-run',
         events: [],
         working_path: mode === 'wrong-path' ? repo : cwd,
-        metadata:
-          mode === 'unowned' ? {} : { owned_worktree: { envId: 'env', creationId: 'creation' } },
+        metadata: ['unowned', 'adopted', 'broken-chain'].includes(mode)
+          ? {}
+          : { owned_worktree: { envId: 'env', creationId: 'creation' } },
       })
     );
+    mkdirSync(join(home, 'runs'), { recursive: true });
+    if (adopted || mode === 'broken-chain') {
+      writeFileSync(
+        prior,
+        JSON.stringify({
+          id: 'prior-run',
+          events: [],
+          working_path: cwd,
+          metadata: { owned_worktree: { envId: 'env', creationId: 'creation' } },
+        })
+      );
+      writeFileSync(join(bin, 'archon'), `#!/bin/sh\ncat '${prior}'\n`, { mode: 0o755 });
+      const adoptions =
+        mode === 'broken-chain'
+          ? [
+              { from: 'older-run', to: 'prior-run' },
+              { from: 'other-run', to: 'current-run' },
+            ]
+          : [{ from: 'prior-run', to: 'current-run' }];
+      writeFileSync(
+        join(home, 'runs/operator.json'),
+        JSON.stringify({ run_id: 'operator', archon_run_id: 'current-run', repo, adoptions })
+      );
+    }
     const path = planFile(root, 'true');
     writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), repo }));
-    const r = runScript(cwd, { kind: 'env', plan: path, events_file: events }, SCRIPT, {
-      WORKFLOW_ID: 'current-run',
-      PATH: `${bin}:${process.env.PATH}`,
-    });
+    const r = runScript(
+      cwd,
+      { kind: 'env', plan: path, events_file: events, archon: join(bin, 'archon') },
+      SCRIPT,
+      {
+        WORKFLOW_ID: 'current-run',
+        SUPERAGENT_HOME: home,
+        PATH: `${bin}:${process.env.PATH}`,
+      }
+    );
     const artifact = JSON.parse(readFileSync(join(r.art, 'environment.json'), 'utf8'));
     expect(r.out).toEqual(artifact);
-    expect(r.code, r.err).toBe(mode === 'owned' && status === 0 ? 0 : 1);
-    expect(artifact.precheck.ok).toBe(mode === 'owned' && status === 0);
-    expect(existsSync(marker)).toBe(mode === 'owned');
+    expect(r.code, r.err).toBe(shouldRecover && status === 0 ? 0 : 1);
+    expect(artifact.precheck.ok).toBe(shouldRecover && status === 0);
+    expect(existsSync(marker)).toBe(shouldRecover);
     expect(existsSync(join(repo, 'node_modules'))).toBe(false);
     expect(existsSync(join(repo, '.hooks/_'))).toBe(false);
-    if (mode === 'owned') {
+    if (shouldRecover) {
       expect(artifact.provisioned[0]).toMatchObject({
         cmd: 'bun install --frozen-lockfile',
         exit: status,
