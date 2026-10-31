@@ -154,7 +154,8 @@ export async function provisionEnvironment(cwd: string, signal?: AbortSignal,
         const locks = ['bun.lock', 'bun.lockb', 'package-lock.json', 'npm-shrinkwrap.json',
           'pnpm-lock.yaml', 'yarn.lock'].filter(file => existsSync(join(cwd, file)));
         const dependency = dependencyRecord(cwd, pkg, locks);
-        writeFileSync(dependency.path, `${dependency.digest}\n`);
+        // An install that exits 0 without node_modules stays a typed precheck failure below.
+        if (existsSync(dirname(dependency.path))) writeFileSync(dependency.path, `${dependency.digest}\n`);
       }
     }
     if (provisioned.every(p => p.exit === 0)) environment = envPrecheck(cwd);

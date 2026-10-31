@@ -934,6 +934,7 @@ const input = await Bun.stdin.text(); console.log(JSON.stringify({ args: process
       const received = JSON.parse(stdout);
       expect(received.input).toBe(contents);
       expect(received.args).toContain('-');
+      expect(received.args).toContain('--skip-git-repo-check');
       expect(received.args).toContain(output);
       expect(JSON.stringify(received.args)).not.toContain(contents);
       expect(stderr).toContain('selected codex/');

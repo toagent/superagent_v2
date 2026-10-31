@@ -25,6 +25,7 @@
       "when": [
         "wetamp/src/generate.ts",
         "wetamp/src/land.ts",
+        "wetamp/templates/.archon/scripts/env-precheck.ts",
         "wetamp/templates/.archon/scripts/sa-check.ts",
         "wetamp/templates/.archon/scripts/sa-context.ts"
       ],
