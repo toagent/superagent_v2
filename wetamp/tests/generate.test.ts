@@ -18,7 +18,16 @@ import * as coord from '../src/coord';
 import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
-import { fixturePlan, fixtureTiers, gitRepo, fixtureEnv, sh, tmp } from './helpers';
+import {
+  acceptanceNodeEnvironment,
+  directAuxiliaryPreload,
+  fixturePlan,
+  fixtureTiers,
+  gitRepo,
+  fixtureEnv,
+  sh,
+  tmp,
+} from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import {
   CHECK_AUX_BUDGET_MS,
@@ -1395,6 +1404,76 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'settle-api')?.with?.delta_base).toBe(
       '$settle-core.output.head'
     );
+  });
+  test('resync remerge delta includes the merge resolution and later repair commits', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      art = join(root, 'art');
+    const commit = (path: string, content: string, message: string): void => {
+      fs.writeFileSync(join(repo, path), content);
+      sh(`git add '${path}' && git commit -qm '${message}'`, repo);
+    };
+    const base = sh('git rev-parse HEAD', repo).trim();
+    commit('conflict.txt', 'base\n', 'base');
+    sh('git checkout -qb target', repo);
+    commit('conflict.txt', 'target\n', 'target');
+    sh('git checkout -q main', repo);
+    commit('conflict.txt', 'worker\n', 'worker');
+    const resyncBase = sh('git rev-parse HEAD', repo).trim();
+    sh('git merge --no-edit target >/dev/null 2>&1 || true', repo);
+    commit('conflict.txt', 'resolved\n', 'resolved');
+    commit('followup.txt', 'followup\n', 'followup');
+    fs.mkdirSync(art);
+    const plan = join(root, 'plan.json'),
+      policy = join(root, 'policy.json');
+    fs.writeFileSync(
+      plan,
+      JSON.stringify({
+        packages: [
+          {
+            id: 'a',
+            scope: { write: ['conflict.txt', 'followup.txt'] },
+            accept: [{ cmd: 'true', timeout_s: 5 }],
+          },
+        ],
+      })
+    );
+    fs.writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    const inputs = {
+      kind: 'accept',
+      plan,
+      policy,
+      pkgs: 'a',
+      tag: 'final-accept-m1',
+      base,
+      delta_base: resyncBase,
+      delta_remerge: '1',
+    };
+    const result = Bun.spawnSync(
+      [
+        process.execPath,
+        '--preload',
+        directAuxiliaryPreload(),
+        join(WETAMP, 'templates/.archon/scripts/sa-check.ts'),
+      ],
+      {
+        cwd: repo,
+        env: {
+          ...process.env,
+          ...acceptanceNodeEnvironment(art, inputs.tag),
+          ARTIFACTS_DIR: art,
+          ...Object.fromEntries(
+            Object.entries(inputs).map(([key, value]) => [`INPUTS_${key.toUpperCase()}`, value])
+          ),
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }
+    );
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const delta = readFileSync(JSON.parse(result.stdout.toString()).delta, 'utf8');
+    expect(delta).toContain('resolved');
+    expect(delta).toContain('followup.txt');
   });
   test('generated node ids follow package, milestone, and review-round structure', () => {
     const workflow = build(false);

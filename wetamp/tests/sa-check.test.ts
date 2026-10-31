@@ -4661,38 +4661,6 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     expect(check(target)).toMatchObject({ out_of_scope: [], disposition: 'advance' });
   });
 
-  test('resync remerge delta includes the merge resolution and later repair commits', () => {
-    const root = tmp();
-    const repo = gitRepo(root);
-    const base = sh('git rev-parse HEAD', repo).trim();
-    writeFileSync(join(repo, 'conflict.txt'), 'base\n');
-    sh('git add conflict.txt && git -c user.name=t -c user.email=t@l commit -qm base', repo);
-    sh('git checkout -qb target', repo);
-    writeFileSync(join(repo, 'conflict.txt'), 'target\n');
-    sh('git add conflict.txt && git -c user.name=t -c user.email=t@l commit -qm target', repo);
-    sh('git checkout -q main', repo);
-    writeFileSync(join(repo, 'conflict.txt'), 'worker\n');
-    sh('git add conflict.txt && git -c user.name=t -c user.email=t@l commit -qm worker', repo);
-    const resyncBase = sh('git rev-parse HEAD', repo).trim();
-    sh('git -c user.name=t -c user.email=t@l merge --no-edit target >/dev/null 2>&1 || true', repo);
-    writeFileSync(join(repo, 'conflict.txt'), 'resolved\n');
-    sh('git add conflict.txt && git -c user.name=t -c user.email=t@l commit -qm resolved', repo);
-    writeFileSync(join(repo, 'followup.txt'), 'followup\n');
-    sh('git add followup.txt && git -c user.name=t -c user.email=t@l commit -qm followup', repo);
-    const result = runScript(repo, {
-      kind: 'accept',
-      plan: planFile(root, 'true'),
-      pkgs: 'a',
-      tag: 'final-accept-m1',
-      base,
-      delta_base: resyncBase,
-      delta_remerge: '1',
-    }).out as { delta: string };
-    const delta = readFileSync(result.delta, 'utf8');
-    expect(delta).toContain('resolved');
-    expect(delta).toContain('followup.txt');
-  });
-
   // prettier-ignore
   test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
