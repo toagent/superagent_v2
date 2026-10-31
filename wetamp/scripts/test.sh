@@ -24,5 +24,6 @@ case "$(uname -s)" in
   Linux) cpus=$(getconf _NPROCESSORS_ONLN) ;;
   *) echo "wetamp test: unsupported platform $(uname -s)" >&2; exit 1 ;;
 esac
-workers=$((cpus > 2 ? cpus - 2 : 1))
-heavy_exec bun run "$runner" "--parallel=$workers" tests/ scripts/
+workers=$((cpus > 1 ? cpus / 2 : 1))
+# bun 1.4 ignores bunfig [test] timeout; only the CLI flag lifts the 5 s per-test default.
+heavy_exec bun run "$runner" --timeout 30000 "--parallel=$workers" tests/ scripts/
