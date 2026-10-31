@@ -1189,16 +1189,28 @@ async function acceptOnce(
           const path = join(artifacts, `${tag}.delta.patch`);
           writeFileSync(
             path,
-            git(
-              'show',
-              '--remerge-diff',
-              '--format=',
-              '--no-ext-diff',
-              '--no-textconv',
-              '--binary',
-              'HEAD',
-              '--'
-            )
+            env('DELTA_BASE')
+              ? git(
+                  'log',
+                  '--reverse',
+                  '--remerge-diff',
+                  '--format=',
+                  '--no-ext-diff',
+                  '--no-textconv',
+                  '--binary',
+                  `${env('DELTA_BASE')}..HEAD`,
+                  '--'
+                )
+              : git(
+                  'show',
+                  '--remerge-diff',
+                  '--format=',
+                  '--no-ext-diff',
+                  '--no-textconv',
+                  '--binary',
+                  'HEAD',
+                  '--'
+                )
           );
           return path;
         })()

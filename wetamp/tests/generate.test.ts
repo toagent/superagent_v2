@@ -1508,6 +1508,12 @@ describe('buildWorkflow', () => {
     expect(
       deliveryIntegration.loop_group.nodes.find(n => n.id === 'review-resync-m1-r1')?.with
     ).toMatchObject({ context: '$ARTIFACTS_DIR/review-m1-r1.context.json' });
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'final-accept-m1')?.with
+    ).toMatchObject({ delta_base: '$resync-base-m1.output' });
+    expect(
+      deliveryIntegration.loop_group.nodes.find(n => n.id === 'diff-resync-m1-r2')?.with
+    ).toMatchObject({ delta_base: '$gate-m1-rresync1.output.reviewed_head' });
     expect(deliveryIntegration.loop_group.nodes.find(n => n.id === 'publish-m1')).toMatchObject({
       runtime: 'bun',
       with: {

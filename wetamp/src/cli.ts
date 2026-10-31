@@ -2136,11 +2136,20 @@ const retryScope = (l: Ledger, node: string): string => {
     : '';
   return pkg && attemptable(l, `pkg/${pkg}`) ? `pkg/${pkg}` : milestoneOf(l, node);
 };
-const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r(?:\d+|resync)$/, '$1');
-const milestoneOf = (l: Ledger, node: string): string => {
+const resyncMilestone = (node: string): string | undefined => {
   const local = node.split('.').at(-1) ?? node;
   return (
-    /^(?:resolve-context-|resolve-)?resync-(.+?)(?:-decision|-ready)?$/.exec(local)?.[1] ??
+    /^gate-(.+)-rresync\d+$/.exec(local)?.[1] ??
+    /^(?:fix|diff|review|handoff)-resync-(.+)-r\d+$/.exec(local)?.[1] ??
+    /^(?:attempt-review|review-context)-resync-(.+)-r\d+$/.exec(local)?.[1] ??
+    /^resync-base-(.+)$/.exec(local)?.[1] ??
+    /^(?:resolve-context-|resolve-)?resync-(.+?)(?:-decision|-ready)?$/.exec(local)?.[1]
+  );
+};
+const gateMilestone = (node: string): string => node.replace(/^gate-(.+)-r\d+$/, '$1');
+const milestoneOf = (l: Ledger, node: string): string => {
+  return (
+    resyncMilestone(node) ??
     /^diff-(.+)-r\d+$/.exec(node)?.[1] ??
     (/^(verify|settle|code|repair)-/.test(node)
       ? (planOf(l).packages.find(p => node.replace(/^(verify|settle|code|repair)-/, '') === p.id)

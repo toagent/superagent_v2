@@ -4323,6 +4323,16 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     }
   });
 
+  test.each(['gate-m1-rresync1', 'fix-resync-m1-r2', 'resync-base-m1'])(
+    'resync node %s retries the owning milestone',
+    node => {
+      const s = held(node, { [`${node}.json`]: gate('coder_partial') });
+      const result = captured(() => main(['decide', 'sa1', 'retry']));
+      expect(result.code, result.out).toBe(0);
+      expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
+    }
+  );
+
   /** 每个挂起原因一个场景：类型 Record<Hold, …> 让 HOLD_POLICY 新增一行而没有场景时编译失败。 */
   const patchLedger = (root: string, patch: Partial<Ledger>): void =>
     writeFileSync(

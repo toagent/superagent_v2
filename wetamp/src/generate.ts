@@ -662,6 +662,7 @@ export function buildWorkflow(
             ...(round === 1
               ? {
                   delta_remerge: '1',
+                  delta_base: ref.value(output<string>(resyncBase)),
                   terminal: 'unless_resolved',
                   sync_status: ref.required(readyHandle, 'status'),
                 }
@@ -670,7 +671,7 @@ export function buildWorkflow(
                     conditionalOutput<CoderOutput>(`fix-resync-${m.id}-r${String(round)}`),
                     null
                   ),
-                  delta_base: `$${gateId(round - 1)}.output.head`,
+                  delta_base: `$${gateId(round - 1)}.output.reviewed_head`,
                   reviewed_diff_hash: `$${gateId(round - 1)}.output.reviewed_diff_hash`,
                 }),
           },
