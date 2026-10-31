@@ -2278,7 +2278,13 @@ describe('health upstream reporting', () => {
       warn.mockRestore();
     }
   });
-  const check = (files: string[], exitCode = 0, verbose = false, consoleError?: string) => {
+  const check = (
+    files: string[],
+    exitCode = 0,
+    verbose = false,
+    consoleError?: string,
+    tick: Record<string, unknown> = {}
+  ) => {
     const fixture = stub([]);
     writeFileSync(
       join(fixture.root, 'home/tick.json'),
@@ -2290,6 +2296,7 @@ describe('health upstream reporting', () => {
         console: { ok: true },
         failover: { ok: true },
         actions: { ok: true },
+        ...tick,
       })
     );
     if (consoleError) {
@@ -2359,6 +2366,9 @@ describe('health upstream reporting', () => {
     const result = check([]);
     expect(result.json).toMatchObject({ upstream_clean: true, upstream_file_count: 0 });
     expect(result.json).not.toHaveProperty('reason');
+    const failed = check([], 0, false, undefined, { ntfy_sync: { ok: false, error: 'offline' } });
+    expect(failed.code).toBe(1);
+    expect(failed.json.tick.messages).toContain('ntfy 回收失败：offline');
   });
   test('failed upstream check with empty output cannot report clean', () => {
     const result = check([], 1);
@@ -3017,9 +3027,17 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       );
       const record = JSON.parse(readFileSync(join(s.root, 'home/tick.json'), 'utf8'));
       expect(
-        ['reclaim', 'collect', 'publish', 'console', 'actions', 'failover', 'orca'].every(
-          stage => typeof record[stage]?.duration_ms === 'number'
-        )
+        [
+          'reclaim',
+          'collect',
+          'publish',
+          'console',
+          'ntfy_sync',
+          'actions',
+          'ntfy_publish',
+          'failover',
+          'orca',
+        ].every(stage => typeof record[stage]?.duration_ms === 'number')
       ).toBe(true);
       expect(launched).toBe(1);
     } finally {

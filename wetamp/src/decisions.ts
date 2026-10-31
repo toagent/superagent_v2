@@ -18,6 +18,7 @@ import {
   digest,
   isAuthorizedDevice,
   isOperatorDevice,
+  operatorGrant,
   requireThat,
   type Device,
   type Receipt,
@@ -88,6 +89,7 @@ export function describeDecision(
     disabled ??= '此门需要 Mac 上的额外上下文或反馈';
   if (!options.length || (gate?.decisionsAuthored && gate.decisions?.some(d => !d.label)))
     disabled ??= '缺少具名选项与后果；请在 Mac 处理';
+  if (options.length > 3) disabled ??= 'ntfy 每条通知最多支持三个选项；请在 Mac 处理';
   return {
     id,
     run: l.run_id,
@@ -553,6 +555,35 @@ export async function answerDecision(
   } finally {
     deviceGuard.release();
   }
+}
+
+/** HMAC verification happens in ntfy.ts; this durable operator identity reuses the same CAS path. */
+export async function answerNtfyDecision(
+  id: string,
+  choice: string,
+  store = new DeviceStore(),
+  answer = answerDecision
+): Promise<Receipt> {
+  const channelId = digest('ntfy-channel');
+  const device = store.transaction(state => {
+    const existing = state.devices.find(candidate => candidate.id === channelId);
+    if (existing) {
+      existing.authorized = true;
+      existing.revoked = false;
+      existing.grant = operatorGrant();
+      return { ...existing };
+    }
+    const created: Device = {
+      id: channelId,
+      session: '',
+      csrf: '',
+      authorized: true,
+      grant: operatorGrant(),
+    };
+    state.devices.push(created);
+    return { ...created };
+  });
+  return answer(store, device, id, choice);
 }
 export async function decisionState(
   device: Device,

@@ -29,6 +29,7 @@ import {
   tmp,
 } from './helpers';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
+import { LOAD_WAIT_BUDGET_MS } from '../templates/.archon/scripts/load-gate';
 import {
   CHECK_AUX_BUDGET_MS,
   PROCESS_TREE_RECOVERY_MS,
@@ -59,7 +60,11 @@ import { integrationLockTimeout, integrationNodeTimeout } from '../src/integrati
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 const RESYNC_MAX_ROUNDS = Math.max(1, MAX_ROUNDS - 1);
 const ACCEPTANCE_FIXED_BUDGET_MS =
-  CHECK_AUX_BUDGET_MS + 5_000 + RESOURCE_WAIT_BUDGET_S * 1000 + PROCESS_TREE_RECOVERY_MS;
+  CHECK_AUX_BUDGET_MS +
+  5_000 +
+  LOAD_WAIT_BUDGET_MS +
+  RESOURCE_WAIT_BUDGET_S * 1000 +
+  PROCESS_TREE_RECOVERY_MS;
 
 test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through stable attempt paths', () => {
   const gen = tmp(),
@@ -755,6 +760,9 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'soldier-items-core')).toMatchObject({
       depends_on: ['sync-m1-ready', 'package-attempt-core'],
     });
+    expect(nodes.find(n => n.id === 'package-attempt-core')?.timeout).toBe(
+      120_000 + LOAD_WAIT_BUDGET_MS
+    );
     expect(nodes.find(n => n.id === 'soldier-ok-core')).toMatchObject({
       id: 'soldier-ok-core',
       depends_on: ['soldier-core'],
@@ -1220,8 +1228,11 @@ describe('buildWorkflow', () => {
         expect(n.timeout).toBe(Math.max(ms, 20_000 + ACCEPTANCE_FIXED_BUDGET_MS));
       for (const n of nodes.filter(
         n => n.with?.kind !== 'accept' && n.with?.kind !== 'settle' && n.id !== 'environment'
-      ))
-        expect(n.timeout).toBeUndefined();
+      )) {
+        const waitsForLoad =
+          n.id.startsWith('package-attempt-') || n.id.startsWith('review-context-');
+        expect(n.timeout).toBe(waitsForLoad ? ms + LOAD_WAIT_BUDGET_MS : undefined);
+      }
     }
   });
   test('ACCT: serial checks include a full failed-command baseline probe, even with cache enabled', () => {
