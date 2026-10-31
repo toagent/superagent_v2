@@ -1317,6 +1317,7 @@ export function waitForRunAdmission(
   for (;;) {
     const admission = admit();
     if (admission.ok) return admission;
+    if (admission.reason !== 'admission_busy') return admission;
     const now = waitClock.now();
     if (now >= deadline) return { ok: false, reason: 'admission_timeout' };
     if (now >= nextProgress) {

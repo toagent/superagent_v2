@@ -78,9 +78,22 @@ export const fixtureEnv = (env: Record<string, string> = {}): NodeJS.ProcessEnv 
 });
 
 export const sh = (cmd: string, cwd: string, env: Record<string, string> = {}): string => {
+  const childEnv = fixtureEnv(env);
+  for (const key of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_NAMESPACE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_PREFIX',
+    'GIT_SHALLOW_FILE',
+    'GIT_WORK_TREE',
+  ])
+    delete childEnv[key];
   const p = Bun.spawnSync(['bash', '-c', cmd], {
     cwd,
-    env: fixtureEnv(env),
+    env: childEnv,
     stdout: 'pipe',
     stderr: 'pipe',
   });

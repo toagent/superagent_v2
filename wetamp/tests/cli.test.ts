@@ -184,6 +184,10 @@ describe('P3 engine lifecycle contracts', () => {
       ok: false,
       reason: 'admission_timeout',
     });
+    expect(waitForRunAdmission(() => ({ ok: false, reason: 'launch_reserved' }))).toEqual({
+      ok: false,
+      reason: 'launch_reserved',
+    });
   });
   test('delivery defaults: concurrent admission launches exactly once and pending work retains capacity', () => {
     const root = tmp();
@@ -205,7 +209,7 @@ describe('P3 engine lifecycle contracts', () => {
     if (!first.ok) throw new Error('admission refused');
     first.launch(['workflow', 'run']);
     first.release();
-    expect(admitExecution(host).ok).toBe(false);
+    expect(admitExecution(host)).toMatchObject({ ok: false, reason: 'launch_reserved' });
     expect(launches).toBe(1);
   });
   test('delivery defaults: live or unknown execution owners never reach claim or dispatch', () => {

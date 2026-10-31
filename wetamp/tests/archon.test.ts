@@ -240,7 +240,7 @@ test('BYPASS_CAPACITY run counts are observed and launch reservations remain exc
     }
     db.exec('delete from remote_agent_workflow_runs');
     writeFileSync(join(root, 'run-admission.json'), '{}');
-    expect(transport.admitRun()).toMatchObject({ ok: false, reason: 'admission_busy' });
+    expect(transport.admitRun()).toMatchObject({ ok: false, reason: 'launch_reserved' });
   } finally {
     db.close();
     if (savedSa === undefined) delete process.env.SUPERAGENT_HOME;

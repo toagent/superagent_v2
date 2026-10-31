@@ -360,7 +360,7 @@ export type Admission =
       launch: (args: string[], cwd?: string) => Json;
       release: () => void;
     }
-  | { ok: false; reason: 'admission_busy' };
+  | { ok: false; reason: 'admission_busy' | 'launch_reserved' };
 
 /** Lock through pending-row publication; durable reservations retain ambiguous launch ownership. */
 export function admitExecution(host: ExecutionAdmissionHost): Admission {
@@ -387,7 +387,7 @@ export function admitExecution(host: ExecutionAdmissionHost): Admission {
         host.inspectProcess(old.pid).state !== 'offline'
       ) {
         lease.release();
-        return { ok: false, reason: 'admission_busy' };
+        return { ok: false, reason: 'launch_reserved' };
       }
       unlinkSync(reservation);
     }

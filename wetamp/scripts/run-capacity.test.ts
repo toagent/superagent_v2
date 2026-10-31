@@ -32,6 +32,21 @@ function withHome(fn: (db: Database) => void): void {
 }
 
 describe('run admission', () => {
+  test('fixture shells do not inherit the caller repository', () => {
+    const outer = gitRepo(tmp()),
+      root = tmp(),
+      head = sh('git rev-parse HEAD', outer).trim(),
+      saved = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(outer, '.git');
+    try {
+      sh('git init -q -b main repo && echo fixture > repo/README.md', root);
+    } finally {
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
+    }
+    expect(sh('git rev-parse HEAD', outer).trim()).toBe(head);
+    expect(readFileSync(join(outer, 'README.md'), 'utf8')).toBe('hi\n');
+  });
   test('schema/read failure releases the launch lock without treating the DB as empty', () =>
     withHome(db => {
       db.run('drop table remote_agent_workflow_runs');
@@ -48,7 +63,7 @@ describe('run admission', () => {
         { host: hostname(), pid: process.pid, pid_start: 'known' },
       ]) {
         writeFileSync(path, JSON.stringify(old));
-        expect(admitRun()).toMatchObject({ ok: false, reason: 'admission_busy' });
+        expect(admitRun()).toMatchObject({ ok: false, reason: 'launch_reserved' });
         expect(existsSync(path)).toBe(true);
       }
       writeFileSync(

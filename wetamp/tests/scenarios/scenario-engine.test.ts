@@ -74,7 +74,7 @@ fi
 exec "$S12_REAL_ARCHON" "$@"
 `);
     chmodSync(archon, 0o755);
-    const waitForDetachedResult = async (kind: 'paused' | 'crashed'): Promise<string> => {
+    const waitForDetachedResult = async (kind: 'paused' | 'crashed', diagnostic = ''): Promise<string> => {
       const result = join(root, `${kind}.result`), log = join(root, `${kind}.log`), pidFile = join(root, `${kind}.pid`);
       for (const end = Date.now() + 90_000; !existsSync(result) && Date.now() < end; ) {
         if (existsSync(pidFile)) try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); }
@@ -85,7 +85,7 @@ exec "$S12_REAL_ARCHON" "$@"
         }
         await Bun.sleep(25);
       }
-      expect(existsSync(result), existsSync(log) ? readFileSync(log, 'utf8').slice(-4000) : 'missing log').toBeTrue();
+      expect(existsSync(result), existsSync(log) ? readFileSync(log, 'utf8').slice(-4000) : `missing log\n${diagnostic}`).toBeTrue();
       return result;
     };
     for (const [i, kind] of ['running', 'paused', 'crashed'].entries()) {
@@ -107,9 +107,8 @@ exec "$S12_REAL_ARCHON" "$@"
     const b = sh('git rev-parse HEAD', source).trim();
     promote(b, undefined, { probe: passedProbe });
     Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_BUN: process.execPath, S12_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon'), S12_RUNNER: runner, S12_STATE_DIR: root });
-    const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs'), supervisor = join(root, 'supervisor.py');
+    const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs');
     writeFileSync(launcherPreload, `require(${JSON.stringify(join(aPath, 'wetamp/hooks/live.cjs'))}).launcher = () => (${JSON.stringify(who)});\n`);
-    writeFileSync(supervisor, 'import sys\nprint("yes" if "ask-status" in sys.argv else "scenario-ask")\n');
     for (const run of ['5ce0-0012-0', '5ce0-0012-1', '5ce0-0012-2']) {
       const path = join(home, 'runs', `${run}.json`), ledger = JSON.parse(readFileSync(path, 'utf8'));
       coordination.coord().claim(coordination.repoScope(ledger.repo), who, true, 'scenario continuation');
@@ -117,7 +116,7 @@ exec "$S12_REAL_ARCHON" "$@"
       coordination.coord().reauthorize(ledger, who);
       writeFileSync(path, JSON.stringify(ledger));
     }
-    const invoke = (...args: string[]) => Bun.spawnSync([SHIM, ...args], { env: { ...process.env, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(), SA_SUPERVISOR: supervisor, S12_PROBE: probe }, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 });
+    const invoke = (...args: string[]) => Bun.spawnSync([SHIM, ...args], { env: { ...process.env, BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(), S12_PROBE: probe }, stdout: 'pipe', stderr: 'pipe', timeout: 120_000 });
     const promotedTick = invoke('supervise-tick');
     expect(promotedTick.exitCode, promotedTick.stdout.toString() + promotedTick.stderr.toString()).toBe(0);
     expect(await store.getWorkflowRunStatus('5ce0-0012-0')).toBe('running');
@@ -129,13 +128,18 @@ exec "$S12_REAL_ARCHON" "$@"
       await store.getWorkflowRunStatus('5ce0-0012-2'),
       promotedTick.stdout.toString() + readFileSync(crashedResult, 'utf8')
     ).toBe('completed');
+    const asksPath = join(home, 'asks.json'), asks = JSON.parse(readFileSync(asksPath, 'utf8')) as Record<string, { status: string }>;
+    const pausedAsk = Object.entries(asks).find(([key]) => key.startsWith('5ce0-0012-1:'))?.[1];
+    if (!pausedAsk) throw new Error('missing paused-run decision fixture');
+    pausedAsk.status = 'yes';
+    writeFileSync(asksPath, JSON.stringify(asks));
     writeFileSync(join(root, 'running.release'), 'continue');
     await children[0].exited;
     expect(await store.getWorkflowRunStatus('5ce0-0012-0')).toBe('completed');
     expect(rollback()).toEqual({ from: b, to: a });
     const rolledBackTick = invoke('supervise-tick');
     expect(rolledBackTick.exitCode, rolledBackTick.stdout.toString() + rolledBackTick.stderr.toString()).toBe(0);
-    await waitForDetachedResult('paused');
+    await waitForDetachedResult('paused', rolledBackTick.stdout.toString() + rolledBackTick.stderr.toString());
     const calls = readFileSync(probe, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     const ticks = calls.filter(call => Array.isArray(call.args) && call.args[0] === 'supervise-tick');
     expect(ticks.filter(call => call.args.includes('--schedule')).map(call => call.snapshot)).toEqual([join(home, 'engine', b), aPath]);
