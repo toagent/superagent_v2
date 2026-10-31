@@ -59,6 +59,14 @@ const mutations: Mutation[] = [
     expectedError: 'Received: "events:code-a:0"',
   },
   {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'rerun <= (pytest ? 1 : 2) && merged.failures.length',
+    to: 'rerun < (pytest ? 1 : 2) && merged.failures.length',
+    test: 'tests/sa-check.test.ts',
+    name: 'typed Bun rerun adapter',
+    expectedError: 'Expected length: 3',
+  },
+  {
     file: 'src/generate.ts',
     from: "ref.optional(\n          conditionalOutput<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256',\n          ''\n        ),",
     to: "ref.required(\n          output<{ artifact_sha256: string }>(binding.node),\n          'artifact_sha256'\n        ),",
