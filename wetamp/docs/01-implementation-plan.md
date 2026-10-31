@@ -58,7 +58,7 @@
 - `decide`（approve → signal；reject → cancel）、`brief`、`land`（读 `land` 节点输出）。
 - 测试：评审链三种路径（r1 pass / r2 pass / 三轮失败 escalate）黄金 YAML；`gate` script 单测；supervisor 桥对 fake `archon`/fake `supervisor.py` 的状态机测试（用 PATH 注入的桩脚本）。
 
-验收：fixture plan（两个里程碑、第二个 `signoff: human`）端到端：m1 自动过审并落 `land`，m2 暂停在 `human-m2`；`supervise-tick` 用桩 `supervisor.py` 返回“是”后 run 完成。真实提醒事项由元帅人工复测一次。
+验收：fixture plan（两个里程碑、第二个 `signoff: human`）端到端：m1 自动过审并落 `land`，m2 暂停在 `human-m2`；`supervise-tick` 用 ntfy 桩返回“是”后 run 完成。真实 ntfy 通道由元帅人工复测一次。
 
 ## M3 运维与收尾
 

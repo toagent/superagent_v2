@@ -1,7 +1,3 @@
-import { createDecisionAdapter } from './decision-adapter';
-import { DeviceStore, requireThat } from './device-store';
-import { authorizeDecision } from '../decisions';
-import { caller, coord, runScope } from '../coord';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -400,7 +396,6 @@ async function serve(): Promise<void> {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   let server: ReturnType<typeof Bun.serve> | undefined;
-  let mobileTimer: ReturnType<typeof setInterval> | undefined;
   const token = randomBytes(32).toString('hex'),
     hash = residentHash(),
     load = createLoader();
@@ -416,31 +411,11 @@ async function serve(): Promise<void> {
     const { startObserver } = await import('./archon');
     await startObserver(socket);
     const port = Number(process.env.SA_CONSOLE_PORT ?? 39890);
-    const originFile = join(dir, 'decision-origin');
-    const origin = existsSync(originFile) ? readFileSync(originFile, 'utf8').trim() : undefined;
-    const mobile = origin ? await createDecisionAdapter(origin) : undefined;
-    let notifying = false;
-    const notify = async () => {
-      if (!mobile || notifying) return;
-      notifying = true;
-      try {
-        const health = await mobile.tick();
-        writeAtomic(
-          join(dir, 'mobile-health'),
-          JSON.stringify({ ...health, at: new Date().toISOString() })
-        );
-      } catch {
-        writeAtomic(join(dir, 'mobile-health'), 'notification observation failed; unknown');
-      } finally {
-        notifying = false;
-      }
-    };
-    if (mobile) { mobileTimer = setInterval(() => void notify(), 15000); void notify(); }
     const consoleHandler = handler(port, token, () => overview(demand.snapshot()), 'http://localhost', fetch, socket, () => demand.snapshot(), demand.update);
     server = Bun.serve({
       hostname: '127.0.0.1',
       port,
-      fetch: r => r.headers.get('host') === mobile?.host ? mobile.fetch(r) : consoleHandler(r),
+      fetch: consoleHandler,
     });
     writeAtomic(
       stateFile(),
@@ -463,7 +438,6 @@ async function serve(): Promise<void> {
     writeAtomic(join(dir, 'error'), (e as Error).message);
     throw e;
   } finally {
-    clearInterval(mobileTimer);
     if (server) await server.stop(true);
     cleanup();
     held.release();
@@ -542,90 +516,6 @@ export async function refreshConsole(
 export async function webCli(argv: string[]): Promise<number> {
   const a = parseArgs(argv),
     sub = a._[1];
-  if (
-    [
-      'mobile-pair',
-      'mobile-revoke',
-      'mobile-config',
-      'mobile-disable',
-      'mobile-devices',
-      'mobile-upgrade',
-    ].includes(sub)
-  ) {
-    const who = caller(); // Only an explicit local commander may delegate operator authority.
-    const dir = join(home().sa, 'console');
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const store = new DeviceStore();
-    if (sub === 'mobile-devices') {
-      console.log(JSON.stringify(store.listDevices()));
-    } else if (sub === 'mobile-upgrade') {
-      const device = a._[2] ?? '',
-        upgraded = store.upgrade(device);
-      console.log(
-        JSON.stringify({
-          device,
-          scope: 'managed-approvals',
-          upgraded,
-          next: upgraded ? '已生效；手机刷新后可查看全部受管审批' : '设备已是 operator，无需操作',
-        })
-      );
-    } else if (sub === 'mobile-config') {
-      const { checkOrigin } = await import('./decision-adapter');
-      const origin = checkOrigin(a._[2] ?? '').origin;
-      const file = join(dir, 'decision-origin');
-      writeAtomic(file, origin);
-      chmodSync(file, 0o600);
-      console.log(
-        JSON.stringify({
-          configured: true,
-          next: '人工 console stop/start 加载配置；现有提醒不会迁移或修改',
-        })
-      );
-    } else if (sub === 'mobile-disable') {
-      const file = join(dir, 'decision-origin');
-      if (existsSync(file)) unlinkSync(file);
-      console.log(
-        JSON.stringify({
-          configured: false,
-          next: '人工 console stop/start；设备记录保留，恢复未来 Reminders 通知',
-        })
-      );
-    } else if (sub === 'mobile-revoke') {
-      store.revoke(a._[2] ?? '');
-      console.log(JSON.stringify({ revoked: true }));
-    } else {
-      const target = a._[2];
-      let file: string;
-      if (target) {
-        const l = (await import('../cli')).loadLedger(target);
-        file = coord().mutate(runScope(l), who, () => {
-          const d = authorizeDecision(l.run_id);
-          requireThat(d.controller, 409);
-          return store.pairing({
-            scope: 'run',
-            run: d.run,
-            engine: d.engine,
-            controller: d.controller,
-          });
-        });
-      } else {
-        const { operatorGrant } = await import('./device-store');
-        file = store.pairing(operatorGrant());
-      }
-      console.log(
-        JSON.stringify({
-          pairing_page: file,
-          expires_in_s: 600,
-          authority: target
-            ? '仅此 run、engine 和当前 owner generation；后续 gate 仍逐项确认'
-            : '仅 Archon 管理的具名审批；不授予 console、独立代理或原生弹窗权限',
-        })
-      );
-      if (a.flags.open)
-        await Bun.spawn(['open', file], { stdout: 'ignore', stderr: 'ignore' }).exited;
-    }
-    return 0;
-  }
   if (sub === 'serve') {
     await serve();
     return 0;
@@ -647,12 +537,6 @@ export async function webCli(argv: string[]): Promise<number> {
     console.log(
       JSON.stringify({
         ...consoleStatus(s, p.status === 0),
-        mobile: {
-          configured: existsSync(join(home().sa, 'console/decision-origin')),
-          observation: existsSync(join(home().sa, 'console/mobile-health'))
-            ? readFileSync(join(home().sa, 'console/mobile-health'), 'utf8')
-            : 'NOT_RUN',
-        },
         port: s?.port,
         error: existsSync(error) ? readFileSync(error, 'utf8') : undefined,
         launchd: p.stdout

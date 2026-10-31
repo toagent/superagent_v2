@@ -2,9 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { answerNtfyDecision } from '../src/decisions';
+import { answerNtfyDecision, DecisionStore, type DecisionReceipt } from '../src/decisions';
 import { askCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
-import { DeviceStore, type Receipt } from '../src/web/device-store';
 import {
   askNtfy,
   publishPendingNtfy,
@@ -76,15 +75,16 @@ describe('ntfy decision channel', () => {
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
     expect(ntfyTickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
   });
-  test('keeps secrets out of state and uses a valid answerDecision channel identity', async () => {
+  test('keeps secrets out of state and routes answers through the durable decision store', async () => {
     const f = fixture(); askNtfy(f.request('secret'), f.config); await publishPendingNtfy(f.config);
     const key = readFileSync(f.config.answerKey, 'utf8').trim(), visible = readFileSync(f.config.statePath, 'utf8') + JSON.stringify(f.posts[0].body) + process.argv.join(' ');
     expect(visible).not.toContain(key); expect(visible).not.toContain('publisher-secret');
     const leaking = (async (...args: Parameters<typeof fetch>) => { throw new Error(JSON.stringify(args[1])); }) as unknown as typeof fetch;
     askNtfy(f.request('leak'), f.config); await expect(publishPendingNtfy({ ...f.config, fetch: leaking })).rejects.toThrow('ntfy publish unavailable');
     chmodSync(f.config.publisherToken, 0o644); await expect(publishPendingNtfy(f.config)).rejects.toThrow('publisher token file must be mode 600');
-    let device = ''; const receipt: Receipt = { id: 'd', device: '', run: '', engine: '', node: '', pause: '', decision: 'yes', at: '', stage: 'accepted' };
-    await answerNtfyDecision('d', 'yes', new DeviceStore(join(f.root, 'devices')), async (store, value) => { device = value.id; store.deviceLock(value.id).release(); return receipt; });
-    expect(device).toMatch(/^[a-f0-9]{64}$/);
+    const id = 'd'.repeat(64), receipt: DecisionReceipt = { id, run: '', engine: '', node: '', pause: '', decision: 'yes', at: '', stage: 'accepted' };
+    let observed = '';
+    await answerNtfyDecision(id, 'yes', new DecisionStore(join(f.root, 'decisions')), async (_store, value) => { observed = value; return receipt; });
+    expect(observed).toBe(id);
   });
 });

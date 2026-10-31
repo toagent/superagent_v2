@@ -133,6 +133,12 @@ function saveState(path: string, state: NtfyState): void {
   chmodSync(path, 0o600);
 }
 
+function stateLock(path: string) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(path), 0o700);
+  return lock(path + '.lock');
+}
+
 const signatureInput = (answer: Omit<SignedAnswer, 'sig'>): string =>
   `${answer.id}|${answer.option}|${answer.nonce}|${String(answer.exp)}`;
 
@@ -173,7 +179,7 @@ function validateAsk(request: NtfyAsk, now: number): void {
 export function askNtfy(request: NtfyAsk, supplied: Partial<NtfyConfig> = {}): string {
   const config = { ...defaultConfig(), ...supplied };
   validateAsk(request, config.now());
-  const guard = lock(config.statePath + '.lock');
+  const guard = stateLock(config.statePath);
   if (!guard.ok) throw new Error('ntfy state busy');
   try {
     const state = readState(config.statePath);
@@ -289,7 +295,7 @@ export async function syncNtfy(
   onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined
 ): Promise<{ accepted: number; ignored: number; failed: number }> {
   const config = { ...defaultConfig(), ...supplied };
-  const guard = lock(config.statePath + '.lock');
+  const guard = stateLock(config.statePath);
   if (!guard.ok) return { accepted: 0, ignored: 0, failed: 0 };
   let accepted = 0;
   let ignored = 0;
@@ -431,7 +437,7 @@ export function queueNtfyAlert(
   supplied: Partial<NtfyConfig> = {}
 ): void {
   const config = { ...defaultConfig(), ...supplied };
-  const guard = lock(config.statePath + '.lock');
+  const guard = stateLock(config.statePath);
   if (!guard.ok) throw new Error('ntfy state busy');
   try {
     const state = readState(config.statePath);
@@ -461,7 +467,7 @@ export function ntfyDecisionStatus(
 
 export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {
   const config = { ...defaultConfig(), ...supplied };
-  const guard = lock(config.statePath + '.lock');
+  const guard = stateLock(config.statePath);
   if (!guard.ok) return;
   try {
     const state = readState(config.statePath);
