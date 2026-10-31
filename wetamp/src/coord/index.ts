@@ -118,6 +118,19 @@ export const archonMutation = shared.archonMutation;
 export const ownerLabel = (who: Identity | null): string =>
   who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';
 export const ACK_TIMEOUT_MS = 15 * 60_000;
+// Keep operator-facing queues bounded and observable without inventing another lock protocol.
+export const QUEUE_WAIT: Readonly<{
+  timeoutMs: number;
+  retryMs: number;
+  progressMs: number;
+}> = Object.freeze({ timeoutMs: 120_000, retryMs: 50, progressMs: 30_000 });
+export class CoordRegistryWaitError extends Error {
+  readonly reason = 'coord_registry_timeout';
+  constructor(readonly waitMs: number) {
+    super(`coord: registry wait timed out after ${String(waitMs)}ms`);
+    this.name = 'CoordRegistryWaitError';
+  }
+}
 export function repoScope(path: string): Extract<Scope, { kind: 'repo' }> {
   const scope = shared.repoScope(path);
   if (!scope) throw new Error(`coord: not a repository: ${path}`);
@@ -238,11 +251,13 @@ export class Coordination {
       writeAtomic(file, JSON.stringify(value) + '\n');
     });
   }
-  locked<T>(f: () => T, waitMs = 10_000): T {
+  locked<T>(f: () => T, waitMs = QUEUE_WAIT.timeoutMs): T {
     if (this.depth) return f();
     const root = join(this.d.sa, 'coord');
     mkdirSync(root, { recursive: true });
-    for (let n = 0; ; n++) {
+    const deadline = this.d.now() + waitMs;
+    let nextProgress = this.d.now() + QUEUE_WAIT.progressMs;
+    for (;;) {
       const k = lock(join(root, 'registry.lock'));
       if (k.ok) {
         this.depth++;
@@ -253,8 +268,13 @@ export class Coordination {
           k.release();
         }
       }
-      if (n * 50 >= waitMs) throw new Error('coord: registry busy');
-      Bun.sleepSync(50);
+      const now = this.d.now();
+      if (now >= deadline) throw new CoordRegistryWaitError(waitMs);
+      if (now >= nextProgress) {
+        console.error('coord: waiting for registry lock');
+        nextProgress = now + QUEUE_WAIT.progressMs;
+      }
+      Bun.sleepSync(Math.min(QUEUE_WAIT.retryMs, deadline - now));
     }
   }
   private scopeLock(scope: Scope): string {

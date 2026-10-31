@@ -1016,6 +1016,11 @@ async function acceptOnce(
   const ids = env('PKGS').split(',').filter(Boolean);
   const p = plan();
   const pkgs = p.packages.filter(k => ids.includes(k.id));
+  const ownership = checkoutOwnership();
+  const dependency = ownership.owned
+    ? await provisionEnvironment(process.cwd())
+    : { environment: envPrecheck(process.cwd()), provisioned: [] };
+  appendFileSync(log, `# dependency precheck: ${JSON.stringify(dependency)}\n`);
   // 后续里程碑的 BASE 是前序 land head；前序包的已批准写入范围对本次增量仍有效。
   const scopeIds = (env('SCOPE_PKGS') || env('PKGS')).split(',');
   const covered = p.packages.filter(k => scopeIds.includes(k.id));
@@ -1034,7 +1039,11 @@ async function acceptOnce(
     )
   );
   const dirty = git('status', '--porcelain').trim();
-  const failures: CheckFailure[] = [];
+  const failures: CheckFailure[] = dependency.environment.failures.map(f => ({
+    command: 'env-precheck',
+    failure_class: f.failure_class,
+    evidence: log,
+  }));
   const commandResults: CommandResult[] = [];
   if (dirty)
     appendFileSync(
@@ -1057,9 +1066,9 @@ async function acceptOnce(
   const head = git('rev-parse', 'HEAD').trim();
   const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
   // prettier-ignore
-  let resourceWaitTimedOut = false, failed: string[] = [];
+  let resourceWaitTimedOut = false, failed: string[] = dependency.environment.ok ? [] : ['env-precheck'];
   // prettier-ignore
-  if (!prior)
+  if (!prior && !failed.length)
     try {
       failed = await run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
     } catch (error) {
@@ -1549,19 +1558,23 @@ async function ruler(): Promise<void> {
 }
 
 // prettier-ignore
+function checkoutOwnership(): { owned: boolean; error?: string } {
+  try {
+    const current = runEvidence(), receipt = current.metadata?.owned_worktree, source = plan().repo;
+    return { owned: current.id === process.env.WORKFLOW_ID && !!receipt?.envId && !!receipt.creationId &&
+      !!current.working_path && realpathSync(current.working_path) === process.cwd() &&
+      !!source && realpathSync(source) !== process.cwd() &&
+      realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim()) };
+  } catch (e) { return { owned: false, error: String(e) }; }
+}
+// prettier-ignore
 async function environment(): Promise<void> {
   const log = join(artifacts, 'environment.log');
   const notes: string[] = [];
-  let owned = false;
-  try {
-    const current = runEvidence(), receipt = current.metadata?.owned_worktree, source = plan().repo;
-    owned = current.id === process.env.WORKFLOW_ID && !!receipt?.envId && !!receipt.creationId &&
-      !!current.working_path && realpathSync(current.working_path) === process.cwd() &&
-      !!source && realpathSync(source) !== process.cwd() &&
-      realpathSync(git('rev-parse', '--git-dir').trim()) !== realpathSync(git('rev-parse', '--git-common-dir').trim());
-  } catch (e) { notes.push(`worktree ownership unavailable: ${String(e)}`); }
-  if (!owned) notes.push('Recovery skipped: current checkout is not proven to be created and owned by this run.');
-  const out = { ...await prepareEnvironment(process.cwd(), plan(), log, owned), notes, head: git('rev-parse', 'HEAD').trim() };
+  const ownership = checkoutOwnership();
+  if (ownership.error) notes.push(`worktree ownership unavailable: ${ownership.error}`);
+  if (!ownership.owned) notes.push('Recovery skipped: current checkout is not proven to be created and owned by this run.');
+  const out = { ...await prepareEnvironment(process.cwd(), plan(), log, ownership.owned), notes, head: git('rev-parse', 'HEAD').trim() };
   writeFileSync(join(artifacts, 'environment.json'), JSON.stringify(out));
   emit(out);
   if (!out.ok) process.exit(1);
