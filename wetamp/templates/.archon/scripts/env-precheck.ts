@@ -1,9 +1,43 @@
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { accessSync, constants, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 // prettier-ignore
 const hookNames = new Set(('applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge pre-push pre-receive update proc-receive post-receive post-update reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate fsmonitor-watchman post-index-change').split(' '));
+const installs: Record<string, string> = {
+  bun: 'bun install --frozen-lockfile',
+  npm: 'npm ci',
+  pnpm: 'pnpm install --frozen-lockfile',
+  yarn: 'yarn install --immutable',
+};
+interface PackageDeclaration {
+  packageManager?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  workspaces?: string[] | { packages?: string[] };
+  scripts?: Record<string, string>;
+}
+const dependencyRecord = (cwd: string, pkg: PackageDeclaration, locks: string[]) => {
+  const patterns = Array.isArray(pkg.workspaces)
+    ? pkg.workspaces
+    : (pkg.workspaces?.packages ?? []);
+  const manifests = patterns.flatMap(pattern => [
+    ...new Bun.Glob(`${pattern.replace(/\/$/, '')}/package.json`).scanSync({
+      cwd,
+      onlyFiles: true,
+    }),
+  ]);
+  const files = [...new Set(['package.json', ...locks, ...manifests])].sort();
+  const digest = createHash('sha256');
+  for (const file of files)
+    digest
+      .update(file)
+      .update('\0')
+      .update(readFileSync(join(cwd, file)))
+      .update('\0');
+  return { digest: digest.digest('hex'), path: join(cwd, 'node_modules', '.sa-deps.sha256') };
+};
 
 /** Shared, portable observation only. Recovery is a separate, explicitly authorized operation. */
 // prettier-ignore
@@ -16,10 +50,7 @@ export function envPrecheck(cwd: string) {
   let hookStatus: 'unknown' | 'observed' | 'not_configured' = 'not_configured';
   try {
     const manifest = join(cwd, 'package.json');
-    const pkg = existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')) as {
-      packageManager?: string; dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>; workspaces?: unknown; scripts?: Record<string, string>;
-    } : undefined;
+    const pkg = existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')) as PackageDeclaration : undefined;
     const locks = [['bun.lock', 'bun'], ['bun.lockb', 'bun'], ['package-lock.json', 'npm'],
       ['npm-shrinkwrap.json', 'npm'], ['pnpm-lock.yaml', 'pnpm'], ['yarn.lock', 'yarn']] as const;
     const present = locks.filter(([file]) => existsSync(join(cwd, file)));
@@ -28,8 +59,6 @@ export function envPrecheck(cwd: string) {
     if (selected) managers.add(selected);
     for (const manager of managers) if (!Bun.which(manager)) fail(`missing declared tool: ${manager}`);
     const manager = selected ?? (managers.size === 1 ? [...managers][0] : undefined);
-    const installs: Record<string, string> = { bun: 'bun install --frozen-lockfile', npm: 'npm ci',
-      pnpm: 'pnpm install --frozen-lockfile', yarn: 'yarn install --immutable' };
     const prepare = pkg?.scripts?.prepare && manager ? [`${manager} run prepare`] : [];
     const needed = !pkg || !!pkg.workspaces || Object.keys(pkg.dependencies ?? {}).length > 0 ||
       Object.keys(pkg.devDependencies ?? {}).length > 0;
@@ -39,6 +68,12 @@ export function envPrecheck(cwd: string) {
       if (!existsSync(dir) || !statSync(dir).isDirectory())
         fail(`missing dependency directory: ${dir}; lockfiles: ${present.map(([f]) => f).join(', ')}`,
           manager && installs[manager] ? [installs[manager]] : []);
+      else if (pkg) {
+        const record = dependencyRecord(cwd, pkg, present.map(([file]) => file));
+        if (!existsSync(record.path) || readFileSync(record.path, 'utf8').trim() !== record.digest)
+          fail(`dependency declarations changed: ${record.path}`,
+            manager && installs[manager] ? [installs[manager]] : []);
+      }
     }
     // Exit 1 is git-config's structured "unset" result, not an error-text heuristic.
     if (git('rev-parse', '--is-inside-work-tree').status === 0) {
@@ -90,7 +125,7 @@ export async function provisionEnvironment(cwd: string, signal?: AbortSignal,
       let exit = -1, output = '';
       try {
         signal?.throwIfAborted();
-        const p = Bun.spawn(['sh', '-c', cmd], { cwd, stdin: 'ignore',
+        const p = Bun.spawn(['sh', '-c', cmd], { cwd, env: process.env, stdin: 'ignore',
           stdout: 'pipe', stderr: 'pipe', timeout: RECOVERY_TIMEOUT_MS, signal });
         const [status, stdout, stderr] = await Promise.all([
           p.exited, new Response(p.stdout).text(), new Response(p.stderr).text(),
@@ -106,6 +141,14 @@ export async function provisionEnvironment(cwd: string, signal?: AbortSignal,
         environment.failures.push({ failure_class: 'test_env', recovery: [cmd],
           evidence: `recovery ${cmd}; exit=${String(exit)}; ${output}` });
         break;
+      }
+      if (Object.values(installs).includes(cmd)) {
+        const manifest = join(cwd, 'package.json');
+        const pkg = JSON.parse(readFileSync(manifest, 'utf8')) as PackageDeclaration;
+        const locks = ['bun.lock', 'bun.lockb', 'package-lock.json', 'npm-shrinkwrap.json',
+          'pnpm-lock.yaml', 'yarn.lock'].filter(file => existsSync(join(cwd, file)));
+        const dependency = dependencyRecord(cwd, pkg, locks);
+        writeFileSync(dependency.path, `${dependency.digest}\n`);
       }
     }
     if (provisioned.every(p => p.exit === 0)) environment = envPrecheck(cwd);

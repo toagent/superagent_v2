@@ -49,10 +49,11 @@ import {
   recoverySnapshot,
 } from './recovery';
 // prettier-ignore
-import { caller, control, coord, identityKey, repoScope, runScope, same, presence, type Controller } from './coord';
+import { caller, control, coord, identityKey, QUEUE_WAIT, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
 import { ENGINE_CHANGED } from './board/App';
+import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
@@ -1285,6 +1286,24 @@ export const waitClock = {
   },
 };
 
+export function waitForRunAdmission(
+  admit: typeof admitRun = admitRun
+): ReturnType<typeof admitRun> | { ok: false; reason: 'admission_timeout' } {
+  const deadline = waitClock.now() + QUEUE_WAIT.timeoutMs;
+  let nextProgress = waitClock.now() + QUEUE_WAIT.progressMs;
+  for (;;) {
+    const admission = admit();
+    if (admission.ok) return admission;
+    const now = waitClock.now();
+    if (now >= deadline) return { ok: false, reason: 'admission_timeout' };
+    if (now >= nextProgress) {
+      console.error('superagent: waiting for run admission');
+      nextProgress = now + QUEUE_WAIT.progressMs;
+    }
+    waitClock.sleep(Math.min(QUEUE_WAIT.retryMs, deadline - now));
+  }
+}
+
 const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
   const now = Date.now();
   try {
@@ -1548,7 +1567,7 @@ function startRun(planPath: string, a: Args): number {
           return EXIT_USAGE;
         }
         phase = 'admission';
-        const admission = admitRun();
+        const admission = waitForRunAdmission();
         if (!admission.ok) {
           print({
             ok: false,
@@ -4863,33 +4882,76 @@ async function heartbeatCli(argv: string[]): Promise<number> {
   }
   const startedEngine = currentEngineSnapshot();
   if (process.stdout.isTTY) {
-    const [{ createElement }, ink, { HeartbeatView, registerHeartbeatResizeClear }] =
-      await Promise.all([import('react'), import('ink'), import('./board/HeartbeatView')]);
+    const [{ createElement }, { renderToString }, { HeartbeatFrame }] = await Promise.all([
+      import('react'),
+      import('ink'),
+      import('./board/HeartbeatView'),
+    ]);
     const quota = (): string | undefined => relayQuota().quota;
-    let watchExit = 0;
-    let app: ReturnType<typeof ink.render> | undefined;
-    let promotionTimer: ReturnType<typeof setInterval> | undefined;
-    const unregisterResizeClear = registerHeartbeatResizeClear(process.stdout, () => app?.clear());
-    try {
-      app = ink.render(
-        createElement(HeartbeatView, {
-          initial: readModel(),
-          load: readModel,
-          initialQuota: quota(),
-          loadQuota: quota,
-        }),
-        { alternateScreen: true, incrementalRendering: true, maxFps: 4 }
+    let resolveExit: (code: number) => void = () => undefined;
+    const exited = new Promise<number>(resolve => {
+      resolveExit = resolve;
+    });
+    let model = readModel();
+    let fingerprint = JSON.stringify(model);
+    let quotaValue = quota();
+    const screen = openTerminalScreen({
+      input: process.stdin,
+      output: process.stdout,
+      signals: process,
+      onExit: resolveExit,
+    });
+    const render = (): void => {
+      const width = process.stdout.columns || 100;
+      screen.render(
+        renderToString(
+          createElement(HeartbeatFrame, {
+            model,
+            quota: quotaValue,
+            now: Date.now(),
+            width,
+            rows: process.stdout.rows || 30,
+          }),
+          { columns: width }
+        )
       );
-      promotionTimer = setInterval(() => {
-        watchExit = heartbeatEngineExitCode(startedEngine);
-        if (watchExit) app?.unmount();
-      }, 15_000);
-      await app.waitUntilExit();
+    };
+    const refresh = (): void => {
+      const next = readModel();
+      const serialized = JSON.stringify(next);
+      if (serialized === fingerprint) return;
+      model = next;
+      fingerprint = serialized;
+      render();
+    };
+    const refreshQuota = (): void => {
+      const next = quota();
+      if (next === quotaValue) return;
+      quotaValue = next;
+      render();
+    };
+    const resize = (): void => {
+      render();
+    };
+    process.stdout.on('resize', resize);
+    render();
+    const dataTimer = setInterval(refresh, 15_000);
+    const clockTimer = setInterval(render, 500);
+    const quotaTimer = setInterval(refreshQuota, 300_000);
+    const promotionTimer = setInterval(() => {
+      const code = heartbeatEngineExitCode(startedEngine);
+      if (code) resolveExit(code);
+    }, 15_000);
+    try {
+      return await exited;
     } finally {
-      if (promotionTimer) clearInterval(promotionTimer);
-      unregisterResizeClear();
+      clearInterval(dataTimer);
+      clearInterval(clockTimer);
+      clearInterval(quotaTimer);
+      clearInterval(promotionTimer);
+      process.stdout.off('resize', resize);
+      screen.close();
     }
-    return watchExit;
   }
   let resolveStop: (value: 'stop') => void = () => undefined;
   const interrupted = new Promise<'stop'>(resolve => {

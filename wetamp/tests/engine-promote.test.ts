@@ -223,7 +223,7 @@ test('engine acceptance script isolates files and stops at the first failure', (
     '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\n[ "$4" != tests/scenarios/b.test.ts ]\n'
   );
   chmodSync(bun, 0o755);
-  const result = Bun.spawnSync(['bash', 'scripts/engine-acceptance.sh'], {
+  const result = Bun.spawnSync(['bash', 'scripts/engine-acceptance.sh', '--full'], {
     cwd: wetamp,
     env: {
       ...process.env,

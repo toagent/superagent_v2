@@ -1,5 +1,5 @@
-import { Box, Text, useStdout, type TextProps } from 'ink';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { Box, Text, type TextProps } from 'ink';
+import type { ReactElement } from 'react';
 import {
   panelDuration,
   shortRunId,
@@ -33,6 +33,10 @@ const attentionLabel = (item: PanelAttention, drift: number): string =>
   item.run
     ? `${shortRunId(item.id)} · ${item.project} · ${item.text} · ${generalLabel(item.run, drift)}`
     : `${shortRunId(item.id)} · ${item.project} · ${item.text} · 已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? ` · 下一步：${item.next}` : ''}`;
+const attentionReason = (item: PanelAttention, drift: number): string =>
+  item.run
+    ? `${item.text} · ${generalLabel(item.run, drift)}`
+    : `${item.text} · 已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? ` · 下一步：${item.next}` : ''}`;
 
 type PipelineKind = 'code' | 'verify' | 'repair' | 'review' | 'land' | 'other';
 const pipelineKind = (run: PanelRun): PipelineKind => {
@@ -180,6 +184,190 @@ const displayLines = (value: string, width: number, limit: number): string[] => 
   }
   return lines;
 };
+const wrappedLines = (value: string, width: number): string[] => {
+  const lines: string[] = [];
+  let rest = value;
+  while (rest) {
+    let line = '',
+      offset = 0;
+    for (const character of rest) {
+      if (Bun.stringWidth(line + character) > width) break;
+      line += character;
+      offset += character.length;
+    }
+    if (!line) return [...lines, fit(rest, width)];
+    lines.push(line);
+    rest = rest.slice(offset);
+  }
+  return lines;
+};
+const mobilePipeline = (run: PanelRun): string => {
+  const current = pipelineKind(run),
+    currentPhase = current === 'repair' ? 'verify' : current,
+    phases: { kind: PipelineKind; label: string }[] = [
+      { kind: 'code', label: '编' },
+      { kind: 'verify', label: '验' },
+      { kind: 'review', label: '评' },
+      { kind: 'land', label: '合' },
+    ],
+    currentIndex = phases.findIndex(phase => phase.kind === currentPhase),
+    round = /-r(\d+)(?:-|$)/.exec(run.node ?? '')?.[1];
+  return phases
+    .map((phase, index) => {
+      const icon = index < currentIndex ? '✓' : index === currentIndex ? '●' : '○';
+      const label = current === 'repair' && phase.kind === 'verify' ? `修${round ? `r${round}` : ''}` : phase.label;
+      return `${icon}${label}`;
+    })
+    .join(' ');
+};
+const shortRoles = (roles: string[]): string =>
+  [...new Set(roles.map(role => role.split('·')[0] ?? role))].join('、');
+
+function MobileRunCard({
+  run,
+  width,
+  drift,
+  now,
+}: {
+  run: PanelRun;
+  width: number;
+  drift: number;
+  now: number;
+}): ReactElement {
+  return (
+    <Box width={width} flexDirection="column">
+      <Box height={1}>
+        <StateIcon state={run.general} now={now} />
+        <Text wrap="truncate-end">
+          {' '}
+          {shortRunId(run.id)} · 已用 {age(run.elapsed_s, drift)}
+        </Text>
+      </Box>
+      <Text wrap="truncate-end">{fit(run.title, width)}</Text>
+      <Text wrap="truncate-end">
+        {fit(`${mobilePipeline(run)} · ${shortRoles(run.roles)}`, width)}
+      </Text>
+    </Box>
+  );
+}
+
+function MobileHeartbeatFrame({
+  model,
+  quota,
+  now,
+  width,
+  rows,
+}: HeartbeatFrameProps): ReactElement {
+  const drift = driftAt(model, now),
+    availableRows = Math.max(0, rows - 1),
+    quotaPrefix = '额度：',
+    quotaIndent = ' '.repeat(Bun.stringWidth(quotaPrefix)),
+    quotaWidth = Math.max(1, width - Bun.stringWidth(quotaPrefix)),
+    completeQuotaLines = wrappedLines(quota ?? '未配置', quotaWidth),
+    quotaLimit = Math.min(3, Math.max(0, availableRows - 1)),
+    quotaValueLines =
+      completeQuotaLines.length <= quotaLimit
+        ? completeQuotaLines
+        : displayLines(quota ?? '未配置', quotaWidth, Math.min(2, quotaLimit)),
+    quotaLines = quotaValueLines.map((line, index) =>
+      fit((index ? quotaIndent : quotaPrefix) + line, width)
+    ),
+    footerRows = Math.min(availableRows, 1 + quotaLines.length),
+    bodyBudget = Math.max(0, availableRows - footerRows),
+    attention = model.attention.slice(0, 5),
+    runningReserve = 1 + (model.runs.length ? 3 : 1),
+    attentionBudget = Math.max(0, bodyBudget - 4 - runningReserve),
+    attentionCount = attention.length ? Math.min(attention.length, Math.floor(attentionBudget / 2)) : 0,
+    attentionOverflow =
+      model.attention.length > attentionCount && attentionBudget - attentionCount * 2 > 0,
+    shownAttentionRows = attention.length
+      ? attentionCount * 2 + (attentionOverflow ? 1 : 0)
+      : Math.min(1, attentionBudget),
+    fixedRows = 4 + shownAttentionRows + 1 + (model.runs.length ? 0 : 1),
+    cardBudget = Math.max(0, bodyBudget - fixedRows),
+    capacity = Math.floor(cardBudget / 3),
+    shown = model.runs.slice(0, capacity),
+    hidden = model.runs.length - shown.length,
+    showHidden = hidden > 0 && cardBudget - shown.length * 3 > 0,
+    checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
+    clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5),
+    health = model.health.ok ? `● 正常 · 巡检 ${String(checkedAge)}s 前` : '⚠ 巡检可能停了';
+  return (
+    <Box flexDirection="column" width={width}>
+      {bodyBudget >= 1 && (
+        <Text bold color="cyan" wrap="truncate-end">
+          {fit(`◆ 心跳 · ${model.projects}`, width)}
+        </Text>
+      )}
+      {bodyBudget >= 2 && (
+        <Text color={model.health.ok ? undefined : 'red'} wrap="truncate-end">
+          {fit(`${clock} ${health}`, width)}
+        </Text>
+      )}
+      {bodyBudget >= 3 && (
+        <Text wrap="truncate-end">
+          跑{String(model.stats.running)} 等{String(model.stats.waiting)}{' '}
+          <Text color={model.attention.length ? 'yellow' : undefined} wrap="truncate-end">
+            需{String(model.attention.length)}
+          </Text>{' '}
+          收{String(model.stats.reclaimPending)} 遗{String(model.stats.legacy)}
+        </Text>
+      )}
+      {bodyBudget >= 4 && (
+        <Text bold wrap="truncate-end">
+          需要处理
+        </Text>
+      )}
+      {attention.length ? (
+        attention.slice(0, attentionCount).map((item, index) => (
+          <Box key={`${item.project}-${String(index)}`} flexDirection="column" height={2}>
+            <Text color="yellow" wrap="truncate-end">
+              {fit(`⚠ ${shortRunId(item.id)} · ${item.project}`, width)}
+            </Text>
+            <Text color="yellow" wrap="truncate-end">
+              {fit(`  ${attentionReason(item, drift)}`, width)}
+            </Text>
+          </Box>
+        ))
+      ) : shownAttentionRows ? (
+        <StatusMessage success>无需处理</StatusMessage>
+      ) : null}
+      {attentionOverflow && (
+        <Text color="yellow" wrap="truncate-end">
+          +{String(model.attention.length - attentionCount)} 条
+        </Text>
+      )}
+      {bodyBudget >= 5 + shownAttentionRows && (
+        <Text bold wrap="truncate-end">
+          进行中
+        </Text>
+      )}
+      {!model.runs.length && bodyBudget >= 6 + shownAttentionRows && (
+        <Text dimColor wrap="truncate-end">
+          暂无在跑任务
+        </Text>
+      )}
+      {shown.map(run => (
+        <MobileRunCard key={`${run.project}-${run.id}`} run={run} width={width} drift={drift} now={now} />
+      ))}
+      {showHidden && (
+        <Text dimColor wrap="truncate-end">
+          +{String(hidden)} 个 run 未显示
+        </Text>
+      )}
+      {availableRows > 0 && (
+        <Text backgroundColor="cyan" color="black" wrap="truncate-end">
+          {fit(`巡检 ${String(checkedAge)}s 前`, width)}
+        </Text>
+      )}
+      {quotaLines.map((line, index) => (
+        <Text key={index} backgroundColor="cyan" color="black" wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
+    </Box>
+  );
+}
 export function HeartbeatFrame({
   model,
   quota,
@@ -189,6 +377,7 @@ export function HeartbeatFrame({
 }: HeartbeatFrameProps): ReactElement {
   width = Math.max(1, Math.floor(width));
   rows = Math.max(1, Math.floor(rows));
+  if (width < 60) return <MobileHeartbeatFrame model={model} quota={quota} now={now} width={width} rows={rows} />;
   const drift = driftAt(model, now),
     availableRows = Math.max(0, rows - 1),
     compact = width < 60,
@@ -322,61 +511,5 @@ export function HeartbeatFrame({
         </Text>
       ))}
     </Box>
-  );
-}
-
-interface ResizeSource {
-  on(event: 'resize', listener: () => void): unknown;
-  off(event: 'resize', listener: () => void): unknown;
-}
-export const registerHeartbeatResizeClear = (
-  stdout: ResizeSource,
-  clear: () => void
-): (() => void) => {
-  stdout.on('resize', clear);
-  return () => stdout.off('resize', clear);
-};
-
-export interface HeartbeatViewProps {
-  initial: PanelModel;
-  load: () => PanelModel;
-  initialQuota?: string;
-  loadQuota: () => string | undefined;
-}
-export function HeartbeatView({
-  initial,
-  load,
-  initialQuota,
-  loadQuota,
-}: HeartbeatViewProps): ReactElement {
-  const stdout = useStdout().stdout as NodeJS.WriteStream;
-  const [model, setModel] = useState(initial),
-    [quota, setQuota] = useState(initialQuota),
-    [now, setNow] = useState(Date.now()),
-    [size, setSize] = useState({ width: stdout.columns || 100, rows: stdout.rows || 30 }),
-    fingerprint = useRef(JSON.stringify(initial));
-  const refresh = useCallback(() => {
-    const next = load(),
-      serialized = JSON.stringify(next);
-    if (serialized !== fingerprint.current) {
-      fingerprint.current = serialized;
-      setModel(next);
-    }
-  }, [load]);
-  useEffect(() => {
-    const dataTimer = setInterval(refresh, 15_000),
-      clockTimer = setInterval(() => setNow(Date.now()), 500),
-      quotaTimer = setInterval(() => setQuota(loadQuota()), 300_000),
-      resize = (): void => setSize({ width: stdout.columns || 100, rows: stdout.rows || 30 });
-    stdout.on('resize', resize);
-    return () => {
-      clearInterval(dataTimer);
-      clearInterval(clockTimer);
-      clearInterval(quotaTimer);
-      stdout.off('resize', resize);
-    };
-  }, [loadQuota, refresh, stdout]);
-  return (
-    <HeartbeatFrame model={model} quota={quota} now={now} width={size.width} rows={size.rows} />
   );
 }
