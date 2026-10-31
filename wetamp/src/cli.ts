@@ -64,6 +64,7 @@ import {
   askName,
   CANCELLATION_REASONS,
   HOLD_POLICY,
+  holdAction,
   reasonOf,
   type Hold,
   type Policy,
@@ -681,7 +682,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
-      : c.state.startsWith('held:') ? `superagent decide ${l.run_id} retry`
+      : c.state.startsWith('held:') ? holdAction(l.run_id, reason)
       : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? `superagent recover ${l.run_id}`
       : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}` : '读 evidence_path');
   const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
@@ -2452,6 +2453,7 @@ function brief(l: Ledger, json = false): number {
     const a = (evidenceJson(l, art, `${c.node}.json`) as { adjudication?: unknown } | null)
       ?.adjudication;
     lines.push(`adjudication: ${JSON.stringify(a ?? 'missing')}`);
+    lines.push(`action: ${holdAction(l.run_id, 'acceptance_adjudication')}`);
   }
   if (l.reason === 'deadline') lines.push('plan 截止已过，已取消');
   if (typeof s.error === 'string') lines.push(`error: ${s.error}`);
@@ -3660,7 +3662,7 @@ function blocker(l: Ledger, hold: Hold): { reason: string; next: string } | unde
   return p.do === 'blocked'
     ? {
         reason: `${hold}: ${p.text}`,
-        next: `${p.next}；superagent brief ${l.run_id}；条件修复后显式 superagent decide ${l.run_id} retry（红线不变）`,
+        next: `${p.next}；superagent brief ${l.run_id}；条件修复后显式 ${holdAction(l.run_id, hold)}（红线不变）`,
       }
     : undefined;
 }

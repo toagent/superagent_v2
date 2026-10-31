@@ -4035,7 +4035,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
     expect(status).toMatchObject({ state: 'held:gate', node: 'verify-core' });
     expect(status.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
-    expect(captured(() => main(['brief', 'sa1'])).out).toContain('held:gate @verify-core');
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('superagent decide sa1 retry');
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
     expect(readFileSync(join(s.root, 'gen/attempts/.packages/core'), 'utf8')).toBe('1');
     expect(existsSync(join(s.root, 'gen/attempts/m1'))).toBe(false);
@@ -4487,6 +4487,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       join(s.ledger.gen_dir, 'approvals/diff-m1-r1.json'),
       JSON.stringify({ ...prior, approvals: [prior] })
     );
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('superagent decide sa1 approve');
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
     expect(readFileSync(join(s.ledger.gen_dir, 'attempts/m1'), 'utf8')).toBe('1');
     expect(s.calls().some(call => call.startsWith('workflow run sa-sa1 '))).toBe(true);

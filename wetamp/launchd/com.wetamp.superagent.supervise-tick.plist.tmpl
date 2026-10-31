@@ -20,8 +20,11 @@
   </dict>
   <key>StartInterval</key>
   <integer>60</integer>
+  <!-- The tick spawns engine promotions and run continuations that inherit this job's
+       scheduling policy; Background confines them to throttled CPU/IO and timed scenarios
+       fail. Interactive matches GitHub Actions' runner service (actions.runner.plist.template). -->
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>__HOME__/supervise-tick.log</string>
   <key>StandardErrorPath</key>

@@ -166,7 +166,13 @@ export type Check = {
    */
   requires_prior_pass?: boolean;
   report?: {
+    /**
+     * Fresh JUnit XML produced by cmd. For pytest, use --junitxml=<path> -o junit_family=xunit1 so testcase file attributes map to pytest nodeids; without file, ids remain classname::name.
+     */
     junit: string;
+    /**
+     * Command listing one case id per line. Lines without :: are ignored. For pytest use pytest --collect-only -q with the same targets; for Vitest use vitest list with the same project and filters. Remaining ids must exactly match the JUnit testcase ids.
+     */
     collect?: string;
   };
   /**
@@ -440,8 +446,19 @@ export const acceptOutputFormat = {
           additionalProperties: false,
           required: ['junit'],
           properties: {
-            junit: { type: 'string', minLength: 1, pattern: '^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+' },
-            collect: { type: 'string', minLength: 1 },
+            junit: {
+              type: 'string',
+              minLength: 1,
+              pattern: '^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+',
+              description:
+                'Fresh JUnit XML produced by cmd. For pytest, use --junitxml=<path> -o junit_family=xunit1 so testcase file attributes map to pytest nodeids; without file, ids remain classname::name.',
+            },
+            collect: {
+              type: 'string',
+              minLength: 1,
+              description:
+                'Command listing one case id per line. Lines without :: are ignored. For pytest use pytest --collect-only -q with the same targets; for Vitest use vitest list with the same project and filters. Remaining ids must exactly match the JUnit testcase ids.',
+            },
           },
         },
         base_expect_fail: {

@@ -274,6 +274,17 @@ function validXml(xml: string): boolean {
 // prettier-ignore
 type ParsedCases = StructuredCases & { errors: string[]; report_error: boolean };
 // prettier-ignore
+function junitCaseId(a: Record<string, string | undefined>): string {
+  const legacy = `${a.classname ?? ''}::${a.name ?? ''}`;
+  if (!a.file || !a.classname || !a.name) return legacy;
+  const file = a.file.replace(/\\/g, '/'), module = file.replace(/\.py$/, '').split('/'), parts = a.classname.split('.');
+  for (let length = Math.min(module.length, parts.length); length > 0; length--) {
+    if (module.slice(-length).join('.') !== parts.slice(0, length).join('.')) continue;
+    return [file, ...parts.slice(length), a.name].join('::');
+  }
+  return legacy;
+}
+// prettier-ignore
 function junitCases(path: string, expected: string[], started: number): ParsedCases | undefined {
   try {
     if (!existsSync(path) || statSync(path).mtimeMs < started) return;
@@ -286,7 +297,7 @@ function junitCases(path: string, expected: string[], started: number): ParsedCa
     const ids: string[] = [], skipped: string[] = [], errors: string[] = [], failures: StructuredCases['failures'] = [];
     for (const match of cases) {
       const a = attrs(match[1]),
-        id = `${a.classname ?? ''}::${a.name ?? ''}`,
+        id = junitCaseId(a),
         body = match[2] || '';
       if (!a.classname || !a.name || ids.includes(id)) return;
       ids.push(id);
@@ -647,7 +658,7 @@ async function run(
             .toString()
             .split(/\r?\n/)
             .map(x => x.trim())
-            .filter(Boolean);
+            .filter(x => x.includes('::'));
       }
     }
     const execute = async () => {
@@ -1106,7 +1117,8 @@ async function acceptOnce(
       ? await probe(
           base,
           checks.filter(c => failed.includes(c.cmd)),
-          tag
+          tag,
+          commandResults
         )
       : [];
   if (resourceWaitTimeoutCommand) {
@@ -1423,7 +1435,8 @@ async function settle(): Promise<void> {
 
 /** 在 base 的临时 detached 工作树里准备同一环境后重跑失败命令；无法准备时不作基线结论。 */
 // prettier-ignore
-async function probe(base: string, checks: Check[], tag: string): Promise<NonNullable<Accept['base_results']>> {
+async function probe(base: string, checks: Check[], tag: string,
+  candidates: CommandResult[]): Promise<NonNullable<Accept['base_results']>> {
   const log = join(artifacts, `${tag}.probe.log`),
     setup = environmentChecks(plan());
   writeFileSync(log, setup.length ? '' : '# baseline unknown: no environment commands declared\n');
@@ -1437,6 +1450,23 @@ async function probe(base: string, checks: Check[], tag: string): Promise<NonNul
     }
     const output: NonNullable<Accept['base_results']> = [];
     for (const c of checks) {
+      const candidate = candidates.find(result => result.check.cmd === c.cmd)?.structured;
+      const caseFiles = candidate?.complete ? [...new Set(candidate.ids.map(id => id.split('::')[0]))] : [];
+      const pytestFiles = caseFiles.filter(path => {
+        const rel = relative(dir, resolve(dir, path));
+        return path.endsWith('.py') && rel !== '..' && !rel.startsWith('../') && rel !== '';
+      });
+      const missingPytestFiles = pytestFiles.filter(path => !existsSync(resolve(dir, path)));
+      if (candidate?.ids.length && pytestFiles.length === caseFiles.length &&
+        missingPytestFiles.length === pytestFiles.length) {
+        output.push({ cmd: c.cmd, pass: true });
+        continue;
+      }
+      for (const path of missingPytestFiles) {
+        const target = resolve(dir, path);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, '');
+      }
       const failures: CheckFailure[] = [],
         results: CommandResult[] = [];
       // prettier-ignore
