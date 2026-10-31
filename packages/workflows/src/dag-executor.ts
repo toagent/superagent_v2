@@ -2143,7 +2143,8 @@ async function executeNodeInternal(
   iteration?: number,
   checkpointSession?: SessionCheckpoint,
   typedArtifactsFile?: string,
-  resumeIntent: SessionResumeIntent = 'ordinary'
+  resumeIntent: SessionResumeIntent = 'ordinary',
+  onSessionResumeFailure?: () => void
 ): Promise<NodeExecutionResult> {
   const {
     deps,
@@ -2219,11 +2220,7 @@ async function executeNodeInternal(
   const failAgentNode = async (
     error: string,
     failureKind: NodeFailureKind,
-    extras: {
-      output?: string;
-      providerFailure?: ProviderFailure;
-      diagnostics?: NodeExecutionRecord['diagnostics'];
-    } = {}
+    extras: { output?: string; providerFailure?: ProviderFailure } = {}
   ): Promise<NodeExecutionResult> => {
     const result = await recordNodeState(
       { store: deps.store, logDir },
@@ -2245,7 +2242,6 @@ async function executeNodeInternal(
           numTurns: nodeNumTurns,
           resolvedModel: nodeResolvedModel?.id,
           sessionId: newSessionId,
-          diagnostics: { ...execution.diagnostics, ...extras.diagnostics },
         }
       )
     );
@@ -2905,13 +2901,9 @@ async function executeNodeInternal(
         : 'unknown';
     const providerFailure =
       !cancelled && err instanceof NodeFailure ? err.providerFailure : undefined;
+    if (err instanceof SessionResumeFailure) onSessionResumeFailure?.();
     return failAgentNode(failureMessage, failureKind, {
       ...(providerFailure !== undefined ? { providerFailure } : {}),
-      ...(namedResumeSourceNodeId !== undefined &&
-      resumeIntent !== 'fresh-fallback' &&
-      err instanceof SessionResumeFailure
-        ? { diagnostics: { sessionResumeFailed: true } }
-        : {}),
     });
   }
   if (result.state === 'failed') {
@@ -2945,7 +2937,6 @@ async function executeNodeInternal(
           ...(namedResumeSourceNodeId !== undefined
             ? {
                 sessionForked: resumeIntent === 'source-fork',
-                ...(resumeIntent === 'fresh-fallback' ? { sessionFallbackFresh: true } : {}),
               }
             : {}),
           ...(backgroundTasksIncomplete.length > 0 ? { backgroundTasksIncomplete } : {}),
@@ -10600,11 +10591,13 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
                   iteration,
                   checkpointSessionForProvider(provider),
                   attemptTypedArtifactsFile,
-                  resumeFallbackFresh ? 'fresh-fallback' : resumeIntent
+                  resumeFallbackFresh ? 'fresh-fallback' : resumeIntent,
+                  resumeIntent === 'source-fork'
+                    ? (): void => {
+                        resumeFallbackFresh = true;
+                      }
+                    : undefined
                 );
-                if (resumeIntent === 'source-fork' && attemptOutput.sessionResumeFailed === true) {
-                  resumeFallbackFresh = true;
-                }
                 return attemptOutput;
               },
               { state: 'failed', output: '', error: 'Node did not execute' },

@@ -76,8 +76,6 @@ export const serializedNodeDataSchema = z.object({
   session_source_node_id: z.string().optional(),
   session_fork_requested: z.boolean().optional(),
   session_forked: z.boolean().optional(),
-  session_resume_failed: z.boolean().optional(),
-  session_fallback_fresh: z.boolean().optional(),
   background_tasks_incomplete: z.array(z.string()).optional(),
   child_run_id: z.string().optional(),
   blocked_on_child_run_id: z.string().optional(),
@@ -312,12 +310,6 @@ export function serializeNodeStateRecord(record: NodeStateRecord): SerializedNod
         ? { session_fork_requested: d.sessionForkRequested }
         : {}),
       ...(d?.sessionForked !== undefined ? { session_forked: d.sessionForked } : {}),
-      ...(d?.sessionResumeFailed !== undefined
-        ? { session_resume_failed: d.sessionResumeFailed }
-        : {}),
-      ...(d?.sessionFallbackFresh !== undefined
-        ? { session_fallback_fresh: d.sessionFallbackFresh }
-        : {}),
       ...(d?.backgroundTasksIncomplete !== undefined
         ? { background_tasks_incomplete: d.backgroundTasksIncomplete }
         : {}),
@@ -339,7 +331,6 @@ export type NodeExecutionResult = NodeOutput & {
   costUsd?: number;
   tokens?: TokenUsage;
   loopIterations?: number;
-  sessionResumeFailed?: boolean;
 };
 
 export function serializeNodeOutput(
@@ -359,7 +350,6 @@ export function serializeNodeOutput(
     ...(record.diagnostics?.loopIterations !== undefined
       ? { loopIterations: record.diagnostics.loopIterations }
       : {}),
-    ...(record.diagnostics?.sessionResumeFailed === true ? { sessionResumeFailed: true } : {}),
     execution: executionMetadata(record),
   };
   const session = record.sessionId !== undefined ? { sessionId: record.sessionId } : {};

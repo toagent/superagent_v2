@@ -29567,12 +29567,8 @@ describe('executeDagWorkflow -- addressable session resume', () => {
         retry: { max_attempts: 1, delay_ms: 0 },
       },
     ]);
-
-    expect(mockSendQueryDag.mock.calls.map(call => call[2])).toEqual([
-      undefined,
-      'source-session',
-      undefined,
-    ]);
+    const sessions = mockSendQueryDag.mock.calls.map(call => call[2]);
+    expect(sessions).toEqual([undefined, 'source-session', undefined]);
     const events = persistedEvents(store);
     expect(
       events.some(
@@ -29583,8 +29579,7 @@ describe('executeDagWorkflow -- addressable session resume', () => {
     ).toBe(true);
     expect(
       events.some(
-        event =>
-          event.event_type === 'node_completed' && event.data?.session_fallback_fresh === true
+        event => event.event_type === 'node_completed' && event.data?.session_forked === false
       )
     ).toBe(true);
     expect(store.completeWorkflowRun).toHaveBeenCalled();
@@ -29616,7 +29611,8 @@ describe('executeDagWorkflow -- addressable session resume', () => {
     );
     expect(failed?.data).toMatchObject({
       failure_kind: 'transient',
-      session_resume_failed: true,
+      session_source_node_id: 'source',
+      session_fork_requested: true,
     });
     expect(
       persistedEvents(store).some(

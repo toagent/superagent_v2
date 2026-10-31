@@ -160,8 +160,6 @@ export const executionDiagnosticsSchema = z.object({
   sessionSourceNodeId: z.string().optional(),
   sessionForkRequested: z.boolean().optional(),
   sessionForked: z.boolean().optional(),
-  sessionResumeFailed: z.boolean().optional(),
-  sessionFallbackFresh: z.boolean().optional(),
   backgroundTasksIncomplete: z.array(z.string()).optional(),
   /** The child run this node ran, or is suspended on. */
   childRunId: z.string().optional(),
