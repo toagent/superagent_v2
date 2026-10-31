@@ -135,12 +135,11 @@ align_superagent`;
 
 describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
   /** 抽出 python 探针 superagent()，在临时 home 下按给定旧 verify.json 运行。 */
-  function probe(verify: (head: string) => object | null) {
+  function probe(legacyVerify: object | null) {
     const r = repo();
     const sa = join(r.root, 'sa');
     mkdirSync(sa);
-    const v = verify(r.head);
-    if (v) writeFileSync(join(sa, 'verify.json'), JSON.stringify(v));
+    if (legacyVerify) writeFileSync(join(sa, 'verify.json'), JSON.stringify(legacyVerify));
     const fn = slice('def superagent():', '\ndef npm_global');
     const py = `import json, os, subprocess\nhome = ${JSON.stringify(r.root)}\n${fn}\nprint(json.dumps(superagent()))\n`;
     const p = Bun.spawnSync(['python3', '-I', '-c', py], {
@@ -153,7 +152,7 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
   }
 
   test('探针：只报告 HEAD，不返回 verified / last_ok', () => {
-    const a = probe(head => ({ commit: head, ok: true, last_ok_commit: head }));
+    const a = probe({ commit: 'stale', ok: true, last_ok_commit: 'stale' });
     expect(a.s.head).toBe(a.head);
     expect(a.s).not.toHaveProperty('verified');
     expect(a.s).not.toHaveProperty('last_ok');
