@@ -57,6 +57,7 @@ interface NtfyState {
   decisions: Record<string, StoredDecision>;
   used_nonces: Record<string, number>;
   alerts: { id: string; title?: string; message: string }[];
+  alert_ids: string[];
   ignored: number;
   callback_failures: number;
 }
@@ -103,6 +104,7 @@ const emptyState = (): NtfyState => ({
   decisions: {},
   used_nonces: {},
   alerts: [],
+  alert_ids: [],
   ignored: 0,
   callback_failures: 0,
 });
@@ -146,7 +148,13 @@ function readState(path: string): NtfyState {
       !Array.isArray(value.alerts)
     )
       return emptyState();
-    return { ...value, callback_failures: value.callback_failures ?? 0 } as NtfyState;
+    return {
+      ...value,
+      alert_ids: Array.isArray(value.alert_ids)
+        ? value.alert_ids
+        : value.alerts.map(alert => alert.id),
+      callback_failures: value.callback_failures ?? 0,
+    } as NtfyState;
   } catch {
     return emptyState();
   }
@@ -478,14 +486,18 @@ export async function syncNtfy(
 export function queueNtfyAlert(
   id: string,
   message: string,
-  supplied: Partial<NtfyConfig> = {}
+  supplied: Partial<NtfyConfig> = {},
+  title?: string
 ): void {
   const config = { ...defaultConfig(), ...supplied };
   const guard = stateLock(config.statePath);
   if (!guard.ok) throw new Error('ntfy state busy');
   try {
     const state = readState(config.statePath);
-    if (!state.alerts.some(alert => alert.id === id)) state.alerts.push({ id, message });
+    if (!state.alert_ids.includes(id)) {
+      state.alert_ids.push(id);
+      state.alerts.push({ id, message, ...(title ? { title } : {}) });
+    }
     saveState(config.statePath, state);
   } finally {
     guard.release();
