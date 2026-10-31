@@ -139,7 +139,11 @@ test('ENV_PRECHECK missing dependencies block; installed consistency stays unkno
   expect(sh('git status --porcelain', repo)).toBe(before);
   expect(readFileSync(join(repo, 'bun.lock'), 'utf8')).toBe('declared lock');
   mkdirSync(join(repo, 'node_modules'));
-  expect(envPrecheck(repo)).toMatchObject({ ok: true, dependencies: 'unknown' });
+  expect(envPrecheck(repo)).toMatchObject({
+    ok: false,
+    dependencies: 'unknown',
+    failures: [{ recovery: ['bun install --frozen-lockfile'] }],
+  });
 });
 
 test('ENV_PRECHECK unset hooks and empty dependency repo pass; missing declared tools block', () => {
@@ -181,9 +185,10 @@ test('ENV_PRECHECK environment emits typed evidence and skips commands until che
     'bun install --frozen-lockfile'
   );
   mkdirSync(join(repo, 'node_modules'));
+  writeFileSync(join(repo, 'package.json'), '{}');
   const ready = runScript(repo, { kind: 'env', plan: p });
   expect(ready.code, ready.err).toBe(0);
-  expect(ready.out).toMatchObject({ ok: true, precheck: { dependencies: 'unknown' } });
+  expect(ready.out).toMatchObject({ ok: true, precheck: { dependencies: 'not_required' } });
   expect(existsSync(marker)).toBe(true);
 });
 
