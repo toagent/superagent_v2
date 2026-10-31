@@ -202,10 +202,6 @@ export function App(p: AppProps): ReactElement {
   }, [refresh, p.interval, stdout]);
   useInput((input, key) => {
     if (input === 'q' || (key.ctrl && input === 'c')) exit();
-    else if (input === 'w' && snap.web_url) {
-      const child = Bun.spawn(['open', snap.web_url], { stdout: 'ignore', stderr: 'ignore' });
-      void child.exited;
-    }
   });
   return <BucketedFrame snap={snap} width={size.w} height={size.h} now={now} />;
 }

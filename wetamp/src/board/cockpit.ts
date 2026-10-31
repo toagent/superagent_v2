@@ -207,7 +207,6 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       progress,
       progressText: progressLabel(progress),
       id: r.run_id,
-      url: r.archon_id ? `/console/r/${encodeURIComponent(r.archon_id)}` : undefined,
       project: basename(r.repo),
       title: r.engine?.title ?? '任务标题未知',
       state: r.state,

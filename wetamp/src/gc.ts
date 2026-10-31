@@ -14,15 +14,7 @@ import { isPathInside } from '@archon/paths';
 // prettier-ignore
 import { archonJson, getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runStatuses, type RunView } from './archon';
 import { home, writeAtomic } from './config';
-import {
-  artifactsOf,
-  consoleLaunchdPlist,
-  ledgerIds,
-  ledgerPath,
-  loadLedger,
-  updateLedger,
-  type Ledger,
-} from './cli';
+import { artifactsOf, ledgerIds, ledgerPath, loadLedger, updateLedger, type Ledger } from './cli';
 import type { Plan } from './plan';
 import { makeWritable } from './engine';
 import { inspectProcess } from './launcher';
@@ -107,27 +99,6 @@ interface GcInput {
 const gcRuleVersion = (): string =>
   new Bun.CryptoHasher('sha256').update(readFileSync(import.meta.path)).digest('hex');
 
-function consoleEngineSnapshot(engineRoot: string, configuredRoot: string) {
-  const plist = consoleLaunchdPlist();
-  if (!existsSync(plist)) return {};
-  const cmd = ['plutil', '-extract', 'ProgramArguments', 'json', '-o', '-', plist];
-  const parsed = Bun.spawnSync(cmd, { stdout: 'pipe', stderr: 'pipe' });
-  try {
-    if (parsed.exitCode !== 0) throw new Error(parsed.stderr.toString().trim());
-    const args = JSON.parse(parsed.stdout.toString()) as string[];
-    for (const argument of args)
-      for (const root of [engineRoot, configuredRoot]) {
-        const absolute = resolve(argument),
-          sha = absolute.startsWith(root + '/')
-            ? absolute.slice(root.length + 1).split('/')[0]
-            : '';
-        if (/^[0-9a-f]{7,40}$/i.test(sha)) return { path: join(engineRoot, sha) };
-      }
-    return {};
-  } catch (error) {
-    return { error: String(error) };
-  }
-}
 // prettier-ignore
 export function collectEngineSnapshots(dryRun: boolean, statuses: Map<string, RunView['status']> | null = null): GcAction[] {
   const configuredRoot = resolve(home().sa, 'engine');
@@ -176,8 +147,6 @@ export function collectEngineSnapshots(dryRun: boolean, statuses: Map<string, Ru
         reason: 'current engine snapshot is outside engine root',
       },
     ];
-  const consoleSnapshot = consoleEngineSnapshot(engineRoot, configuredRoot);
-  if (consoleSnapshot.error) return [{ run_id: '*', object: 'engine', action: 'skipped', reason: `console plist unreadable; all engine snapshots retained: ${consoleSnapshot.error}` }];
   const previous = receipts.filter(value => value.sha !== currentSha).at(-1)?.sha;
   const ledgers: Ledger[] = [];
   for (const id of ledgerIds()) {
@@ -199,7 +168,6 @@ export function collectEngineSnapshots(dryRun: boolean, statuses: Map<string, Ru
     if (!entry.isDirectory() || !/^[0-9a-f]{7,40}$/i.test(entry.name)) return [];
     const path = join(engineRoot, entry.name);
     if (entry.name === currentSha || entry.name === previous) return [];
-    if (path === consoleSnapshot.path) return [{ run_id: '*', object: 'engine', action: 'skipped', reason: 'console snapshot retained', path }];
     const references = ledgers.filter(ledger => {
       const pinned = ledger.engine_snapshot ?? (bootstrap && join(engineRoot, bootstrap));
       if (!pinned) return false;

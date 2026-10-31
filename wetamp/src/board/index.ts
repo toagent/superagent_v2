@@ -6,7 +6,6 @@ import { EXIT_USAGE, parseArgs } from '../cli';
 import { WETAMP } from '../config';
 import { createLoader, readLedger, type BoardRow, type Snapshot } from './data';
 import { detailOf, type Detail } from './detail';
-import { webState, webUrl } from '../web/server';
 import { requestUsageRefresh } from '../usage';
 import { residentHash } from '../generate';
 
@@ -43,11 +42,7 @@ async function run(argv: string[], signal: AbortSignal): Promise<number> {
     target = a._[1];
     interval = boardInterval(a.flags.interval);
     limit = Math.floor(positive(a.flags.limit, Number.MAX_SAFE_INTEGER, 'limit'));
-    const base = createLoader(signal);
-    let url: string | undefined;
-    load = async n => ({ ...(await base(n)), web_url: url });
-    const resident = webState();
-    if (resident) url = webUrl(resident);
+    load = createLoader(signal);
     if (process.env.NODE_ENV !== 'test') requestUsageRefresh();
   } catch (e) {
     console.error(`${(e as Error).message}\n${USAGE}`);

@@ -1,12 +1,10 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { disableCleanup } from '../src/web/archon';
 import { evidenceGates, evidenceJson, summarize, type Ledger } from '../src/cli';
 import { rowOf, snapshotOf } from '../src/board/data';
 import { cockpit } from '../src/board/cockpit';
-import { handler } from '../src/web/server';
 import type { RunView } from '../src/archon';
 import { gitRepo, sh, tmp } from './helpers';
 await (
@@ -21,71 +19,6 @@ afterEach(() => {
 });
 const wetamp = join(import.meta.dir, '..');
 
-test('M2-01 cleanup preload only disables the scheduler; absent or ambiguous target fails closed', async () => {
-  const source = readFileSync(
-    join(wetamp, '../packages/core/src/services/cleanup-service.ts'),
-    'utf8'
-  );
-  const adapted = disableCleanup(source);
-  expect(adapted).toContain('cleanup_scheduler_disabled_by_superagent');
-  expect(adapted).not.toContain("getLog().info('scheduler_starting'");
-  for (const bad of [
-    source.replace('export function startCleanupScheduler()', 'export function renamedScheduler()'),
-    source + source,
-  ])
-    expect(() => disableCleanup(bad)).toThrow('target missing or ambiguous');
-  const root = tmp(),
-    file = join(root, 'cleanup-service.ts');
-  writeFileSync(file, 'export function changedScheduler() {}');
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      '--no-env-file',
-      '--preload',
-      join(wetamp, 'src/web/archon.ts'),
-      '-e',
-      'await import(process.argv[1])',
-      file,
-    ],
-    {
-      env: { ...process.env, SUPERAGENT_HOME: root, ARCHON_HOME: root },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }
-  );
-  const err = await new Response(child.stderr).text();
-  expect(await child.exited).not.toBe(0);
-  expect(err).toContain('target missing or ambiguous');
-});
-test('M2-02 SSE and reads use the protected Unix socket; mutation never forwards', async () => {
-  let seen: string | undefined,
-    calls = 0;
-  const forward: typeof fetch = Object.assign(
-    async (_url: string | URL | Request, options?: RequestInit & { unix?: string }) => {
-      seen = options?.unix;
-      calls++;
-      return new Response('data: socket\n\n', { headers: { 'content-type': 'text/event-stream' } });
-    },
-    { preconnect: () => {} }
-  );
-  const get = handler(
-    39890,
-    'fixture',
-    () => ({}),
-    'http://localhost',
-    forward,
-    '/tmp/fixture.sock'
-  );
-  const req = (method: string) =>
-    new Request('http://127.0.0.1:39890/stream?t=fixture', {
-      method,
-      headers: { host: '127.0.0.1:39890' },
-    });
-  expect(await (await get(req('GET'))).text()).toBe('data: socket\n\n');
-  expect(seen).toBe('/tmp/fixture.sock');
-  expect((await get(req('POST'))).status).toBe(403);
-  expect(calls).toBe(1);
-});
 test.each([
   ['node GUARD codex', '^Read$', false, 1],
   ['echo GUARD', '*', false, 1],

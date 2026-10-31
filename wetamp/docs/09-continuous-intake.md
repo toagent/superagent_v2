@@ -147,5 +147,4 @@ ntfy。回答先校验签名、期限与一次性 nonce，再保存 durable inte
 
 普通决策提供具名选项；红线批准必须经过两段式确认。令牌与签名密钥只从 0600 文件
 读取，不进入状态文件、命令行或错误。`report.human_decisions`、board 与 ntfy 发布从
-同一当前引擎 gate 描述派生，历史 asks 仍保留。本地 console 只保留看板、memory panel
-和 Archon observer，不承担决策投递或回答。
+同一当前引擎 gate 描述派生，历史 asks 仍保留。决策投递和回答统一由 ntfy 通道承担。
