@@ -10,10 +10,23 @@ if [ "$#" -gt 0 ]; then
 fi
 
 # This guards the supported entrypoint only; direct bun test remains observable by stall detection.
+has_engine_check_ancestor() {
+  pid=$$
+  while :; do
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+    ancestor_command=$(ps -ww -o command= -p "$pid" 2>/dev/null || true)
+    case "$ancestor_command" in
+      *'.archon/scripts/sa-check.ts'*) return 0 ;;
+    esac
+  done
+}
+
 case "$PWD/" in
   */worktrees/sa/*)
-    if [ "${SA_ACCEPTANCE:-}" != '1' ]; then
-      echo '完整套件由验收运行；请用 bun run test <文件…> 聚焦' >&2
+    if ! has_engine_check_ancestor; then
+      echo '完整套件由引擎验收运行；请用 bun run test <文件…> 聚焦' >&2
       exit 2
     fi
     ;;

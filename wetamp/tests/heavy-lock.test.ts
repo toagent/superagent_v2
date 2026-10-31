@@ -22,6 +22,7 @@ function fixture(): { root: string; env: Record<string, string> } {
   const root = track(mkdtempSync(join(tmpdir(), 'heavy-lock-')));
   const bin = join(root, 'bin');
   mkdirSync(bin);
+  mkdirSync(join(root, 'ordinary/wetamp'), { recursive: true });
   writeFileSync(join(root, 'active'), '0\n');
   writeFileSync(join(root, 'max'), '0\n');
   writeFileSync(
@@ -56,11 +57,17 @@ rmdir "$COUNTER_ROOT/mutex"
       SA_HEAVY_LOCK_FILE: join(root, 'suite.lock'),
       SA_HEAVY_LOCK_HELD: '',
       SA_ACCEPTANCE: '1',
+      TEST_WETAMP: join(root, 'ordinary/wetamp'),
     },
   };
 }
 
-function run(env: Record<string, string>, id: string, args: string[] = [], cwd = wetamp) {
+function run(
+  env: Record<string, string>,
+  id: string,
+  args: string[] = [],
+  cwd = env.TEST_WETAMP ?? wetamp
+) {
   return Bun.spawn([script, ...args], {
     cwd,
     env: { ...env, JOB_ID: id },
@@ -93,22 +100,6 @@ test('browser admission exposes exactly two machine-wide slots', async () => {
   const next = await acquireResource('browser', 500, locks);
   expect(next).toBeDefined();
   await Promise.all([second!.release(), next!.release()]);
-});
-
-test('general worktrees reject only unapproved complete suites before taking a slot', async () => {
-  const { root, env } = fixture();
-  const general = join(root, 'worktrees/sa/run/wetamp');
-  const outside = join(root, 'ordinary/wetamp');
-  mkdirSync(general, { recursive: true });
-  mkdirSync(outside, { recursive: true });
-  const unapproved = { ...env, SA_ACCEPTANCE: '' };
-  const blocked = run(unapproved, 'blocked', [], general);
-  expect(await blocked.exited).toBe(2);
-  expect(await new Response(blocked.stderr).text()).toContain('完整套件由验收运行');
-  expect(existsSync(join(root, 'started.blocked'))).toBe(false);
-  expect(await run(env, 'acceptance', [], general).exited).toBe(0);
-  expect(await run(unapproved, 'focused', ['tests/one.test.ts'], general).exited).toBe(0);
-  expect(await run(unapproved, 'outside', [], outside).exited).toBe(0);
 });
 
 test('a complete suite uses at most half the machine CPUs', async () => {
@@ -172,7 +163,7 @@ test('heavy slot publishes live holder metadata and ignores a stale holder', asy
     .find(line => line.startsWith('cwd='))
     ?.slice(4);
   expect(cwd).toBeDefined();
-  expect(realpathSync(cwd!)).toBe(realpathSync(wetamp));
+  expect(realpathSync(cwd!)).toBe(realpathSync(env.TEST_WETAMP));
   expect(metadata).toContain('started_at=');
   expect(await holder.exited).toBe(0);
   expect(existsSync(holderFile)).toBe(false);

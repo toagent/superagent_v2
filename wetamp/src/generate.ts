@@ -1233,6 +1233,8 @@ export function renderBrief(
 ): string {
   const list = (xs: string[] | undefined): string =>
     xs?.length ? xs.map(x => `- \`${x}\``).join('\n') : '- （无）';
+  const coderAccept = p.accept.filter(check => !check.resource);
+  const engineAccept = p.accept.filter(check => check.resource);
   const vars: Partial<Record<string, string>> = {
     id: p.id,
     title: p.title,
@@ -1247,7 +1249,8 @@ export function renderBrief(
         : ''),
     write: list(p.scope.write),
     read: list(p.scope.read_hint),
-    accept: list(p.accept.map(c => c.cmd)),
+    accept: list(coderAccept.map(check => check.cmd)),
+    engine_accept: list(engineAccept.map(check => check.cmd)),
     notes: p.notes ?? '（无）',
     caps: renderCaps(caps),
     hint,

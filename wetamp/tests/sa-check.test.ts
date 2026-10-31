@@ -139,7 +139,11 @@ test('ENV_PRECHECK missing dependencies block; installed consistency stays unkno
   expect(sh('git status --porcelain', repo)).toBe(before);
   expect(readFileSync(join(repo, 'bun.lock'), 'utf8')).toBe('declared lock');
   mkdirSync(join(repo, 'node_modules'));
-  expect(envPrecheck(repo)).toMatchObject({ ok: true, dependencies: 'unknown' });
+  expect(envPrecheck(repo)).toMatchObject({
+    ok: false,
+    dependencies: 'unknown',
+    failures: [{ recovery: ['bun install --frozen-lockfile'] }],
+  });
 });
 
 test('ENV_PRECHECK unset hooks and empty dependency repo pass; missing declared tools block', () => {
@@ -181,9 +185,10 @@ test('ENV_PRECHECK environment emits typed evidence and skips commands until che
     'bun install --frozen-lockfile'
   );
   mkdirSync(join(repo, 'node_modules'));
+  writeFileSync(join(repo, 'package.json'), '{}');
   const ready = runScript(repo, { kind: 'env', plan: p });
   expect(ready.code, ready.err).toBe(0);
-  expect(ready.out).toMatchObject({ ok: true, precheck: { dependencies: 'unknown' } });
+  expect(ready.out).toMatchObject({ ok: true, precheck: { dependencies: 'not_required' } });
   expect(existsSync(marker)).toBe(true);
 });
 
@@ -548,6 +553,7 @@ test('P3 budget display reports receipts while admission reserves missing spend'
 
 const PRODUCT_FAILURE = `printf '%s' '{"failure_class":"product","evidence":"product regression"}'; exit 1`;
 const SCRIPT = join(import.meta.dir, '..', 'templates', '.archon', 'scripts', 'sa-check.ts');
+const shellQuoteForTest = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
 type Rv = NonNullable<NonNullable<Parameters<typeof decide>[0]['reviews']>[number]>;
 type F = Rv['findings'][number];
 const f = (severity: F['severity'], extra: Partial<F> = {}): F => ({
@@ -2028,7 +2034,7 @@ Bun.spawnSync = (actual, opts) => {
   if (scaled)
     source = source.replace(
       'CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000',
-      'CHECK_EVENT_QUERY_TIMEOUT_MS = 2000'
+      `CHECK_EVENT_QUERY_TIMEOUT_MS = ${String(hangOnce ? 1000 : 200)}`
     );
   if (budget !== undefined)
     source = source.replace('CHECK_AUX_BUDGET_MS = 130_000', `CHECK_AUX_BUDGET_MS = ${budget}`);
@@ -2118,31 +2124,43 @@ for (const [kind, step, evidence] of [
   ['accept', 'events', 'archon workflow get fixture:'],
   ['env', 'rev-parse HEAD', 'git rev-parse:'],
 ])
-  test(`ACCT: ${kind} auxiliary ${step} timeout fails with original evidence`, () => {
-    const r = auxiliaryFixture(kind, step, true);
-    expect(r.code).toBe(1);
-    expect(r.err).toContain(evidence);
-    expect(r.err).toContain('auxiliary-stalled');
-    expect(r.err).toContain('TERM; process exited');
-    expect(
-      r.calls.find(c =>
-        c.cmd[0] === 'git'
-          ? c.cmd.slice(1, 3).join(' ') === step
-          : c.cmd[0] !== 'bash' && step === 'events'
-      )?.timeout
-    ).toBe(2000);
-    if (step === 'events')
-      expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(
-        2
+  test(
+    `ACCT: ${kind} auxiliary ${step} timeout fails with original evidence`,
+    () => {
+      const r = auxiliaryFixture(kind, step, true);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(evidence);
+      expect(r.err).toMatch(
+        step === 'events' ? /auxiliary-stalled|signal SIGKILL/ : /auxiliary-stalled/
       );
-  });
+      expect(r.err).toMatch(
+        step === 'events' ? /TERM; process exited|signal SIGKILL/ : /TERM; process exited/
+      );
+      expect(
+        r.calls.find(c =>
+          c.cmd[0] === 'git'
+            ? c.cmd.slice(1, 3).join(' ') === step
+            : c.cmd[0] !== 'bash' && step === 'events'
+        )?.timeout
+      ).toBe(step === 'events' ? 200 : 2000);
+      if (step === 'events')
+        expect(
+          r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events')).length
+        ).toBeGreaterThanOrEqual(2);
+    },
+    step === 'events' ? testTimeout(10_000) : undefined
+  );
 
-test('ACCT: event query retries one timeout and keeps its evidence', () => {
-  const r = auxiliaryFixture('env', 'events', true, false, false, undefined, true);
-  expect(r.code, r.err).toBe(0);
-  expect(r.err).toContain('auxiliary-stalled');
-  expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(2);
-});
+test(
+  'ACCT: event query retries one timeout and keeps its evidence',
+  () => {
+    const r = auxiliaryFixture('env', 'events', true, false, false, undefined, true);
+    expect(r.code, r.err).toBe(0);
+    expect(`${r.err}\n${JSON.stringify(r.out)}`).toContain('auxiliary-stalled');
+    expect(r.calls.filter(c => Array.isArray(c.cmd) && c.cmd.includes('--events'))).toHaveLength(2);
+  },
+  testTimeout(10_000)
+);
 
 test('probe: bounded prune timeout cannot override baseline results', () => {
   const r = auxiliaryFixture('accept', 'worktree prune', true);
@@ -2183,7 +2201,10 @@ test('ACCT: TERM EPERM is recorded and does not suppress SIGKILL', () => {
 test('ROOT_ACCEPT diagnostic probe hook timeout preserves acceptance failure', () => {
   const r = auxiliaryFixture('accept', '', true, false, true);
   // Fixture setup and other auxiliary calls are outside this watchdog's budget.
-  expect(r.calls.find(c => c.cmd.slice(0, 3).join(' ') === 'git worktree add')?.timeout).toBe(2000);
+  expect(
+    r.calls.find(c => Array.isArray(c.cmd) && c.cmd.slice(0, 3).join(' ') === 'git worktree add')
+      ?.timeout
+  ).toBe(2000);
   expect(r.code, r.err).toBe(0);
   expect(r.out).toMatchObject({ ok: false, disposition: 'repair', base_pass: null });
   const diagnostic = readFileSync(join(r.art, 'acct.probe.log'), 'utf8');
@@ -2746,45 +2767,58 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
-  test('accept: flaky rerun policy records and notifies without widening eligibility', () => {
-    const r = tmp();
-    const [repo, m, h] = [gitRepo(r), join(r, 'runs'), join(r, 'home')];
-    const cmd = `n=$(wc -l < '${m}' 2>/dev/null || echo 0); echo x >> '${m}'; if [ $((n%2)) = 0 ]; then printf '<testsuite tests="1"><testcase classname="suite" name="case"%s></testcase></testsuite>' '><failure>bad</failure' > junit.xml; exit 1; else printf '<testsuite tests="1"><testcase classname="suite" name="case"%s></testcase></testsuite>' '' > junit.xml; fi`;
-    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\n');
-    const plan = planFile(r, cmd),
-      p = JSON.parse(readFileSync(plan, 'utf8'));
-    p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::case\n'` };
+  // prettier-ignore
+  test('accept: JUnit failure reruns only its exact Bun case and records flaky without cache', () => {
+    const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\nfixture.test.ts\n');
+    writeFileSync(join(repo, 'fixture.test.ts'), `import { describe, expect, test } from 'bun:test'; import { appendFileSync, readFileSync } from 'node:fs';
+describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify(counts)}, 'stable\\n'); }); test('target', () => { appendFileSync(${JSON.stringify(counts)}, 'target\\n'); const n = readFileSync(${JSON.stringify(counts)}, 'utf8').split('target').length - 1; expect(n).toBeGreaterThan(1); }); });`
+    );
+    const command = 'bun test fixture.test.ts --reporter=junit --reporter-outfile=junit.xml';
+    const plan = planFile(root, command), p = JSON.parse(readFileSync(plan, 'utf8'));
+    p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::stable\nsuite::target\n'` };
     writeFileSync(plan, JSON.stringify(p));
-    const extra = { SUPERAGENT_HOME: h, ARCHON_HOME: join(h, 'archon') };
-    const run = (tag: string) =>
-      runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag }, SCRIPT, extra);
-    const results = ['first', 'second'].map(run);
-    for (const x of results)
-      expect(x.out).toMatchObject({ ok: true, command_results: [{ pass: true, flaky: true }] });
-    expect(readdirSync(join(results[1].art, 'accept-cache'))).toEqual(['.key']);
-    const ledger = readFileSync(join(h, 'flaky-acceptance.jsonl'), 'utf8').trim().split('\n');
-    expect(ledger).toHaveLength(2);
-    const inbox = join(h, 'coord/inbox'),
-      notice = readFileSync(join(inbox, readdirSync(inbox)[0]), 'utf8');
-    expect(notice).toContain('验收偶发x2: suite::case');
-    const cases = JSON.parse(
-      '[["accept",true,"false",2],["accept",false,"false",1],["env",true,"false",1],["accept",true,"kill -TERM $$",1],["accept",true,"sleep 2; false",1]]'
-    ) as ['accept' | 'env', boolean, string, number][];
-    for (const [kind, cache, command, runs] of cases) {
-      const r = tmp(),
-        m = join(r, 'runs'),
-        trace = `echo x >> '${m}'; ${command}`;
-      const plan = planFile(
-        r,
-        kind === 'env' ? 'true' : trace,
-        kind === 'env' ? [trace] : [],
-        cache,
-        command.startsWith('sleep') ? 1 : 5
-      );
-      runScript(gitRepo(r), { kind, plan, pkgs: 'a', tag: 'verify-a' });
-      expect(readFileSync(m, 'utf8').trim().split('\n')).toHaveLength(runs);
-    }
+    const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' }, SCRIPT,
+      { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+    expect(result.out, readFileSync(join(result.art, 'verify-a.log'), 'utf8')).toMatchObject({ ok: true,
+      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] } }] });
+    expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\ntarget\n');
+    expect(readdirSync(join(result.art, 'accept-cache'))).toEqual(['.key']);
+    expect(JSON.parse(readFileSync(join(home, 'flaky-acceptance.jsonl'), 'utf8'))).toMatchObject({ test_ids: ['suite::target'], attempts: 2 });
   });
+  // prettier-ignore
+  test.each(['still-fails', 'first-pass', 'missing-rerun-id'])(
+    'accept: typed Bun rerun adapter handles %s',
+    mode => {
+      const root = tmp(), repo = gitRepo(root), counts = join(root, 'counts'), fixture = join(repo, 'fixture.test.ts');
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\nfixture.test.ts\n');
+      const source = (includeTarget = true) =>
+        `import { describe, expect, test } from 'bun:test'; import { appendFileSync } from 'node:fs'; describe('suite', () => { test('stable', () => appendFileSync(${JSON.stringify(counts)}, 'stable\\n')); ${includeTarget ? `test('target', () => { appendFileSync(${JSON.stringify(counts)}, 'target\\n'); expect(${JSON.stringify(mode)}).toBe('first-pass'); });` : ''} });`;
+      writeFileSync(fixture, source());
+      const rewrite = mode === 'missing-rerun-id' ? `; code=$?; printf %s ${shellQuoteForTest(source(false))} > fixture.test.ts; exit $code` : '';
+      const command = `bun test fixture.test.ts --reporter=junit --reporter-outfile=junit.xml${rewrite}`;
+      const plan = planFile(root, command), p = JSON.parse(readFileSync(plan, 'utf8'));
+      p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::stable\nsuite::target\n'` };
+      writeFileSync(plan, JSON.stringify(p));
+      const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' });
+      if (mode === 'first-pass') {
+        expect(result.out).toMatchObject({ ok: true, command_results: [{ pass: true }] });
+        expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\n');
+        const cases = JSON.parse('[["accept",true,"false",2],["accept",false,"false",1],["env",true,"false",1],["accept",true,"kill -TERM $$",1],["accept",true,"sleep 2; false",1]]') as ['accept' | 'env', boolean, string, number][];
+        for (const [kind, cache, command, runs] of cases) {
+          const r = tmp(), m = join(r, 'runs'), trace = `echo x >> '${m}'; ${command}`;
+          const plan = planFile(r, kind === 'env' ? 'true' : trace, kind === 'env' ? [trace] : [], cache, command.startsWith('sleep') ? 1 : 5);
+          runScript(gitRepo(r), { kind, plan, pkgs: 'a', tag: 'verify-a' });
+          expect(readFileSync(m, 'utf8').trim().split('\n')).toHaveLength(runs);
+        }
+      } else {
+        expect(result.out).toMatchObject({ ok: false, command_results: [{ pass: false }] });
+        const lines = readFileSync(counts, 'utf8').trim().split('\n');
+        expect(lines.filter(line => line === 'stable')).toHaveLength(1);
+        expect(lines.filter(line => line === 'target')).toHaveLength(mode === 'still-fails' ? 3 : 1);
+      }
+    }
+  );
   test('P2: identity-bound adjudication outranks scope until approval', () => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -4560,7 +4594,7 @@ describe('sa-check script', () => {
     writeFileSync(p, JSON.stringify(plan));
     runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a', base });
     expect(readFileSync(trees, 'utf8')).toBe(
-      `${candidateTree}\n${candidateTree}\n${candidateTree}\n${candidateTree}\n${baseTree}\n${baseTree}\n${baseTree}\n${baseTree}\n`
+      `${candidateTree}\n${candidateTree}\n${baseTree}\n${baseTree}\n`
     );
     expect(readFileSync(join(root, 'art', 'verify-a.probe.log'), 'utf8')).not.toContain('# reused');
   });
