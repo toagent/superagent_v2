@@ -510,7 +510,8 @@ export async function refreshConsole(
   restart = startWeb,
   current = residentHash(),
   live = alive,
-  launched = loaded
+  // The launchd label is machine-wide; only a plist under this home's LaunchAgents dir is ours to restart.
+  launched = () => existsSync(consoleLaunchdPlist()) && loaded()
 ): Promise<ConsoleState | null> {
   const s = webState();
   const running = !!s && live(s.pid);
