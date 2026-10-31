@@ -19,7 +19,10 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
   const bin = join(root, 'bin');
   const trace = join(root, 'trace');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'bun'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\n');
+  writeFileSync(
+    join(bin, 'bun'),
+    '#!/bin/sh\nprintf "%s:%s\\n" "${SA_HEAVY_LOCK_HELD:-}" "$*" >> "$TRACE"\n'
+  );
   chmodSync(join(bin, 'bun'), 0o755);
   const invoke = (...args: string[]) => {
     writeFileSync(trace, '');
@@ -29,15 +32,15 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
         TRACE: trace,
-        SA_HEAVY_LOCK_HELD: '1',
+        SA_HEAVY_LOCK_FILE: join(root, 'heavy.lock'),
       },
     });
     expect(result.exitCode).toBe(0);
     return readFileSync(trace, 'utf8').trim().split('\n');
   };
   expect(invoke()).toEqual([
-    'run type-check',
-    'test --timeout 900000 tests/scenarios/scenario-core.test.ts',
+    ':run type-check',
+    ':test --timeout 900000 tests/scenarios/scenario-core.test.ts',
   ]);
   const scenarios = readdirSync(join(wetamp, 'tests/scenarios'))
     .filter(name => name.endsWith('.test.ts'))
@@ -48,7 +51,7 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
     .sort()
     .map(name => `tests/${name}`);
   expect(invoke('--full')).toEqual([
-    'run type-check',
-    ...[...scenarios, ...engines].map(path => `test --timeout 900000 ${path}`),
+    ':run type-check',
+    ...[...scenarios, ...engines].map(path => `1:test --timeout 900000 ${path}`),
   ]);
 });

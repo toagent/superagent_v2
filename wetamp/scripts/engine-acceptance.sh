@@ -20,5 +20,5 @@ bun run type-check
 if [[ "${1:-}" == --full ]]; then
   heavy_exec bash "$0" --scenarios --full
 else
-  heavy_exec bash "$0" --scenarios
+  bash "$0" --scenarios
 fi
