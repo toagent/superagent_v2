@@ -552,12 +552,11 @@ describe('quick', () => {
 });
 
 describe('parseArgs', () => {
-  // prettier-ignore
   test('positionals, --k v, --k=v and boolean flags', () => {
     expect(parseArgs(['wait', 'x', '--timeout', '5', '--pkg=core', '--fake'])).toEqual({
       _: ['wait', 'x'],
       flags: { timeout: '5', pkg: 'core', fake: true },
-    }); expect(parseArgs(['engine', 'verify', 'abc1234', '--base', 'def5678']).flags.base).toBe('def5678');
+    });
   });
   test('unknown flags fail instead of being ignored', () => {
     expect(() => parseArgs(['run', 'p.json', '--skip-selftests'])).toThrow(/Unknown option/);

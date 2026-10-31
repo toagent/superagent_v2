@@ -422,7 +422,7 @@ test('auto promotion waits for the promotion lock before spawning', () => {
 }, testTimeout(60_000));
 
 // prettier-ignore
-test('post-promotion verify handles retries, no affected tests, persistent failure, and timeout', () => {
+test('post-promotion verify handles retries, no affected tests, persistent failure, and timeout', async () => {
   const f = sourceFixture(), base = f.sha(), xml = (failed: boolean) => `<testsuites><testsuite file="tests/caller.test.ts" failures="${failed ? 1 : 0}"><testcase name="caller"${failed ? '><failure/></testcase>' : '/>'}</testsuite></testsuites>`;
   const run = (name: string, exits: number[], reports: boolean[]) => {
     const sha = commit(f.source, name), commands: string[][] = [], timeouts: number[] = [];
@@ -434,6 +434,7 @@ test('post-promotion verify handles retries, no affected tests, persistent failu
   expect(run('persistent', [1, 1], [true, true]).result).toMatchObject({ status: 'failed', failed_files: ['tests/caller.test.ts'] });
   expect(run('no-tests', [0], [false]).result).toMatchObject({ status: 'passed', files: [], failed_files: [] });
   const timeout = run('timeout', [124], [false]); expect(timeout.result.status).toBe('failed'); expect(timeout.timeouts).toEqual([60 * 60_000]);
+  expect((await import('../src/cli')).parseArgs(['engine', 'verify', 'abc1234', '--base', 'def5678']).flags.base).toBe('def5678');
 }, testTimeout(60_000));
 
 // prettier-ignore
