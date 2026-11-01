@@ -45,10 +45,12 @@ interface SignedAnswer {
 
 interface StoredDecision extends NtfyAsk {
   id: string;
-  status: 'pending' | 'answered' | 'expired' | 'failed';
+  status: 'pending' | 'answered' | 'expired' | 'failed' | 'superseded';
   delivery: 'pending' | 'sent';
   actions: SignedAnswer[];
   answer?: string;
+  handled_at?: string;
+  error?: { code: string; message: string };
   red_phase?: 'request' | 'confirm';
 }
 
@@ -289,6 +291,21 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
   state.alert_ids.push(id);
 }
 
+function callbackError(error: unknown): { code: string; message: string } {
+  const raw =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : '';
+  const code = /^[a-z][a-z0-9_]{0,63}$/.test(raw) ? raw : 'callback_failed';
+  return {
+    code,
+    message: code === 'decision_changed' ? '决定已变化，请重读' : '回调处理失败',
+  };
+}
+
+const optionLabel = (decision: StoredDecision, option: string): string =>
+  decision.options.find(candidate => candidate.id === option)?.label ?? option;
+
 async function publish(
   config: NtfyConfig,
   topic: 'sa-decisions' | 'sa-alerts',
@@ -475,7 +492,8 @@ export async function syncNtfy(
         let rejection: string | undefined;
         if (!decision) rejection = '该决策未找到或已过期，未执行';
         else if (decision.status === 'expired') rejection = '该决策已过期，未执行';
-        else if (decision.status === 'failed') rejection = '该决策处理失败，未执行';
+        else if (['failed', 'superseded'].includes(decision.status))
+          rejection = `这条在 ${decision.handled_at ?? '未知时间'} 已按 ${decision.status} 处理，本次未执行`;
         else if (decision.status === 'answered' || answer.nonce in state.used_nonces)
           rejection = '该决策已处理，本次点按忽略';
         else if (answer.exp < Math.floor(config.now() / 1000)) rejection = '该决策已过期，未执行';
@@ -486,7 +504,9 @@ export async function syncNtfy(
           receipt(
             state,
             `receipt:${answer.id}:rejected`,
-            `未执行｜${decision?.title ?? '未知决策'}`,
+            decision && ['failed', 'superseded'].includes(decision.status)
+              ? `未执行｜${optionLabel(decision, answer.option)}`
+              : `未执行｜${decision?.title ?? '未知决策'}`,
             rejection,
             config.now()
           );
@@ -521,8 +541,7 @@ export async function syncNtfy(
           await onAnswer(decision, answer.option);
           decision.status = 'answered';
           decision.answer = answer.option;
-          const label =
-            decision.options.find(option => option.id === answer.option)?.label ?? answer.option;
+          const label = optionLabel(decision, answer.option);
           receipt(
             state,
             `receipt:${decision.id}:${answer.option}`,
@@ -531,13 +550,19 @@ export async function syncNtfy(
             config.now()
           );
           accepted++;
-        } catch {
-          decision.status = 'failed';
+        } catch (error) {
+          decision.answer = answer.option;
+          decision.handled_at = new Date(config.now()).toISOString();
+          decision.error = callbackError(error);
+          decision.status = decision.error.code === 'decision_changed' ? 'superseded' : 'failed';
+          const label = optionLabel(decision, answer.option);
           receipt(
             state,
             `receipt:${decision.id}:failed`,
-            `未执行｜${decision.title}`,
-            '处理失败，请使用命令行重试',
+            `未执行｜${label}`,
+            decision.status === 'superseded'
+              ? `你点的选项：${label}；这条决策当前已失效（${decision.handled_at}，superseded）；你的选择未改变任何状态`
+              : `处理失败（${decision.error.code}）；你的选择未改变任何状态`,
             config.now()
           );
           failed++;

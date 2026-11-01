@@ -289,7 +289,8 @@ test('5: self, online, offline backlog and unowned route deterministically; next
   expect(sent).toMatchObject({ presence: online });
   const offline = new Coordination({
     sa: s.sa,
-    runs: () => [],
+    runs: () => [{ run_id: 'held', archon_run_id: 'engine', repo: s.repo }],
+    status: () => 'paused',
     presence: () => ({ state: 'offline' }),
   });
   expect(
