@@ -4237,7 +4237,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
-  { command: 'ask', positionals: '[status <id>]', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
+  { command: 'ask', positionals: '[status <id>]', flags: ['source', 'spec', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
   { command: 'notify', flags: ['id', 'title', 'body', 'priority'] },
   { command: 'ntfy', positionals: 'pause|resume|status', flags: [] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
