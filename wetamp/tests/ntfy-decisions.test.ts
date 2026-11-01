@@ -195,6 +195,18 @@ describe('ntfy decision channel', () => {
     ntfyCli(['ntfy', 'resume'], f.config, () => undefined); await publishPendingNtfy(f.config);
     expect(f.posts.map(post => post.body.topic)).toEqual(['sa-decisions', 'sa-alerts']);
   });
+  test('pause records operator and time without replacing the original actor', async () => {
+    const now = 2_000_000_000_000, f = fixture(now), output: unknown[] = [], marker = join(f.root, 'paused');
+    const first = { client: 'codex', host: 'dev', pid: 7, pid_start: 'start-1' };
+    f.config.actor = () => first; ntfyCli(['ntfy', 'pause'], f.config, value => output.push(value));
+    const recorded = { at: new Date(now).toISOString(), by: first };
+    expect(JSON.parse(readFileSync(marker, 'utf8'))).toEqual(recorded); expect(output.at(-1)).toMatchObject({ paused: true, paused_at: recorded.at, paused_by: first });
+    f.config.actor = () => ({ ...first, pid: 8 }); ntfyCli(['ntfy', 'pause'], f.config, () => undefined);
+    expect(JSON.parse(readFileSync(marker, 'utf8'))).toEqual(recorded);
+    ntfyCli(['ntfy', 'resume'], f.config, () => undefined); writeFileSync(marker, '');
+    ntfyCli(['ntfy', 'status'], f.config, value => output.push(value));
+    expect(output.at(-1)).toMatchObject({ paused: true, paused_at: expect.any(String), paused_by: null }); askNtfy(f.request('paused-legacy'), f.config); await publishPendingNtfy(f.config); expect(f.posts).toHaveLength(0);
+  });
   test('keeps secrets out of state and routes answers through the durable decision store', async () => {
     const f = fixture(); askNtfy(f.request('secret'), f.config); await publishPendingNtfy(f.config);
     const key = readFileSync(f.config.answerKey, 'utf8').trim(), visible = readFileSync(f.config.statePath, 'utf8') + JSON.stringify(f.posts[0].body) + process.argv.join(' ');

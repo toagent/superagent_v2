@@ -13,7 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { lock } from './archon';
 import { home, writeAtomic } from './config';
-import type { Identity, Scope } from './coord';
+import { caller, type Identity, type Scope } from './coord';
 
 export interface NtfyOption {
   id: string;
@@ -139,6 +139,7 @@ export interface NtfyConfig {
   statePath: string;
   fetch: typeof fetch;
   now: () => number;
+  actor?: () => Identity | null;
 }
 
 const defaultConfig = (): NtfyConfig => ({
@@ -470,6 +471,19 @@ function recordLimited(state: NtfyState, keys: string[], now: number): void {
 }
 
 const pausedPath = (config: NtfyConfig): string => join(dirname(config.statePath), 'paused');
+
+function pauseRecord(marker: string): { paused_at: string; paused_by: Identity | null } {
+  try {
+    const value = JSON.parse(readFileSync(marker, 'utf8')) as { at?: unknown; by?: unknown };
+    const by = value.by as Partial<Identity> | null;
+    const validBy = by === null || (typeof by.client === 'string' && typeof by.pid === 'number');
+    if (typeof value.at === 'string' && validBy)
+      return { paused_at: value.at, paused_by: by as Identity | null };
+  } catch {
+    /* Legacy or malformed marker: fall back to mtime. */
+  }
+  return { paused_at: statSync(marker).mtime.toISOString(), paused_by: null };
+}
 
 const HEAVY = '━'.repeat(14),
   LIGHT = '─'.repeat(14);
@@ -830,17 +844,36 @@ export function queueNtfyAlert(
 export function ntfyControl(
   action: 'pause' | 'resume' | 'status',
   supplied: Partial<NtfyConfig> = {}
-): { paused: boolean; sent: number; limited: number; deduplicated: number } {
+): {
+  paused: boolean;
+  paused_at?: string;
+  paused_by?: Identity | null;
+  sent: number;
+  limited: number;
+  deduplicated: number;
+} {
   const config = { ...defaultConfig(), ...supplied },
     marker = pausedPath(config);
   mkdirSync(dirname(marker), { recursive: true, mode: 0o700 });
-  if (action === 'pause' && !existsSync(marker)) writeFileSync(marker, '', { mode: 0o600 });
+  if (action === 'pause' && !existsSync(marker)) {
+    let by: Identity | null = null;
+    try {
+      by = config.actor ? config.actor() : caller(true);
+    } catch {
+      /* Pausing still succeeds when caller identity is unavailable. */
+    }
+    writeFileSync(marker, JSON.stringify({ at: new Date(config.now()).toISOString(), by }), {
+      mode: 0o600,
+    });
+  }
   if (action === 'resume' && existsSync(marker)) unlinkSync(marker);
-  const state = readState(config.statePath),
+  const paused = existsSync(marker),
+    state = readState(config.statePath),
     cutoff = config.now() - HOUR,
     activity = state.activity.filter(event => event.at >= cutoff);
   return {
-    paused: existsSync(marker),
+    paused,
+    ...(paused ? pauseRecord(marker) : {}),
     sent: activity.filter(event => event.kind === 'decision' || event.kind === 'alert').length,
     limited: activity.filter(event => event.kind === 'limited').length,
     deduplicated: activity.filter(event => event.kind === 'deduplicated').length,
