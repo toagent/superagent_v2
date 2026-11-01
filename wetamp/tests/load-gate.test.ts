@@ -21,6 +21,12 @@ const run = (loads: string, maxMs = '20') => {
   });
   return { result, log: existsSync(log) ? readFileSync(log, 'utf8') : '' };
 };
+test('test mode without an injected sequence never reads machine load', () => {
+  const idle = run('');
+  expect(idle.result.exitCode).toBe(0);
+  expect(idle.log).toBe('');
+  expect(idle.result.stderr.toString()).toBe('');
+});
 test('normal load returns silently while high load waits until recovery', () => {
   const normal = run('0');
   expect(normal.result.exitCode).toBe(0);

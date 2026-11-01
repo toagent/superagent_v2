@@ -186,7 +186,7 @@ test('engine acceptance script isolates files and stops at the first failure', (
   const bun = join(bin, 'bun');
   writeFileSync(
     bun,
-    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\n[ "$4" != tests/scenarios/b.test.ts ]\n'
+    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\n[ "$5" != tests/scenarios/b.test.ts ]\n'
   );
   chmodSync(bun, 0o755);
   const result = Bun.spawnSync(['bash', 'scripts/engine-acceptance.sh', '--full'], {
@@ -202,8 +202,8 @@ test('engine acceptance script isolates files and stops at the first failure', (
   expect(result.exitCode).not.toBe(0);
   expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
     'run type-check',
-    'test --timeout 900000 tests/scenarios/a.test.ts',
-    'test --timeout 900000 tests/scenarios/b.test.ts',
+    'test --isolate --timeout 900000 tests/scenarios/a.test.ts',
+    'test --isolate --timeout 900000 tests/scenarios/b.test.ts',
   ]);
 });
 

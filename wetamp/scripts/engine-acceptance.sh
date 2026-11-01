@@ -11,7 +11,7 @@ if [[ "${1:-}" == --scenarios ]]; then
     files=(tests/scenarios/*.test.ts tests/engine-*.test.ts)
   fi
   for f in "${files[@]}"; do
-    bun test --timeout 900000 "$f"
+    bun test --isolate --timeout 900000 "$f"
   done
   exit
 fi

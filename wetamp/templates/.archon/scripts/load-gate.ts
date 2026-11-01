@@ -5,8 +5,10 @@ const testNumber = (key: string, fallback: number): number =>
   process.env.NODE_ENV === 'test' && process.env[key] ? Number(process.env[key]) : fallback;
 let testLoads: number[] | undefined;
 const currentLoad = (): number => {
-  if (process.env.NODE_ENV !== 'test' || !process.env.SA_TEST_LOAD_SEQUENCE) return loadavg()[0];
-  testLoads ??= process.env.SA_TEST_LOAD_SEQUENCE.split(',').map(Number);
+  if (process.env.NODE_ENV !== 'test') return loadavg()[0];
+  const testSequence = process.env.SA_TEST_LOAD_SEQUENCE;
+  if (!testSequence) return 0;
+  testLoads ??= testSequence.split(',').map(Number);
   return (testLoads.length > 1 ? testLoads.shift() : testLoads[0]) ?? loadavg()[0];
 };
 export async function waitForLoad(log?: string): Promise<void> {

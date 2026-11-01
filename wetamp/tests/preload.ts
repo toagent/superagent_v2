@@ -2,12 +2,49 @@ import { afterAll, afterEach } from 'bun:test';
 // prettier-ignore
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
 
 export const nativeSpawnSync = Bun.spawnSync;
 const roots: string[] = [];
 const children: Array<[ReturnType<typeof Bun.spawn>, boolean]> = [];
+const gitGuards: Array<{
+  repo: string;
+  bare: string;
+  head: string;
+  reported: boolean;
+}> = [];
+
+const gitState = (repo: string, args: string[]): string => {
+  const result = nativeSpawnSync(['git', '-C', repo, ...args], {
+    env: process.env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  return `${String(result.exitCode)}:${result.stdout.toString().trim()}`;
+};
+
+export function installGitGuard(repo: string): void {
+  gitGuards.push({
+    repo,
+    bare: gitState(repo, ['config', '--get', 'core.bare']),
+    head: gitState(repo, ['rev-parse', 'HEAD']),
+    reported: false,
+  });
+}
+
+function checkGitGuards(throwOnChange: boolean): void {
+  for (const guard of gitGuards) {
+    const actualBare = gitState(guard.repo, ['config', '--get', 'core.bare']);
+    const actualHead = gitState(guard.repo, ['rev-parse', 'HEAD']);
+    if (actualBare === guard.bare && actualHead === guard.head) continue;
+    const message = `test git guard: repository changed: ${guard.repo} (core.bare ${guard.bare} -> ${actualBare}, HEAD ${guard.head} -> ${actualHead})`;
+    process.exitCode = 1;
+    if (!guard.reported) console.error(message);
+    guard.reported = true;
+    if (throwOnChange) throw new Error(message);
+  }
+}
 
 export function trackTestRoot(path: string): void {
   roots.push(path);
@@ -34,6 +71,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   for (const root of roots.splice(0)) await removeTempTree(root);
+  checkGitGuards(true);
 }, 240_000);
 
 const STALE_MS = 6 * 60 * 60 * 1000;
@@ -70,6 +108,16 @@ export const isolatedTestHomes = {
 process.env.SUPERAGENT_HOME = isolatedTestHomes.superagent;
 process.env.ARCHON_HOME = isolatedTestHomes.archon;
 mkdirSync(process.env.ARCHON_HOME);
+for (const key of Object.keys(process.env)) if (key.startsWith('GIT_')) delete process.env[key];
+process.env.GIT_CEILING_DIRECTORIES = dirname(tmpdir());
+process.env.SA_ENGINE_VERIFY_TOKEN = '';
+process.env.SA_ENGINE_PROMOTER_TOKEN = '';
+process.env.SA_SERVED_RUN = '';
+process.env.SA_HISTORICAL_RUN = '';
+process.env.SA_CONSOLE_LABEL = `com.wetamp.superagent-console.test.${String(process.pid)}`;
+process.env.SA_LAUNCHD_DIR = join(testHome, 'LaunchAgents');
+installGitGuard(join(import.meta.dir, '..'));
+process.on('exit', () => checkGitGuards(false));
 process.once('exit', () => {
   try {
     rmSync(testHome, { recursive: true, force: true });
