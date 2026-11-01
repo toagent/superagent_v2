@@ -813,19 +813,38 @@ exec ${join(currentSnapshot, 'wetamp/bin/archon')} "$@"
     );
     sh(`chmod +x '${wrapper}'`, scratch);
     process.env.SA_ARCHON_BIN = wrapper;
+    const shim = join(currentSnapshot, 'wetamp/bin/superagent-shim'),
+      resumeEnv = {
+        ...process.env,
+        BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(),
+      },
+      preflight =
+        terminal === 'cancelled'
+          ? Bun.spawnSync([shim, 'resume', state.runId], {
+              env: resumeEnv,
+              stdout: 'pipe',
+              stderr: 'pipe',
+            })
+          : undefined,
+      snapshot = preflight
+        ? archonModule.lastJson(preflight.stdout.toString())?.snapshot
+        : undefined,
+      reconciliation = typeof snapshot === 'string' ? snapshot : undefined;
+    if (terminal === 'cancelled' && !reconciliation)
+      throw new Error('cancelled scenario reconciliation snapshot missing');
     const resumed = Bun.spawnSync(
-      [join(currentSnapshot, 'wetamp/bin/superagent-shim'), 'resume', state.runId],
+      [shim, 'resume', state.runId, ...(reconciliation ? ['--reconciled', reconciliation] : [])],
       {
-        env: {
-          ...process.env,
-          BUN_OPTIONS: `${process.env.BUN_OPTIONS ?? ''} --preload=${launcherPreload}`.trim(),
-        },
+        env: resumeEnv,
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: 240_000,
       }
     );
     expect(resumed.exitCode, resumed.stdout.toString() + resumed.stderr.toString()).toBe(0);
+    const recovery = archonModule.lastJson(resumed.stdout.toString()) as {
+      cancellation_source?: string;
+    };
     for (const end = Date.now() + 240_000; !existsSync(resultPath) && Date.now() < end; )
       await Bun.sleep(25);
     expect(existsSync(resultPath), readFileSync(runnerLog, 'utf8').slice(-4000)).toBeTrue();
@@ -865,6 +884,7 @@ exec ${join(currentSnapshot, 'wetamp/bin/archon')} "$@"
       root: currentSnapshot,
       oldGenDir: old.gen_dir,
       originalRunId: state.runId,
+      recovery,
     };
   } finally {
     resetDatabase();
