@@ -1642,6 +1642,23 @@ describe('buildWorkflow', () => {
     if (parsed.workflow === null) throw new Error(parsed.error.error);
     expect(parsed.workflow.interactive).not.toBe(true);
   });
+  test('budgeted non-fake repairs close output references', () => {
+    const plan = structuredClone(fixture);
+    plan.packages[0]!.max_net_lines = 200;
+    const workflow = build(false, plan),
+      nodes = nodesOf(workflow);
+    expect(() => assertGeneratedWorkflow(workflow as Record<string, unknown>, false)).not.toThrow();
+    for (const id of ['repair-context-core', 'repair-core'])
+      expect(nodes.find(node => node.id === id)?.depends_on).toContain('human-budget-core');
+    expect(
+      evaluateCondition(
+        nodes.find(node => node.id === 'repair-core')!.when!,
+        new Map([
+          ['verify-core', { state: 'completed' as const, output: '{"disposition":"repair"}' }],
+        ])
+      ).result
+    ).toBeTrue();
+  });
   test('fake mode replaces every agent node with a bash stub', () => {
     const realAgents = nodesOf(build(false)).filter(node => node.command?.startsWith('sa-'));
     const fake = nodesOf(build(true));

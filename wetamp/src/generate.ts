@@ -1128,6 +1128,7 @@ export function buildWorkflow(
       const repairWhen =
         `$${verify}.output.disposition == 'repair'` +
         (budgetGate ? ` || $${budgetGate}.output.decision == 'reject'` : '');
+      const repairDeps = [verify, pkgAttempt, ...(budgetGate ? [budgetGate] : [])];
       const repairContext = `repair-context-${p.id}`;
       const repairHandle = conditionalOutput<CoderOutput>(`repair-${p.id}`);
       if (!fake)
@@ -1135,7 +1136,7 @@ export function buildWorkflow(
           id: repairContext,
           ...attemptInputs(attemptPath(gen, `pkg/${p.id}`)),
           with: { counter: attemptPath(gen, `pkg/${p.id}`), gen, context_node: `repair-${p.id}` },
-          depends_on: [verify, pkgAttempt],
+          depends_on: repairDeps,
           when: repairWhen,
           output_format: contextOutputFormat,
         });
@@ -1161,7 +1162,7 @@ export function buildWorkflow(
                 accept_log: ref.optional(verifyHandle, 'log', ''),
               },
             }),
-        depends_on: [verify, pkgAttempt, ...(!fake ? [repairContext] : [])],
+        depends_on: [...repairDeps, ...(!fake ? [repairContext] : [])],
         when: repairWhen,
         output_format: coderOutputFormat,
       });
@@ -1466,6 +1467,29 @@ export function buildWorkflow(
 }
 
 export function assertGeneratedWorkflow(definition: Node, background = true): void {
+  const assertReferenceClosure = (nodes: Node[], enclosing = new Set<string>()): void => {
+    const byId = new Map(nodes.map(node => [String(node.id), node]));
+    for (const node of nodes) {
+      const upstream = new Set(enclosing),
+        pending = [...((node.depends_on as string[] | undefined) ?? [])];
+      for (const id of pending) {
+        if (upstream.has(id)) continue;
+        upstream.add(id);
+        pending.push(...((byId.get(id)?.depends_on as string[] | undefined) ?? []));
+      }
+      for (const value of [node.when, node.with]) {
+        if (value === undefined) continue;
+        const source = typeof value === 'string' ? value : JSON.stringify(value);
+        for (const match of source.matchAll(/\$([A-Za-z0-9_-]+)\.output(?:\.|\b)/g)) {
+          const id = match[1];
+          if (id !== 'LOOP_PREV' && id !== 'INPUTS' && !upstream.has(id))
+            throw new Error(`${String(node.id)}: non-upstream output reference ${id}`);
+        }
+      }
+      const group = node.loop_group as { nodes?: Node[] } | undefined;
+      assertReferenceClosure(group?.nodes ?? [], new Set([...enclosing, ...byId.keys()]));
+    }
+  };
   const visit = (nodes: Node[]): void => {
     for (const node of nodes) {
       for (const field of ['bash', 'until_bash'] as const) {
@@ -1477,6 +1501,7 @@ export function assertGeneratedWorkflow(definition: Node, background = true): vo
       visit(group?.nodes ?? []);
     }
   };
+  assertReferenceClosure(definition.nodes as Node[]);
   visit(definition.nodes as Node[]);
   const parsed = parseWorkflow(YAML.stringify(definition, { lineWidth: 0 }), 'generated.yaml', {
     get: () => undefined,

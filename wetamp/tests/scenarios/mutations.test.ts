@@ -23,6 +23,14 @@ const mutations: Mutation[] = [
     expectedError: 'interactive',
   },
   {
+    file: 'src/generate.ts',
+    from: 'const repairDeps = [verify, pkgAttempt, ...(budgetGate ? [budgetGate] : [])];',
+    to: 'const repairDeps = [verify, pkgAttempt];',
+    test: 'tests/generate.test.ts',
+    name: 'budgeted non-fake repairs close output references',
+    expectedError: 'human-budget-core',
+  },
+  {
     file: 'src/land.ts',
     from: 'const who = authorization.run;',
     to: 'const who = caller();',
