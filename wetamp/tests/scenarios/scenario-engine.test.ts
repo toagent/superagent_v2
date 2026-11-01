@@ -190,4 +190,5 @@ test('S15: recover adopts accepted work and hashes the carried persisted bytes',
     const cancelled = await recoverCarriedScenario(spec, 'cancelled');
     expect(cancelled.adopted.adoptions?.at(-1)).toMatchObject({ from: cancelled.originalRunId, to: cancelled.result.runId });
     expect(cancelled.result.terminal.completed).toEqual([cancelled.result.runId]);
+    expect(cancelled.recovery.cancellation_source).toBe('unknown');
 }, 240_000);

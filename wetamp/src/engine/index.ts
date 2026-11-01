@@ -424,7 +424,12 @@ export interface AutoVerifyDependencies { spawn?: (command: string[], env: Recor
 const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): string => {
   let subject = '';
   try {
-    subject = git(['show', '-s', '--format=%s', record.sha]).slice(0, 30);
+    const parents = git(['show', '-s', '--format=%P', record.sha]).split(' ').filter(Boolean);
+    subject = git(
+      parents.length > 1
+        ? ['log', '-1', '--no-merges', '--format=%s', record.sha]
+        : ['show', '-s', '--format=%s', record.sha]
+    ).slice(0, 30);
   } catch {
     subject = '';
   }

@@ -1016,9 +1016,10 @@ function recoverRun(
   reconciled?: string,
   evidenceFile?: string,
   admit?: (run: RunView) => string | undefined
-): RecoverResult & { working_path?: string } {
+): RecoverResult & { working_path?: string; cancellation_source?: 'unknown' } {
   let staleSnapshot = false;
   let invalidWorkingPath: string | undefined;
+  const cancellation = { source: undefined as 'unknown' | undefined };
   let adopted:
     | {
         from: string;
@@ -1281,16 +1282,19 @@ function recoverRun(
         const cancelled = [...(l.intervention_events ?? [])]
           .reverse()
           .find(event => event.action === 'cancel' && event.ok);
-        if (!cancelled || cancelled.reason === 'rejected')
+        if (cancelled?.reason === 'rejected')
           return 'cancelled recovery requires a successful engine/operator cancellation';
         if (publishProjection(l, run)) return 'cancelled recovery refuses published delivery';
+        if (!cancelled) cancellation.source = 'unknown';
       }
       return admit?.(run);
     }
   );
-  return invalidWorkingPath && !result.ok
-    ? { ...result, working_path: invalidWorkingPath }
-    : result;
+  return cancellation.source && result.ok
+    ? { ...result, cancellation_source: cancellation.source }
+    : invalidWorkingPath && !result.ok
+      ? { ...result, working_path: invalidWorkingPath }
+      : result;
 }
 
 const clearAutoRecoverPause = (l: Ledger): string | undefined => {
