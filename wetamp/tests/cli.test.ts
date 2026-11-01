@@ -809,7 +809,7 @@ test('legacy deferred_deliveries is ignored without rewriting the ledger', () =>
   const path = ledgerPath('sa1');
   const historical = JSON.stringify({ ...s.ledger, deferred_deliveries: ['m1'] });
   writeFileSync(path, historical);
-  expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).not.toHaveProperty(
+  expect(JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out)).not.toHaveProperty(
     'deferred_deliveries'
   );
   expect(readFileSync(path, 'utf8')).toBe(historical);
@@ -846,7 +846,9 @@ describe('HF3 latest-engine recovery', () => {
       expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
       expect(s.calls().some(c => c.includes('--adopt'))).toBe(changed);
       expect(s.calls().some(c => c.startsWith('workflow resume'))).toBe(!changed);
-      expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('current');
+      expect(JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out).engine).toBe(
+        'current'
+      );
     }
   );
   test('AD: stale terminal runs with completed work adopt and reverify', () => {
@@ -1142,7 +1144,9 @@ describe('HF3 latest-engine recovery', () => {
     engineBoundary!.mockImplementation(() => cleanEngine(engine));
     const commit = gitHead(engine);
     const historical = readFileSync(ledgerPath('sa1'), 'utf8');
-    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).engine).toBe('stale(unknown)');
+    expect(JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out).engine).toBe(
+      'stale(unknown)'
+    );
     expect(readFileSync(ledgerPath('sa1'), 'utf8')).toBe(historical);
     expect(loadLedger('sa1').engine_commit).toBeUndefined();
     const dir = s.ledger.gen_dir;
@@ -1164,7 +1168,7 @@ describe('HF3 latest-engine recovery', () => {
     });
     expect(l.recoveries).toHaveLength(0);
     // prettier-ignore
-    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).toMatchObject({
+    expect(JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out)).toMatchObject({
       engine: 'current',
       adoption: { from: 'r', to: 'r2' },
       package_history: { core: { elapsed_ms: 10_000, failed_rounds: 1,
@@ -1331,7 +1335,20 @@ const featureRepo = (root: string): string => {
 };
 
 describe('waitRun (archon stub)', () => {
-  test('multi-run wait returns the first event and validates every run before waiting', () => {
+  test('compact default status reuses brief and --json preserves the status object', () => {
+    stub([run('running', { nodes: [{ nodeId: 'code-core', state: 'running' }] })]);
+    const compact = captured(() => main(['status', 'sa1'])),
+      brief = captured(() => main(['brief', 'sa1'])),
+      json = captured(() => main(['status', 'sa1', '--json']));
+    expect(compact).toEqual(brief);
+    expect(compact.out.split('\n')).toHaveLength(7);
+    expect(JSON.parse(json.out)).toMatchObject({
+      run_id: 'sa1',
+      state: 'running',
+      nodes: '0/1 completed',
+    });
+  });
+  test('compact default multi-run wait includes pending and terminal quota', () => {
     const s = stub([run('running')]),
       second = { ...s.ledger, run_id: 'sa2', archon_run_id: 'r2' };
     writeFileSync(ledgerPath('sa2'), JSON.stringify(second));
@@ -1348,12 +1365,22 @@ describe('waitRun (archon stub)', () => {
       )
     );
     expect(() => main(['wait', 'sa1', 'missing', '--timeout', '1'])).toThrow('unknown run');
-    const result = JSON.parse(captured(() => main(['wait', 'sa1', 'sa2', '--timeout', '2'])).out);
+    const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
+    const result = JSON.parse(
+      captured(() => main(['wait', 'sa1', 'sa2', '--json', '--timeout', '2'])).out
+    );
     expect(result).toMatchObject({ run_id: 'sa2', state: 'completed', pending: ['sa1'] });
     expect(result.timed_out).toBeUndefined();
+    const compact = captured(() => main(['wait', 'sa1', 'sa2', '--timeout', '2']));
+    expect(compact.out.split('\n').length).toBeLessThanOrEqual(20);
+    expect(compact.out).toContain('pending: sa1');
+    expect(compact.out.split('\n').at(-1)).toBe('relay fixture');
+    quota.mockRestore();
     completed = false;
     now = 0;
-    const timeout = JSON.parse(captured(() => main(['wait', 'sa1', 'sa2', '--timeout', '1'])).out);
+    const timeout = JSON.parse(
+      captured(() => main(['wait', 'sa1', 'sa2', '--json', '--timeout', '1'])).out
+    );
     expect(timeout).toMatchObject({
       timed_out: true,
       exit: EXIT.running,
@@ -1362,6 +1389,10 @@ describe('waitRun (archon stub)', () => {
         { run_id: 'sa2', state: 'running' },
       ],
     });
+    now = 0;
+    const compactTimeout = captured(() => main(['wait', 'sa1', 'sa2', '--timeout', '1']));
+    expect(compactTimeout.out.split('\n').length).toBeLessThanOrEqual(20);
+    expect(compactTimeout.out).toContain('pending: sa1 sa2');
   });
   test('terminal status and wait expose non-empty out-of-scope evidence', () => {
     const s = stub([run('completed')]);
@@ -1374,11 +1405,14 @@ describe('waitRun (archon stub)', () => {
     );
     const diff = join(art, 'diff-m1-r1.json');
     writeFileSync(diff, JSON.stringify({ out_of_scope: [] }));
-    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).out_of_scope).toBeUndefined();
+    expect(
+      JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out).out_of_scope
+    ).toBeUndefined();
     writeFileSync(diff, JSON.stringify({ out_of_scope: ['fixtures/golden.json'] }));
     for (const command of ['status', 'wait'])
       expect(
-        JSON.parse(captured(() => main([command, 'sa1', '--timeout', '1'])).out).out_of_scope
+        JSON.parse(captured(() => main([command, 'sa1', '--json', '--timeout', '1'])).out)
+          .out_of_scope
       ).toEqual(['fixtures/golden.json']);
   });
   test('wait --json retains long errors at node, terminal record and metadata boundaries', () => {
@@ -1545,7 +1579,7 @@ describe('waitRun (archon stub)', () => {
       run('completed', { output_root: '/none', nodes: [{ nodeId: 'a', state: 'completed' }] }),
     ]);
     const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
-    const out = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '60'])).out);
+    const out = JSON.parse(captured(() => main(['wait', 'sa1', '--json', '--timeout', '60'])).out);
     expect(out.quota).toBe('relay fixture');
     quota.mockRestore();
     expect(out).toMatchObject({
@@ -1569,7 +1603,7 @@ describe('waitRun (archon stub)', () => {
     writeFileSync(join(s.root, 'home/tick.json'), JSON.stringify({
       at: new Date(Date.now() - 4 * 60_000).toISOString(), collect: { ok: true }, publish: { ok: true }, orca: { ok: true }, console: { ok: true }, failover: { ok: true }, actions: { ok: true },
     }));
-    const timedOut = captured(() => main(['wait', 'sa1', '--timeout', '3600']));
+    const timedOut = captured(() => main(['wait', 'sa1', '--json', '--timeout', '3600']));
     expect(timedOut.code).toBe(EXIT.running);
     expect(JSON.parse(timedOut.out)).toMatchObject({ state: 'running', exit: EXIT.running, timed_out: true,
       heartbeat: { available: true, line: 'mine', running: [{ id: 'mine' }], waiting: [{ id: 'wait' }], warnings: ['心跳过期 19m', '未收到巡检心跳 4m'] },
@@ -1578,7 +1612,7 @@ describe('waitRun (archon stub)', () => {
     expect(waits).toHaveLength(60);
     expect(waits.every(call => Number(call.split('--timeout ')[1]) <= 60)).toBe(true);
     stub([run('running')]);
-    const short = JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '60'])).out);
+    const short = JSON.parse(captured(() => main(['wait', 'sa1', '--json', '--timeout', '60'])).out);
     expect(short).toMatchObject({ state: 'running', exit: EXIT.running, timed_out: true, heartbeat: { available: false } });
     expect(short).not.toHaveProperty('timeout_capped');
     expect(waitRun(stub([run('completed')]).ledger, 0, who).heartbeat).toBeUndefined();
@@ -1610,7 +1644,7 @@ describe('waitRun (archon stub)', () => {
       evidence: art,
     });
     expect(
-      JSON.parse(captured(() => main(['wait', 'sa1', '--timeout', '1'])).out)
+      JSON.parse(captured(() => main(['wait', 'sa1', '--json', '--timeout', '1'])).out)
     ).not.toHaveProperty('quota');
   });
   test('early failure without a failed node: run error (redacted) and stop reason, with evidence paths', () => {
@@ -2666,7 +2700,7 @@ describe('brief / land (archon stub)', () => {
       JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] })
     );
     expect(classifyRun(s.ledger, dirty).state).toBe('target_dirty');
-    const status = captured(() => main(['wait', 'sa1', '--timeout', '1']));
+    const status = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
     expect(JSON.parse(status.out).receipt).toMatchObject({
       reason: 'target_dirty',
       evidence_path: join(art, 'publish-m1.json'),
@@ -3383,7 +3417,9 @@ describe('RCPT consumed decision receipts', () => {
     const lines = captured(() => main(['brief', 'sa1'])).out.split('\n');
     expect(lines).toContain('receipt: 最新答复');
     expect(lines.length).toBeLessThanOrEqual(20);
-    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).receipt).toBe('最新答复');
+    expect(JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out).receipt).toBe(
+      '最新答复'
+    );
   });
 });
 
@@ -3540,7 +3576,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     );
     held('verify-core', { 'verify-core.json': { ...result, ok: true, milestone: 'm1' } });
     for (const command of ['status', 'wait']) {
-      const response = captured(() => main([command, 'sa1', '--timeout', '1']));
+      const response = captured(() => main([command, 'sa1', '--json', '--timeout', '1']));
       const out = JSON.parse(response.out);
       expect(out.state).toBe('held:gate');
       expect(out.reason).toStartWith('needs:');
@@ -3561,7 +3597,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       join(s.root, 'gen/.archon/workflows/sa-sa1/sa-sa1.yaml'),
       '  - id: package-attempt-core\n'
     );
-    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    const status = JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out);
     expect(status).toMatchObject({ state: 'held:gate', node: 'verify-core' });
     expect(status.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
     view.status = 'cancelled';
@@ -3583,7 +3619,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
   });
   test('decide stays refused when an earlier failure has no structured control artifact', () => {
     held('package-attempt-core');
-    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    const status = JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out);
     expect(status).toMatchObject({ state: 'failed', node: 'package-attempt-core' });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(1);
   });
@@ -3603,7 +3639,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         }).decision,
       },
     });
-    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    const status = JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out);
     const brief = captured(() => main(['brief', 'sa1'])).out;
     const view = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
     const board = detailOf(s.ledger, rowOf(s.ledger, view, { now: Date.now() }));
@@ -3663,7 +3699,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
   test('only a recorded permission decision surfaces a current need', () => {
     const s = held('gate-m1-r1', { 'gate-m1-r1.json': gate('coder_redline') });
     expect(tick()).toEqual([]);
-    const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    const status = JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out);
     expect(status.needs).toMatchObject([{ tag: 'gate-m1-r1', cap: 'permission' }]);
     expect(captured(() => main(['brief', 'sa1'])).out).toContain('need permission');
     expect(resumes(s.calls())).toBe(0);

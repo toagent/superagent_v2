@@ -2570,7 +2570,7 @@ function decide(l: Ledger, a: Args): number {
 }
 
 /** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
-function brief(l: Ledger, json = false): number {
+function brief(l: Ledger, json = false, suffix: string[] = []): number {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
   const s = summary(l, run, c);
@@ -2662,7 +2662,7 @@ function brief(l: Ledger, json = false): number {
       l.auto_retries?.length ?? 0
     )}`
   );
-  console.log(lines.slice(0, 20).join('\n'));
+  console.log([...lines.slice(0, Math.max(0, 20 - suffix.length)), ...suffix].join('\n'));
   return c.exit;
 }
 
@@ -4843,10 +4843,21 @@ export function main(argv: string[]): number {
       const ids = [need(target, 'wait <run>'), ...a._.slice(2)],
         ledgers = ids.map(id => loadLedger(coord().resolveRun(id)?.run_id ?? id)),
         s = ledgers.length === 1 ? waitRun(ledgers[0], t, who) : waitRuns(ledgers, t, who),
-        eventLedger = ledgers.find(item => item.run_id === s.run_id);
+        eventLedger = ledgers.find(item => item.run_id === s.run_id),
+        compactLedger = eventLedger ?? ledgers[0],
+        terminal = ['completed', 'failed', 'cancelled'].includes(String(s.state)),
+        quota = terminal && eventLedger ? relayQuota(eventLedger.gen_dir, 'end') : {};
       if (s.state === 'completed' && eventLedger) s.delivery = deliveryProjection(eventLedger);
-      // prettier-ignore
-      print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) && eventLedger ? relayQuota(eventLedger.gen_dir, 'end') : {}) });
+      if (a.flags.json) print({ ...s, ...quota });
+      else
+        brief(compactLedger, false, [
+          ...(ledgers.length > 1
+            ? [
+                `pending: ${(Array.isArray(s.pending) ? s.pending : ledgers.map(item => item.run_id)).join(' ')}`,
+              ]
+            : []),
+          ...(quota.quota ? [quota.quota] : []),
+        ]);
       return Number(s.exit);
     }
     case 'quota': {
@@ -4856,8 +4867,9 @@ export function main(argv: string[]): number {
     }
     case 'status': {
       const l = ledger();
-      const run = getRun(l.archon_run_id, l.repo);
-      const c = classifyRun(l, run);
+      if (!a.flags.json) return brief(l);
+      const run = getRun(l.archon_run_id, l.repo),
+        c = classifyRun(l, run);
       print({ ...summary(l, run, c), receipt: latestReceipt(asksOf(l.run_id))?.body ?? null });
       return c.exit;
     }
