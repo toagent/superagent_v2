@@ -57,6 +57,8 @@ function setup(
     started_at: '',
     transcript: '',
     log: '',
+    // prettier-ignore
+    adoptions: [{ at: '', from: 'r1', to: 'old-engine', engine_from: null, engine_to: '', reason: 'plan_replacement', packages: { core: { elapsed_ms: 20_000, failed_rounds: 1, first_failure: { node: 'code-core', reason: 'first', at: '', evidence: 'first.json' } } } }],
   };
   ledger.controller = coordination
     .coord()
@@ -71,7 +73,10 @@ function setup(
     changed_files: ['core.txt'],
   };
   writeFileSync(join(art, 'verify-core.coder.json'), JSON.stringify(coder));
-  const run = { id: 'old-engine', status: state.status, working_path: repo, output_root: root };
+  // prettier-ignore
+  const run = { id: 'old-engine', status: state.status, working_path: repo, output_root: root,
+    started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:00:10Z',
+    nodes: [{ nodeId: 'verify-core', state: 'failed', error: 'second' }] };
   writeFileSync(join(stub, 'get-000.json'), JSON.stringify(run));
   const calls: string[] = [];
   spies.push(
@@ -110,11 +115,14 @@ test('run --adopt launches on the old branch with fresh plan and structured hand
   expect(id).toBeDefined();
   const ledger = loadLedger(id!);
   expect(ledger).toMatchObject({ branch: 'sa/old-sa', launch_branch: 'sa/old-sa' });
+  // prettier-ignore
   expect(ledger.adoptions?.at(-1)).toMatchObject({
     from: 'old-engine',
     to: 'r2',
     carried: [],
     coded: [],
+    packages: { core: { elapsed_ms: 30_000, failed_rounds: 2,
+      first_failure: { node: 'code-core', reason: 'first' } } },
   });
   expect(readFileSync(join(ledger.gen_dir, 'hints/core.md'), 'utf8')).toContain('"changed_files"');
 });

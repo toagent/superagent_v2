@@ -137,6 +137,7 @@ import {
 } from './archon';
 import {
   attemptPath,
+  readAttempt,
   reviewRoundLimit,
   type DeliveryDecision,
   type decide as decideGate,
@@ -348,6 +349,8 @@ export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 
 type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };
+// prettier-ignore
+interface PackageHistory { elapsed_ms: number; failed_rounds: number; first_failure?: { node: string; reason: string; at: string; evidence: string } }
 export interface Ledger {
   waiting_on?: { run: string; reason?: string; since: string };
   rejected?: string;
@@ -373,6 +376,7 @@ export interface Ledger {
     engine_commit?: string;
     carried?: string[];
     coded?: string[];
+    packages?: Record<string, PackageHistory>;
   }[];
   launcher?: Launcher;
   controller?: Controller;
@@ -417,6 +421,24 @@ export interface Ledger {
   auto_recover_paused?: string;
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
+}
+
+// prettier-ignore
+function adoptionPackages(l: Ledger, run: RunView): Record<string, PackageHistory> {
+  const prior: Partial<Record<string, PackageHistory>> = l.adoptions?.at(-1)?.packages ?? {},
+    measured = Date.parse(run.completed_at ?? '') - Date.parse(run.started_at ?? ''),
+    elapsed = Number.isFinite(measured) ? Math.max(0, measured) : 0;
+  return Object.fromEntries(planOf(l).packages.map(p => {
+    const failed = (run.nodes ?? []).filter(n => n.state === 'failed' && n.nodeId.endsWith(`-${p.id}`)),
+      first = failed.at(0), previous = prior[p.id], first_failure = previous?.first_failure ?? (first ? {
+        node: first.nodeId, reason: errorExcerpt(redact(first.error ?? 'unknown'), 200),
+        at: first.startedAt ?? run.completed_at ?? '', evidence: join(artifactsOf(run), `${authoredNodeId(first.nodeId)}.json`),
+      } : undefined);
+    return [p.id, { elapsed_ms: (previous?.elapsed_ms ?? 0) + elapsed,
+      failed_rounds: Math.max((previous?.failed_rounds ?? 0) + failed.length,
+        readAttempt(attemptPath(l.gen_dir, `pkg/${p.id}`)) + failed.length),
+      ...(first_failure ? { first_failure } : {}) }];
+  }));
 }
 export interface AutoRetry {
   deterministic?: true;
@@ -775,6 +797,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
         ? 'current'
         : `stale(${workflowIdentity(l)?.slice(0, 8) ?? 'unknown'})`,
     adoption: l.adoptions?.at(-1) ?? null,
+    package_history: l.adoptions?.at(-1)?.packages ?? {},
     last_activity: lastActivity(l),
     state: c.state,
     exit: c.exit,
@@ -1042,6 +1065,7 @@ function recoverRun(
         commit: string | undefined;
         carried: string[];
         coded: string[];
+        packages: Record<string, PackageHistory>;
         dir: string;
         snapshot_from?: string;
         snapshot_to?: string;
@@ -1095,6 +1119,7 @@ function recoverRun(
           engine_commit: adopted.commit,
           carried: adopted.carried,
           coded: adopted.coded,
+          packages: adopted.packages,
         });
         l.archon_run_id = to;
         l.engine_hash = adopted.hash;
@@ -1149,6 +1174,7 @@ function recoverRun(
               commit: l.engine_commit,
               carried: [],
               coded: [],
+              packages: adoptionPackages(l, run),
               dir: l.gen_dir,
             };
             // prettier-ignore
@@ -1271,6 +1297,7 @@ function recoverRun(
           commit: gen.engine_commit,
           carried,
           coded,
+          packages: adoptionPackages(l, run),
           dir: gen.dir,
           ...(staleSnapshot
             ? { snapshot_from: fixedEngineSnapshot(l), snapshot_to: runningEngineSnapshot() }
@@ -1830,6 +1857,7 @@ function startRun(planPath: string, a: Args): number {
                 engine_commit: gen.engine_commit,
                 carried: [],
                 coded: [],
+                packages: adoptionPackages(adopted.ledger, adopted.run),
               },
             ]
           : undefined;
@@ -2553,6 +2581,9 @@ function brief(l: Ledger, json = false): number {
   if (typeof s.next === 'string') lines.push(`blocked: ${String(s.reason)}；next: ${s.next}`);
   lines.push(`initiator: ${JSON.stringify(s.initiator)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
+  const history = l.adoptions?.at(-1)?.packages;
+  // prettier-ignore
+  if (history) lines.push(`history: ${Object.entries(history).map(([p, h]) => `${p} total=${String(Math.round(h.elapsed_ms / 1000))}s failed=${String(h.failed_rounds)} first=${h.first_failure?.reason ?? '-'}`).join('; ')}`);
   try {
     const asks = asksOf(l.run_id),
       receipt = latestReceipt(asks);

@@ -1133,6 +1133,10 @@ describe('HF3 latest-engine recovery', () => {
   });
   test('old ledger adopts with fresh source and preserves runtime files', () => {
     const s = setup(undefined, false);
+    // prettier-ignore
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed', { output_root: s.root,
+      started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:00:10Z',
+      nodes: [{ nodeId: 'verify-core', state: 'failed', startedAt: '2026-01-01T00:00:05Z', error: 'boom' }] })));
     const engine = gitRepo(tmp());
     engineBoundary!.mockImplementation(() => cleanEngine(engine));
     const commit = gitHead(engine);
@@ -1158,11 +1162,15 @@ describe('HF3 latest-engine recovery', () => {
       engine_commit: commit,
     });
     expect(l.recoveries).toHaveLength(0);
+    // prettier-ignore
     expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).toMatchObject({
       engine: 'current',
       adoption: { from: 'r', to: 'r2' },
+      package_history: { core: { elapsed_ms: 10_000, failed_rounds: 1,
+        first_failure: { node: 'verify-core', reason: 'boom' } } },
     });
-    expect(captured(() => main(['brief', 'sa1'])).out).toContain('adoption:');
+    // prettier-ignore
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('history: core total=10s failed=1 first=boom');
     expect(l.adoptions).toEqual([
       expect.objectContaining({
         from: 'r',
