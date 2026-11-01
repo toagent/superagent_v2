@@ -130,6 +130,23 @@ describe('ntfy decision channel', () => {
     expect(f.posts.at(-1)!.body).toMatchObject({ title: '已执行｜Archon｜是否放行？', priority: 2, tags: ['green_circle'] });
     expect(String(f.posts.at(-1)!.body.message)).toContain('▍还需要你吗');
   });
+  test('moves a gate answer to its current episode and reports execution in progress', async () => {
+    const f = fixture(), saved = process.env.SUPERAGENT_HOME;
+    process.env.SUPERAGENT_HOME = f.root;
+    try {
+      const oldKey = 'run:signoff:old', currentKey = 'run:signoff:current';
+      const id = askNtfy({ ...f.request('gate'), project: 'Archon', headline: '是否批准签收并续跑？', callback: { kind: 'ask', key: oldKey } }, f.config);
+      await publishPendingNtfy(f.config);
+      writeFileSync(join(f.root, 'asks.json'), JSON.stringify({ [oldKey]: { id, status: 'superseded' }, [currentKey]: { id, status: 'pending', legacy_key: oldKey } }));
+      f.push(f.action());
+      expect((await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }))).accepted).toBe(1);
+      expect(JSON.parse(readFileSync(join(f.root, 'asks.json'), 'utf8'))[currentKey].status).toBe('yes');
+      expect(f.posts.at(-1)!.body).toMatchObject({ title: '正在执行｜Archon｜是否批准签收并续跑？', priority: 2, tags: ['white_circle'] });
+      expect(String(f.posts.at(-1)!.body.message)).toContain('已收到你的『Yes』，正在执行（门禁 signoff）');
+    } finally {
+      if (saved === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = saved;
+    }
+  });
   test('limits each tick to five new decisions without starving later decisions or limiting alerts', async () => {
     let now = Date.now(); const f = fixture(now); f.config.now = () => now;
     const decisions = [...Array(7)].map((_, i) => ({ id: `decision-${i}`, run: `run-${i}`, engine: '', node: '', pause: '', question: `Decision ${i}`, reason: 'reason', context: 'context', options: f.request('x').options.map(option => ({ ...option, consequence: option.consequence ?? option.label })) }));

@@ -1259,7 +1259,15 @@ describe('HF3 latest-engine recovery', () => {
 
 const humanWait = (resumeAt = '2099-01-01T00:00:00.000Z'): RunView =>
   run('paused', {
-    metadata: { wait: { nodeId: 'human-m2', kind: 'event', event: 'sa.human.m2', resumeAt } },
+    metadata: {
+      wait: {
+        nodeId: 'human-m2',
+        kind: 'event',
+        event: 'sa.human.m2',
+        resumeAt,
+        waitingSince: '2026-11-01T00:00:00.000Z',
+      },
+    },
   });
 
 const LOST = { host: hostname(), pid: 2 ** 22 + 1 };
@@ -2778,6 +2786,63 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
     expect(gets()).toBe(3);
     db.close();
+  });
+  test('gate episode uses node start, renders P24 fields, and sends the final result to its initiator', () => {
+    const gate = (last: string): RunView =>
+      run('paused', {
+        last_activity_at: last,
+        metadata: { approval: { nodeId: 'human-m2', pauseId: 'p1' } },
+        nodes: [{ nodeId: 'human-m2', state: 'running', startedAt: '2026-11-01T01:00:00.000Z' }],
+      });
+    const s = stub([gate('first'), gate('changed')]);
+    s.due.mockReturnValue([]);
+    s.ledger.launcher = {
+      ...coordModule.caller(),
+      client: 'codex',
+      tty: null,
+      cwd: s.root,
+    };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(
+      join(s.ledger.gen_dir, 'plan.json'),
+      JSON.stringify({ packages: [{ id: 'core', title: '核心包', goal: '完成门禁' }] })
+    );
+    cliMod.superviseTick();
+    const path = join(s.root, 'home', 'asks.json'),
+      first = JSON.parse(readFileSync(path, 'utf8'));
+    const key = Object.keys(first)[0],
+      ask = first[key];
+    expect(key).toBe(
+      `sa1:signoff:${new Bun.CryptoHasher('sha256').update('human-m2@2026-11-01T01:00:00.000Z').digest('hex').slice(0, 16)}`
+    );
+    const ntfy = JSON.parse(readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8'));
+    expect(ntfy.decisions[ask.id]).toMatchObject({
+      project: s.root.split('/').at(-1),
+      headline: '是否批准签收并续跑？',
+      purpose: '核心包：完成门禁',
+    });
+    first[key].status = 'yes';
+    writeFileSync(path, JSON.stringify(first));
+    const result = JSON.parse(captured(() => main(['supervise-tick'])).out);
+    expect(result.actions[0]).toMatchObject({ action: 'approve', ok: true });
+    const after = JSON.parse(readFileSync(path, 'utf8'));
+    expect(Object.keys(after)).toEqual([key]);
+    expect(after[key]).not.toHaveProperty('stale_answer');
+    const alert = JSON.parse(
+      readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8')
+    ).alerts.at(-1);
+    expect(alert).toMatchObject({
+      title: expect.stringContaining('已执行｜'),
+      priority: 2,
+      tags: ['green_circle'],
+    });
+    expect(alert.message).toContain('已批准签收，run继续（当前节点human-m2）');
+    expect(
+      coordModule
+        .coord()
+        .inbox(s.ledger.launcher!, true)
+        .some(message => message.body.includes('已执行'))
+    ).toBe(true);
   });
   test('failed runs settle only without a future deadline', () => {
     const s = stub([run('failed')]),

@@ -353,7 +353,8 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
     state.activity.push({ at: now, kind: 'deduplicated' });
     return;
   }
-  const executed = title.startsWith('已记录');
+  const executed = title.startsWith('已记录'),
+    processing = title.startsWith('已收到');
   const parts = title.split('｜'),
     structured = parts.indexOf('需你决定');
   const project = structured >= 0 ? parts[structured + 1] : 'superagent';
@@ -362,11 +363,11 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
     id,
     title:
       structured >= 0
-        ? `${executed ? '已执行' : '未执行'}｜${project}｜${problem ?? '决策回执'}`
+        ? `${processing ? '正在执行' : executed ? '已执行' : '未执行'}｜${project}｜${problem ?? '决策回执'}`
         : title,
     message:
       structured >= 0
-        ? `${HEAVY}\n结论：${message}\n${HEAVY}\n▍你的选择\n${parts[0] || '未知'}\n${LIGHT}\n▍引擎做了什么\n${message}\n${LIGHT}\n▍现在的状态\n${executed ? '已生效' : '未改变状态'}\n${LIGHT}\n▍接下来谁做什么\n${executed ? '引擎继续执行' : '操作员重读最新决策'}\n${LIGHT}\n▍还需要你吗\n${executed ? '否' : '是'}\n${LIGHT}\n来源：${id}`
+        ? `${HEAVY}\n结论：${message}\n${HEAVY}\n▍你的选择\n${parts[0] || '未知'}\n${LIGHT}\n▍引擎做了什么\n${message}\n${LIGHT}\n▍现在的状态\n${processing ? '正在执行' : executed ? '已生效' : '未改变状态'}\n${LIGHT}\n▍接下来谁做什么\n${processing || executed ? '引擎继续执行' : '操作员重读最新决策'}\n${LIGHT}\n▍还需要你吗\n${processing || executed ? '否' : '是'}\n${LIGHT}\n来源：${id}`
         : message,
     priority: 2,
     tags: [executed ? 'green_circle' : 'white_circle'],
@@ -666,6 +667,8 @@ export async function syncNtfy(
             action.option === answer.option &&
             action.exp === answer.exp
         );
+        const gate =
+          decision?.callback.kind === 'ask' ? decision.callback.key.split(':')[1] : undefined;
         let rejection: string | undefined;
         if (!decision) rejection = '该决策未找到或已过期，未执行';
         else if (decision.status === 'expired') rejection = '该决策已过期，未执行';
@@ -726,8 +729,8 @@ export async function syncNtfy(
           receipt(
             state,
             `receipt:${decision.id}:${answer.option}`,
-            `已记录：${label}｜${decisionPresentation(decision).title}`,
-            '本次点按已执行',
+            `${gate ? '已收到' : '已记录'}：${label}｜${decisionPresentation(decision).title}`,
+            gate ? `已收到你的『${label}』，正在执行（门禁 ${gate}）` : '本次点按已执行',
             config.now()
           );
           accepted++;

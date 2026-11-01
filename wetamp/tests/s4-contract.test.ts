@@ -152,6 +152,14 @@ test('I4 canonical migration, hold change and terminal supersession expose stale
   supersedeAsks(asks, 'r', 'environment');
   expect(asks[askKey('r', 'environment')]).toMatchObject({ id: 'a', status: 'pending' });
   expect(cockpitSignals([], asks)).toMatchObject({ dup_ask: 0, stale_answer: 1 });
+  const migrated: Asks = { 'r:signoff:old': { id: 'gate', status: 'yes' } };
+  supersedeAsks(migrated, 'r', 'signoff', 'human-budget@2026-11-01');
+  expect(migrated[askKey('r', 'signoff', 'human-budget@2026-11-01')]).toMatchObject({
+    id: 'gate',
+    status: 'yes',
+    legacy_key: 'r:signoff:old',
+  });
+  expect(migrated['r:signoff:old']?.stale_answer).toBeUndefined();
   supersedeAsks(asks, 'r', 'engine_suspect');
   expect(asks['r:environment']?.status).toBe('superseded');
   const hold = {

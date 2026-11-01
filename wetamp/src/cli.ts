@@ -2608,7 +2608,7 @@ function decisionReceipt(
   let action: string;
   switch (effect.action) {
     case 'approve':
-      action = '已批准等待门并提交续跑';
+      action = `已批准签收，run继续（当前节点${name(node) || '未指定'}）`;
       break;
     case 'reject':
       action = '已终止整个run（保留证据）';
@@ -2666,6 +2666,12 @@ interface DecisionContext {
   reason: string;
   recommendation: { choice: 'yes' | 'no'; reason: string };
   consequences: { yes: string; no: string };
+  project?: string;
+  headline?: string;
+  purpose?: string;
+  why?: string;
+  queued_at?: string;
+  initiator_label?: string;
 }
 type Ask = BaseAsk & {
   receipt?: AnswerReceipt;
@@ -2795,10 +2801,7 @@ function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks
     at: new Date().toISOString(),
   };
   const key = Object.entries(asks).find(([, value]) => value === a)?.[0];
-  if (key) {
-    saveAsk(asks, key);
-    deliverReceipt(l, key, a, asks);
-  }
+  if (key) saveAsk(asks, key);
 }
 
 /** Cancellation has a terminal engine fact. Other unacknowledged effects remain explicitly unknown. */
@@ -2872,7 +2875,7 @@ function consumeAnswer(
   a.receipt = {
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
-    stage: effect.action === 'wait' ? 'succeeded' : 'executing',
+    stage: 'succeeded',
     effect,
     delivery: 'pending',
     terminal_before: a.decision?.terminal_before,
@@ -2916,15 +2919,26 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
       }
     }
     if (r.delivery === 'sent') return;
+    const project = a.context?.project ?? 'superagent',
+      headline = a.context?.headline ?? '决策回执',
+      succeeded = r.stage === 'succeeded';
     queueNtfyAlert(
       r.key,
-      r.body,
+      `${'━'.repeat(14)}\n结论：${r.body}\n${'━'.repeat(14)}\n▍你的选择\n${a.status === 'approved' ? '是' : '否'}\n${'─'.repeat(14)}\n▍引擎做了什么\n${r.body}\n${'─'.repeat(14)}\n▍现在的状态\n${succeeded ? '已生效' : '未改变状态'}\n${'─'.repeat(14)}\n▍接下来谁做什么\n${succeeded ? '引擎继续执行' : '操作员检查原因后重新决定'}\n${'─'.repeat(14)}\n▍还需要你吗\n${succeeded ? '否' : '是'}\n${'─'.repeat(14)}\n来源：${l?.run_id ?? key}`,
       {},
-      r.stage === 'succeeded' ? '已执行｜superagent｜决策回执' : '未执行｜superagent｜决策回执',
-      { priority: 2, tags: [r.stage === 'succeeded' ? 'green_circle' : 'white_circle'] }
+      `${succeeded ? '已执行' : '未执行'}｜${project}｜${headline}`,
+      { priority: 2, tags: [succeeded ? 'green_circle' : 'white_circle'] }
     );
     r.delivery = 'sent';
     delete r.error;
+    if (l && a.context?.initiator && a.context.initiator !== 'unknown')
+      coord().receipt(
+        runScope(l),
+        caller(true),
+        JSON.parse(a.context.initiator) as Controller,
+        a.id,
+        `${succeeded ? '已执行' : '未执行'}：${r.body}`
+      );
   } catch (e) {
     r.delivery = 'failed';
     r.error = tail((e as Error).message, 200);
@@ -2949,12 +2963,24 @@ function dispatchAsk(
     asks[key] = { status: 'unknown', context: ctx };
     saveAsk(asks, key);
     const id = askNtfy({
-      source: ctx.source,
+      source: {
+        ref: ctx.task_id,
+        initiator: ctx.initiator_label ?? ctx.initiator,
+        ...(ctx.queued_at ? { queued_at: ctx.queued_at } : {}),
+      },
       title: askName(title, 200),
       body: `${ctx.reason}\n对象：${ctx.target}\n影响：${ctx.action}`,
+      project: ctx.project,
+      headline: ctx.headline,
+      purpose: ctx.purpose,
+      why: ctx.why,
+      recommend: {
+        option: ctx.recommendation.choice === 'yes' ? '是' : '否',
+        reason: ctx.recommendation.reason,
+      },
       options: [
-        { id: 'yes', label: '是', consequence: ctx.consequences.yes },
-        { id: 'no', label: '否', consequence: ctx.consequences.no },
+        { id: 'yes', label: '是', timing: '立即', effect: ctx.consequences.yes },
+        { id: 'no', label: '否', timing: '立即', effect: ctx.consequences.no },
       ],
       risk: `${ctx.action}${ctx.reason}`.includes('红线') ? 'red' : 'normal',
       expires_at: new Date(Date.now() + hours * 3600e3).toISOString(),
@@ -3017,7 +3043,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
   const p = dispatchAsk(
     key,
-    () => decisionQuestion(l, run, classifyRun(l, run), 'signoff'),
+    () => decisionQuestion(l, run, classifyRun(l, run), 'signoff', key),
     ttlHours(Date.parse(w.resumeAt ?? '')),
     asks,
     question => decisionContext(l, run, classifyRun(l, run), 'signoff', key, question)
@@ -3353,8 +3379,13 @@ export async function syncDecisionChannel(
           );
         return;
       }
-      const asks = loadAsks(),
-        current = asks[decision.callback.key];
+      const callbackKey = decision.callback.key,
+        asks = loadAsks(),
+        direct = asks[callbackKey],
+        current =
+          direct?.id === decision.id && ['pending', 'unknown'].includes(direct.status)
+            ? direct
+            : Object.values(asks).find(a => a?.legacy_key === callbackKey);
       if (
         !current ||
         current.id !== decision.id ||
@@ -3362,7 +3393,9 @@ export async function syncDecisionChannel(
       )
         throw new Error('ntfy decision changed');
       current.status = option;
-      saveAsk(asks, decision.callback.key);
+      const currentKey = Object.entries(asks).find(([, ask]) => ask === current)?.[0];
+      if (!currentKey) throw new Error('ntfy decision changed');
+      saveAsk(asks, currentKey);
     },
     supplied,
     decision => {
@@ -3718,7 +3751,7 @@ const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
 export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
 
 /** Entry timestamp is stable across polls; stalled episodes follow provider progress, not heartbeats. */
-function holdEpisode(l: Ledger, run: RunView, c: Classified, hold?: Hold): string {
+function holdEpisode(_l: Ledger, run: RunView, c: Classified, hold?: Hold): string {
   if (hold === 'stalled') {
     const attention = runAttention(run as Parameters<typeof runAttention>[0]);
     if (attention?.kind !== 'stalled_tool_calls') throw new Error('stalled attention missing');
@@ -3727,13 +3760,11 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified, hold?: Hold): strin
       .sort()
       .join('|');
   }
-  return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${
-    run.metadata?.wait?.waitingSince ??
-    run.completed_at ??
-    run.last_activity_at ??
-    run.started_at ??
-    l.started_at
-  }`;
+  const node = c.node ?? run.metadata?.wait?.nodeId ?? run.metadata?.approval?.nodeId ?? '';
+  const since =
+    run.metadata?.wait?.waitingSince ?? run.nodes?.find(n => n.nodeId === node)?.startedAt;
+  if (!node || !since) throw new Error(`gate episode missing node_started: ${node || 'unknown'}`);
+  return `${node}@${since}`;
 }
 function coordinationContext(key: string): DecisionContext {
   const message = coord()
@@ -3762,6 +3793,10 @@ function decisionContext(
 ): DecisionContext {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not actionable: ${hold}`);
+  const plan = planOf(l),
+    node = c.node ?? run.metadata?.approval?.nodeId ?? run.metadata?.wait?.nodeId ?? 'unknown',
+    since = run.metadata?.wait?.waitingSince ?? run.nodes?.find(n => n.nodeId === node)?.startedAt,
+    completed = (run.nodes ?? []).filter(n => n.state === 'completed').length;
   return {
     request_key: key,
     source: 'superagent',
@@ -3775,6 +3810,22 @@ function decisionContext(
       yes: p.yesText,
       no: p.do === 'ask' && 'noText' in p ? p.noText : '终止整个run（保留证据）',
     },
+    project: basename(l.repo),
+    headline:
+      hold === 'signoff'
+        ? node.startsWith('human-budget')
+          ? '是否批准超预算签收并续跑？'
+          : '是否批准签收并续跑？'
+        : p.text,
+    purpose: plan.packages
+      .map(pkg => [pkg.title, pkg.goal].filter(Boolean).join('：'))
+      .filter(Boolean)
+      .join('；'),
+    why: `${p.text}；已等待${String(since ? Math.max(0, Math.floor((Date.now() - Date.parse(since)) / 60000)) : 0)}分钟；已完成${String(completed)}节点`,
+    queued_at: since,
+    initiator_label: l.launcher
+      ? `${l.launcher.client} ${l.launcher.session_id?.slice(0, 8) ?? `pid:${String(l.launcher.pid)}`}`
+      : 'unknown',
   };
 }
 function blocker(l: Ledger, hold: Hold): { reason: string; next: string } | undefined {
@@ -3804,7 +3855,7 @@ export function decisionQuestion(
       [basename(l.repo), l.run_id],
       [reason, reason],
       () => ['', ''],
-      askMarker(requestKey ?? askKey(l.run_id, hold, holdEpisode(l, run, c, hold)))
+      askMarker(requestKey ?? askKey(l.run_id, hold))
     );
   }
   if (hold === 'stalled') {
@@ -3817,7 +3868,7 @@ export function decisionQuestion(
       [basename(l.repo), call.nodeId],
       [detail, detail],
       () => ['', ''],
-      askMarker(requestKey ?? askKey(l.run_id, hold, holdEpisode(l, run, c, hold)))
+      askMarker(requestKey ?? askKey(l.run_id, hold))
     );
   }
   const plan = planOf(l),
@@ -3872,7 +3923,7 @@ export function decisionQuestion(
     names,
     [`${detail}；${progress}`, `${compact}；${progress}`],
     () => ['', ''],
-    askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
+    askMarker(requestKey ?? askKey(l.run_id, hold))
   );
 }
 /** Project engine state and perform only policy-authorized automatic actions. */

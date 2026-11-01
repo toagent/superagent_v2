@@ -53,7 +53,6 @@ export function supersedeAsks(asks: Asks, run: string, hold?: string, episode?: 
     if (!key.startsWith(`${run}:`) || !a || !unresolved(a)) continue;
     const category = key.split(':')[1];
     if (
-      !episode &&
       current &&
       key !== current &&
       (category === hold || (hold === 'signoff' && !(category in HOLD_POLICY))) &&
