@@ -17,6 +17,14 @@ run_cli() {
   exec bun "$snapshot/wetamp/src/cli.ts" "$@"
 }
 
+terminal_runs() {
+  local id status
+  for id in "$@"; do
+    status=$(SA_HISTORICAL_RUN="$id" bun "$current/wetamp/src/cli.ts" status "$id" 2>/dev/null || true)
+    bun -e 'const v=JSON.parse(await Bun.stdin.text());process.exit(["completed","failed","cancelled"].includes(v.state)?0:1)' <<< "$status" || return 1
+  done
+}
+
 verb=${1:-}
 if [[ "$verb" == supervise-tick ]]; then
   schedule=$(bun "$current/wetamp/src/cli.ts" supervise-tick --schedule)
@@ -42,6 +50,32 @@ if [[ "$verb" == supervise-tick ]]; then
     for (const group of value.groups || []) console.log(`${group.snapshot}\t${group.runs.join(",")}`);
   ' <<< "$schedule")
   exit "$tick_status"
+fi
+
+wait_runs=()
+if [[ "$verb" == wait ]]; then
+  for arg in "${@:2}"; do [[ "$arg" == --* ]] && break; wait_runs+=("$arg"); done
+  if [[ "${#wait_runs[@]}" -gt 1 ]]; then
+    routes=$(bun -e '
+      const home=process.argv[1],engine=process.argv[2],groups=new Map(),fs=require("node:fs");
+      const receipts=Array.from(new Bun.Glob("*.json").scanSync(`${engine}/receipts`)).flatMap(file=>{
+        try{return [JSON.parse(fs.readFileSync(`${engine}/receipts/${file}`,"utf8"))]}catch{return []}
+      }).sort((a,b)=>a.at.localeCompare(b.at));
+      for (const run of process.argv.slice(3)) {
+        try { const l=JSON.parse(await Bun.file(`${home}/runs/${run}.json`).text()),s=l.engine_snapshot||(receipts[0]&&`${engine}/${receipts[0].sha}`);
+          if(s) groups.set(s,[...(groups.get(s)||[]),run]); } catch {}
+      }
+      for(const [snapshot,runs] of groups) console.log(`${snapshot}\t${runs.join(",")}`);
+    ' "$sa_home" "$engine_home" "${wait_runs[@]}")
+    if [[ $(awk 'END { print NR }' <<< "$routes") -gt 1 ]]; then
+      if terminal_runs "${wait_runs[@]}"; then
+        export SA_HISTORICAL_RUN=${wait_runs[0]}
+        run_cli "$current" "$@"
+      fi
+      printf 'wait runs use different engine snapshots; wait for each group separately:\n%s\n' "$routes" >&2
+      exit 1
+    fi
+  fi
 fi
 
 run=${2:-}
@@ -77,6 +111,8 @@ case "$verb" in
         if [[ ! -d "$snapshot" ]]; then
           historical=0
           case "$verb" in
+            wait)
+              terminal_runs "${wait_runs[@]}" && historical=1 ;;
             brief|status|report) historical=1 ;;
             land)
               historical=1

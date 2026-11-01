@@ -28,7 +28,8 @@ appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.string
 if (args[0] === 'engine' && args[1] === 'continuation') {
   if (args[2] === 'unsupported') process.exit(2);
   console.log(JSON.stringify({ current: args[2] === 'stale' }));
-} else if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
+} else if (args[0] === 'status') console.log(JSON.stringify({ state: args[1] === 'archived' || args[1]?.startsWith('done-') ? 'completed' : 'running' }));
+else if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
 else console.log(JSON.stringify({ ok: true }));
 if (${String(failExecutor)} && args.includes('--no-global')) process.exit(1);
 `
@@ -36,13 +37,14 @@ if (${String(failExecutor)} && args.includes('--no-global')) process.exit(1);
   return engine;
 }
 
-test('shim dispatches current, pinned run, and grouped tick without scheduler lock reentry', () => {
+test('shim dispatches wait, current commands, and grouped tick without scheduler lock reentry', () => {
   const root = tmp(),
     home = join(root, 'home'),
     marker = join(root, 'calls.jsonl');
   mkdirSync(join(home, 'engine'), { recursive: true });
   mkdirSync(join(home, 'runs'), { recursive: true });
   const pinned = fakeEngine(root, 'pinned', marker);
+  const other = fakeEngine(root, 'other', marker);
   const failed = fakeEngine(root, 'failed', marker, undefined, true);
   const bootstrap = fakeEngine(root, 'bootstrap', marker);
   const current = fakeEngine(root, 'current', marker, {
@@ -60,6 +62,8 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   symlinkSync(bootstrap, join(home, 'engine', 'bootstrap'));
   writeFileSync(join(home, 'runs', 'run-1.json'), JSON.stringify({ engine_snapshot: pinned }));
   writeFileSync(join(home, 'runs', 'stale.json'), JSON.stringify({ engine_snapshot: pinned }));
+  writeFileSync(join(home, 'runs', 'run-other.json'), JSON.stringify({ engine_snapshot: other }));
+  writeFileSync(join(home, 'runs', 'done-other.json'), JSON.stringify({ engine_snapshot: other }));
   writeFileSync(
     join(home, 'runs', 'unsupported.json'),
     JSON.stringify({ engine_snapshot: pinned })
@@ -89,6 +93,13 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   expect(invoke('status', 'run-1').exitCode).toBe(0);
   expect(invoke('status', 'legacy').exitCode).toBe(0);
   expect(invoke('status', 'archived').exitCode).toBe(0);
+  expect(invoke('wait', 'archived').exitCode).toBe(0);
+  expect(invoke('wait', 'run-1', 'stale', '--timeout', '1').exitCode).toBe(0);
+  const conflict = invoke('wait', 'run-1', 'run-other', '--timeout', '1');
+  expect(conflict.exitCode).toBe(1);
+  expect(conflict.stderr.toString()).toContain(`${pinned}\trun-1`);
+  expect(conflict.stderr.toString()).toContain(`${other}\trun-other`);
+  expect(invoke('wait', 'archived', 'done-other', '--timeout', '1').exitCode).toBe(0);
   expect(invoke('resume', 'archived').exitCode).toBe(1);
   expect(invoke('resume', 'stale').exitCode).toBe(0);
   expect(invoke('resume', 'run-1').exitCode).toBe(0);
@@ -104,6 +115,17 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
     { engine: 'pinned', args: ['status', 'run-1'], served: 'run-1' },
     { engine: 'bootstrap', args: ['status', 'legacy'], served: 'legacy' },
     { engine: 'current', args: ['status', 'archived'], historical: 'archived' },
+    { engine: 'current', args: ['status', 'archived'], historical: 'archived' },
+    { engine: 'current', args: ['wait', 'archived'], historical: 'archived' },
+    { engine: 'pinned', args: ['wait', 'run-1', 'stale', '--timeout', '1'], served: 'run-1' },
+    { engine: 'current', args: ['status', 'run-1'], historical: 'run-1' },
+    { engine: 'current', args: ['status', 'archived'], historical: 'archived' },
+    { engine: 'current', args: ['status', 'done-other'], historical: 'done-other' },
+    {
+      engine: 'current',
+      args: ['wait', 'archived', 'done-other', '--timeout', '1'],
+      historical: 'archived',
+    },
     { engine: 'current', args: ['engine', 'continuation', 'archived'] },
     { engine: 'current', args: ['engine', 'continuation', 'stale'] },
     { engine: 'current', args: ['resume', 'stale'] },
