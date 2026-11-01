@@ -11,6 +11,8 @@ import { readJobs, type Job } from './jobs';
 import { Intake, intakeRoot } from './intake';
 import { renderHandoffContext } from './rollover-context';
 import { supervisor } from './cli';
+import { responsibilityList } from './resume-card';
+import type { Responsibility } from './heartbeat';
 
 // prettier-ignore
 export interface RolloverRecord {
@@ -34,7 +36,7 @@ interface Deps {
   launch: (bin: string, args: string[]) => Promise<AgentLaunch>;
   supervise: (args: string[]) => string;
   scratch: { ROOT: string; directory: (client: string, session: string) => string; transfer: (client: string, session: string, to: Pick<Identity, 'pid' | 'pid_start'>) => Record<string, string> };
-  now: () => Date; token: () => string; sleep: (ms: number) => Promise<void>; jobs: () => Job[];
+  now: () => Date; token: () => string; sleep: (ms: number) => Promise<void>; jobs: () => Job[]; responsibilities: (session: string) => Responsibility[];
 }
 
 const taskBin = join(process.env.HOME ?? '', '.wetamp/bin/tasks.sh');
@@ -49,7 +51,7 @@ const context = createRequire(import.meta.url)('../hooks/context-advisory.cjs') 
 };
 const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as Deps['scratch'];
 // prettier-ignore
-const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, scratch, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs });
+const defaults = (coord: Coordination): Deps => ({ env: process.env, cwd: process.cwd(), coord, who: () => caller(), exists: existsSync, read: path => readFileSync(path, 'utf8'), write: writeAtomic, files: path => existsSync(path) ? readdirSync(path) : [], tasks: (cwd, args) => execFileSync('bash', [taskBin, ...args], { cwd, encoding: 'utf8' }).trim(), launch: launchAgent, supervise: supervisor, scratch, repo: cwd => execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(), now: () => new Date(), token: () => randomBytes(16).toString('hex'), sleep: ms => Bun.sleep(ms), jobs: () => readJobs().jobs, responsibilities: responsibilityList });
 
 // prettier-ignore
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -239,6 +241,7 @@ export class Rollover {
     const to = this.d.who();
     if (!to.session_id) throw new Error('rollover: caller 缺少 session_id');
     let r = this.load(token);
+    const handoff = r.from.session_id ? this.d.responsibilities(r.from.session_id) : [];
     this.d.coord.locked(() => {
       r = this.load(token);
       if (!['pending', 'accepted'].includes(r.state) || (r.to && !same(r.to, to))) throw new Error(`rollover: ${r.state === 'pending' ? '已被其他会话接手' : `记录已${r.state}`}`);
@@ -318,7 +321,7 @@ export class Rollover {
       .jobs()
       .filter(j => j.launcher?.session_id === r.from.session_id && ['queued', 'running'].includes(j.state))
       .map(j => ({ id: j.id, title: j.title, log: j.log }));
-    return { state: r.state, repo: r.repo_transfer, scratch: r.scratch, task: join(r.cwd, '.context', 'sessions', r.task_session, 'task-stack.md'), runs, jobs };
+    return { state: r.state, repo: r.repo_transfer, scratch: r.scratch, task: join(r.cwd, '.context', 'sessions', r.task_session, 'task-stack.md'), runs, jobs, responsibilities: handoff };
   }
   cancel(token: string): Record<string, unknown> {
     const who = this.d.who(),

@@ -1,8 +1,9 @@
-import { createReadStream, realpathSync, statSync } from 'node:fs';
+import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { coord } from './coord';
+import { responsibilities, type Heartbeat, type Responsibility } from './heartbeat';
 type Client = 'claude' | 'codex';
 type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
@@ -10,6 +11,19 @@ type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
 export const waitingRuns = (sessionId: string, runs = coord().unfinishedRuns(sessionId)): Run[] =>
   runs.filter(run => run.status === 'running' || run.status === 'pending');
+export function responsibilityList(sessionId: string): Responsibility[] {
+  try {
+    const root = process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent');
+    const heartbeat = JSON.parse(readFileSync(join(root, 'heartbeat.json'), 'utf8')) as Heartbeat;
+    return heartbeat.marshals.flatMap(m =>
+      m.owner !== 'unknown' && m.owner.session_id === sessionId
+        ? responsibilities(heartbeat, m.owner)
+        : []
+    );
+  } catch {
+    return [];
+  }
+}
 const bytes = (s: string): number => Buffer.byteLength(s);
 const chars = (s: string): string[] =>
   Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s), x => x.segment);
@@ -164,6 +178,10 @@ if (import.meta.main) {
     mode = process.argv[2];
   if (mode === 'waiting-runs') {
     process.stdout.write(`${JSON.stringify(waitingRuns(payload.session_id ?? ''))}\n`);
+    process.exit(0);
+  }
+  if (mode === 'responsibilities') {
+    process.stdout.write(`${JSON.stringify(responsibilityList(payload.session_id ?? ''))}\n`);
     process.exit(0);
   }
   const context = await resumeCard(payload, mode as Client);

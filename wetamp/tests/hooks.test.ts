@@ -553,6 +553,42 @@ describe('guard.cjs', () => {
     expect(check({ processes: () => `${processes()}\n12 10 bun cli.ts wait run-b` })).toBeNull();
     expect(check({ derived: true })).toBeNull();
     expect(check({ runs: () => [{ run_id: 'held', status: 'held' }] })).toBeNull();
+    expect(
+      check({
+        responsibilities: () => [
+          { id: 'held', waiting_for: '评审轮次用尽', next: 'superagent decide held retry' },
+        ],
+      }).reason
+    ).toContain('held 评审轮次用尽');
+    const home = tmp(),
+      who = { client: 'claude', session_id: 's', host: 'h', pid: 1, pid_start: 'x' },
+      heartbeat = {
+        marshals: [
+          {
+            owner: who,
+            waiting: [
+              {
+                id: 'held',
+                since: '2026-10-29T09:00:00Z',
+                waited_s: 0,
+                waiting_for: '评审轮次用尽',
+                next: 'retry',
+              },
+            ],
+          },
+        ],
+      };
+    writeFileSync(join(home, 'heartbeat.json'), JSON.stringify(heartbeat));
+    const hooks = createRequire(import.meta.url)('../hooks/coord.cjs') as any,
+      notified: string[][] = [];
+    const notify = (args: string[]) => notified.push(args),
+      at = (minutes: number) => () =>
+        Date.parse(`2026-10-29T09:${String(minutes).padStart(2, '0')}:00Z`);
+    expect(hooks.unread(home, who, [], undefined, notify, at(4))).toEqual([]);
+    const due = hooks.unread(home, who, [], undefined, notify, at(30));
+    expect(hooks.notifications(due)).toContain('需要处理 1 项');
+    expect(notified[0]).toContain('responsibility:held');
+    expect(hooks.unread(home, who, [due[0].id], undefined, notify, at(30))).toEqual([]);
     for (const broken of [
       {
         runs: () => {

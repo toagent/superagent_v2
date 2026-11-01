@@ -10,6 +10,13 @@ function waiterGate(payload, client, deps = {}) {
   if (payload.hook_event_name !== 'Stop' || client !== 'claude' || deps.derived) return null;
   try {
     if (!payload.session_id) throw new Error('缺少 session_id');
+    const responsibilities = deps.responsibilities
+      ? deps.responsibilities(payload.session_id)
+      : JSON.parse(spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'responsibilities'], { input: JSON.stringify(payload), encoding: 'utf8', timeout: 10000 }).stdout);
+    if (responsibilities.length) {
+      const reason = `SUPERAGENT：需要处理 ${responsibilities.length} 项：\n${responsibilities.map(item => `${item.id} ${item.waiting_for} → ${item.next}`).join('\n')}`;
+      return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
+    }
     const runs = deps.runs
       ? deps.runs(payload.session_id)
       : JSON.parse(
