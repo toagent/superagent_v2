@@ -5013,7 +5013,8 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     queuedTickAlert = queueTickStaleAlert(model.health.stale, previous, alert => {
       queueNtfyAlert(alert.id, alert.message, {}, 'supervise-tick 停摆');
     });
-    if (queuedTickAlert !== previous) await publishPendingNtfy();
+    if (queuedTickAlert && ntfyDeliveryStatus('alert', queuedTickAlert) === 'pending')
+      await publishPendingNtfy();
   };
   if (process.stdout.isTTY) {
     const [{ createElement }, { renderToString }, { HeartbeatFrame }] = await Promise.all([
