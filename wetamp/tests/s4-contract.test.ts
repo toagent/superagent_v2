@@ -162,6 +162,7 @@ test('I4 canonical migration, hold change and terminal supersession expose stale
     legacy_key: 'r:signoff:old',
   });
   expect(migrated['r:signoff:old']?.stale_answer).toBeUndefined();
+  // prettier-ignore
   const next = askKey('r', 'signoff', 'human-budget@2026-11-02');
   supersedeAsks(migrated, 'r', 'signoff', 'human-budget@2026-11-02');
   expect(migrated[next]).toMatchObject({ id: 'gate', status: 'yes', legacy_key: 'r:signoff:old' });
