@@ -211,6 +211,7 @@ function unread(home, who, seen = [], archon, _notify, now = Date.now) {
   const heartbeat = read(path.join(home, 'heartbeat.json')),
     marshal = heartbeat?.marshals?.find(m => m.owner !== 'unknown' && same(m.owner, who)),
     due = (marshal?.waiting || []).flatMap(item => {
+      if (item.actionable === false) return [];
       const parsed = Date.parse(item.since),
         age = Number.isFinite(parsed)
           ? Math.max(0, Math.floor((now() - parsed) / 1000))

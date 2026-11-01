@@ -81,6 +81,7 @@ import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { reclaimOnce, reclaimTick } from './reclaim';
+import { responsibilityList } from './resume-card';
 import {
   askQuestion,
   askName,
@@ -258,6 +259,7 @@ export const OPTIONS = {
   'lint-override': { type: 'string' },
   'allow-overlap': { type: 'string' },
   adopt: { type: 'string' },
+  on: { type: 'string' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
   environment: { type: 'string', multiple: true },
@@ -347,6 +349,7 @@ export const EXIT_USAGE = 64;
 
 type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };
 export interface Ledger {
+  waiting_on?: { run: string; reason?: string; since: string };
   rejected?: string;
   gc?: GcAction[];
   allow_overlap?: string;
@@ -3357,7 +3360,17 @@ export async function syncDecisionChannel(
         await answer(decision.callback.id, option);
         return;
       }
-      if (decision.callback.kind !== 'ask') return;
+      if (decision.callback.kind === 'external') {
+        if (decision.originator)
+          coord().receipt(
+            decision.originator.scope,
+            caller(true),
+            decision.originator.identity,
+            decision.id,
+            option
+          );
+        return;
+      }
       const asks = loadAsks(),
         current = asks[decision.callback.key];
       if (
@@ -4215,6 +4228,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap', 'adopt'] },
   { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'wait', positionals: '<run>', flags: ['timeout'] },
+  { command: 'wait-on', positionals: '<run>', flags: ['on', 'reason'] },
   { command: 'status', flags: [] },
   { command: 'brief', flags: [] },
   { command: 'land', positionals: '<run>', flags: ['apply'] },
@@ -4639,6 +4653,10 @@ export function main(argv: string[]): number {
     case 'handoff':
     case 'inbox':
       {
+        const previousSession =
+          verb === 'claim' && a.flags.takeover
+            ? coord().owner(coord().scope(target)).owner?.session_id
+            : undefined;
         const result = coordinationCommand(a);
         if (verb === 'handoff') {
           const k = lock(join(home().sa, 'supervise.lock'));
@@ -4651,7 +4669,11 @@ export function main(argv: string[]): number {
             }
           }
         }
-        print(result);
+        print(
+          previousSession
+            ? { ...(result as object), responsibilities: responsibilityList(previousSession) }
+            : result
+        );
       }
       return 0;
     case 'plan': {
@@ -4667,6 +4689,26 @@ export function main(argv: string[]): number {
       return startRun(need(target, 'run <plan.json>'), a);
     case 'quick':
       return startRun(quickPlan(a), a);
+    case 'wait-on': {
+      const l = ledger(true),
+        on = need(a.flags.on, 'wait-on <run> --on <run2>'),
+        awaited = coord().resolveRun(on),
+        who = caller();
+      if (!awaited) throw new Error(`wait-on: unknown run ${on}`);
+      if (!same(coord().owner(runScope(l)).owner, who))
+        throw new Error('wait-on: only the current run owner may mark a wait');
+      return controlled(l, () => {
+        updateLedger(l, current => {
+          current.waiting_on = {
+            run: awaited.run_id,
+            ...(a.flags.reason?.trim() ? { reason: a.flags.reason.trim() } : {}),
+            since: new Date().toISOString(),
+          };
+        });
+        print({ run: l.run_id, waiting_on: l.waiting_on });
+        return 0;
+      });
+    }
     case 'wait': {
       const t = Number(a.flags.timeout ?? 3000);
       if (!Number.isFinite(t) || t <= 0) {
@@ -4986,7 +5028,10 @@ export async function askCli(
     } catch (error) {
       throw new Error(`ask spec: ${(error as Error).message}`);
     }
-    const id = askNtfy(parseNtfyAskSpec(value), supplied);
+    const id = askNtfy(
+      { ...parseNtfyAskSpec(value), originator: { identity: caller(), scope: coord().scope() } },
+      supplied
+    );
     return publishAsk(id, supplied, emit);
   }
   const source = need(a.flags.source, 'ask --source <source>'),
@@ -5007,6 +5052,7 @@ export async function askCli(
       default_on_expiry: a.flags['default-on-expiry'],
       callback: { kind: 'external', ref: callback },
       dedupe_key: `external:${callback}`,
+      originator: { identity: caller(), scope: coord().scope() },
       ...(a.flags.recommend
         ? {
             project: source,

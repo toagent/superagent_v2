@@ -6,6 +6,7 @@ import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
 import { adoptedRuns, heartbeat, heartbeatSummary, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
+import { EXIT } from '../src/cli';
 import { generalKey } from '../src/stall';
 import { tmp } from './helpers';
 const now = Date.parse('2026-10-29T10:00:00Z');
@@ -139,6 +140,7 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   // prettier-ignore
   needs.engine = { title: 'needs', milestones: [], currentMilestone: null, states: [], firstPass: false, reason: 'coder_needs', dispositions: [] };
   running.coordination!.pending = 2;
+  failed.waiting_on = { run: 'running', reason: '等修复包', since: '2026-10-29T09:54:00Z' };
   const snap: Snapshot = {
     at: new Date(now).toISOString(),
     summary: {},
@@ -180,12 +182,13 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   const marshal = result.marshals[0]!;
   expect([...new Set(marshal.running.map(item => item.id))]).toEqual(['running', 'other']);
   expect(marshal.waiting.map(item => [item.id, item.waiting_for])).toEqual([
-    ['failed', '交付包含 scope.write 之外的路径'],
+    ['failed', '等待 running：等修复包'],
     ['held', '评审轮次用尽'],
     ['needs', '编码端需要补充能力'],
     ['running', '1 条协调消息'],
     ['repo:/repo/project', '1 条协调消息'],
   ]);
+  expect(marshal.waiting[0]).toMatchObject({ code: 'waiting_on', actionable: false });
   expect(marshal.waiting[1]).toMatchObject({
     kind: 'run',
     since: '2026-10-29T09:55:00Z',
@@ -198,8 +201,13 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   });
   expect(marshal.waiting[3]).toMatchObject({ code: 'coordination_pending' });
   expect(marshal.waiting.filter(item => item.id.startsWith('repo:'))).toHaveLength(1);
-  expect(responsibilities(result, who)).toEqual(marshal.waiting);
-  expect(marshal.line).toContain('等待5：交付包含 scope.write 之外的路径、评审轮次用尽');
+  expect(responsibilities(result, who)).toEqual(marshal.waiting.slice(1));
+  expect(marshal.line).toContain('等待5：等待 running：等修复包、评审轮次用尽');
+  running.exit = EXIT.completed;
+  expect(
+    heartbeat(snap, cockpit(snap, now), now, () => ({ state: 'online', activity: 'active' }))
+      .marshals[0]?.waiting[0]?.waiting_for
+  ).toBe('交付包含 scope.write 之外的路径');
 });
 
 test('heartbeat persistence ignores clocks, refreshes at 900s, and health classifies stages', () => {

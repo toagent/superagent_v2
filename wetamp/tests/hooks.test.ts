@@ -568,6 +568,13 @@ describe('guard.cjs', () => {
             owner: who,
             waiting: [
               {
+                id: 'passive',
+                since: '2026-10-29T09:00:00Z',
+                waited_s: 0,
+                waiting_for: '等待 dependency',
+                actionable: false,
+              },
+              {
                 id: 'held',
                 since: '2026-10-29T09:00:00Z',
                 waited_s: 0,

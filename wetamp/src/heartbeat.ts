@@ -13,7 +13,7 @@ import { generalKey, type GeneralAssessment } from './stall';
 // prettier-ignore
 interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; coder?: boolean; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string; general?: GeneralAssessment }
 // prettier-ignore
-export interface Responsibility { id: string; kind?: 'run' | 'coord' | 'decision' | 'job'; since?: string; what: string; code: string; waiting_for: string; waited_s: number; next?: string }
+export interface Responsibility { id: string; kind?: 'run' | 'coord' | 'decision' | 'job'; since?: string; what: string; code: string; waiting_for: string; waited_s: number; next?: string; actionable?: boolean }
 // prettier-ignore
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: Responsibility[]; line: string }
 // prettier-ignore
@@ -104,7 +104,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const key = `unknown\0${cwd}`, found = groups.get(key), value = found ?? { owner: 'unknown' as const, owner_key: 'unknown' as const, cwd, project: basename(cwd), running: [], waiting: [], line: '无人负责' };
     value.waiting.push(item); groups.set(key, value); unowned++;
   };
-  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id));
+  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id)), rows = new Map(snapshot.rows.map(row => [row.run_id, row]));
   for (const row of snapshot.rows) {
     if (row.archon_id && adopted.has(row.archon_id)) continue;
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
@@ -123,6 +123,12 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const marshal = group(owner, row.repo);
     if (!marshal) continue;
     const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
+    const dependency = row.waiting_on && rows.get(row.waiting_on.run);
+    if (row.waiting_on && dependency && [3, 4].includes(dependency.exit ?? -1)) {
+      const label = `等待 ${row.waiting_on.run.slice(0, 12)}${row.waiting_on.reason ? `：${row.waiting_on.reason}` : ''}`;
+      marshal.waiting.push({ id: row.run_id, kind: 'run', since: row.waiting_on.since, what: run?.stage ?? row.state, code: 'waiting_on', waiting_for: label, waited_s: age(row.waiting_on.since, now) ?? 0, actionable: false });
+      continue;
+    }
     if (row.state === 'running' && active.has(row.run_id)) for (const node of nodes) marshal.running.push({
       id: row.run_id, kind: 'run', title: row.engine?.title ?? '任务标题未知', stage: run?.stage ?? row.state,
       ...(node.id ? { node: node.id } : {}), coder: node.role === 'coder', role: roleTag(node.role, node.model), model: node.model, state: row.state,
@@ -173,7 +179,9 @@ export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): 
   return { available: true, line: marshal.line, running: marshal.running, waiting: marshal.waiting, ...(warnings.length ? { warnings } : {}) };
 }
 export const responsibilities = (value: Heartbeat, who: Identity): Responsibility[] =>
-  value.marshals.find(item => item.owner !== 'unknown' && same(who, item.owner))?.waiting ?? [];
+  value.marshals
+    .find(item => item.owner !== 'unknown' && same(who, item.owner))
+    ?.waiting.filter(item => item.actionable !== false) ?? [];
 
 // prettier-ignore
 export interface TickStage { ok: boolean; duration_ms?: number; error?: string; skipped?: string }
