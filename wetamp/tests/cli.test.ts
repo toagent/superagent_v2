@@ -293,6 +293,14 @@ test('plan check validates without dispatch or launch-failure writes', () => {
     ok: true,
     plan_lint: { rejected: false },
   });
+  process.env.SUPERAGENT_MEMORY = 'on';
+  const episodes = join(s.root, 'home/memory/episodes');
+  mkdirSync(episodes, { recursive: true });
+  // prettier-ignore
+  for (let i = 0; i < 3; i++)
+    writeFileSync(join(episodes, `repeat-${i}.json`), JSON.stringify({ id: `repeat-${i}`,
+      project: repo, reasons: ['ruler_invalid'], signature: 'acceptance', at: new Date().toISOString() }));
+  expect(invoke().stderr.toString()).toContain('机制签名 acceptance 3 次');
   mkdirSync(join(repo, '.superagent'));
   writeFileSync(
     join(repo, '.superagent/rules.json'),
@@ -302,14 +310,6 @@ test('plan check validates without dispatch or launch-failure writes', () => {
     })
   );
   expect(invoke().stderr.toString()).toContain('intersects frozen path');
-  process.env.SUPERAGENT_MEMORY = 'on';
-  const episodes = join(s.root, 'home/memory/episodes');
-  mkdirSync(episodes, { recursive: true });
-  // prettier-ignore
-  for (let i = 0; i < 3; i++)
-    writeFileSync(join(episodes, `repeat-${i}.json`), JSON.stringify({ id: `repeat-${i}`,
-      project: repo, reasons: ['ruler_invalid'], at: new Date().toISOString() }));
-  expect(invoke().stderr.toString()).toContain('acceptance 3 次');
   const overridden = invoke(['--lint-override', 'approved exception']);
   expect(overridden.exitCode).toBe(0);
   expect(JSON.parse(overridden.stdout.toString())).toMatchObject({
