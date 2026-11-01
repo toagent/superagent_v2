@@ -2,7 +2,7 @@ import { describeDecision, type Decision } from '../decisions';
 import { abandoned, clock, firstPassOf, planOf, cwdOf, interventionCount } from '../ledger-metrics';
 // board 数据层：ledger + `workflow get` → BoardRow 与汇总。不渲染；判定与计数全部复用 cli.ts。
 import { spawnSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   getRunAsync,
@@ -98,6 +98,7 @@ export interface BoardRow {
 }
 
 export interface Snapshot {
+  heavy_queue?: HeavyQueueEntry[];
   general?: Record<string, import('../stall').GeneralAssessment>;
   reflection?: ReturnType<typeof memoryData>['reflection'];
   eta?: Record<string, Estimate>;
@@ -111,6 +112,24 @@ export interface Snapshot {
   at: string;
   /** 加载器总会带上；手工构造的帧（测试）可省略，此时不画活动区。 */
   activity?: Activity;
+}
+
+// prettier-ignore
+export interface HeavyQueueEntry { pid: number; command: string; cwd: string; queued_at: string; run?: string; holder?: { command: string; started_at: string } }
+// prettier-ignore
+export function readHeavyQueue(lock = process.env.SA_HEAVY_LOCK_FILE ?? '/tmp/superagent-heavy-test.lock'): HeavyQueueEntry[] {
+  const live = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } };
+  let holder: HeavyQueueEntry['holder'];
+  try {
+    const fields = Object.fromEntries(readFileSync(`${lock}.holder`, 'utf8').trim().split('\n').map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)]; }));
+    if (live(Number(fields.pid)) && fields.command && fields.started_at)
+      holder = { command: fields.command, started_at: fields.started_at };
+  } catch { /* Missing or partial holder is unknown. */ }
+  try {
+    return readdirSync(`${lock}.queue`).filter(file => file.endsWith('.json')).flatMap(file => {
+      try { const value = JSON.parse(readFileSync(join(`${lock}.queue`, file), 'utf8')) as HeavyQueueEntry; return Number.isInteger(value.pid) && live(value.pid) && value.command && value.cwd && value.queued_at ? [{ ...value, ...(holder ? { holder } : {}) }] : []; } catch { return []; }
+    });
+  } catch { return []; }
 }
 
 const STRINGS = [
@@ -647,6 +666,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     }
     return {
       reflection,
+      heavy_queue: readHeavyQueue(),
       heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
         ?.mtimeMs,
       asks,

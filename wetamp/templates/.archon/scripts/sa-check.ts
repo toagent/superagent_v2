@@ -103,7 +103,7 @@ const resourceWaitBudgetMs = (): number =>
 // prettier-ignore
 class ResourceWaitTimeout extends Error { constructor(readonly command: string) { super(`resource wait budget exhausted before: ${command}`); } }
 // prettier-ignore
-interface ResourceLease { waitedMs: number; release(): Promise<void>; }
+interface ResourceLease { queuedAt: string; waitedMs: number; release(): Promise<void>; }
 // prettier-ignore
 const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
   resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE] : RESOURCE_SLOTS[resource];
@@ -125,20 +125,22 @@ function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams |
 }
 // prettier-ignore
 export async function acquireResource(resource: NonNullable<Check['resource']>, budgetMs: number,
-  lockFiles = resourceLockFiles(resource)): Promise<ResourceLease | undefined> {
+  lockFiles = resourceLockFiles(resource), command = '', cwd = process.cwd(), queuedAt = new Date().toISOString()): Promise<ResourceLease | undefined> {
   const started = Date.now(), deadline = started + budgetMs;
-  while (Date.now() < deadline) {
+  const queue = resource === 'heavy-test' ? `${lockFiles[0]}.queue/${String(process.pid)}.json` : '';
+  if (queue) { mkdirSync(dirname(queue), { recursive: true }); const temporary = `${queue}.tmp`; writeFileSync(temporary, JSON.stringify({ pid: process.pid, command, cwd, queued_at: queuedAt, ...(env('RUN') ? { run: env('RUN') } : {}) })); renameSync(temporary, queue); }
+  try { while (Date.now() < deadline) {
     for (const path of lockFiles) {
       const child = await tryResourceLock(path);
       if (!child) continue;
       return {
+        queuedAt,
         waitedMs: Date.now() - started,
         release: async () => { child.stdin.end(); await new Promise<void>(resolve => child.once('close', () => { resolve(); })); },
       };
     }
     await Bun.sleep(Math.min(25, Math.max(1, deadline - Date.now())));
-  }
-  return undefined;
+  } return undefined; } finally { if (queue) rmSync(queue, { force: true }); }
 }
 // Elapsed auxiliary time has one shared cap, independent of subprocess count.
 export const CHECK_AUX_BUDGET_MS = 130_000;
@@ -730,12 +732,14 @@ async function run(
     // prettier-ignore
     if (c.resource) {
       const remainingWait = resourceWaitBudgetMs() - resourceWaitElapsedMs;
-      lease = remainingWait > 0 ? await acquireResource(c.resource, remainingWait) : undefined;
+      const queuedAt = new Date().toISOString();
+      lease = remainingWait > 0 ? await acquireResource(c.resource, remainingWait, resourceLockFiles(c.resource), c.cmd, cwd, queuedAt) : undefined;
       resourceWaitElapsedMs += lease?.waitedMs ?? Math.max(0, remainingWait);
       if (!lease) {
         const at = new Date().toISOString();
-        results.push({ check: c, pass: false, evidence: log, exit: 'resource_wait_timeout', duration_ms: 0,
-          started_at: at, ended_at: at, attempts: [], summary: { pass: 0, fail: 1, skip: 0, retry: 0 } });
+        results.push({ check: c, pass: null, evidence: log, exit: null, duration_ms: 0,
+          queued_at: queuedAt, started_at: at, finished_at: at, waited_ms: Math.max(0, Date.parse(at) - Date.parse(queuedAt)), ended_at: at,
+          attempts: [], summary: { pass: 0, fail: 1, skip: 0, retry: 0 } });
         failures.push({ command: c.cmd, failure_class: 'test_env', evidence: log });
         resourceWaitTimeoutCommand = c.cmd;
         throw new ResourceWaitTimeout(c.cmd);
@@ -805,7 +809,8 @@ async function run(
           stdout: result.stdout, stderr: result.stderr,
         };
       }
-      const code = p.signalCode ? `signal ${p.signalCode}` : (p.exitCode ?? 'unknown');
+      const code = p.exitCode,
+        displayedExit = p.signalCode ? `signal ${p.signalCode}` : (code ?? 'unknown');
       const structured = outputReport
         ? junitCases(outputReport, expected, executionStarted)
         : undefined;
@@ -822,17 +827,17 @@ async function run(
       const duration = Date.now() - t0;
       appendFileSync(
         log,
-        `$ ${command}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(duration)}\n\n`
+        `$ ${command}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(displayedExit)} ms=${String(duration)}\n\n`
       );
       // prettier-ignore
       attempts.push({ started_at: new Date(executionStarted).toISOString(), ended_at: new Date().toISOString(),
-        exit: code, duration_ms: Date.now() - executionStarted, log, ...(junit ? { junit } : {}),
+        exit: displayedExit, duration_ms: Date.now() - executionStarted, log, ...(junit ? { junit } : {}),
         tests: structured?.tests ?? 0, failures: structured?.failures.length ?? 0, skipped: structured?.skipped.length ?? 0 });
       return [
         p,
         code,
         structured,
-        code === 0 && (!c.report || structured?.complete === true),
+        code === null ? null : code === 0 && (!c.report || structured?.complete === true),
         duration,
       ] as const;
     };
@@ -902,7 +907,10 @@ async function run(
       evidence: log,
       exit: code,
       duration_ms: duration,
+      queued_at: lease?.queuedAt ?? new Date(t0).toISOString(),
+      waited_ms: lease?.waitedMs ?? 0,
       started_at: new Date(t0).toISOString(),
+      finished_at: new Date().toISOString(),
       ended_at: new Date().toISOString(),
       attempts,
       summary: {

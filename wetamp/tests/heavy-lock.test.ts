@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   writeFileSync,
 } from 'node:fs';
@@ -150,7 +151,7 @@ test('selectors and an inherited heavy slot bypass the lock', async () => {
   expect(await nested.exited).toBe(0);
 });
 
-test('heavy slot publishes live holder metadata and ignores a stale holder', async () => {
+test('queued state publishes queue and live holder metadata, then cleans both', async () => {
   const { env } = fixture();
   const holderFile = `${env.SA_HEAVY_LOCK_FILE}.holder`;
   const holder = run({ ...env, DURATION: '0.5' }, 'metadata');
@@ -165,7 +166,26 @@ test('heavy slot publishes live holder metadata and ignores a stale holder', asy
   expect(cwd).toBeDefined();
   expect(realpathSync(cwd!)).toBe(realpathSync(env.TEST_WETAMP));
   expect(metadata).toContain('started_at=');
+  const waiter = run({ ...env, DURATION: '0.1' }, 'waiter');
+  const queueDir = `${env.SA_HEAVY_LOCK_FILE}.queue`;
+  for (
+    let i = 0;
+    i < 100 &&
+    (!existsSync(queueDir) || !readdirSync(queueDir).some(file => file.endsWith('.json')));
+    i++
+  )
+    await Bun.sleep(10);
+  const queued = JSON.parse(
+    readFileSync(
+      join(queueDir, readdirSync(queueDir).find(file => file.endsWith('.json'))!),
+      'utf8'
+    )
+  );
+  expect(queued.command).toContain('bun');
+  expect(realpathSync(queued.cwd)).toBe(realpathSync(env.TEST_WETAMP));
   expect(await holder.exited).toBe(0);
+  expect(await waiter.exited).toBe(0);
+  expect(readdirSync(queueDir).filter(file => file.endsWith('.json'))).toEqual([]);
   expect(existsSync(holderFile)).toBe(false);
 
   writeFileSync(holderFile, 'pid=99999999\ncommand=stale\n');

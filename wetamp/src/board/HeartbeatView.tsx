@@ -340,6 +340,14 @@ function MobileHeartbeatFrame({
           收{String(model.stats.reclaimPending)} 遗{String(model.stats.legacy)}
         </Text>
       )}
+      {model.heavyQueue.slice(0, 1).map(item => (
+        <Text key={item.command} color="yellow" wrap="truncate-end">
+          {fit(
+            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${fit(item.holder?.command ?? '未知', 32)} (${item.holder ? panelDuration(item.holder.running_s + drift) : '未知'})`,
+            width
+          )}
+        </Text>
+      ))}
       {bodyBudget >= 4 && (
         <Text bold wrap="truncate-end">
           需要处理
@@ -502,6 +510,14 @@ export function HeartbeatFrame({
           需要处理
         </Text>
       )}
+      {model.heavyQueue.map(item => (
+        <Text key={item.command} color="yellow" wrap="truncate-end">
+          {fit(
+            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${fit(item.holder?.command ?? '未知', 40)} (${item.holder ? panelDuration(item.holder.running_s + drift) : '未知'})`,
+            width
+          )}
+        </Text>
+      ))}
       {shownAttentionRows > 0 &&
         (attention.length ? (
           attention

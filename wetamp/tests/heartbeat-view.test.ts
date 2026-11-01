@@ -98,12 +98,23 @@ test('engine/current 切换返回重启码，路径缺失时不触发', () => {
 });
 
 test('问题置顶、验收流水线与 quota 状态栏', () => {
-  const output = frame(heartbeat(['idle']), 100, 40, 'Claude 今日 $1.23');
+  const value = heartbeat(['idle']);
+  value.heavy_queue = [
+    {
+      pid: process.pid,
+      command: 'accept',
+      cwd: '/tmp',
+      queued_at: new Date(now - 120_000).toISOString(),
+      holder: { command: 'bun test', started_at: new Date(now - 300_000).toISOString() },
+    },
+  ];
+  const output = frame(value, 100, 40, 'Claude 今日 $1.23');
   expect(output.indexOf('需要处理')).toBeLessThan(output.indexOf('run-1'));
   expect(output).toContain('✓ 编码');
   expect(output).toContain('● 验收');
   expect(output).toContain('○ 评审');
   expect(output).toContain('超时 · 已等 30m');
+  expect(output).toContain('⏳ 排队等重型名额 2m · 持有者 bun test (5m)');
   expect(output.split('\n').find(line => line.includes('任务1'))).toContain('run-1');
   expect(output.trimEnd().split('\n').at(-1)).toContain('额度：Claude 今日 $1.23');
   expect(frame(heartbeat([]), 100, 20).trimEnd().split('\n').at(-1)).toContain('额度：未配置');
