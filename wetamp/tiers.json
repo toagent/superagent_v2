@@ -148,7 +148,7 @@
     },
     "general": {
       "name": "将军",
-      "purpose": "编码：Claude 池（single:claude）与 ChatGPT 池并为主力；实现、验收、修复一次性闭环。",
+      "purpose": "编码：ChatGPT 池为主力；Claude 池仅 plan mode single:claude；实现、验收、修复一次性闭环。",
       "pools": {
         "chatgpt": ["gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
         "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]

@@ -664,24 +664,18 @@ test('BYPASS_CAPACITY generic Archon dispatch observes exhausted budgets', async
   );
 });
 
-test('VENDOR_FAILOVER runtime coder retains native role config on Claude dispatch', async () => {
+test('runtime coder failover stays on Codex and retains native role config', async () => {
   const s = runtimeFixture();
   s.tiers.routing.coder.models = pool.map(c => c.model);
   writeFileSync(s.policyPath, JSON.stringify(snapshotPolicy(s.tiers)));
   const calls: SendQueryOptions[] = [];
-  const native = fake(() => ({
-    type: 'result',
-    isError: true,
-    failure: { class: 'overloaded', evidence: 'typed' },
-  }));
-  const provider = wrapPolicyProvider(native, 'codex', candidate => {
-    expect(candidate.provider).toBe('claude');
-    return fake((options, session) => {
-      expect(session).toBeUndefined();
-      calls.push(options);
-      return success;
-    }).sendQuery;
+  const native = fake(options => {
+    calls.push(options);
+    return calls.length === 1
+      ? { type: 'result', isError: true, failure: { class: 'overloaded', evidence: 'typed' } }
+      : success;
   });
+  const provider = wrapPolicyProvider(native, 'codex');
   const chunks = await inRuntime(s.root, () =>
     collect(
       provider.sendQuery('p', s.root, 'original', {
@@ -691,9 +685,9 @@ test('VENDOR_FAILOVER runtime coder retains native role config on Claude dispatc
       })
     )
   );
-  expect(calls).toHaveLength(1);
-  expect(calls[0].nodeConfig?.denied_tools).toBeUndefined();
+  expect(calls.map(call => call.model)).toEqual(['gpt-6.1-sol', 'gpt-6-sol']);
+  expect(calls.every(call => call.nodeConfig?.denied_tools === undefined)).toBe(true);
   expect(chunks.some(c => c.type === 'warning' && c.code === 'superagent.vendor_failover')).toBe(
-    true
+    false
   );
 });

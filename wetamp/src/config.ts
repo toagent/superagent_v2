@@ -261,7 +261,6 @@ export function resolveRoute(
   risk: Pkg['risk'] = 'G1',
   round = 1,
   authors: string[] = [],
-  vendorFailover = false,
   state: RouteState = HEALTHY_ROUTE
 ): Route {
   if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
@@ -281,8 +280,7 @@ export function resolveRoute(
   const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: soldierProvider ?? providerOf(model), effort }))
-    // Initial code/repair routing stays Codex; dispatch may retain the failover pool.
-    .filter(a => vendorFailover || vendor !== null || role === 'review' || role === 'command' || a.provider === 'codex')
+    .filter(a => !['code', 'repair'].includes(role) || a.provider === (mode === 'single:claude' ? 'claude' : 'codex'))
     .filter(
       a => (role === 'soldier' || role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
@@ -343,7 +341,7 @@ const obj = (v: unknown): Obj =>
  */
 export function runAliases(c: Console, t = loadTiers(), mode = 'auto', state = HEALTHY_ROUTE) {
   const route = (role: Parameters<typeof resolveRoute>[3], authors: string[] = []) =>
-    resolveRoute(t, c, mode, role, 'G1', 1, authors, false, state).candidates;
+    resolveRoute(t, c, mode, role, 'G1', 1, authors, state).candidates;
   const coder = route('code')[0],
     reviewers = route('review', [coder.model]);
   const reviewer = reviewers[0];

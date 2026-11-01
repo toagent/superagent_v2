@@ -42,24 +42,20 @@ test('frozen descriptors and both entry points share risk/round effort and nativ
   );
 });
 
-test('soldier and general dispatch pools remain isolated during vendor failover', () => {
+test('soldier and general dispatch pools remain isolated during failover', () => {
   const soldierTiers = fixtureTiers();
   const configured = soldierTiers.routing.soldier?.models ?? [];
   const soldier = executionRoute(
     soldierTiers,
     'codex',
     'auto',
-    describeExecution(soldierTiers, 'soldier'),
-    [],
-    true
+    describeExecution(soldierTiers, 'soldier')
   ).candidates;
   const general = executionRoute(
     soldierTiers,
     'codex',
     'auto',
-    describeExecution(soldierTiers, 'code'),
-    [],
-    true
+    describeExecution(soldierTiers, 'code')
   ).candidates;
   expect(configured.length).toBeGreaterThan(0);
   expect(soldier.map(candidate => candidate.model)).toEqual(configured);
@@ -123,12 +119,12 @@ test('explicit unlimited tokens ignores reserves and spend while preserving laun
   expect(calls).toBe(3);
 });
 
-test('VENDOR_FAILOVER reviewer pool excludes authors and preserves write-capable profiles', async () => {
+test('reviewer failover pool excludes authors and preserves write-capable profiles', async () => {
   const author = 'claude-opus-5';
   const t = structuredClone(tiers);
   t.routing.reviewer.by_risk = { G1: ['gpt-6.1-sol', author, 'claude-sonnet-5'] };
   const descriptor = describeExecution(t, 'review', 'G1');
-  const candidates = executionRoute(t, 'codex', 'auto', descriptor, [author], true).candidates;
+  const candidates = executionRoute(t, 'codex', 'auto', descriptor, [author]).candidates;
   const called: string[] = [];
   const chunks = [];
   const sendQuery = async function* () {
