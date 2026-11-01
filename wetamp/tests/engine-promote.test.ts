@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   statSync,
@@ -435,6 +436,15 @@ test('post-promotion verify handles retries, no affected tests, persistent failu
   expect(run('no-tests', [0], [false]).result).toMatchObject({ status: 'passed', files: [], failed_files: [] });
   const timeout = run('timeout', [124], [false]); expect(timeout.result.status).toBe('failed'); expect(timeout.timeouts).toEqual([60 * 60_000]);
   expect((await import('../src/cli')).parseArgs(['engine', 'verify', 'abc1234', '--base', 'def5678']).flags.base).toBe('def5678');
+}, testTimeout(60_000));
+
+// prettier-ignore
+test('verify uses an independent local clone without registering a worktree', () => {
+  const f = sourceFixture(), base = f.sha(), sha = commit(f.source, 'verify-clone'), before = sh('git worktree list --porcelain', f.source);
+  let checkout = '', common = '', resolvedBase = '', during = '';
+  const result = runVerify(sha, base, { execute: worktree => { checkout = worktree; common = realpathSync(join(worktree, sh('git rev-parse --git-common-dir', worktree).trim())); resolvedBase = sh(`git rev-parse '${base}^{commit}'`, worktree).trim(); during = sh('git worktree list --porcelain', f.source); return 0; } });
+  expect(result.status).toBe('passed'); expect(common).not.toBe(realpathSync(join(f.source, '.git'))); expect(resolvedBase).toBe(base);
+  expect(during).toBe(before); expect(sh('git worktree list --porcelain', f.source)).toBe(before); expect(existsSync(checkout)).toBe(false);
 }, testTimeout(60_000));
 
 // prettier-ignore

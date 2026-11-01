@@ -246,6 +246,7 @@ export function resumeExecution(
     operatorId?: string;
     resolveId: () => string;
     adopt: (run: ExecutionRunView) => string[] | undefined;
+    claimCancelled?: (run: ExecutionRunView, claim: RecoveryAdmission) => boolean;
   },
   reconciled?: string,
   admit?: (run: ExecutionRunView) => string | undefined
@@ -278,6 +279,19 @@ export function resumeExecution(
         snapshot: recoverySnapshot(run),
         action: `Reconcile external effects and stop surviving node processes before explicitly continuing ${strategy?.operatorId ?? id} with snapshot ${recoverySnapshot(run)}`,
       };
+    if (run.status === 'cancelled') {
+      if (reconciled !== recoverySnapshot(run))
+        return {
+          ok: false,
+          held: true,
+          reason: 'cancelled_reconciliation_required',
+          snapshot: recoverySnapshot(run),
+          action: `Reconcile the cancelled execution before explicitly continuing ${strategy?.operatorId ?? id} with snapshot ${recoverySnapshot(run)}`,
+        };
+      const ownership = executionOwnership(run, host.inspectProcess).state;
+      if (ownership !== 'offline')
+        return held(ownership === 'online' ? 'cancelled_owner_alive' : 'cancelled_owner_unknown');
+    }
     if (run.status === 'running') {
       const live = host.liveOwnerAnswering(run.id);
       if (live !== false) return held(live ? 'live_owner_answering' : 'owner_probe_unknown');
@@ -315,6 +329,9 @@ export function resumeExecution(
       if (executionOwnership(run, host.inspectProcess).state !== 'offline')
         return { ok: false, reason: 'owner alive or on another host' };
       if (!host.claimInterrupted(run, claim)) return { ok: false, reason: 'owner_changed' };
+    } else if (run.status === 'cancelled') {
+      if (!strategy?.claimCancelled?.(run, claim))
+        return { ok: false, reason: 'cancelled execution changed before recovery' };
     } else if (run.status !== 'failed' && run.status !== 'paused') {
       return { ok: false, reason: `status ${run.status} is not resumable` };
     }
@@ -328,7 +345,8 @@ export function resumeExecution(
       result.code === 0 &&
       resumed?.ok === false &&
       resumed.executed === false &&
-      run.status !== 'running'
+      run.status !== 'running' &&
+      run.status !== 'cancelled'
     ) {
       // A structured pre-admission refusal guarantees no worker was launched.
       // Any other failure (including a lost acknowledgement) retains the fence.
