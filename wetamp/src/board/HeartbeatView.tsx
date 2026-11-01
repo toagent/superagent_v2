@@ -14,6 +14,15 @@ import { ProgressBar } from './ProgressBar';
 
 const driftAt = (model: PanelModel, now: number): number =>
   Math.max(0, Math.floor((now - Date.parse(model.heartbeatAt)) / 1000));
+const ntfyPauseNotice = (model: PanelModel): string => {
+  if (!model.ntfyPaused) return '';
+  const time = new Date(model.ntfyPaused.at).toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return ` · ⏸ ntfy 已暂停 ${time} ${model.ntfyPaused.by ?? '来源未知'}`;
+};
 const age = (seconds: number | null, drift: number, recent = false): string => {
   if (seconds === null) return '未知';
   const value = seconds + drift;
@@ -216,7 +225,10 @@ const mobilePipeline = (run: PanelRun): string => {
   return phases
     .map((phase, index) => {
       const icon = index < currentIndex ? '✓' : index === currentIndex ? '●' : '○';
-      const label = current === 'repair' && phase.kind === 'verify' ? `修${round ? `r${round}` : ''}` : phase.label;
+      const label =
+        current === 'repair' && phase.kind === 'verify'
+          ? `修${round ? `r${round}` : ''}`
+          : phase.label;
       return `${icon}${label}`;
     })
     .join(' ');
@@ -280,7 +292,9 @@ function MobileHeartbeatFrame({
     attention = model.attention.slice(0, 5),
     runningReserve = 1 + (model.runs.length ? 3 : 1),
     attentionBudget = Math.max(0, bodyBudget - 4 - runningReserve),
-    attentionCount = attention.length ? Math.min(attention.length, Math.floor(attentionBudget / 2)) : 0,
+    attentionCount = attention.length
+      ? Math.min(attention.length, Math.floor(attentionBudget / 2))
+      : 0,
     attentionOverflow =
       model.attention.length > attentionCount && attentionBudget - attentionCount * 2 > 0,
     shownAttentionRows = attention.length
@@ -294,7 +308,7 @@ function MobileHeartbeatFrame({
     showHidden = hidden > 0 && cardBudget - shown.length * 3 > 0,
     checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
     clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5),
-    health = model.health.ok ? `● 正常 · 巡检 ${String(checkedAge)}s 前` : '⚠ 巡检可能停了';
+    health = `${model.health.ok ? `● 正常 · 巡检 ${String(checkedAge)}s 前` : '⚠ 巡检可能停了'}${ntfyPauseNotice(model)}`;
   return (
     <Box flexDirection="column" width={width}>
       {staleLines.slice(0, staleRows).map((line, index) => (
@@ -361,7 +375,13 @@ function MobileHeartbeatFrame({
         </Text>
       )}
       {shown.map(run => (
-        <MobileRunCard key={`${run.project}-${run.id}`} run={run} width={width} drift={drift} now={now} />
+        <MobileRunCard
+          key={`${run.project}-${run.id}`}
+          run={run}
+          width={width}
+          drift={drift}
+          now={now}
+        />
       ))}
       {showHidden && (
         <Text dimColor wrap="truncate-end">
@@ -390,7 +410,8 @@ export function HeartbeatFrame({
 }: HeartbeatFrameProps): ReactElement {
   width = Math.max(1, Math.floor(width));
   rows = Math.max(1, Math.floor(rows));
-  if (width < 60) return <MobileHeartbeatFrame model={model} quota={quota} now={now} width={width} rows={rows} />;
+  if (width < 60)
+    return <MobileHeartbeatFrame model={model} quota={quota} now={now} width={width} rows={rows} />;
   const drift = driftAt(model, now),
     availableRows = Math.max(0, rows - 1),
     staleLines = model.health.stale ? wrappedLines(model.health.stale.message, width) : [],
@@ -422,7 +443,7 @@ export function HeartbeatFrame({
     health = model.health.ok
       ? `● 巡检正常 · 巡检 ${String(checkedAge)}s 前`
       : `⚠ 巡检可能停了：${model.health.messages.join('；')}`,
-    status = `${clock} · ${health}`,
+    status = `${clock} · ${health}${ntfyPauseNotice(model)}`,
     titleWidth = Math.max(0, width - Bun.stringWidth(status) - 1),
     header = titleWidth
       ? `${fit(`◆ 心跳 · ${model.projects}`, titleWidth)} ${status}`
