@@ -90,6 +90,11 @@ export interface PanelModel {
   projects: string;
   attention: PanelAttention[];
   runs: PanelRun[];
+  heavyQueue: {
+    command: string;
+    queued_s: number;
+    holder?: { command: string; running_s: number };
+  }[];
   stats: { running: number; waiting: number; reclaimPending: number; legacy: number };
   ntfyPaused?: { at: string; by: string | null };
 }
@@ -129,6 +134,8 @@ export function panelModel(
     };
   });
   const byRun = new Map(runs.map(run => [`${run.project}\0${run.id}`, run]));
+  // prettier-ignore
+  const heavyQueue = (heartbeat?.heavy_queue ?? []).filter(item => selected.some(marshal => marshal.cwd === item.cwd || marshal.running.some(run => run.id === item.run))).map(item => ({ command: item.command, queued_s: Math.max(0, Math.floor((now - Date.parse(item.queued_at)) / 1000)), ...(item.holder ? { holder: { command: item.holder.command, running_s: Math.max(0, Math.floor((now - Date.parse(item.holder.started_at)) / 1000)) } } : {}) }));
   const attention: PanelAttention[] = [];
   for (const marshal of selected) {
     for (const item of marshal.running)
@@ -157,6 +164,7 @@ export function panelModel(
     projects: selected.map(item => item.project).join('、') || scopeLabel,
     attention,
     runs,
+    heavyQueue,
     stats: {
       running: runs.length,
       waiting: selected.reduce((sum, item) => sum + item.waiting.length, 0),
@@ -200,6 +208,12 @@ export function renderPanel(
       : ['无']),
     '',
     '进行中'
+  );
+  lines.push(
+    ...model.heavyQueue.map(
+      item =>
+        `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${fit(item.holder?.command ?? '未知', 40)} (${item.holder ? panelDuration(item.holder.running_s + drift) : '未知'})`
+    )
   );
   if (!model.runs.length) lines.push('暂无在跑任务');
   for (const run of model.runs) {

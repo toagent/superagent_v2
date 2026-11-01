@@ -3572,7 +3572,10 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     const r = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag: 'verify-a' }, SCRIPT, {
       SA_HEAVY_LOCK_FILE: lock,
     });
-    expect(r.out, r.err).toMatchObject({ ok: false });
+    expect(r.out, r.err).toMatchObject({
+      ok: false,
+      command_results: [{ exit: null, pass: null }],
+    });
     expect(() => process.kill(Number(readFileSync(child, 'utf8')), 0)).toThrow();
     writeFileSync(
       p,
@@ -3598,7 +3601,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
   });
 
   test(
-    'resource waits precede each timeout and preserve full command output',
+    'queued state records wait lifecycle and preserves full command output',
     async () => {
       const root = tmp(),
         repo = gitRepo(root),
@@ -3655,7 +3658,16 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       expect(await holder.exited).toBe(0);
       expect(result.out).toMatchObject({
         failures: [{ failure_class: 'product' }],
-        command_results: [{ exit: 1 }],
+        command_results: [
+          {
+            exit: 1,
+            pass: false,
+            queued_at: expect.any(String),
+            started_at: expect.any(String),
+            finished_at: expect.any(String),
+            waited_ms: expect.any(Number),
+          },
+        ],
         base_results: [{ pass: false }],
       });
       expect(existsSync(queued)).toBe(true);

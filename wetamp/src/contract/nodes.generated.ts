@@ -289,11 +289,14 @@ export interface CommandResult {
   check: Check;
   pass: boolean | null;
   evidence: string;
-  exit?: number | string;
+  exit?: number | string | null;
   duration_ms: number;
   flaky?: boolean;
   structured?: StructuredCases;
+  queued_at?: string;
   started_at?: string;
+  finished_at?: string;
+  waited_ms?: number;
   ended_at?: string;
   attempts?: CommandAttempt[];
   summary?: {
@@ -541,11 +544,14 @@ export const acceptOutputFormat = {
         check: { $ref: '#/%24defs/Check' },
         pass: { type: ['boolean', 'null'] },
         evidence: { type: 'string' },
-        exit: { type: ['number', 'string'] },
+        exit: { type: ['number', 'string', 'null'] },
         duration_ms: { type: 'integer', minimum: 0 },
         flaky: { type: 'boolean' },
         structured: { $ref: '#/$defs/StructuredCases' },
+        queued_at: { type: 'string' },
         started_at: { type: 'string' },
+        finished_at: { type: 'string' },
+        waited_ms: { type: 'integer', minimum: 0 },
         ended_at: { type: 'string' },
         attempts: { type: 'array', items: { $ref: '#/$defs/CommandAttempt' } },
         summary: {

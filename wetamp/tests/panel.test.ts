@@ -63,6 +63,25 @@ test('问题置顶并显示空转、挂起处置和运行详情', () => {
   expect(renderPanel(withoutNext, tick(), now, allMarshals, 120)).not.toContain('下一步');
 });
 
+test('queued state 显示等待时长和截断后的持有者', () => {
+  const value = heartbeat();
+  value.heavy_queue = [
+    {
+      pid: process.pid,
+      command: 'accept heavy-test',
+      cwd: '/',
+      queued_at: new Date(now - 120_000).toISOString(),
+      holder: {
+        command: 'bun test '.repeat(10),
+        started_at: new Date(now - 300_000).toISOString(),
+      },
+    },
+  ];
+  expect(renderPanel(value, tick(), now, allMarshals, 120)).toContain(
+    '⏳ 排队等重型名额 2m · 持有者 bun test'
+  );
+});
+
 test('用 tick 判断新鲜度并按 heartbeat.at 漂移时长', () => {
   const old = heartbeat(now - 10 * 60_000);
   const fresh = renderPanel(old, tick(), now, allMarshals, 120);

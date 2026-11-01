@@ -17,7 +17,7 @@ export interface Responsibility { id: string; kind?: 'run' | 'coord' | 'decision
 // prettier-ignore
 interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: Responsibility[]; line: string }
 // prettier-ignore
-export interface Heartbeat { at: string; reclaim_pending: number; legacy?: number; unowned: number; unreadable: number; marshals: Marshal[] }
+export interface Heartbeat { at: string; reclaim_pending: number; legacy?: number; unowned: number; unreadable: number; heavy_queue?: Snapshot['heavy_queue']; marshals: Marshal[] }
 export const HEARTBEAT_INTERVAL_MS = 900_000;
 // prettier-ignore
 export type HeartbeatSummary = { available: true; line: string; running: Item[]; waiting: Marshal['waiting']; warnings?: string[] } | { available: false; reason: string };
@@ -162,7 +162,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const roles = marshal.running.map(item => `${item.role} ${item.general ? ({ working: '干活', idle: `空转 ${String(Math.floor(item.general.idle_s / 60))}m${item.general.waiting_command ? '（在等命令）' : ''}`, stalled: `停滞 ${String(Math.floor(item.general.idle_s / 60))}m`, handed_back: '已交回', unknown: `观测未知${item.general.reason ? `（${item.general.reason}）` : ''}` }[item.general.state]) : item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
     marshal.line = `${marshal.project} 元帅｜${roles.join('｜') || '无执行'}${marshal.waiting.length ? `｜等待${String(marshal.waiting.length)}：${marshal.waiting.slice(0, 2).map(item => item.waiting_for).join('、')}` : ''}`;
   }
-  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, legacy, unowned, unreadable, marshals: [...groups.values()] };
+  return { at: new Date(now).toISOString(), reclaim_pending: reclaim, legacy, unowned, unreadable, ...(snapshot.heavy_queue?.length ? { heavy_queue: snapshot.heavy_queue } : {}), marshals: [...groups.values()] };
 }
 // prettier-ignore
 const semantic = (value: Heartbeat): unknown => JSON.parse(JSON.stringify(value, (key: string, item: unknown): unknown => ['at', 'elapsed_s', 'last_activity_s', 'waited_s', 'line', 'idle_s', 'cpu', 'root'].includes(key) ? undefined : item)) as unknown;
