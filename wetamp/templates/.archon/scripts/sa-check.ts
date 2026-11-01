@@ -512,6 +512,42 @@ const acceptanceCachePath = (
     )
   );
 
+type CachedCommandResult = Partial<
+  Pick<
+    CommandResult,
+    | 'pass'
+    | 'exit'
+    | 'duration_ms'
+    | 'structured'
+    | 'started_at'
+    | 'ended_at'
+    | 'attempts'
+    | 'summary'
+  >
+> & {
+  tag?: string;
+  failure?: CheckFailure | null;
+  stdout?: string;
+  stderr?: string;
+};
+// prettier-ignore
+const completeCachedResult = (saved: CachedCommandResult, report: boolean): boolean =>
+  !saved.failure && saved.pass === true && saved.exit === 0 && typeof saved.duration_ms === 'number' &&
+  Number.isInteger(saved.duration_ms) && saved.duration_ms >= 0 &&
+  !!saved.started_at && !!saved.ended_at && Array.isArray(saved.attempts) && saved.attempts.length > 0 &&
+  (saved.attempts as unknown[]).every(value => {
+    if (!value || typeof value !== 'object') return false;
+    const attempt = value as Record<string, unknown>;
+    return typeof attempt.started_at === 'string' && !!attempt.started_at &&
+      typeof attempt.ended_at === 'string' && !!attempt.ended_at &&
+      (typeof attempt.exit === 'number' || typeof attempt.exit === 'string') &&
+      typeof attempt.duration_ms === 'number' && Number.isInteger(attempt.duration_ms) && attempt.duration_ms >= 0 &&
+      typeof attempt.log === 'string' && [attempt.tests, attempt.failures, attempt.skipped].every(item =>
+        typeof item === 'number' && Number.isInteger(item) && item >= 0);
+  }) &&
+  !!saved.summary && saved.summary.pass === 1 && saved.summary.fail === 0 && saved.summary.skip === 0 &&
+  saved.summary.retry === saved.attempts.length - 1 && (!report || saved.structured?.complete === true);
+
 // prettier-ignore
 const cacheJson = (value: unknown): string => JSON.stringify(value, (key: string, item: unknown): unknown => key === 'resource' ? undefined : item);
 export function acceptanceCacheReady(cwd = process.cwd()): boolean {
@@ -536,26 +572,9 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
     const path = acceptanceCachePath(head, tree, check, envKey, environment);
     if (!existsSync(path)) return false;
     try {
-      const saved = JSON.parse(readFileSync(path, 'utf8')) as {
-        failure?: CheckFailure | null;
-        pass?: boolean;
-        exit?: number | string;
-        structured?: StructuredCases;
-        started_at?: string;
-        ended_at?: string;
-        attempts?: CommandResult['attempts'];
-        summary?: CommandResult['summary'];
-      };
-      // prettier-ignore
-      if (saved.failure || saved.pass !== true || saved.exit !== 0 || !saved.started_at || !saved.ended_at || !saved.attempts?.length || !saved.summary)
-        return false;
-      if (!check.report) return true;
-      const structured = saved.structured;
-      return (
-        !!structured &&
-        typeof structured === 'object' &&
-        'complete' in structured &&
-        structured.complete
+      return completeCachedResult(
+        JSON.parse(readFileSync(path, 'utf8')) as CachedCommandResult,
+        !!check.report
       );
     } catch {
       return false;
@@ -678,25 +697,16 @@ async function run(
     // prettier-ignore
     const hit = tree && c.cache !== false ? acceptanceCachePath(head, tree, c, envKey, environment) : '';
     if (hit && existsSync(hit)) {
-      const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
-        tag: string;
-        failure: CheckFailure | null;
-        pass?: boolean;
-        exit?: number | string;
-        duration_ms?: number;
-        stdout?: string;
-        stderr?: string;
-        structured?: StructuredCases;
-        started_at?: string;
-        ended_at?: string;
-        attempts?: CommandResult['attempts'];
-        summary?: CommandResult['summary'];
-      };
-      // prettier-ignore
-      if (!saved.failure && saved.pass === true && saved.exit === 0 && saved.started_at && saved.ended_at && saved.attempts?.length && saved.summary && (!c.report || saved.structured?.complete === true)) {
+      let saved: CachedCommandResult = {};
+      try {
+        saved = JSON.parse(readFileSync(hit, 'utf8')) as CachedCommandResult;
+      } catch {
+        /* Invalid cache entries are misses. */
+      }
+      if (completeCachedResult(saved, !!c.report)) {
         appendFileSync(
           log,
-          `$ ${c.cmd}\n# reused pass from ${saved.tag}\n${saved.stdout ?? ''}${
+          `$ ${c.cmd}\n# reused pass from ${saved.tag ?? 'unknown'}\n${saved.stdout ?? ''}${
             saved.stderr ?? ''
           }\n`
         );

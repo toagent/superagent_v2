@@ -4350,6 +4350,11 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     delete incomplete.exit;
     writeFileSync(join(cache, entry), JSON.stringify(incomplete));
     expect(go('missing-exit').out).toMatchObject({ ok: true });
+    const invalidAttempt = JSON.parse(readFileSync(join(cache, entry), 'utf8'));
+    invalidAttempt.exit = 0;
+    delete invalidAttempt.attempts[0].ended_at;
+    writeFileSync(join(cache, entry), JSON.stringify(invalidAttempt));
+    expect(go('incomplete-attempt').out).toMatchObject({ ok: true });
     expect(
       go('excluded', 'good', {
         INPUTS_UNUSED: 'changed',
@@ -4376,13 +4381,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         CONTEXT: 'changed',
       }).out
     ).toMatchObject({ ok: true });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
     expect(go('path-changed', 'good', { PATH: `${process.env.PATH}:/changed` }).out).toMatchObject({
       ok: true,
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
     expect(go('changed', 'worse').out).toMatchObject({ ok: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
     const keyPath = join(cache, '.key'),
       key = readFileSync(keyPath);
     expect(key.length).toBe(32);
@@ -4400,13 +4405,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     unlinkSync(keyPath);
     expect(go('lost-context').out).toMatchObject({ ok: true });
     expect(readFileSync(keyPath).equals(key)).toBe(false);
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\n');
     sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm candidate', repo);
     expect(go('new-commit').out).toMatchObject({ ok: true });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
   }, testTimeout(10_000));
   test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
     const root = tmp(),
