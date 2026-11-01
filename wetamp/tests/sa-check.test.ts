@@ -4879,6 +4879,8 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     mkdirSync(join(root, 'approvals'));
     writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ diff_hash: held.diff_hash, files: ['tests/a.test.ts'] }));
     expect(go('G1')).toMatchObject({ disposition: 'advance', out_of_scope: ['tests/a.test.ts'] });
+    commit('src/c.ts');
+    expect(go('G1')).toMatchObject({ disposition: 'fail', reason: 'scope_approval' });
   }, testTimeout(15_000));
   test('unknown kind fails loudly', () => {
     const root = tmp();

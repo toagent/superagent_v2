@@ -14,7 +14,7 @@ test('an absent or unexceeded max_net_lines does not trigger the gate', () => {
   expect(budgetExceeded(5, 5)).toBeFalse();
 });
 
-test('an exceeded budget has one native approval gate and no repair route', () => {
+test('an exceeded budget can approve or reject into the existing repair route', () => {
   const plan = structuredClone(fixture);
   plan.packages = [plan.packages[0]];
   plan.packages[0].max_net_lines = 1;
@@ -32,6 +32,9 @@ test('an exceeded budget has one native approval gate and no repair route', () =
   expect(gate).toMatchObject({
     when: "$verify-core.output.reason == 'budget_exceeded'",
     approval: { decisions: [{ id: 'approve' }, { id: 'reject' }] },
+  });
+  expect(nodes.find(node => node.id === 'repair-core')).toMatchObject({
+    when: "$verify-core.output.disposition == 'repair' || $human-budget-core.output.decision == 'reject'",
   });
   expect(() => assertGeneratedWorkflow(workflow, true)).not.toThrow();
 });
