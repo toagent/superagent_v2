@@ -754,7 +754,6 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
   const outOfScope = c.exit === EXIT.running ? [] : outOfScopeOf(l, art);
   const hold = holdOf(l, run, c);
   const projection = terminalProjection(l, run, c);
-  const recoveryAction = 'receipt' in projection ? projection.receipt?.action : undefined;
   return {
     run_id: l.run_id,
     initiator: l.launcher ?? 'unknown',
@@ -769,9 +768,6 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     state: c.state,
     exit: c.exit,
     ...projection,
-    ...(['failed', 'cancelled'].includes(c.state) && recoveryAction
-      ? { action: recoveryAction }
-      : {}),
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
       nodes.length
     )} completed`,
@@ -839,9 +835,7 @@ const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
 /** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
-  if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
-  if (run.status === 'paused' && coderBudgetExceeded(run, c))
-    return { ...c, state: 'held:gate', exit: EXIT.held };
+  if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const art = artifactsOf(run);
     if (run.status === 'failed') {
@@ -863,7 +857,12 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         if (evidence?.status === 'conflict') return { ...c, state: 'sync_conflict' };
       }
     }
-    const controlNode = (run.status === 'paused' ? [c.node] : []).find(node => {
+    const controlNode = [
+      c.node,
+      ...(run.status === 'failed'
+        ? (run.nodes ?? []).filter(n => n.state === 'failed').map(n => n.nodeId)
+        : []),
+    ].find(node => {
       const decision = decisionOf(evidenceJson(l, art, `${authoredNodeId(node)}.json`));
       return (
         decision?.kind === 'block' &&
