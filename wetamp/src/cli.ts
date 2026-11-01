@@ -4441,7 +4441,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   if (snapshot)
     await result('publish', () => {
       const path = join(home().sa, 'heartbeat.json'), now = Date.now();
-      const next = heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa));
+      const next = Object.assign(heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa)), { held_runs: snapshot.rows.filter(row => row.state.startsWith('held:')).map(row => row.run_id) });
       let previous: Heartbeat | undefined;
       try { previous = readJson(path) as Heartbeat | undefined; } catch { /* corrupt cache is replaced */ }
       const changed = shouldWriteHeartbeat(previous, next, now);

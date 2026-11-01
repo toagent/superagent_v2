@@ -150,8 +150,8 @@ test('tick retires lost jobs after one hour without sending responsibility alert
 test('held owner online groups aged runs, applies yes with CAS, and reports every result', () => {
   const now = 2_000_000_000_000, s = setup(() => ({ state: 'online', activity: 'idle' })), r2 = { ...s.run, run_id: 'r2', archon_run_id: 'engine-2' }, ledger = JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8'));
   writeFileSync(join(s.sa, 'runs/r2.json'), JSON.stringify({ ...ledger, ...r2 })); s.c.d.runs = () => [s.run, r2]; s.c.d.status = () => 'paused'; s.c.claim(runScope(r2), a);
-  const waiting = (id: string) => ({ id, kind: 'run', held: true, since: new Date(now - 86_400_000).toISOString(), what: `package-${id}`, waiting_for: `held-${id}`, waited_s: 86_400 });
-  writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting: [waiting('r2'), waiting('r1')] }] }));
+  const waiting = (id: string) => ({ id, kind: 'run', since: new Date(now - 86_400_000).toISOString(), what: `package-${id}`, waiting_for: `held-${id}`, waited_s: 86_400 });
+  writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ held_runs: ['r2', 'r1'], marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting: [waiting('r2'), waiting('r1')] }] }));
   new Reclaimer(s.c, () => now).tick();
   const state = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')), id = Object.keys(state.decisions)[0]!;
   expect(id).toHaveLength(64); expect(state.decisions[id].purpose).toContain('r1｜package-r1'); expect(state.decisions[id].purpose).toContain('r2｜package-r2');
@@ -165,19 +165,19 @@ test('held owner online groups aged runs, applies yes with CAS, and reports ever
 // prettier-ignore
 test('held owner online no keeps the run, reminds once, and stale pending asks are withdrawn', () => {
   const now = 2_000_000_000_000, s = setup(() => ({ state: 'online', activity: 'idle' })), r = new Reclaimer(s.c, () => now); s.c.d.status = () => 'paused';
-  const heartbeat = (waiting: unknown[]) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting }] })), item = { id: 'r1', kind: 'decision', held: true, since: new Date(now - 86_400_000).toISOString(), what: 'package', waiting_for: 'human', waited_s: 86_400 };
+  const heartbeat = (waiting: unknown[], held_runs = ['r1']) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ held_runs, marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting }] })), item = { id: 'r1', kind: 'decision', since: new Date(now - 86_400_000).toISOString(), what: 'package', waiting_for: 'human', waited_s: 86_400 };
   heartbeat([item]); r.tick(); const first = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')), id = Object.keys(first.decisions)[0]!;
   expect(answerHeldOwnerAsk(id, id, 'no', s.c, b, now)).toEqual(['r1:ok:kept']); r.tick();
   expect(JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8')).rejected).toBeUndefined(); expect(s.c.inbox(a).filter(message => message.title === 'held run 保留提醒')).toHaveLength(1);
-  heartbeat([]); r.tick(); expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/held-online.json'), 'utf8'))).toEqual([]);
+  heartbeat([], []); r.tick(); expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/held-online.json'), 'utf8'))).toEqual([]);
   const pending = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')); expect(pending.decisions[id].status).toBe('superseded');
 });
 
 // prettier-ignore
 test('held owner online withdraws a pending ask after the run leaves the group', () => {
   const now = 2_000_000_000_000, s = setup(() => ({ state: 'online', activity: 'idle' })), r = new Reclaimer(s.c, () => now); s.c.d.status = () => 'paused';
-  const heartbeat = (waiting: unknown[]) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting }] }));
-  heartbeat([{ id: 'r1', kind: 'run', held: true, since: new Date(now - 86_400_000).toISOString(), what: 'package', waiting_for: 'human', waited_s: 86_400 }]); r.tick();
-  const id = Object.keys(JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')).decisions)[0]!; heartbeat([]); r.tick();
+  const heartbeat = (waiting: unknown[], held_runs = ['r1']) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ held_runs, marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting }] }));
+  heartbeat([{ id: 'r1', kind: 'run', since: new Date(now - 86_400_000).toISOString(), what: 'package', waiting_for: 'human', waited_s: 86_400 }]); r.tick();
+  const id = Object.keys(JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')).decisions)[0]!; heartbeat([], []); r.tick();
   expect(JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')).decisions[id].status).toBe('superseded');
 });

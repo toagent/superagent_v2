@@ -80,12 +80,12 @@ export class Reclaimer {
     }
   }
   private heldOnline(): void {
-    let heartbeat: { marshals?: { owner: Identity | 'unknown'; project: string; cwd: string; waiting: { id: string; kind?: string; since?: string; what: string; waiting_for: string; waited_s: number; held?: boolean }[] }[] };
+    let heartbeat: { held_runs?: string[]; marshals?: { owner: Identity | 'unknown'; project: string; cwd: string; waiting: { id: string; kind?: string; since?: string; what: string; waiting_for: string; waited_s: number }[] }[] };
     try { heartbeat = JSON.parse(readFileSync(join(this.c.d.sa, 'heartbeat.json'), 'utf8')) as typeof heartbeat; } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return; throw e; }
-    const prior = new Map(values<HeldAsk>(heldPath(this.c)).map(value => [value.ref, value])), next: HeldAsk[] = [], active: string[] = [];
+    const held = new Set(heartbeat.held_runs ?? []), prior = new Map(values<HeldAsk>(heldPath(this.c)).map(value => [value.ref, value])), next: HeldAsk[] = [], active: string[] = [];
     for (const marshal of heartbeat.marshals ?? []) {
       const owner = marshal.owner; if (owner === 'unknown' || this.c.d.presence(owner).state !== 'online') continue;
-      const runs = marshal.waiting.filter(item => item.held === true && ['run', 'decision'].includes(item.kind ?? 'run') && item.waited_s >= OFFLINE_CLEANUP_MS / 1000).flatMap(item => {
+      const runs = marshal.waiting.filter(item => held.has(item.id) && ['run', 'decision'].includes(item.kind ?? 'run') && item.waited_s >= OFFLINE_CLEANUP_MS / 1000).flatMap(item => {
         const run = this.c.resolveRun(item.id); if (!run) return [];
         const view = this.c.owner(runScope(run)); let status = 'unknown'; try { status = this.c.d.status(run); } catch { return []; }
         return same(view.owner, owner) && view.presence.state === 'online' && ['paused', 'failed'].includes(status) && !abandoned(run) ? [{ id: item.id, generation: view.generation, since: item.since ?? 'unknown', reason: item.waiting_for, title: item.what }] : [];
@@ -187,7 +187,7 @@ export function answerHeldOwnerAsk(ref: string, askId: string, choice: string, c
   if (!group) throw Object.assign(new Error('决定已变化，请重读'), { code: 'decision_changed' });
   if (group.results) return group.results;
   group.answer = choice as 'yes' | 'no'; group.answered_at = new Date(now).toISOString(); saveHeld(c, state);
-  let current = new Set<string>(); try { const heartbeat = JSON.parse(readFileSync(join(c.d.sa, 'heartbeat.json'), 'utf8')) as { marshals?: { owner: Identity | 'unknown'; cwd: string; waiting: { id: string; held?: boolean }[] }[] }; current = new Set(heartbeat.marshals?.filter(m => m.owner !== 'unknown' && same(m.owner, group.owner) && m.cwd === group.repo).flatMap(m => m.waiting.filter(item => item.held === true).map(item => item.id)) ?? []); } catch { /* Missing current evidence fails closed below. */ }
+  let current = new Set<string>(); try { const heartbeat = JSON.parse(readFileSync(join(c.d.sa, 'heartbeat.json'), 'utf8')) as { held_runs?: string[]; marshals?: { owner: Identity | 'unknown'; cwd: string; waiting: { id: string }[] }[] }, held = new Set(heartbeat.held_runs ?? []); current = new Set(heartbeat.marshals?.filter(m => m.owner !== 'unknown' && same(m.owner, group.owner) && m.cwd === group.repo).flatMap(m => m.waiting.filter(item => held.has(item.id)).map(item => item.id)) ?? []); } catch { /* Missing current evidence fails closed below. */ }
   const results = group.runs.map(item => {
     const run = c.resolveRun(item.id); if (!run) return `${item.id}:skip:missing`;
     try { return c.scoped(runScope(run), () => c.locked(() => {
