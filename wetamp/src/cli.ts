@@ -82,7 +82,7 @@ import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
-import { reclaimOnce, reclaimTick } from './reclaim';
+import { answerHeldOwnerAsk, reclaimOnce, reclaimTick } from './reclaim';
 import { responsibilityList } from './resume-card';
 import {
   askQuestion,
@@ -3398,7 +3398,8 @@ export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
   answer: typeof answerNtfyDecision = answerNtfyDecision,
-  newDecisionLimit = 5
+  newDecisionLimit = 5,
+  answerHeld: typeof answerHeldOwnerAsk = answerHeldOwnerAsk
 ) {
   const inbox = await loadInbox();
   const enabled = inbox.decisions.filter(decision => !decision.disabled);
@@ -3448,6 +3449,18 @@ export async function syncDecisionChannel(
         return;
       }
       if (decision.callback.kind === 'external') {
+        if (decision.originator)
+          coord().receipt(
+            decision.originator.scope,
+            caller(true),
+            decision.originator.identity,
+            decision.id,
+            option
+          );
+        return;
+      }
+      if (decision.callback.kind === 'held') {
+        answerHeld(decision.callback.ref, decision.id, option);
         if (decision.originator)
           coord().receipt(
             decision.originator.scope,

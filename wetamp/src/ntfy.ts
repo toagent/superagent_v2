@@ -37,6 +37,7 @@ export interface NtfyAsk {
   callback:
     | { kind: 'ask'; key: string }
     | { kind: 'decision'; id: string }
+    | { kind: 'held'; ref: string }
     | { kind: 'external'; ref: string };
   dedupe_key?: string;
   project?: string;
@@ -306,7 +307,9 @@ export function askNtfy(request: NtfyAsk, supplied: Partial<NtfyConfig> = {}): s
       : undefined;
     if (existing) return existing.id;
     const key = secureSecret(config.answerKey, 'answer key', true);
-    const id = randomUUID();
+    const id = request.callback.kind === 'held' ? request.callback.ref : randomUUID();
+    if (request.callback.kind === 'held' && Object.hasOwn(state.decisions, id))
+      Reflect.deleteProperty(state.sent, `decision:${id}:normal`);
     const expires = Math.floor(Date.parse(request.expires_at) / 1000);
     state.decisions[id] = {
       ...request,
@@ -408,7 +411,7 @@ const supersededReceipt = (decision: StoredDecision, option: string): [string, s
 };
 
 // prettier-ignore
-export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Partial<NtfyConfig> = {}, sourceOf: (id: string) => DecisionSourceState | undefined = () => undefined): void {
+export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Partial<NtfyConfig> = {}, sourceOf: (id: string) => DecisionSourceState | undefined = () => undefined, kind: 'decision' | 'held' = 'decision'): void {
   const config = { ...defaultConfig(), ...supplied };
   const active = new Set(activeIds);
   const guard = stateLock(config.statePath);
@@ -416,8 +419,8 @@ export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Pa
   try {
     const state = readState(config.statePath);
     for (const decision of Object.values(state.decisions)) {
-      if (decision.status !== 'pending' || decision.callback.kind !== 'decision' || active.has(decision.callback.id)) continue;
-      const source = sourceOf(decision.callback.id);
+      if (decision.status !== 'pending' || decision.callback.kind !== kind || active.has(kind === 'decision' && decision.callback.kind === 'decision' ? decision.callback.id : decision.id)) continue;
+      const source = sourceOf(decision.callback.kind === 'decision' ? decision.callback.id : decision.id);
       decision.status = 'superseded';
       decision.handled_at = new Date(config.now()).toISOString();
       decision.error = {
