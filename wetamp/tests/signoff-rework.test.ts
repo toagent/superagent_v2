@@ -150,14 +150,14 @@ for (const key of ['spawn', 'spawnSync']) Bun[key] = (cmd, options = {}) => {
     })
   );
 
-  expect(sa('wait', 'signoff-rework', '--timeout', '120').out).toMatchObject({
+  expect(sa('wait', 'signoff-rework', '--json', '--timeout', '120').out).toMatchObject({
     state: 'held:human',
   });
   expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['code-W1', 'code-W2', 'code-W3']);
 
   const rejected = sa('decide', 'signoff-rework', 'reject', '--pkg', 'W2', '--hint', 'revise W2');
   expect(rejected.code, `${rejected.err}\n${JSON.stringify(rejected.out)}`).toBe(0);
-  expect(sa('wait', 'signoff-rework', '--timeout', '120').out).toMatchObject({
+  expect(sa('wait', 'signoff-rework', '--json', '--timeout', '120').out).toMatchObject({
     state: 'held:human',
   });
   expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
@@ -169,7 +169,7 @@ for (const key of ['spawn', 'spawnSync']) Bun[key] = (cmd, options = {}) => {
   ]);
 
   expect(sa('decide', 'signoff-rework', 'reject').code).toBe(0);
-  expect(sa('status', 'signoff-rework').out).toMatchObject({ state: 'cancelled' });
+  expect(sa('status', 'signoff-rework', '--json').out).toMatchObject({ state: 'cancelled' });
 }, 240_000);
 
 afterAll(() => engineBoundary.mockRestore());

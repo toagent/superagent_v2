@@ -243,7 +243,7 @@ for (const scope of ['package', 'milestone'] as const)
         recoveries: [],
       })
     );
-    const stopped = sa('wait', id, '--timeout', '120');
+    const stopped = sa('wait', id, '--json', '--timeout', '120');
     expect(stopped.out).toMatchObject({
       state: 'failed',
       node: scope === 'package' ? 'settle-W3' : 'gate-m1-r6',
