@@ -2844,6 +2844,44 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
+  test('accept: line budget excludes lock and generated files but keeps scope evidence', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'uv.lock'), 'lock\n'.repeat(500));
+    writeFileSync(join(repo, 'client.generated.ts'), 'generated\n'.repeat(100));
+    writeFileSync(join(repo, 'main.ts'), 'source\n'.repeat(20));
+    sh('git add . && git commit -qm budget-fixture', repo);
+    const plan = planFile(root, 'true'),
+      value = JSON.parse(readFileSync(plan, 'utf8'));
+    value.packages[0].max_net_lines = 50;
+    value.packages[0].scope = { write: ['main.ts'] };
+    value.packages[0].risk = 'G1';
+    writeFileSync(plan, JSON.stringify(value));
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      tag: 'verify-a',
+      run_base: base,
+      generated_paths: '[]',
+      base,
+      scope_base: base,
+      risk: 'G1',
+    });
+    expect(r.out).toMatchObject({
+      reason: 'scope_violation',
+      net_lines: {
+        used: 20,
+        limit: 50,
+        excluded: [
+          { path: 'client.generated.ts', lines: 100 },
+          { path: 'uv.lock', lines: 500 },
+        ],
+      },
+      out_of_scope: ['client.generated.ts', 'uv.lock'],
+    });
+  });
   // prettier-ignore
   test('accept: JUnit failure reruns only its exact Bun case and records flaky without cache', () => {
     const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts');
@@ -2858,7 +2896,15 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' }, SCRIPT,
       { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
     expect(result.out, readFileSync(join(result.art, 'verify-a.log'), 'utf8')).toMatchObject({ ok: true,
-      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] } }] });
+      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] },
+        summary: { pass: 1, fail: 0, skip: 0, retry: 1 } }] });
+    const attempts = (result.out as { command_results: CommandResult[] }).command_results[0].attempts!;
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({ exit: 1, tests: 2, failures: 1, skipped: 0 });
+    expect(attempts[1]).toMatchObject({ exit: 0, tests: 2, failures: 0, skipped: 1 });
+    expect(attempts.map(attempt => attempt.junit)).toEqual([
+      join(result.art, 'verify-a.attempt-1.junit.xml'), join(result.art, 'verify-a.attempt-2.junit.xml')]);
+    expect(attempts.every(attempt => existsSync(attempt.junit!))).toBeTrue();
     expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\ntarget\n');
     expect(readdirSync(join(result.art, 'accept-cache'))).toEqual(['.key']);
     expect(JSON.parse(readFileSync(join(home, 'flaky-acceptance.jsonl'), 'utf8'))).toMatchObject({ test_ids: ['suite::target'], attempts: 2 });
@@ -4336,6 +4382,17 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     expect(go('legacy-rejected', 'bad').out).toMatchObject({ ok: false });
     expect(go('first').out).toMatchObject({ ok: true });
     expect(go('same').out).toMatchObject({ ok: true });
+    const entry = readdirSync(cache).find(file => file !== '.key' &&
+      JSON.parse(readFileSync(join(cache, file), 'utf8')).tag === 'first')!;
+    const incomplete = JSON.parse(readFileSync(join(cache, entry), 'utf8'));
+    delete incomplete.exit;
+    writeFileSync(join(cache, entry), JSON.stringify(incomplete));
+    expect(go('missing-exit').out).toMatchObject({ ok: true });
+    const invalidAttempt = JSON.parse(readFileSync(join(cache, entry), 'utf8'));
+    invalidAttempt.exit = 0;
+    delete invalidAttempt.attempts[0].ended_at;
+    writeFileSync(join(cache, entry), JSON.stringify(invalidAttempt));
+    expect(go('incomplete-attempt').out).toMatchObject({ ok: true });
     expect(
       go('excluded', 'good', {
         INPUTS_UNUSED: 'changed',
@@ -4362,13 +4419,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         CONTEXT: 'changed',
       }).out
     ).toMatchObject({ ok: true });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
     expect(go('path-changed', 'good', { PATH: `${process.env.PATH}:/changed` }).out).toMatchObject({
       ok: true,
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
-    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
     expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
+    expect(go('changed', 'worse').out).toMatchObject({ ok: false });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
     const keyPath = join(cache, '.key'),
       key = readFileSync(keyPath);
     expect(key.length).toBe(32);
@@ -4386,10 +4443,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     unlinkSync(keyPath);
     expect(go('lost-context').out).toMatchObject({ ok: true });
     expect(readFileSync(keyPath).equals(key)).toBe(false);
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\n');
+    sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm candidate', repo);
+    expect(go('new-commit').out).toMatchObject({ ok: true });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
   }, testTimeout(10_000));
   test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
     const root = tmp(),
@@ -4752,7 +4812,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         risk,
         policy: pol,
         ...extra,
-      }).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[] };
+      }).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[]; scope_blobs: Record<string, string> };
     const r = go('G0');
     expect(readFileSync(r.delta, 'utf8')).toContain('src/b.md');
     expect(readFileSync(r.delta, 'utf8')).not.toContain('src/a.ts');
@@ -4879,7 +4939,10 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     mkdirSync(join(root, 'approvals'));
     writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ diff_hash: held.diff_hash, files: ['tests/a.test.ts'] }));
     expect(go('G1')).toMatchObject({ disposition: 'advance', out_of_scope: ['tests/a.test.ts'] });
-    commit('src/c.ts');
+    writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ diff_hash: 'stale', files: ['tests/a.test.ts'], blobs: held.scope_blobs }));
+    expect(go('G1')).toMatchObject({ disposition: 'advance', out_of_scope: ['tests/a.test.ts'] });
+    writeFileSync(join(repo, 'tests/a.test.ts'), 'changed\n');
+    sh('git add tests/a.test.ts && git -c user.name=t -c user.email=t@l commit -qm changed-test', repo);
     expect(go('G1')).toMatchObject({ disposition: 'fail', reason: 'scope_approval' });
   }, testTimeout(15_000));
   test('unknown kind fails loudly', () => {

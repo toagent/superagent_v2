@@ -6,6 +6,7 @@ export interface Ask {
   id?: string;
   status: string;
   stale_answer?: boolean;
+  context?: { target?: string };
 }
 export type Asks = Partial<Record<string, Ask>>;
 export interface HoldSignal {
@@ -49,20 +50,21 @@ export function cockpitSignals(
 /** 保留旧键的历史；只迁移一个当前提问，其余作废，不创建新的提醒。 */
 export function supersedeAsks(asks: Asks, run: string, hold?: string, episode?: string): void {
   const current = hold && askKey(run, hold, episode);
+  const node = episode?.split('@', 1)[0];
   for (const [key, a] of Object.entries(asks)) {
     if (!key.startsWith(`${run}:`) || !a || !unresolved(a)) continue;
     const category = key.split(':')[1];
     if (
-      !episode &&
       current &&
       key !== current &&
       (category === hold || (hold === 'signoff' && !(category in HOLD_POLICY))) &&
+      (!node || a.context?.target?.endsWith(`:${node}`)) &&
       !asks[current]
     ) {
-      asks[current] = { ...a, legacy_key: key };
+      asks[current] = { ...a, legacy_key: a.legacy_key ?? key };
     }
     if (key !== current) {
-      if (['yes', 'no'].includes(a.status) && asks[current ?? '']?.legacy_key !== key)
+      if (['yes', 'no'].includes(a.status) && asks[current ?? '']?.id !== a.id)
         a.stale_answer = true;
       a.status = 'superseded';
     }

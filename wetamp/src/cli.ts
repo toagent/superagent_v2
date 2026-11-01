@@ -14,6 +14,7 @@ import {
   ntfyDeliveryStatus,
   publishPendingNtfy,
   queueNtfyAlert,
+  receiptPresentation,
   supersedeNtfyDecisions,
   syncNtfy,
   type NtfyConfig,
@@ -909,7 +910,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     });
     if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
     const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
-    if (c.node.startsWith('verify-') && decision?.reason === 'scope_approval')
+    if (/^(verify|diff)-/.test(c.node) && decision?.reason === 'scope_approval')
       return { ...c, state: 'held:scope', exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
@@ -2371,13 +2372,26 @@ function approveAdjudication(l: Ledger, run: RunView, c: Classified,
 function recordDiffApproval(l: Ledger, run: RunView, node: string): () => void {
   const match = /^human-(scope|budget)-(.+)$/.exec(node);
   if (!match) return () => undefined;
+  if (match[1] === 'scope') return recordScopeApproval(l, run, `verify-${match[2]}`);
   const out = evidenceJson(l, artifactsOf(run), `verify-${match[2]}.json`) as { diff_hash?: unknown; out_of_scope?: unknown } | undefined;
   if (typeof out?.diff_hash !== 'string' || !out.diff_hash) throw new Error(`${match[1]} approval evidence missing diff_hash`);
-  const files = match[1] === 'scope' && Array.isArray(out.out_of_scope) ? out.out_of_scope.filter((path): path is string => typeof path === 'string').sort() : undefined;
-  if (match[1] === 'scope' && !files?.length) throw new Error('scope approval files missing');
   mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
   const path = join(l.gen_dir, 'approvals', `${node}.json`), prior = existsSync(path) ? readFileSync(path) : undefined;
-  writeFileSync(path, JSON.stringify({ diff_hash: out.diff_hash, ...(files ? { files } : {}) }) + '\n');
+  writeFileSync(path, JSON.stringify({ diff_hash: out.diff_hash }) + '\n');
+  return () => { if (prior) writeFileSync(path, prior); else rmSync(path, { force: true }); };
+}
+
+// prettier-ignore
+function recordScopeApproval(l: Ledger, run: RunView, node: string): () => void {
+  const out = evidenceJson(l, artifactsOf(run), `${node}.json`) as { diff_hash?: unknown; out_of_scope?: unknown; scope_package?: unknown; scope_blobs?: unknown } | undefined;
+  const files = Array.isArray(out?.out_of_scope) ? out.out_of_scope.filter((path): path is string => typeof path === 'string').sort() : [];
+  if (!files.length || typeof out?.scope_package !== 'string') throw new Error('scope approval evidence missing files or package');
+  const blobs = out.scope_blobs && typeof out.scope_blobs === 'object' ? out.scope_blobs as Record<string, unknown> : undefined;
+  const stable = blobs && files.every(file => typeof blobs[file] === 'string' && /^[0-9a-f]{40,64}$/.test(blobs[file]));
+  if (!stable && (typeof out.diff_hash !== 'string' || !out.diff_hash)) throw new Error('scope approval evidence missing fingerprint');
+  mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
+  const path = join(l.gen_dir, 'approvals', `human-scope-${out.scope_package}.json`), prior = existsSync(path) ? readFileSync(path) : undefined;
+  writeFileSync(path, JSON.stringify(stable ? { files, blobs } : { diff_hash: out.diff_hash, files }) + '\n');
   return () => { if (prior) writeFileSync(path, prior); else rmSync(path, { force: true }); };
 }
 
@@ -2434,8 +2448,7 @@ function decide(l: Ledger, a: Args): number {
       return res.ok ? 0 : res.held ? EXIT.held : 1;
     }
     if (c.state === 'held:scope' && c.node) {
-      const pkg = c.node.replace(/^verify-/, ''),
-        rollback = recordDiffApproval(l, run, `human-scope-${pkg}`);
+      const rollback = recordScopeApproval(l, run, c.node);
       const res = retry(l, c);
       if (!res.ok) rollback();
       print({ run_id: l.run_id, decision: 'approve', ...res });
@@ -2639,7 +2652,7 @@ function decisionReceipt(
   let action: string;
   switch (effect.action) {
     case 'approve':
-      action = '已批准等待门并提交续跑';
+      action = `已批准签收，run继续（当前节点${name(node) || '未指定'}）`;
       break;
     case 'reject':
       action = '已终止整个run（保留证据）';
@@ -2697,6 +2710,12 @@ interface DecisionContext {
   reason: string;
   recommendation: { choice: 'yes' | 'no'; reason: string };
   consequences: { yes: string; no: string };
+  project?: string;
+  headline?: string;
+  purpose?: string;
+  why?: string;
+  queued_at?: string;
+  initiator_label?: string;
 }
 type Ask = BaseAsk & {
   receipt?: AnswerReceipt;
@@ -2818,18 +2837,8 @@ export function supervisor(args: string[]): string {
 function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks: Asks): void {
   const run = getRun(l.archon_run_id, l.repo);
   a.decision = { answer, node, engine_run: l.archon_run_id, terminal_before: terminalFact(run) };
-  a.receipt = {
-    key: `${a.id ?? 'unknown'}:${answer}:received`,
-    stage: 'received',
-    body: `run=${l.run_id}；答复=${answer}；任务已收到，执行结果尚未确认`,
-    delivery: 'pending',
-    at: new Date().toISOString(),
-  };
   const key = Object.entries(asks).find(([, value]) => value === a)?.[0];
-  if (key) {
-    saveAsk(asks, key);
-    deliverReceipt(l, key, a, asks);
-  }
+  if (key) saveAsk(asks, key);
 }
 
 /** Cancellation has a terminal engine fact. Other unacknowledged effects remain explicitly unknown. */
@@ -2853,11 +2862,9 @@ function reconcileAnswers(l: Ledger, asks: Asks, out: Action[]): boolean {
       out.push({ run_id: l.run_id, action: 'receipt_reconciled', ok: true });
     } catch (e) {
       unresolved = true;
-      if (a.receipt?.stage === 'received') {
-        a.receipt.stage = 'unknown';
-        a.receipt.key += ':unknown';
-        a.receipt.body += '；执行效果未确认，请检查引擎证据，不会自动重放';
-        a.receipt.delivery = 'pending';
+      if (!a.receipt || a.receipt.stage === 'received') {
+        // prettier-ignore
+        a.receipt = { key: `${a.id ?? key}:${d.answer}:unknown`, stage: 'unknown', body: `run=${l.run_id}；答复=${d.answer}；执行效果未确认，请检查引擎证据，不会自动重放`, delivery: 'pending', at: new Date().toISOString() };
         saveAsk(asks, key);
         deliverReceipt(l, key, a, asks);
       }
@@ -2903,7 +2910,7 @@ function consumeAnswer(
   a.receipt = {
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
-    stage: effect.action === 'wait' ? 'succeeded' : 'executing',
+    stage: 'succeeded',
     effect,
     delivery: 'pending',
     terminal_before: a.decision?.terminal_before,
@@ -2947,15 +2954,37 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
       }
     }
     if (r.delivery === 'sent') return;
-    queueNtfyAlert(
-      r.key,
-      r.body,
-      {},
-      r.stage === 'succeeded' ? '已执行｜superagent｜决策回执' : '未执行｜superagent｜决策回执',
-      { priority: 2, tags: [r.stage === 'succeeded' ? 'green_circle' : 'white_circle'] }
-    );
+    const project = a.context?.project ?? 'superagent',
+      headline = a.context?.headline ?? '决策回执',
+      succeeded = r.stage === 'succeeded',
+      answer = a.decision?.answer ?? (a.status === 'approved' ? 'yes' : 'no'),
+      next = succeeded
+        ? r.effect?.action === 'reject'
+          ? '无需操作；run 已终止'
+          : r.effect?.action === 'wait'
+            ? '无需操作；引擎继续等待'
+            : '引擎继续执行'
+        : '你需要：检查原因后重新决定',
+      presentation = receiptPresentation({
+        outcome: succeeded ? 'executed' : 'not_executed',
+        project,
+        headline,
+        selection: answer === 'yes' ? '是' : '否',
+        result: r.body,
+        next,
+        source: l?.run_id ?? key,
+      });
+    queueNtfyAlert(r.key, presentation.message, {}, presentation.title, presentation);
     r.delivery = 'sent';
     delete r.error;
+    if (l && a.context?.initiator && a.context.initiator !== 'unknown')
+      coord().receipt(
+        runScope(l),
+        caller(true),
+        JSON.parse(a.context.initiator) as Controller,
+        a.id,
+        `${succeeded ? '已执行' : '未执行'}：${r.body}`
+      );
   } catch (e) {
     r.delivery = 'failed';
     r.error = tail((e as Error).message, 200);
@@ -2974,18 +3003,31 @@ function dispatchAsk(
   context: (question: string) => DecisionContext
 ): { a: Ask; asked?: string; note?: string } | { conflict: string } {
   const a = asks[key];
+  if (a?.legacy_key && a.id && ['pending', 'unknown'].includes(a.status)) return { a };
   if (!a || ['pending', 'unknown'].includes(a.status)) {
     const title = text();
     const ctx = a?.context ?? context(title);
     asks[key] = { status: 'unknown', context: ctx };
     saveAsk(asks, key);
     const id = askNtfy({
-      source: ctx.source,
+      source: {
+        ref: ctx.task_id,
+        initiator: ctx.initiator_label ?? ctx.initiator,
+        ...(ctx.queued_at ? { queued_at: ctx.queued_at } : {}),
+      },
       title: askName(title, 200),
       body: `${ctx.reason}\n对象：${ctx.target}\n影响：${ctx.action}`,
+      project: ctx.project,
+      headline: ctx.headline,
+      purpose: ctx.purpose,
+      why: ctx.why,
+      recommend: {
+        option: ctx.recommendation.choice === 'yes' ? '是' : '否',
+        reason: ctx.recommendation.reason,
+      },
       options: [
-        { id: 'yes', label: '是', consequence: ctx.consequences.yes },
-        { id: 'no', label: '否', consequence: ctx.consequences.no },
+        { id: 'yes', label: '是', timing: '立即', effect: ctx.consequences.yes },
+        { id: 'no', label: '否', timing: '立即', effect: ctx.consequences.no },
       ],
       risk: `${ctx.action}${ctx.reason}`.includes('红线') ? 'red' : 'normal',
       expires_at: new Date(Date.now() + hours * 3600e3).toISOString(),
@@ -3048,7 +3090,7 @@ function human(l: Ledger, run: RunView, asks: Asks): Action {
   if (pastDeadline(l)) return expireRun(l, run, asks, base);
   const p = dispatchAsk(
     key,
-    () => decisionQuestion(l, run, classifyRun(l, run), 'signoff'),
+    () => decisionQuestion(l, run, classifyRun(l, run), 'signoff', key),
     ttlHours(Date.parse(w.resumeAt ?? '')),
     asks,
     question => decisionContext(l, run, classifyRun(l, run), 'signoff', key, question)
@@ -3320,6 +3362,9 @@ const rotateTickLog = (sa: string): void => {
   renameSync(file, `${file}.1`);
 };
 
+// prettier-ignore
+const liveCallbackAsk = (asks: Asks, key: string, id: string): [string, Ask] | undefined => Object.entries(asks).find((entry): entry is [string, Ask] => !!entry[1] && entry[1].id === id && ['pending', 'unknown'].includes(entry[1].status) && (entry[0] === key || entry[1].legacy_key === key));
+
 export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
@@ -3384,25 +3429,23 @@ export async function syncDecisionChannel(
           );
         return;
       }
-      const asks = loadAsks(),
-        current = asks[decision.callback.key];
-      if (
-        !current ||
-        current.id !== decision.id ||
-        !['pending', 'unknown'].includes(current.status)
-      )
-        throw new Error('ntfy decision changed');
+      const callbackKey = decision.callback.key,
+        asks = loadAsks(),
+        entry = liveCallbackAsk(asks, callbackKey, decision.id);
+      if (!entry) throw new Error('ntfy decision changed');
+      const [currentKey, current] = entry;
       current.status = option;
-      saveAsk(asks, decision.callback.key);
+      saveAsk(asks, currentKey);
     },
     supplied,
     decision => {
       if (decision.callback.kind !== 'ask') return;
       const asks = loadAsks(),
-        current = asks[decision.callback.key];
-      if (!current || current.id !== decision.id) return;
+        entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
+      if (!entry) return;
+      const [currentKey, current] = entry;
       current.status = 'expired';
-      saveAsk(asks, decision.callback.key);
+      saveAsk(asks, currentKey);
     }
   );
 }
@@ -3749,7 +3792,7 @@ const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
 export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
 
 /** Entry timestamp is stable across polls; stalled episodes follow provider progress, not heartbeats. */
-function holdEpisode(l: Ledger, run: RunView, c: Classified, hold?: Hold): string {
+function holdEpisode(_l: Ledger, run: RunView, c: Classified, hold?: Hold): string {
   if (hold === 'stalled') {
     const attention = runAttention(run as Parameters<typeof runAttention>[0]);
     if (attention?.kind !== 'stalled_tool_calls') throw new Error('stalled attention missing');
@@ -3758,13 +3801,12 @@ function holdEpisode(l: Ledger, run: RunView, c: Classified, hold?: Hold): strin
       .sort()
       .join('|');
   }
-  return `${c.node ?? run.metadata?.wait?.nodeId ?? ''}@${
-    run.metadata?.wait?.waitingSince ??
-    run.completed_at ??
-    run.last_activity_at ??
-    run.started_at ??
-    l.started_at
-  }`;
+  if (hold === 'auto_recover') return `auto_recover@${recoverySnapshot(run)}`;
+  const node = c.node ?? run.metadata?.wait?.nodeId ?? run.metadata?.approval?.nodeId ?? '';
+  // prettier-ignore
+  const since = run.metadata?.wait?.waitingSince ?? run.nodes?.find(n => n.nodeId === node)?.startedAt ?? run.metadata?.approval?.pauseId;
+  if (!node || !since) throw new Error(`gate episode missing node_started: ${node || 'unknown'}`);
+  return `${node}@${since}`;
 }
 function coordinationContext(key: string): DecisionContext {
   const message = coord()
@@ -3793,6 +3835,10 @@ function decisionContext(
 ): DecisionContext {
   const p = HOLD_POLICY[hold];
   if (p.do !== 'ask' && p.do !== 'signoff') throw new Error(`not actionable: ${hold}`);
+  const plan = planOf(l),
+    node = c.node ?? run.metadata?.approval?.nodeId ?? run.metadata?.wait?.nodeId ?? 'unknown',
+    since = run.metadata?.wait?.waitingSince ?? run.nodes?.find(n => n.nodeId === node)?.startedAt,
+    completed = (run.nodes ?? []).filter(n => n.state === 'completed').length;
   return {
     request_key: key,
     source: 'superagent',
@@ -3806,6 +3852,22 @@ function decisionContext(
       yes: p.yesText,
       no: p.do === 'ask' && 'noText' in p ? p.noText : '终止整个run（保留证据）',
     },
+    project: basename(l.repo),
+    headline:
+      hold === 'signoff'
+        ? node.startsWith('human-budget')
+          ? '是否批准超预算签收并续跑？'
+          : '是否批准签收并续跑？'
+        : p.text,
+    purpose: plan.packages
+      .map(pkg => [pkg.title, pkg.goal].filter(Boolean).join('：'))
+      .filter(Boolean)
+      .join('；'),
+    why: `${p.text}；已等待${String(since ? Math.max(0, Math.floor((Date.now() - Date.parse(since)) / 60000)) : 0)}分钟；已完成${String(completed)}节点`,
+    queued_at: since,
+    initiator_label: l.launcher
+      ? `${l.launcher.client} ${l.launcher.session_id?.slice(0, 8) ?? `pid:${String(l.launcher.pid)}`}`
+      : 'unknown',
   };
 }
 function blocker(l: Ledger, hold: Hold): { reason: string; next: string } | undefined {
@@ -3835,7 +3897,7 @@ export function decisionQuestion(
       [basename(l.repo), l.run_id],
       [reason, reason],
       () => ['', ''],
-      askMarker(requestKey ?? askKey(l.run_id, hold, holdEpisode(l, run, c, hold)))
+      askMarker(requestKey ?? askKey(l.run_id, hold))
     );
   }
   if (hold === 'stalled') {
@@ -3848,7 +3910,7 @@ export function decisionQuestion(
       [basename(l.repo), call.nodeId],
       [detail, detail],
       () => ['', ''],
-      askMarker(requestKey ?? askKey(l.run_id, hold, holdEpisode(l, run, c, hold)))
+      askMarker(requestKey ?? askKey(l.run_id, hold))
     );
   }
   const plan = planOf(l),
@@ -3903,7 +3965,7 @@ export function decisionQuestion(
     names,
     [`${detail}；${progress}`, `${compact}；${progress}`],
     () => ['', ''],
-    askMarker(askKey(l.run_id, hold, holdEpisode(l, run, c)))
+    askMarker(requestKey ?? askKey(l.run_id, hold))
   );
 }
 /** Project engine state and perform only policy-authorized automatic actions. */

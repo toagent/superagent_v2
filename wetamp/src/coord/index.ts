@@ -61,6 +61,7 @@ export interface Message {
   title: string;
   body: string;
   evidence: string[];
+  dedupe_key?: string;
   severity: 'normal' | 'urgent';
   state: MessageState;
   at: string;
@@ -768,7 +769,7 @@ export class Coordination {
   handoff(
     scope: Scope,
     sender: Identity,
-    input: Pick<Message, 'kind' | 'title' | 'body' | 'evidence' | 'severity'>,
+    input: Pick<Message, 'kind' | 'title' | 'body' | 'evidence' | 'dedupe_key' | 'severity'>,
     waitMs = 120_000,
     claimUnowned = true
   ): Record<string, unknown> {
@@ -789,7 +790,35 @@ export class Coordination {
             delivery: 'self',
             next: '自己处理',
           };
-        const id = shared.hash([scope, input.kind, input.title, [...input.evidence].sort()]);
+        const matching = input.dedupe_key
+            ? this.messages().filter(
+                message =>
+                  shared.hash(message.scope) === shared.hash(scope) &&
+                  message.kind === input.kind &&
+                  message.dedupe_key === input.dedupe_key
+              )
+            : [],
+          duplicate = matching.find(message => !['done', 'rejected'].includes(message.state)),
+          at = new Date(this.d.now()).toISOString();
+        if (duplicate) {
+          duplicate.evidence = [...new Set([...duplicate.evidence, ...input.evidence])];
+          duplicate.at = at;
+          this.save('inbox', duplicate.id, duplicate);
+          return {
+            id: duplicate.id,
+            routed_to: view.owner,
+            presence: view.presence,
+            delivery: 'queued',
+            next: '已追加到现有交接',
+          };
+        }
+        const id = shared.hash([
+          scope,
+          input.kind,
+          input.title,
+          [...input.evidence].sort(),
+          ...(input.dedupe_key ? [input.dedupe_key, matching.length] : []),
+        ]);
         if (!shared.read(this.path('inbox', id)))
           this.save('inbox', id, {
             ...input,
@@ -799,7 +828,7 @@ export class Coordination {
             recipient: view.owner,
             generation: view.generation,
             state: 'queued',
-            at: new Date(this.d.now()).toISOString(),
+            at,
           });
         return {
           id,

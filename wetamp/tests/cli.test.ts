@@ -1267,7 +1267,15 @@ describe('HF3 latest-engine recovery', () => {
 
 const humanWait = (resumeAt = '2099-01-01T00:00:00.000Z'): RunView =>
   run('paused', {
-    metadata: { wait: { nodeId: 'human-m2', kind: 'event', event: 'sa.human.m2', resumeAt } },
+    metadata: {
+      wait: {
+        nodeId: 'human-m2',
+        kind: 'event',
+        event: 'sa.human.m2',
+        resumeAt,
+        waitingSince: '2026-11-01T00:00:00.000Z',
+      },
+    },
   });
 
 const LOST = { host: hostname(), pid: 2 ** 22 + 1 };
@@ -2456,17 +2464,17 @@ describe('decide (archon stub)', () => {
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts', scope), 'utf8')).toBe('1');
   });
   // prettier-ignore
-  test('scope approval is diff-bound and budget rejection cancels with a readable reason', () => {
-    const scope = stub([run('failed', { nodes: [{ nodeId: 'verify-core', state: 'failed' }] })]);
+  test('scope approval is content-bound across review rounds and budget rejection cancels', () => {
+    const scope = stub([run('failed', { nodes: [{ nodeId: 'diff-m1-r2', state: 'failed' }] })]);
     packageRework(scope);
     const art = join(scope.root, 'out/artifacts/runs/r');
     mkdirSync(art, { recursive: true });
-    writeFileSync(join(art, 'verify-core.json'), JSON.stringify({ diff_hash: 'diff-a', out_of_scope: ['tests/core.test.ts'], decision: { kind: 'block', reason: 'scope_approval', evidence: [], debt: [] } }));
+    writeFileSync(join(art, 'diff-m1-r2.json'), JSON.stringify({ diff_hash: 'diff-a', out_of_scope: ['tests/core.test.ts'], scope_package: 'core', scope_blobs: { 'tests/core.test.ts': 'a'.repeat(40) }, decision: { kind: 'block', reason: 'scope_approval', evidence: [], debt: [] } }));
     const view = JSON.parse(readFileSync(join(scope.dir, 'get-000.json'), 'utf8'));
     view.output_root = join(scope.root, 'out');
     writeFileSync(join(scope.dir, 'get-000.json'), JSON.stringify(view));
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
-    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ diff_hash: 'diff-a', files: ['tests/core.test.ts'] });
+    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ files: ['tests/core.test.ts'], blobs: { 'tests/core.test.ts': 'a'.repeat(40) } });
 
     const budget = stub([run('paused', { metadata: { approval: { nodeId: 'human-budget-core' } } })]);
     expect(captured(() => main(['decide', 'sa1', 'reject', '--hint', 'remove wrapper'])).code).toBe(0);
@@ -2786,6 +2794,86 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     expect(cliMod.superviseTick()).toMatchObject({ skipped_terminal: 0 });
     expect(gets()).toBe(3);
     db.close();
+  });
+  test('gate episode uses node start, renders P24 fields, and sends the final result to its initiator', () => {
+    const gate = (last: string, startedAt = '2026-11-01T01:00:00.000Z'): RunView =>
+      run('paused', {
+        last_activity_at: last,
+        metadata: { approval: { nodeId: 'human-m2', pauseId: 'p1' } },
+        nodes: [{ nodeId: 'human-m2', state: 'running', startedAt }],
+      });
+    const s = stub([gate('first'), gate('changed', '2026-11-01T02:00:00.000Z')]);
+    s.due.mockReturnValue([]);
+    s.ledger.launcher = {
+      ...coordModule.caller(),
+      client: 'codex',
+      tty: null,
+      cwd: s.root,
+    };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(
+      join(s.ledger.gen_dir, 'plan.json'),
+      JSON.stringify({ packages: [{ id: 'core', title: '核心包', goal: '完成门禁' }] })
+    );
+    cliMod.superviseTick();
+    const path = join(s.root, 'home', 'asks.json'),
+      first = JSON.parse(readFileSync(path, 'utf8'));
+    const key = Object.keys(first)[0],
+      ask = first[key];
+    expect(key).toBe(
+      `sa1:signoff:${new Bun.CryptoHasher('sha256').update('human-m2@2026-11-01T01:00:00.000Z').digest('hex').slice(0, 16)}`
+    );
+    const ntfy = JSON.parse(readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8'));
+    expect(ntfy.decisions[ask.id]).toMatchObject({
+      project: s.root.split('/').at(-1),
+      headline: '是否批准签收并续跑？',
+      purpose: '核心包：完成门禁',
+    });
+    cliMod.superviseTick();
+    const migrated = JSON.parse(readFileSync(path, 'utf8')),
+      currentKey = Object.keys(migrated).find(candidate => candidate !== key)!;
+    expect(migrated[currentKey]).toMatchObject({ id: ask.id, legacy_key: key });
+    expect(
+      Object.keys(
+        JSON.parse(readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8')).decisions
+      )
+    ).toHaveLength(1);
+    migrated[currentKey].status = 'yes';
+    writeFileSync(path, JSON.stringify(migrated));
+    const result = JSON.parse(captured(() => main(['supervise-tick'])).out);
+    expect(result.actions[0]).toMatchObject({ action: 'approve', ok: true });
+    const after = JSON.parse(readFileSync(path, 'utf8'));
+    expect(after[currentKey]).not.toHaveProperty('stale_answer');
+    const alert = JSON.parse(
+      readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8')
+    ).alerts.at(-1);
+    expect(alert).toMatchObject({
+      title: expect.stringContaining('已执行｜'),
+      priority: 2,
+      tags: ['green_circle'],
+    });
+    expect(alert.message).toContain('已批准签收，run继续（当前节点human-m2）');
+    expect(
+      coordModule
+        .coord()
+        .inbox(s.ledger.launcher!, true)
+        .some(message => message.body.includes('已执行'))
+    ).toBe(true);
+  });
+  // prettier-ignore
+  test('a refused gate action does not publish or occupy the final initiator receipt', () => {
+    const lost = run('running', { metadata: { execution_owner: LOST } }); const s = stub([lost]); s.due.mockReturnValue([]); runsDb(LOST); s.ledger.launcher = { ...coordModule.caller(), client: 'codex', tty: null, cwd: s.root }; writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...s.ledger, auto_recover_paused: 'effects_unknown' })); fixtureOptions(s.dir, { resumeReply: { ok: false, error: 'resume changed' } });
+    cliMod.superviseTick(); const path = join(s.root, 'home', 'asks.json'), asks = JSON.parse(readFileSync(path, 'utf8')), key = Object.keys(asks)[0]; asks[key].status = 'yes'; writeFileSync(path, JSON.stringify(asks));
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({ action: 'resume', ok: false });
+    expect(JSON.parse(readFileSync(path, 'utf8'))[key]).not.toHaveProperty('receipt'); expect(coordModule.coord().inbox(s.ledger.launcher!, true).some(message => message.source === asks[key].id)).toBe(false);
+  });
+  // prettier-ignore
+  test('approval occurrences and owner-loss snapshots create stable ask episodes', () => {
+    const approval = stub([run('paused', { metadata: { approval: { nodeId: 'review', pauseId: 'p1' } } })]); approval.due.mockReturnValue([]); const approvalTick = cliMod.superviseTick();
+    expect('actions' in approvalTick ? approvalTick.actions[0] : approvalTick).toMatchObject({ action: 'ask', ok: true }); const lost = stub([run('running', { metadata: { execution_owner: LOST } })]);
+    lost.due.mockReturnValue([]); runsDb(LOST); writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...lost.ledger, auto_recover_paused: 'effects_unknown' }));
+    const recoveryTick = cliMod.superviseTick();
+    expect('actions' in recoveryTick ? recoveryTick.actions[0] : recoveryTick).toMatchObject({ action: 'ask', ok: true });
   });
   test('failed runs settle only without a future deadline', () => {
     const s = stub([run('failed')]),
