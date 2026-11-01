@@ -2428,24 +2428,6 @@ function decide(l: Ledger, a: Args): number {
   }
   if (action === 'reject') {
     const { hint, pkg } = a.flags;
-    const budgetPkg = /^human-budget-(.+)$/.exec(c.node ?? '')?.[1];
-    if (budgetPkg) {
-      if (hint === undefined) throw new Error('budget rejection needs --hint <text>');
-      if (pkg !== undefined && pkg !== budgetPkg)
-        throw new Error(`budget rejection package is ${budgetPkg}`);
-      writeFileSync(join(l.gen_dir, 'hints', `${budgetPkg}.md`), hint + '\n');
-      const rollback = advanceAttempts([attemptPath(l.gen_dir, `pkg/${budgetPkg}`)]);
-      try {
-        const rejected = rejectRun(l, hint);
-        if (!rejected.ok) throw new Error(rejected.reason ?? 'native reject failed');
-      } catch (error) {
-        rollback();
-        throw error;
-      }
-      const res = recoverRun(l);
-      print({ run_id: l.run_id, decision: 'reject', package: budgetPkg, ...res });
-      return res.ok ? 0 : res.held ? EXIT.held : 1;
-    }
     if (pkg !== undefined) {
       if (hint === undefined) throw new Error('decide reject --pkg needs --hint <text>');
       if (c.state !== 'held:human' || !run.metadata?.approval)

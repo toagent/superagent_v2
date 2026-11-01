@@ -40,7 +40,6 @@ import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
-  checkTriggerRule,
   inputEnvVars,
   resolveNodeBindings,
   substituteNodeOutputRefs,
@@ -51,7 +50,7 @@ import {
   parseWorkflow,
   validateDagStructure,
 } from '../../packages/workflows/src/loader';
-import { dagNodeSchema, type DagNode, type NodeOutput } from '../../packages/workflows/src/schemas';
+import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
 import type { CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
@@ -774,8 +773,8 @@ describe('buildWorkflow', () => {
       id: 'soldier-reset-core',
       depends_on: ['soldier-ok-core'],
       trigger_rule: 'all_done',
-      when: "$soldier-ok-core.output != 'used'",
-      bash: 'git stash push --include-untracked -m soldier-leftover-core >/dev/null && printf reset',
+      with: { result: { from: '$soldier-ok-core.output', if_skipped: '' } },
+      bash: 'if [ "$INPUTS_RESULT" = used ]; then printf used; else git stash push --include-untracked -m soldier-leftover-core >/dev/null && printf reset; fi',
     });
     const runOk = (output: string): string => {
       const result = Bun.spawnSync([process.execPath, '-e', okSource], {
@@ -791,28 +790,7 @@ describe('buildWorkflow', () => {
     expect(() =>
       assertGeneratedWorkflow({ name: 'soldier', description: 'soldier', nodes }, false)
     ).not.toThrow();
-    const resetWhen = nodes.find(n => n.id === 'soldier-reset-core')!.when!;
-    expect(
-      evaluateCondition(
-        resetWhen,
-        new Map([['soldier-ok-core', { state: 'completed' as const, output: 'used' }]])
-      ).result
-    ).toBe(false);
-    expect(
-      evaluateCondition(
-        resetWhen,
-        new Map([
-          [
-            'soldier-ok-core',
-            {
-              state: 'skipped' as const,
-              output: '',
-              cause: { kind: 'upstream_failed' as const, origin: 'soldier-core' },
-            },
-          ],
-        ])
-      ).result
-    ).toBe(true);
+    expect(nodes.find(n => n.id === 'soldier-reset-core')?.when).toBeUndefined();
     expect(nodes.find(n => n.id === 'code-core')).toMatchObject({
       depends_on: [
         'sync-m1-ready',
@@ -1643,38 +1621,26 @@ describe('buildWorkflow', () => {
     if (parsed.workflow === null) throw new Error(parsed.error.error);
     expect(parsed.workflow.interactive).not.toBe(true);
   });
-  test('budgeted non-fake repairs close output references', () => {
+  test('budgeted repairs depend only on verification and reject skippable when references', () => {
     const plan = structuredClone(fixture);
     plan.packages[0]!.max_net_lines = 200;
     const workflow = build(false, plan),
       nodes = nodesOf(workflow);
     expect(() => assertGeneratedWorkflow(workflow as Record<string, unknown>, false)).not.toThrow();
-    const output = (state: 'completed' | 'skipped'): NodeOutput =>
-      state === 'skipped'
-        ? { state, output: '', cause: { kind: 'condition', expr: 'false' } }
-        : { state, output: '{}' };
-    const outputs = new Map([
-      ['verify-core', output('completed')],
-      ['package-attempt-core', output('completed')],
-      ['human-budget-core', output('skipped')],
-    ]);
     for (const id of ['repair-context-core', 'repair-core']) {
-      const parsed = dagNodeSchema.parse(nodes.find(value => value.id === id));
-      if (parsed.kind === 'include') throw new Error(`${id}: unexpected include`);
-      const node: DagNode = parsed;
-      expect(node.depends_on).toContain('human-budget-core');
-      expect(node.trigger_rule).toBe('none_failed_min_one_success');
-      expect(checkTriggerRule(node, outputs)).toEqual({ decision: 'run' });
-      outputs.set(id, output('completed'));
+      const node = nodes.find(value => value.id === id)!;
+      expect(node.depends_on).not.toContain('human-budget-core');
+      expect(node.trigger_rule).toBeUndefined();
+      expect(node.when).toBe("$verify-core.output.disposition == 'repair'");
     }
-    expect(
-      evaluateCondition(
-        nodes.find(node => node.id === 'repair-core')!.when!,
-        new Map([
-          ['verify-core', { state: 'completed' as const, output: '{"disposition":"repair"}' }],
-        ])
-      ).result
-    ).toBeTrue();
+    const invalid = structuredClone(workflow);
+    const repair = nodesOf(invalid).find(node => node.id === 'repair-core')!;
+    repair.depends_on!.push('human-budget-core');
+    repair.trigger_rule = 'none_failed_min_one_success';
+    repair.when += " || $human-budget-core.output.decision == 'reject'";
+    expect(() => assertGeneratedWorkflow(invalid as Record<string, unknown>, false)).toThrow(
+      'repair-core: when references skippable dependency human-budget-core'
+    );
   });
   test('fake mode replaces every agent node with a bash stub', () => {
     const realAgents = nodesOf(build(false)).filter(node => node.command?.startsWith('sa-'));

@@ -1025,8 +1025,10 @@ export function buildWorkflow(
             id: soldierReset,
             depends_on: [soldierOk],
             trigger_rule: 'all_done',
-            when: `$${soldierOk}.output != 'used'`,
-            bash: `git stash push --include-untracked -m soldier-leftover-${p.id} >/dev/null && printf reset`,
+            with: { result: ref.optionalValue(conditionalOutput<string>(soldierOk), '') },
+            bash:
+              'if [ "$INPUTS_RESULT" = used ]; then printf used; else ' +
+              `git stash push --include-untracked -m soldier-leftover-${p.id} >/dev/null && printf reset; fi`,
           }
         );
       const coder = fake
@@ -1125,10 +1127,8 @@ export function buildWorkflow(
           depends_on: [verify],
           when: `$${verify}.output.reason == 'budget_exceeded'`,
         });
-      const repairWhen =
-        `$${verify}.output.disposition == 'repair'` +
-        (budgetGate ? ` || $${budgetGate}.output.decision == 'reject'` : '');
-      const repairDeps = [verify, pkgAttempt, ...(budgetGate ? [budgetGate] : [])];
+      const repairWhen = `$${verify}.output.disposition == 'repair'`;
+      const repairDeps = [verify, pkgAttempt];
       const repairContext = `repair-context-${p.id}`;
       const repairHandle = conditionalOutput<CoderOutput>(`repair-${p.id}`);
       if (!fake)
@@ -1137,7 +1137,6 @@ export function buildWorkflow(
           ...attemptInputs(attemptPath(gen, `pkg/${p.id}`)),
           with: { counter: attemptPath(gen, `pkg/${p.id}`), gen, context_node: `repair-${p.id}` },
           depends_on: repairDeps,
-          ...(budgetGate ? { trigger_rule: 'none_failed_min_one_success' } : {}),
           when: repairWhen,
           output_format: contextOutputFormat,
         });
@@ -1164,7 +1163,6 @@ export function buildWorkflow(
               },
             }),
         depends_on: [...repairDeps, ...(!fake ? [repairContext] : [])],
-        ...(budgetGate ? { trigger_rule: 'none_failed_min_one_success' } : {}),
         when: repairWhen,
         output_format: coderOutputFormat,
       });
@@ -1497,6 +1495,12 @@ export function assertGeneratedWorkflow(definition: Node, background = true): vo
             !['none_failed_min_one_success', 'all_done'].includes(String(node.trigger_rule))
           )
             throw new Error(`${String(node.id)}: skippable dependency ${id} needs trigger_rule`);
+          if (
+            value === node.when &&
+            dependency?.when !== undefined &&
+            ['none_failed_min_one_success', 'all_done'].includes(String(node.trigger_rule))
+          )
+            throw new Error(`${String(node.id)}: when references skippable dependency ${id}`);
         }
       }
       const group = node.loop_group as { nodes?: Node[] } | undefined;

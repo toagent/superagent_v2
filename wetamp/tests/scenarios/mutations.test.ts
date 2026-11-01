@@ -24,19 +24,11 @@ const mutations: Mutation[] = [
   },
   {
     file: 'src/generate.ts',
-    from: 'const repairDeps = [verify, pkgAttempt, ...(budgetGate ? [budgetGate] : [])];',
-    to: 'const repairDeps = [verify, pkgAttempt];',
+    from: "const repairWhen = `$${verify}.output.disposition == 'repair'`;",
+    to: "const repairWhen = `$${verify}.output.disposition == 'repair'` + (budgetGate ? ` || $${budgetGate}.output.decision == 'reject'` : '');",
     test: 'tests/generate.test.ts',
-    name: 'budgeted non-fake repairs close output references',
-    expectedError: 'human-budget-core',
-  },
-  {
-    file: 'src/generate.ts',
-    from: "...(budgetGate ? { trigger_rule: 'none_failed_min_one_success' } : {}),",
-    to: '...(budgetGate ? {} : {}),',
-    test: 'tests/generate.test.ts',
-    name: 'budgeted non-fake repairs close output references',
-    expectedError: 'skippable dependency human-budget-core needs trigger_rule',
+    name: 'budgeted repairs depend only on verification',
+    expectedError: 'expect(received).toBe(expected)',
   },
   {
     file: 'src/land.ts',
