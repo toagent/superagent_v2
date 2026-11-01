@@ -4,15 +4,14 @@ import { dirname, join, normalize } from 'node:path';
 import { GENERATED_OUTPUT_PATHS, type Plan } from './plan';
 import { reasonOf } from './reasons';
 
-const REPEAT_FAILURE_CATEGORIES = {
-  scope: ['scope_violation', 'repair_exhausted:scope_violation'],
-  acceptance: [
-    'acceptance_failed',
-    'repair_exhausted:acceptance_failed',
-    'ruler_invalid',
-    'vacuous_test',
-  ],
-} as const;
+const REPEAT_FAILURE_REASONS = new Set([
+  'scope_violation',
+  'repair_exhausted:scope_violation',
+  'acceptance_failed',
+  'repair_exhausted:acceptance_failed',
+  'ruler_invalid',
+  'vacuous_test',
+]);
 
 const slash = (path: string): string => path.replaceAll('\\', '/');
 export const covered = (path: string, write: string[]): boolean =>
@@ -68,24 +67,39 @@ export interface PlanPrecheck {
 const repeatFailures = (plan: Plan, override?: string): PlanPrecheck => {
   if (process.env.SUPERAGENT_MEMORY === 'off')
     return { blocking: [], info: ['重复失败检查已跳过：memory 关闭'] };
-  const dir = join(process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'), 'memory/episodes');
+  const home = process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'), dir = join(home, 'memory/episodes');
   if (!existsSync(dir)) return { blocking: [], info: ['重复失败检查已跳过：episodes 目录不存在'] };
   const now = Date.now(), cutoff = now - 7 * 86400_000,
-    counts = new Map<string, string[]>();
+    counts = new Map<string, { id: string; at: number }[]>();
   for (const file of readdirSync(dir).filter(name => name.endsWith('.json'))) {
-    const episode = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { id?: unknown; at?: unknown; project?: unknown; reasons?: unknown };
+    const episode = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { id?: unknown; at?: unknown; project?: unknown; reasons?: unknown; signature?: unknown };
     const at = typeof episode.at === 'string' ? Date.parse(episode.at) : NaN;
     if (episode.project !== plan.repo || !Number.isFinite(at) || at < cutoff || at > now ||
-        !Array.isArray(episode.reasons) || typeof episode.id !== 'string') continue;
-    for (const [category, reasons] of Object.entries(REPEAT_FAILURE_CATEGORIES))
-      if (episode.reasons.some(reason => typeof reason === 'string' && reasonOf(reason) &&
-          (reasons as readonly string[]).includes(reason)))
-        counts.set(category, [...(counts.get(category) ?? []), episode.id]);
+        !Array.isArray(episode.reasons) || typeof episode.id !== 'string' ||
+        typeof episode.signature !== 'string' || !episode.signature) continue;
+    if (episode.reasons.some(reason => typeof reason === 'string' && reasonOf(reason) && REPEAT_FAILURE_REASONS.has(reason)))
+      counts.set(episode.signature, [...(counts.get(episode.signature) ?? []), { id: episode.id, at }]);
   }
-  const messages = [...counts].filter(([, ids]) => ids.length >= 3).map(([category, ids]) =>
-    `近 7 天同类失败 ${category} ${String(ids.length)} 次（run ids: ${ids.join(', ')}）；先落地拦截机制，或用 --lint-override 写明已落地机制`);
+  const promotionDir = join(home, 'engine/promotions'), passedAfter = (last: number): boolean =>
+    existsSync(promotionDir) && readdirSync(promotionDir).filter(name => name.endsWith('.verify.json')).some(name => {
+      try {
+        const verify = JSON.parse(readFileSync(join(promotionDir, name), 'utf8')) as { sha?: unknown; status?: unknown; at?: unknown },
+          verifiedAt = typeof verify.at === 'string' ? Date.parse(verify.at) : NaN;
+        if (verify.status !== 'passed' || typeof verify.sha !== 'string' || !Number.isFinite(verifiedAt) || verifiedAt <= last) return false;
+        const marker = JSON.parse(readFileSync(join(promotionDir, `${verify.sha}.json`), 'utf8')) as { sha?: unknown; status?: unknown; at?: unknown },
+          promotedAt = typeof marker.at === 'string' ? Date.parse(marker.at) : NaN;
+        return marker.sha === verify.sha && marker.status === 'promoted' && Number.isFinite(promotedAt) && promotedAt > last;
+      } catch { return false; }
+    });
+  const blocking: string[] = [], info: string[] = [];
+  for (const [signature, occurrences] of counts) {
+    if (occurrences.length < 3) continue;
+    const latest = occurrences.sort((a, b) => b.at - a.at)[0];
+    if (passedAfter(latest.at)) info.push(`近 7 天机制签名 ${signature} ${String(occurrences.length)} 次，PV1 通过后已解除`);
+    else blocking.push(`近 7 天机制签名 ${signature} ${String(occurrences.length)} 次（最近 run id: ${latest.id}）；先落地拦截机制，或用 --lint-override 写明已落地机制`);
+  }
   // This gate alone is overrideable: the override records the mechanism for audit.
-  return override?.trim() ? { blocking: [], info: messages } : { blocking: messages, info: [] };
+  return override?.trim() ? { blocking: [], info: [...info, ...blocking] } : { blocking, info };
 };
 
 export function checkSyntaxErrors(plan: Plan): string[] {
