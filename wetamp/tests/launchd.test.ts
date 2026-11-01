@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  bootoutLaunchd,
   bootstrapLaunchd,
   kickstartLaunchd,
   printLaunchd,
@@ -33,6 +34,15 @@ test('mutation rejects a fake-home plist before invoking the runner', () => {
       bootstrapLaunchd('gui/501', join(actual, 'com.wetamp.superagent.supervise-tick.plist'), {
         runner: () => (calls++, result()),
       })
+    ).toThrow('launchd mutation refused');
+    expect(() =>
+      bootoutLaunchd(
+        'gui/501/com.wetamp.superagent.supervise-tick',
+        join(actual, 'fixture.plist'),
+        {
+          runner: () => (calls++, result()),
+        }
+      )
     ).toThrow('launchd mutation refused');
     expect(calls).toBe(0);
   } finally {

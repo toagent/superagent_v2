@@ -145,11 +145,31 @@ export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): 
 export interface TickStage { ok: boolean; duration_ms?: number; error?: string; skipped?: string }
 type Stage = 'collect' | 'publish' | 'reclaim' | 'orca' | 'console' | 'failover' | 'actions';
 export type TickRecord = { at: string } & Partial<Record<Stage, TickStage>>;
+export interface TickStaleAlert {
+  id: string;
+  message: string;
+  minutes: number;
+}
 // prettier-ignore
-export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; messages: string[] } {
+export function tickStaleAlert(tick: TickRecord | undefined, now: number): TickStaleAlert | undefined {
+  const parsed = Date.parse(tick?.at ?? '');
+  if (!Number.isFinite(parsed)) return;
+  const elapsed = now - parsed, minutes = Math.floor(elapsed / 60_000);
+  if (elapsed <= 5 * 60_000) return;
+  return { id: `tick-stale:${String(Math.floor(parsed / 60_000))}`, minutes, message: `supervise-tick 已停 ${String(minutes)} 分钟：launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.wetamp.superagent.supervise-tick.plist` };
+}
+// prettier-ignore
+export function queueTickStaleAlert(alert: TickStaleAlert | undefined, previousId: string | undefined, queue: (alert: TickStaleAlert) => void): string | undefined {
+  if (!alert) return;
+  if (alert.id !== previousId) queue(alert);
+  return alert.id;
+}
+// prettier-ignore
+export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; messages: string[]; stale?: TickStaleAlert } {
   const parsed = Date.parse(tick?.at ?? ''), minutes = Number.isFinite(parsed) ? Math.floor((now - parsed) / 60_000) : Infinity;
   const messages = minutes > 3 ? [`未收到巡检心跳${Number.isFinite(minutes) ? ` ${String(minutes)}m` : ''}`] : [];
   if (tick?.collect && !tick.collect.ok) messages.push(`巡检采集失败：${tick.collect.error ?? 'unknown'}`);
   if (tick) for (const stage of ['publish', 'reclaim', 'orca', 'console', 'failover', 'actions'] as const) { const record = tick[stage]; if (record && !record.ok) messages.push(`${stage}异常：${record.error ?? 'unknown'}`); }
-  return { ok: messages.length === 0, messages };
+  const stale = tickStaleAlert(tick, now);
+  return { ok: messages.length === 0, messages, ...(stale ? { stale } : {}) };
 }

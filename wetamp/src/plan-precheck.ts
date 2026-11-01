@@ -12,6 +12,7 @@ const REPEAT_FAILURE_REASONS = new Set([
   'ruler_invalid',
   'vacuous_test',
 ]);
+const FAILURE_STATUSES = new Set(['failed', 'cancelled', 'lost']);
 
 const slash = (path: string): string => path.replaceAll('\\', '/');
 export const covered = (path: string, write: string[]): boolean =>
@@ -70,14 +71,16 @@ const repeatFailures = (plan: Plan, override?: string): PlanPrecheck => {
   const home = process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'), dir = join(home, 'memory/episodes');
   if (!existsSync(dir)) return { blocking: [], info: ['重复失败检查已跳过：episodes 目录不存在'] };
   const now = Date.now(), cutoff = now - 7 * 86400_000,
-    counts = new Map<string, { id: string; at: number }[]>();
+    counts = new Map<string, { id: string; at: number }[]>(), completedOverruns: string[] = [];
   for (const file of readdirSync(dir).filter(name => name.endsWith('.json'))) {
-    const episode = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { id?: unknown; at?: unknown; project?: unknown; reasons?: unknown; signature?: unknown };
+    const episode = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { id?: unknown; at?: unknown; project?: unknown; reasons?: unknown; signature?: unknown; status?: unknown };
     const at = typeof episode.at === 'string' ? Date.parse(episode.at) : NaN;
     if (episode.project !== plan.repo || !Number.isFinite(at) || at < cutoff || at > now ||
         !Array.isArray(episode.reasons) || typeof episode.id !== 'string' ||
         typeof episode.signature !== 'string' || !episode.signature) continue;
-    if (episode.reasons.some(reason => typeof reason === 'string' && reasonOf(reason) && REPEAT_FAILURE_REASONS.has(reason)))
+    if (episode.status === 'completed' && episode.signature === 'duration_overrun') completedOverruns.push(episode.id);
+    if (typeof episode.status === 'string' && FAILURE_STATUSES.has(episode.status) &&
+        (episode.signature === 'duration_overrun' || episode.reasons.some(reason => typeof reason === 'string' && reasonOf(reason) && REPEAT_FAILURE_REASONS.has(reason))))
       counts.set(episode.signature, [...(counts.get(episode.signature) ?? []), { id: episode.id, at }]);
   }
   const promotionDir = join(home, 'engine/promotions'), passedAfter = (last: number): boolean =>
@@ -91,7 +94,7 @@ const repeatFailures = (plan: Plan, override?: string): PlanPrecheck => {
         return marker.sha === verify.sha && marker.status === 'promoted' && Number.isFinite(promotedAt) && promotedAt > last;
       } catch { return false; }
     });
-  const blocking: string[] = [], info: string[] = [];
+  const blocking: string[] = [], info = completedOverruns.length ? [`近 7 天 ${String(completedOverruns.length)} 个已完成 run 超时长，见 superagent report`] : [];
   for (const [signature, occurrences] of counts) {
     if (occurrences.length < 3) continue;
     const latest = occurrences.sort((a, b) => b.at - a.at)[0];
