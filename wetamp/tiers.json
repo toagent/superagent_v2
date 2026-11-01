@@ -175,7 +175,7 @@
     },
     "soldier": {
       "provider": "codex",
-      "models": ["glm-5.3"]
+      "models": []
     },
     "reviewer": {
       "by_risk": {
