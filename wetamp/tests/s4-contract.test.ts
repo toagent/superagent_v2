@@ -152,7 +152,9 @@ test('I4 canonical migration, hold change and terminal supersession expose stale
   supersedeAsks(asks, 'r', 'environment');
   expect(asks[askKey('r', 'environment')]).toMatchObject({ id: 'a', status: 'pending' });
   expect(cockpitSignals([], asks)).toMatchObject({ dup_ask: 0, stale_answer: 1 });
-  const migrated: Asks = { 'r:signoff:old': { id: 'gate', status: 'yes' } };
+  const migrated: Asks = {
+    'r:signoff:old': { id: 'gate', status: 'yes', context: { target: '/repo:r:human-budget' } },
+  };
   supersedeAsks(migrated, 'r', 'signoff', 'human-budget@2026-11-01');
   expect(migrated[askKey('r', 'signoff', 'human-budget@2026-11-01')]).toMatchObject({
     id: 'gate',
@@ -160,6 +162,12 @@ test('I4 canonical migration, hold change and terminal supersession expose stale
     legacy_key: 'r:signoff:old',
   });
   expect(migrated['r:signoff:old']?.stale_answer).toBeUndefined();
+  const changedNode: Asks = {
+    'r:signoff:old': { id: 'old-gate', status: 'yes', context: { target: '/repo:r:human-m1' } },
+  };
+  supersedeAsks(changedNode, 'r', 'signoff', 'human-m2@2026-11-01');
+  expect(changedNode[askKey('r', 'signoff', 'human-m2@2026-11-01')]).toBeUndefined();
+  expect(changedNode['r:signoff:old']).toMatchObject({ status: 'superseded', stale_answer: true });
   supersedeAsks(asks, 'r', 'engine_suspect');
   expect(asks['r:environment']?.status).toBe('superseded');
   const hold = {
