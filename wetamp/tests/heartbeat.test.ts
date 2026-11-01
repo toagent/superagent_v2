@@ -233,7 +233,10 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
   const online = (): Presence => ({ state: 'online', activity: 'active' });
   const first = heartbeat(snap, cockpit(snap, now), now, online);
   const later = heartbeat(snap, cockpit(snap, now + 60_000), now + 60_000, online);
-  expect(first.marshals[0]?.line).toContain('将军·gpt 空转 7m（在跑命令）');
+  expect(first.marshals[0]?.running[0]?.general).toMatchObject({
+    state: 'working',
+    spinning: true,
+  });
   expect(shouldWriteHeartbeat(first, later, now + 60_000)).toBe(false);
   const volatile = structuredClone(later);
   volatile.marshals[0]!.running[0]!.general = {
