@@ -124,7 +124,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     if (!marshal) continue;
     const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
     const dependency = row.waiting_on && rows.get(row.waiting_on.run);
-    if (row.waiting_on && dependency && [3, 4].includes(dependency.exit ?? -1)) {
+    if (row.waiting_on && dependency && ![0, 1, 2].includes(dependency.exit ?? -1)) {
       const label = `等待 ${row.waiting_on.run.slice(0, 12)}${row.waiting_on.reason ? `：${row.waiting_on.reason}` : ''}`;
       marshal.waiting.push({ id: row.run_id, kind: 'run', since: row.waiting_on.since, what: run?.stage ?? row.state, code: 'waiting_on', waiting_for: label, waited_s: age(row.waiting_on.since, now) ?? 0, actionable: false });
       continue;
