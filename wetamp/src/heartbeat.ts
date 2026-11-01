@@ -82,6 +82,10 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     groups.set(key, value);
     return value;
   };
+  const orphan = (cwd: string, item: Responsibility): void => {
+    const key = `unknown\0${cwd}`, found = groups.get(key), value = found ?? { owner: 'unknown' as const, owner_key: 'unknown' as const, cwd, project: basename(cwd), running: [], waiting: [], line: '无人负责' };
+    value.waiting.push(item); groups.set(key, value); unowned++;
+  };
   const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id));
   for (const row of snapshot.rows) {
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
@@ -89,8 +93,12 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const owner = row.coordination?.owner;
     if (!owner) { unowned++; continue; }
     if (presenceOf(owner).state !== 'online') {
-      if (row.state === 'failed' && historical.has(row.run_id)) legacy++;
-      else reclaim++;
+      if (row.state === 'failed') { if (historical.has(row.run_id)) legacy++; else reclaim++; }
+      else {
+        let repoOnline = false; try { repoOnline = coord().owner(repoScope(row.repo)).presence.state === 'online'; } catch { /* Historical repository may be gone. */ }
+        if (repoOnline) reclaim++;
+        else orphan(row.repo, { id: row.run_id, kind: 'run', since: row.lastEvent ?? row.started_at, what: row.state, code: 'unowned', waiting_for: '无人负责', waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0, next: `superagent claim ${row.run_id}` });
+      }
       continue;
     }
     const marshal = group(owner, row.repo);
@@ -121,7 +129,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     let owner: Identity = job.launcher;
     try { owner = coord().owner(repoScope(job.cwd)).owner ?? owner; } catch { /* Historical cwd may no longer resolve. */ }
     const marshal = group(owner, job.cwd), run = cockpit.active.find(item => item.id === job.id);
-    if (!marshal) { reclaim++; continue; }
+    if (!marshal) { if (job.state === 'lost') reclaim++; else orphan(job.cwd, { id: job.id, kind: 'job', since: job.started_at, what: job.state, code: 'unowned', waiting_for: '无人负责', waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` }); continue; }
     if (job.state === 'running' && active.has(job.id)) marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
     if (job.state === 'lost') marshal.waiting.push({ id: job.id, kind: 'job', since: job.started_at, what: '作业丢失', code: 'lost', waiting_for: job.title, waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` });
   }

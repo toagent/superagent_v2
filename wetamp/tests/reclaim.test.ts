@@ -112,3 +112,25 @@ test('reclaim observation isolates deleted repositories in saved and current evi
   // prettier-ignore
   expect(result).toMatchObject({ transferred: ['r1'], skipped: ['missing', 'stale'], skip_reasons: { missing: 'repository_unavailable', stale: 'repository_unavailable' } });
 });
+
+// prettier-ignore
+test('accepted rollover rehabilitates legacy evidence while aged terminal ownership is abandoned', () => {
+  const successor = { ...a, session_id: 'successor' }, s = setup(who => same(who, b) ? { state: 'online', activity: 'idle' } : { state: 'offline' }), scope = runScope(s.run);
+  s.c.rolloverTransfer(scope, a, successor, 'first'); s.c.rolloverTransfer(scope, successor, a, 'accepted');
+  mkdirSync(join(s.sa, 'coord/rollovers'), { recursive: true }); writeFileSync(join(s.sa, 'coord/rollovers/accepted.json'), JSON.stringify({ token: 'accepted', state: 'accepted', to: a, accepted_at: new Date(1).toISOString() }));
+  const generation = s.c.owner(scope).generation, legacy = { run: 'r1', repo: s.run.repo, owner: a, generation, first_offline_at: 2, last_offline_at: 120_002, count: 2 };
+  expect(new Reclaimer(s.c, () => 120_002, () => ({ id: 'engine', status: 'running' })).reclaim([legacy]).transferred).toEqual(['r1']);
+  const old = setup(() => ({ state: 'offline' })), oldScope = runScope(old.run), observation = { ...legacy, generation: old.c.owner(oldScope).generation, first_offline_at: 0, last_offline_at: 86_400_000 };
+  new Reclaimer(old.c, () => 86_399_999, () => ({ id: 'engine', status: 'failed' })).reclaim([observation]); expect(JSON.parse(readFileSync(join(old.sa, 'runs/r1.json'), 'utf8')).rejected).toBeUndefined();
+  new Reclaimer(old.c, () => 86_400_000, () => ({ id: 'engine', status: 'failed' })).reclaim([observation]);
+  expect(JSON.parse(readFileSync(join(old.sa, 'runs/r1.json'), 'utf8'))).toMatchObject({ rejected: 'engine', intervention_events: [{ action: 'abandon', origin: 'engine', ok: true }] });
+});
+
+// prettier-ignore
+test('tick retires aged lost jobs and queues deduplicated unowned and overdue alerts', () => {
+  const s = setup(), now = 86_400_001; mkdirSync(join(s.sa, 'jobs')); writeFileSync(join(s.sa, 'jobs/lost.json'), JSON.stringify({ id: 'lost', title: 'lost', kind: 'codex', tier: 'general', cwd: join(s.root, 'missing'), launcher: a, wrapper_pid: 99999999, pid: 99999999, started_at: new Date(0).toISOString(), state: 'running' }));
+  writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: b, waiting: [{ id: 'late', since: new Date(0).toISOString(), waited_s: 0, waiting_for: '处理', next: 'next' }] }, { owner: 'unknown', waiting: [{ id: 'orphan', waited_s: 0, waiting_for: '无人负责' }] }] }));
+  const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' })); r.tick(); r.tick();
+  expect(JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at).toBeDefined();
+  expect(JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')).alert_ids).toEqual(['responsibility:late', 'unowned:orphan']);
+});

@@ -579,16 +579,13 @@ describe('guard.cjs', () => {
         ],
       };
     writeFileSync(join(home, 'heartbeat.json'), JSON.stringify(heartbeat));
-    const hooks = createRequire(import.meta.url)('../hooks/coord.cjs') as any,
-      notified: string[][] = [];
-    const notify = (args: string[]) => notified.push(args),
-      at = (minutes: number) => () =>
-        Date.parse(`2026-10-29T09:${String(minutes).padStart(2, '0')}:00Z`);
-    expect(hooks.unread(home, who, [], undefined, notify, at(4))).toEqual([]);
-    const due = hooks.unread(home, who, [], undefined, notify, at(30));
+    const hooks = createRequire(import.meta.url)('../hooks/coord.cjs') as any;
+    const at = (minutes: number) => () =>
+      Date.parse(`2026-10-29T09:${String(minutes).padStart(2, '0')}:00Z`);
+    expect(hooks.unread(home, who, [], undefined, undefined, at(4))).toEqual([]);
+    const due = hooks.unread(home, who, [], undefined, undefined, at(30));
     expect(hooks.notifications(due)).toContain('需要处理 1 项');
-    expect(notified[0]).toContain('responsibility:held');
-    expect(hooks.unread(home, who, [due[0].id], undefined, notify, at(30))).toEqual([]);
+    expect(hooks.unread(home, who, [due[0].id], undefined, undefined, at(30))).toEqual([]);
     for (const broken of [
       {
         runs: () => {

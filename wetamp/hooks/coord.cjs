@@ -3,8 +3,7 @@
 const fs = require('node:fs'),
   os = require('node:os'),
   path = require('node:path'),
-  crypto = require('node:crypto'),
-  { spawnSync } = require('node:child_process');
+  crypto = require('node:crypto');
 const { same, presence } = require('./identity.cjs');
 const { resolvePath } = require('./redline.cjs');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -64,11 +63,7 @@ function abandoned(run) {
   );
 }
 function isRunOwnershipEvidence(run, status) {
-  return (
-    run.state !== 'failed' &&
-    !abandoned(run) &&
-    !['completed', 'cancelled'].includes(status)
-  );
+  return run.state !== 'failed' && !abandoned(run) && !['completed', 'cancelled'].includes(status);
 }
 // The CLI supplies verified run states; hooks use a read-only database snapshot, never a subprocess.
 function candidates(home, archon = path.join(home, 'archon'), scope) {
@@ -202,7 +197,7 @@ function archonMutation(argv) {
       (['alias', 'tier'].includes(argv[1]) && argv[2] === 'list'))
   );
 }
-function unread(home, who, seen = [], archon, notify = args => spawnSync('superagent', args, { timeout: 10000 }), now = Date.now) {
+function unread(home, who, seen = [], archon, _notify, now = Date.now) {
   const claims = files(home, 'claims'),
     runs = scope => candidates(home, archon, scope);
   const inbox = files(home, 'inbox').filter(
@@ -216,11 +211,14 @@ function unread(home, who, seen = [], archon, notify = args => spawnSync('supera
   const heartbeat = read(path.join(home, 'heartbeat.json')),
     marshal = heartbeat?.marshals?.find(m => m.owner !== 'unknown' && same(m.owner, who)),
     due = (marshal?.waiting || []).flatMap(item => {
-      const parsed = Date.parse(item.since), age = Number.isFinite(parsed) ? Math.max(0, Math.floor((now() - parsed) / 1000)) : item.waited_s;
+      const parsed = Date.parse(item.since),
+        age = Number.isFinite(parsed)
+          ? Math.max(0, Math.floor((now() - parsed) / 1000))
+          : item.waited_s;
       if (age < 300) return [];
-      const bucket = Math.floor(age / 300), id = `responsibility:${item.id}:${bucket}`;
+      const bucket = Math.floor(age / 300),
+        id = `responsibility:${item.id}:${bucket}`;
       if (seen.includes(id)) return [];
-      if (age >= 1800) notify(['notify', '--id', `responsibility:${item.id}`, '--title', '责任清单超时', '--body', `${item.id} ${item.waiting_for} → ${item.next}`]);
       return [{ id, type: 'responsibility', item }];
     });
   return inbox.concat(due);
@@ -229,8 +227,14 @@ function notifications(messages) {
   const duties = messages.filter(m => m.type === 'responsibility'),
     inbox = messages.filter(m => m.type !== 'responsibility'),
     parts = [];
-  if (duties.length) parts.push(`需要处理 ${duties.length} 项：${duties.map(m => `${m.item.id} ${m.item.waiting_for} → ${m.item.next}`).join('；')}`);
-  if (inbox.length) parts.push(`Superagent 交接待答复：${inbox.map(m => `${m.id} (${m.type || m.kind})`).join('、')}。运行 superagent inbox；使用 inbox --ack <id> accepted|rejected|done --note <短文> 答复。`);
+  if (duties.length)
+    parts.push(
+      `需要处理 ${duties.length} 项：${duties.map(m => `${m.item.id} ${m.item.waiting_for} → ${m.item.next}`).join('；')}`
+    );
+  if (inbox.length)
+    parts.push(
+      `Superagent 交接待答复：${inbox.map(m => `${m.id} (${m.type || m.kind})`).join('、')}。运行 superagent inbox；使用 inbox --ack <id> accepted|rejected|done --note <短文> 答复。`
+    );
   return parts.join('\n') || null;
 }
 module.exports = {

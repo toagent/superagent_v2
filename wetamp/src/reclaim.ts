@@ -1,10 +1,15 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 // prettier-ignore
-import { Coordination, coord, identityKey, runScope, same, type Identity, type RunRef } from './coord';
+import { Coordination, coord, identityKey, repoScope, runScope, same, type Identity, type RunRef } from './coord';
 import { getRun, runStatuses } from './archon';
 import { writeAtomic } from './config';
 import { loadLedger, mutateLedger } from './ledger';
+import { cleanJob, readJobs } from './jobs';
+import { queueNtfyAlert } from './ntfy';
+
+const OFFLINE_CLEANUP_MS = 24 * 60 * 60_000; // Cross one night before terminal cleanup.
+const RESPONSIBILITY_ESCALATION_MS = 30 * 60_000; // PagerDuty-style second escalation.
 
 // prettier-ignore
 interface Observation { run: string; repo: string; first_offline_at?: number; last_offline_at?: number; last_online_at?: number; count: number; owner: Identity; generation: number }
@@ -14,6 +19,10 @@ interface Entry { id: string; run: string; from: Identity; to: Identity; expecte
 export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; skip_reasons: Record<string, 'repository_unavailable'>; pending: string[]; historical: string[] }
 // prettier-ignore
 const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
+// prettier-ignore
+const json = (path: string): unknown => { try { return JSON.parse(readFileSync(path, 'utf8')) as unknown; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; } };
+// prettier-ignore
+const records = <T>(path: string): T[] => { try { return readdirSync(path).filter(file => file.endsWith('.json')).map(file => JSON.parse(readFileSync(join(path, file), 'utf8')) as T); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
 
 // prettier-ignore
 export class Reclaimer {
@@ -27,6 +36,45 @@ export class Reclaimer {
     const ledger = loadLedger(run.run_id);
     mutateLedger(ledger, cur => (cur.intervention_events ??= []).push({ at: new Date(this.now()).toISOString(), action, reason: action, origin: 'engine', source: 'superagent', ok, ...(!ok ? { error: 'Error' } : {}), evidence }));
   }
+  private acceptedAt(o: Observation, scope: ReturnType<typeof runScope>): number | undefined {
+    // prettier-ignore
+    interface Claim { scope: ReturnType<typeof runScope>; owner: Identity | null; generation: number; history: { owner: Identity | null; generation: number; reason: string }[] }
+    // prettier-ignore
+    interface Rollover { token: string; state: string; to: Identity | null; accepted_at: string | null }
+    const claim = records<Claim>(join(this.c.d.sa, 'coord', 'claims')).find(value => JSON.stringify(value.scope) === JSON.stringify(scope));
+    if (!claim || !same(claim.owner, o.owner) || claim.generation !== o.generation) return;
+    for (const r of records<Rollover>(join(this.c.d.sa, 'coord', 'rollovers'))) {
+      const at = Date.parse(r.accepted_at ?? '');
+      if (r.state === 'accepted' && same(r.to, o.owner) && at < (o.first_offline_at ?? 0) && claim.history.some(h => h.generation === o.generation && same(h.owner, o.owner) && h.reason === `rollover:${r.token}`)) return at;
+    }
+    return undefined;
+  }
+  private successorOnline(owner: Identity, since: number): boolean { return records<{ state: string; from: Identity; to: Identity | null; accepted_at: string | null }>(join(this.c.d.sa, 'coord', 'rollovers')).some(r => r.state === 'accepted' && same(r.from, owner) && Date.parse(r.accepted_at ?? '') >= since && !!r.to && this.c.d.presence(r.to).state === 'online'); }
+  private abandon(run: RunRef, o: Observation): void {
+    this.c.scoped(runScope(run), () => { this.c.locked(() => {
+      const view = this.c.owner(runScope(run)), repo = this.c.owner({ kind: 'repo', id: runScope(run).repo });
+      if (!same(view.owner, o.owner) || view.generation !== o.generation || view.presence.state !== 'offline' || repo.presence.state === 'online' || this.successorOnline(o.owner, o.first_offline_at ?? this.now())) return;
+      const ledger = loadLedger(run.run_id);
+      mutateLedger(ledger, cur => {
+        if (cur.rejected === cur.archon_run_id) return;
+        (cur.intervention_events ??= []).push({ at: new Date(this.now()).toISOString(), action: 'abandon', reason: 'offline_owner_cleanup', origin: 'engine', source: 'superagent', ok: true, evidence: { owner: o.owner, generation: o.generation } });
+        cur.rejected = cur.archon_run_id;
+      });
+    }); });
+  }
+  private maintain(): void {
+    const now = this.now();
+    for (const job of readJobs().jobs) if (job.state === 'lost' && now - Date.parse(job.started_at) >= OFFLINE_CLEANUP_MS && job.launcher && this.c.d.presence(job.launcher).state === 'offline' && !this.successorOnline(job.launcher, Date.parse(job.started_at))) {
+      let repositoryOnline = false; try { repositoryOnline = this.c.owner(repoScope(job.cwd)).presence.state === 'online'; } catch { /* Missing historical repositories have no online owner. */ }
+      if (!repositoryOnline) try { cleanJob(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
+    }
+    const heartbeat = json(join(this.c.d.sa, 'heartbeat.json')) as { marshals?: { owner: Identity | 'unknown'; waiting: { id: string; since?: string; waited_s: number; waiting_for: string; next?: string }[] }[] } | undefined;
+    for (const marshal of heartbeat?.marshals ?? []) for (const item of marshal.waiting) {
+      const since = Date.parse(item.since ?? ''), waited = Number.isFinite(since) ? now - since : item.waited_s * 1000;
+      if (marshal.owner === 'unknown') queueNtfyAlert(`unowned:${item.id}`, `${item.id} 无人负责 → ${item.next ?? '需要明确负责人'}`, {}, '责任清单无人负责');
+      else if (waited >= RESPONSIBILITY_ESCALATION_MS && this.c.d.presence(marshal.owner).state === 'online') queueNtfyAlert(`responsibility:${item.id}`, `${item.id} ${item.waiting_for} → ${item.next ?? '需要处理'}`, {}, '责任清单超时');
+    }
+  }
   observe(): Observation[] {
     this.unavailable.clear();
     const prior = new Map(values<Observation>(this.observations).flatMap(o => {
@@ -35,7 +83,7 @@ export class Reclaimer {
     }));
     const next: Observation[] = [], at = this.now();
     for (const run of this.c.d.runs()) {
-      if (!this.c.isRunOwnershipEvidence(run)) continue;
+      if (!this.c.isRunOwnershipEvidence(run)) { try { if (!['failed', 'cancelled'].includes(this.run(run.archon_run_id, run.repo).status)) continue; } catch { continue; } }
       let scope: ReturnType<typeof runScope>;
       try { scope = runScope(run); } catch { this.unavailable.add(run.run_id); continue; }
       const view = this.c.owner(scope);
@@ -75,13 +123,15 @@ export class Reclaimer {
     const out: ReclaimResult = { transferred: [], unclaimed: [], skipped: [...this.unavailable], skip_reasons: Object.fromEntries([...this.unavailable].map(run => [run, 'repository_unavailable'])), pending: [], historical: [] }, pending = this.latest();
     for (const o of observations) {
       if (o.count < 2 || o.first_offline_at === undefined || o.last_offline_at === undefined || o.last_offline_at - o.first_offline_at < 120_000) continue;
-      if (o.last_online_at === undefined) { out.historical.push(o.run); continue; }
       if (['transferring', 'transferred'].includes(pending.get(o.run)?.state ?? '')) { out.pending.push(o.run); continue; }
       const run = this.c.resolveRun(o.run); if (!run) { out.skipped.push(o.run); continue; }
       let scope: ReturnType<typeof runScope>; try { scope = runScope(run); } catch { if (!out.skipped.includes(o.run)) out.skipped.push(o.run); out.skip_reasons[o.run] = 'repository_unavailable'; continue; }
       const target = this.c.owner({ kind: 'repo', id: scope.repo });
+      const lastOnline = o.last_online_at ?? this.acceptedAt(o, scope);
+      let current; try { current = this.run(run.archon_run_id, run.repo); } catch { if (lastOnline === undefined) out.historical.push(o.run); else out.skipped.push(o.run); continue; }
+      if (['failed', 'cancelled'].includes(current.status) && this.now() - o.first_offline_at >= OFFLINE_CLEANUP_MS && target.presence.state !== 'online') { this.abandon(run, o); continue; }
+      if (lastOnline === undefined) { out.historical.push(o.run); continue; }
       if (!target.owner || target.presence.state !== 'online' || same(target.owner, o.owner)) { out.unclaimed.push(o.run); continue; }
-      let current; try { current = this.run(run.archon_run_id, run.repo); } catch { out.skipped.push(o.run); continue; }
       if (current.nodes?.some(n => n.state === 'running' && /^(?:resync|sync|integrate|publish)-/.test(n.nodeId))) { out.skipped.push(o.run); continue; }
       const entry: Entry = { id: crypto.randomUUID(), run: o.run, from: o.owner, to: target.owner, expected_generation: o.generation, observation: { first_offline_at: o.first_offline_at, last_offline_at: o.last_offline_at, count: o.count }, state: 'transferring', at: new Date(this.now()).toISOString() };
       try { this.c.scoped(scope, () => { this.append(entry); const state = this.finish(run, entry); out[state === 'transferred' ? 'transferred' : state === 'pending' ? 'pending' : 'skipped'].push(o.run); }, 0); } catch { out.skipped.push(o.run); }
@@ -92,6 +142,7 @@ export class Reclaimer {
     this.complete(); const observed = this.observe(), now = this.now(), path = join(this.root, 'schedule.json');
     const state = values<number>(path);
     if (!state.length || now - state[0] >= 300_000) { this.reclaim(observed); this.write(path, { last_reclaim_at: now }); }
+    this.maintain();
   }
 }
 
