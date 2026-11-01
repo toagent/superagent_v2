@@ -34,7 +34,7 @@ const heartbeat = (at = now): Heartbeat => ({
           elapsed_s: 120,
           last_activity_s: 60,
           estimate: unknownProgress(),
-          general: { state: 'idle', idle_s: 300, waiting_command: true, cpu: 8 },
+          general: { state: 'working', spinning: true, idle_s: 300, waiting_command: true, cpu: 8 },
         },
       ],
       waiting: [
@@ -54,8 +54,8 @@ const heartbeat = (at = now): Heartbeat => ({
 test('问题置顶并显示空转、挂起处置和运行详情', () => {
   const output = renderPanel(heartbeat(), tick(), now, allMarshals, 120);
   expect(output.indexOf('需要处理')).toBeLessThan(output.indexOf('进行中'));
-  expect(output).toContain('空转 5m（在等命令）');
-  expect(output).toContain('114127-582a｜demo｜实现心跳面板｜空转 5m（在等命令）');
+  expect(output).toContain('空转 5m（在跑命令）');
+  expect(output).toContain('114127-582a｜demo｜实现心跳面板｜空转 5m（在跑命令）');
   expect(output).toContain('run-2｜demo｜评审轮次用尽｜超时｜已等 30m｜下一步：重新确认 blocker');
   expect(output).toContain('阶段 编码｜执行者 将军·gpt');
   const withoutNext = heartbeat();

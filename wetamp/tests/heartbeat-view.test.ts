@@ -48,7 +48,7 @@ const heartbeat = (
         estimate: { ...unknownProgress(), pct: 50, eta_s: 120, basis: 'linear' as const },
         ...(state === 'unknown'
           ? {}
-          : { general: { state, idle_s: 120, waiting_command: false, cpu: 1 } }),
+          : { general: { state, spinning: false, idle_s: 120, waiting_command: false, cpu: 1 } }),
       })),
     },
   ],
@@ -167,6 +167,14 @@ test('状态图标完整且宽屏双列、普通宽度单列', () => {
   const states = heartbeat(['working', 'idle', 'stalled', 'handed_back', 'unknown']);
   const icons = frame(states, 100, 80);
   for (const icon of ['◐', '■', '↩', '○']) expect(icons).toContain(icon);
+  states.marshals[0]!.running[0]!.general = {
+    state: 'working',
+    spinning: true,
+    idle_s: 300,
+    waiting_command: true,
+    cpu: 8,
+  };
+  expect(frame(states, 100, 80)).toContain('空转 5m（在跑命令）');
   const two = heartbeat(['working', 'working']);
   expect(
     frame(two, 140, 40)

@@ -220,7 +220,8 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     rows: [row('a', owner(1))],
     general: {
       [generalKey('a', 'code-core')]: {
-        state: 'idle',
+        state: 'working',
+        spinning: true,
         idle_s: 420,
         waiting_command: true,
         cpu: 50,
@@ -232,7 +233,7 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
   const online = (): Presence => ({ state: 'online', activity: 'active' });
   const first = heartbeat(snap, cockpit(snap, now), now, online);
   const later = heartbeat(snap, cockpit(snap, now + 60_000), now + 60_000, online);
-  expect(first.marshals[0]?.line).toContain('将军·gpt 空转 7m（在等命令）');
+  expect(first.marshals[0]?.line).toContain('将军·gpt 空转 7m（在跑命令）');
   expect(shouldWriteHeartbeat(first, later, now + 60_000)).toBe(false);
   const volatile = structuredClone(later);
   volatile.marshals[0]!.running[0]!.general = {
@@ -242,6 +243,8 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     root: { pid: 8, command: 'changed' },
   };
   expect(shouldWriteHeartbeat(first, volatile, now + 60_000)).toBe(false);
+  volatile.marshals[0]!.running[0]!.general!.spinning = false;
+  expect(shouldWriteHeartbeat(first, volatile, now + 60_000)).toBe(true);
   expect(shouldWriteHeartbeat(first, { ...later, unowned: 1 }, now + 60_000)).toBe(true);
   expect(shouldWriteHeartbeat(first, later, now + 900_000)).toBe(true);
   const tick = {

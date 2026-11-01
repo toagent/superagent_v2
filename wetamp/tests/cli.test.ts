@@ -1489,7 +1489,7 @@ describe('waitRun (archon stub)', () => {
     const s = stub([run('running')]), who = coordModule.caller(), other = { ...who, pid: who.pid + 1 };
     const stall = (at: number, runs: Record<string, object>) => writeFileSync(join(s.root, 'home/stall.json'), JSON.stringify({ at: new Date(at).toISOString(), runs }));
     const episode = (id: string) => ({ node: 'code-core', startedAt: new Date().toISOString(), entries: '', mtime: 0, progressAt: 0,
-      state: 'idle', idle_s: 301, waiting_command: true, cpu: 12, root: { pid: 7, command: 'bun test' }, episode: { id, since: new Date().toISOString() } });
+      state: 'idle', spinning: true, idle_s: 301, waiting_command: true, cpu: 12, root: { pid: 7, command: 'bun test' }, episode: { id, since: new Date().toISOString() } });
     const nativeWait = archonMod.waitNotification; let waits = 0;
     const sliced = spyOn(archonMod, 'waitNotification').mockImplementation((...args) => {
       const result = nativeWait(...args); if (++waits === 1) stall(Date.now(), { sa1: episode('e1') }); return result;

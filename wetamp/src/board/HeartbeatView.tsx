@@ -31,6 +31,8 @@ const age = (seconds: number | null, drift: number, recent = false): string => {
 };
 const generalLabel = (run: PanelRun, drift: number): string => {
   const idle = panelDuration((run.generalDetails?.idle_s ?? 0) + drift);
+  if (run.general === 'working' && run.generalDetails?.spinning)
+    return `空转 ${idle}（在跑命令）`;
   return {
     working: '干活',
     idle: `空转 ${idle}${run.generalDetails?.waiting_command ? '（在等命令）' : ''}`,
