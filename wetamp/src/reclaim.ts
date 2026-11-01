@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 // prettier-ignore
 import { Coordination, coord, identityKey, runScope, same, type Identity, type RunRef } from './coord';
@@ -7,11 +6,9 @@ import { getRun, runStatuses } from './archon';
 import { writeAtomic } from './config';
 import { loadLedger, mutateLedger } from './ledger';
 import { cleanJob, readJobs } from './jobs';
-import { queueNtfyAlert } from './ntfy';
 
 const OFFLINE_CLEANUP_MS = 24 * 60 * 60_000; // Cross one night before terminal cleanup.
 const LOST_JOB_CLEANUP_MS = 60 * 60_000;
-const RESPONSIBILITY_ESCALATION_MS = 30 * 60_000; // PagerDuty-style second escalation.
 const abandoned = (run: RunRef): boolean =>
   run.rejected === run.archon_run_id &&
   !!run.intervention_events?.some(event => event.action === 'abandon' && event.ok);
@@ -24,8 +21,6 @@ interface Entry { id: string; run: string; from: Identity; to: Identity; expecte
 export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; skip_reasons: Record<string, 'repository_unavailable'>; pending: string[]; historical: string[] }
 // prettier-ignore
 const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
-// prettier-ignore
-const json = (path: string): unknown => { try { return JSON.parse(readFileSync(path, 'utf8')) as unknown; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; } };
 // prettier-ignore
 const records = <T>(path: string): T[] => { try { return readdirSync(path).filter(file => file.endsWith('.json')).map(file => JSON.parse(readFileSync(join(path, file), 'utf8')) as T); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
 
@@ -70,26 +65,9 @@ export class Reclaimer {
   private maintain(observations: Observation[]): void {
     const now = this.now();
     const offlineJobs = new Map(observations.filter(o => o.kind === 'job').map(o => [o.run, o]));
-    const cleanedJobs = new Set<string>();
     for (const job of readJobs().jobs) if (job.state === 'lost' && job.launcher) {
       const observed = offlineJobs.get(job.id);
-      if (observed?.first_offline_at !== undefined && now - observed.first_offline_at >= LOST_JOB_CLEANUP_MS) try { cleanJob(job.id); cleanedJobs.add(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
-    }
-    interface Waiting { id: string; kind?: string; since?: string; waited_s: number; waiting_for: string; next?: string }
-    const heartbeat = json(join(this.c.d.sa, 'heartbeat.json')) as { marshals?: { owner: Identity | 'unknown'; project: string; waiting: Waiting[] }[] } | undefined;
-    const groups = new Map<string, { owner: Identity | 'unknown'; project: string; waiting: Waiting[] }>();
-    for (const marshal of heartbeat?.marshals ?? []) for (const item of marshal.waiting) {
-      if (item.kind === 'job' && cleanedJobs.has(item.id)) continue;
-      const since = Date.parse(item.since ?? ''), waited = Number.isFinite(since) ? now - since : item.waited_s * 1000;
-      if (marshal.owner !== 'unknown' && (waited < RESPONSIBILITY_ESCALATION_MS || this.c.d.presence(marshal.owner).state !== 'online')) continue;
-      const key = JSON.stringify([marshal.owner === 'unknown' ? 'unknown' : identityKey(marshal.owner), marshal.project]), group = groups.get(key) ?? { owner: marshal.owner, project: marshal.project, waiting: [] };
-      group.waiting.push(item); groups.set(key, group);
-    }
-    for (const group of groups.values()) {
-      const ids = group.waiting.map(item => item.id).sort(), digest = createHash('sha256').update(JSON.stringify(ids)).digest('hex').slice(0, 16), shown = group.waiting.slice(0, 5);
-      const message = [...shown.map(item => `${item.id.slice(0, 15)} ${item.waiting_for} → ${item.next ?? '需要处理'}`), ...(group.waiting.length > 5 ? [`等 ${String(group.waiting.length - 5)} 项`] : [])].join('\n');
-      const title = group.owner === 'unknown' ? `${group.project} 无人负责有 ${String(group.waiting.length)} 项未处理` : `${group.project} 元帅（${group.owner.client} ${group.owner.session_id?.slice(0, 8) ?? `pid:${String(group.owner.pid)}`}）有 ${String(group.waiting.length)} 项超 30 分钟未处理`;
-      queueNtfyAlert(`responsibility:${createHash('sha256').update(JSON.stringify([group.owner === 'unknown' ? 'unknown' : identityKey(group.owner), group.project])).digest('hex').slice(0, 12)}:${digest}`, message, {}, title);
+      if (observed?.first_offline_at !== undefined && now - observed.first_offline_at >= LOST_JOB_CLEANUP_MS) try { cleanJob(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
     }
   }
   observe(): Observation[] {

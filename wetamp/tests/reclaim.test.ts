@@ -137,12 +137,11 @@ test('accepted rollover rehabilitates legacy evidence while aged terminal owners
 });
 
 // prettier-ignore
-test('tick retires lost jobs after one hour and batches responsibility alerts by owner and project', () => {
+test('tick retires lost jobs after one hour without sending responsibility alerts', () => {
   let now = 0; const notifier = { ...b, session_id: 'notify-session' }, s = setup(who => same(who, notifier) ? { state: 'online', activity: 'idle' } : { state: 'offline' }); mkdirSync(join(s.sa, 'jobs')); writeFileSync(join(s.sa, 'jobs/lost.json'), JSON.stringify({ id: 'lost', title: 'lost', kind: 'codex', tier: 'general', cwd: s.run.repo, launcher: a, wrapper_pid: 99999999, pid: 99999999, started_at: new Date(0).toISOString(), state: 'running' }));
   const waiting = (id: string) => ({ id, ...(id === 'lost' ? { kind: 'job' } : {}), since: new Date(0).toISOString(), waited_s: 0, waiting_for: `处理${id}`, next: `next-${id}` }), heartbeat = (ids: string[]) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: notifier, project: 'BestIFA', waiting: ids.map(waiting) }] }));
-  const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' })), state = () => JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')), ended = () => JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at;
+  const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' })), ended = () => JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at;
   heartbeat(['late-a', 'late-b', 'lost']); r.tick(); expect(ended()).toBeUndefined(); now = 59 * 60_000; r.tick(); expect(ended()).toBeUndefined();
-  expect(state().alerts).toHaveLength(1); expect(state().alerts[0]).toMatchObject({ title: 'BestIFA 元帅（claude notify-s）有 3 项超 30 分钟未处理', message: 'late-a 处理late-a → next-late-a\nlate-b 处理late-b → next-late-b\nlost 处理lost → next-lost' });
-  r.tick(); expect(state().alerts).toHaveLength(1); heartbeat(['late-a', 'late-b', 'late-c', 'lost']); now = 61 * 60_000; r.tick();
-  expect(ended()).toBeDefined(); expect(state().alerts).toHaveLength(2); expect(state().alerts[1].message).not.toContain('lost');
+  expect(existsSync(join(s.sa, 'ntfy/state.json'))).toBe(false); heartbeat(['late-a', 'late-b', 'late-c', 'lost']); now = 61 * 60_000; r.tick();
+  expect(ended()).toBeDefined(); expect(existsSync(join(s.sa, 'ntfy/state.json'))).toBe(false);
 });
