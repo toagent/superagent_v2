@@ -330,6 +330,7 @@ function mechanize(signature: string, reasons: string[], episode: string): void 
       signature,
       episodes: [...new Set([...previous.episodes, episode])],
       reasons: [...new Set([...previous.reasons, ...reasons])],
+      ...(previous.resolved ? { resolved: previous.resolved } : {}),
       ...(previous.handoff ? { handoff: previous.handoff } : {}),
       invariant: 'I1/I2/I5/I6',
       requirement: '用 episode 证据建立事故回放，将重复失败转为确定性机制。',
@@ -341,7 +342,12 @@ interface Outcome {
   state: 'done' | 'rejected';
   at: string;
 }
-type Mechanism = { episodes: string[]; reasons: string[]; signature?: string } & {
+type Mechanism = {
+  episodes: string[];
+  reasons: string[];
+  signature?: string;
+  resolved?: string[];
+} & {
   handoff?: { id: string; state: string; episodes: number; seen?: string[]; outcomes?: Outcome[] };
 };
 const mechanismAccuracy = (signature: string): string => {
@@ -397,7 +403,18 @@ export function deliverEngineDefects(asks?: Asks): void {
           writeAtomic(file, JSON.stringify({ ...mechanism, handoff: { ...previous, state } }));
         continue;
       }
+      const outcomes = previous?.outcomes ?? [],
+        settled =
+          (message?.state === 'done' || message?.state === 'rejected') &&
+          !outcomes.some(outcome => outcome.id === message.id)
+            ? [...outcomes, { id: message.id, state: message.state, at: new Date().toISOString() }]
+            : outcomes,
+        resolved = new Set(mechanism.resolved ?? []);
+      if (message?.state === 'done')
+        for (const id of previous?.seen ?? mechanism.episodes.slice(0, previous?.episodes ?? 0))
+          resolved.add(id);
       const evidence = mechanism.episodes.flatMap(id => {
+          if (resolved.has(id)) return [];
           const episode = episodeOf(id),
             current = episode && diagnosis(episode);
           if (
@@ -414,26 +431,25 @@ export function deliverEngineDefects(asks?: Asks): void {
               : liveDefect(episode, asks, jobs);
           return diagnostic ? [{ episode, diagnostic }] : [];
         }),
-        outcomes = previous?.outcomes ?? [],
-        settled =
-          (message?.state === 'done' || message?.state === 'rejected') &&
-          !outcomes.some(outcome => outcome.id === message.id)
-            ? [...outcomes, { id: message.id, state: message.state, at: new Date().toISOString() }]
-            : outcomes,
         seen = new Set(
           previous?.seen ?? (previous ? mechanism.episodes.slice(0, previous.episodes) : [])
         ),
         unseen = evidence.filter(({ episode }) => !seen.has(episode.id)),
         silenced =
-          settled.length >= 2 && settled.slice(-2).every(outcome => outcome.state === 'rejected');
+          settled.length >= 2 && settled.slice(-2).every(outcome => outcome.state === 'rejected'),
+        resolvedChanged = resolved.size !== (mechanism.resolved?.length ?? 0);
       if (
         !evidence.length ||
         (previous && (!['done', 'rejected'].includes(state ?? '') || !unseen.length || silenced))
       ) {
-        if (previous && (state !== previous.state || settled !== outcomes))
+        if (previous && (state !== previous.state || settled !== outcomes || resolvedChanged))
           writeAtomic(
             file,
-            JSON.stringify({ ...mechanism, handoff: { ...previous, state, outcomes: settled } })
+            JSON.stringify({
+              ...mechanism,
+              resolved: [...resolved],
+              handoff: { ...previous, state, outcomes: settled },
+            })
           );
         if (silenced && unseen.length) memoryLog(`engine_handoff_silenced:${signature}`);
         continue;
@@ -461,6 +477,7 @@ export function deliverEngineDefects(asks?: Asks): void {
         seen: evidence.map(({ episode }) => episode.id),
         outcomes: settled,
       };
+      mechanism.resolved = [...resolved];
       writeAtomic(file, JSON.stringify(mechanism));
     } catch {
       memoryLog('engine_handoff_failed');

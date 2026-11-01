@@ -465,6 +465,28 @@ describe('EV1 incident replay', () => {
         .filter(m => !m.type)
     ).toHaveLength(3);
   });
+  test('historical samples fold after repair while a new defect still triggers handoff', () => {
+    const historical = engineEpisode({ id: 'historical-fixed' });
+    saveEpisode(historical);
+    deliverEngineDefects();
+    const first = coordination.coord().messages()[0],
+      owner = { ...first.sender, client: 'engine-owner' };
+    coordination.coord().claim(first.scope, owner);
+    coordination.coord().ack(first.id, owner, 'done', 'fixed');
+    deliverEngineDefects();
+    const mechanismFile = join(sa, 'memory/mechanize/engine_suspect.json');
+    expect(JSON.parse(readFileSync(mechanismFile, 'utf8')).resolved).toEqual(['historical-fixed']);
+
+    saveEpisode({ ...historical, id: 'new-defect' });
+    expect(JSON.parse(readFileSync(mechanismFile, 'utf8')).resolved).toEqual(['historical-fixed']);
+    deliverEngineDefects();
+    const regression = coordination
+      .coord()
+      .messages()
+      .find(message => message.body.includes('run_ids: new-defect'))!;
+    expect(regression.body).toContain('occurrences: 1');
+    expect(regression.body).not.toContain('run_ids: historical-fixed');
+  });
   test('two rejected outcomes silence a signature until a done outcome restores it', () => {
     const first = engineEpisode({ id: 'false-a' });
     saveEpisode(first);
