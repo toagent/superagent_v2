@@ -1,9 +1,11 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { admitRun, lock, pidAlive as archonPidAlive } from '../src/archon';
+import { inspectProcess } from '../src/launcher';
+import { executionAdmissionWait } from '@archon/workflows/execution-lifecycle';
 import { EXIT_ADMISSION } from '../src/cli';
 import { home, WETAMP } from '../src/config';
 import { fixturePlan, gitRepo, sh, tmp } from '../tests/helpers';
@@ -23,6 +25,7 @@ function withHome(fn: (db: Database) => void): void {
   try {
     fn(db);
   } finally {
+    mock.restore();
     db.close();
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -58,12 +61,16 @@ describe('run admission', () => {
   test('launch reservations retain unknown/live effects and clear only confirmed dead children', () =>
     withHome(() => {
       const path = join(home().archon, 'run-admission.json');
+      let now = 0;
+      spyOn(executionAdmissionWait, 'now').mockImplementation(() => now);
+      spyOn(executionAdmissionWait, 'sleep').mockImplementation(ms => void (now += ms));
       for (const old of [
         { host: hostname() },
-        { host: hostname(), pid: process.pid, pid_start: 'known' },
+        { host: hostname(), pid: process.pid, pid_start: inspectProcess(process.pid).start },
       ]) {
+        now = 0;
         writeFileSync(path, JSON.stringify(old));
-        expect(admitRun()).toMatchObject({ ok: false, reason: 'launch_reserved' });
+        expect(admitRun()).toMatchObject({ reason: 'launch_reserved', waited_ms: 2_000 });
         expect(existsSync(path)).toBe(true);
       }
       writeFileSync(

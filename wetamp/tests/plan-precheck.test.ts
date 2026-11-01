@@ -116,7 +116,7 @@ test('an unresolved repeated mechanism signature blocks until a promoted PV1 pas
   const saved = [process.env.SUPERAGENT_HOME, process.env.SUPERAGENT_MEMORY];
   process.env.SUPERAGENT_HOME = home;
   const episode = (id: string, days: number, signature = 'verify:scope') => writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, project: root,
-    reasons: ['scope_violation'], signature, at: new Date(Date.now() - days * 86400_000).toISOString() }));
+    reasons: ['scope_violation'], signature, status: 'failed', at: new Date(Date.now() - days * 86400_000).toISOString() }));
   try {
     episode('one', 3); episode('two', 2); episode('other', 1, 'integrate:scope');
     expect(planPrecheck(subject, root).blocking).toEqual([]);
@@ -138,4 +138,20 @@ test('an unresolved repeated mechanism signature blocks until a promoted PV1 pas
     if (saved[0] === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = saved[0];
     if (saved[1] === undefined) delete process.env.SUPERAGENT_MEMORY; else process.env.SUPERAGENT_MEMORY = saved[1];
   }
+});
+
+// prettier-ignore
+test('duration overruns only block for failed runs; completed runs stay informational', () => {
+  const root = fixture(), home = tmp(), dir = join(home, 'memory/episodes'), subject = plan(root, [], []), saved = process.env.SUPERAGENT_HOME;
+  mkdirSync(dir, { recursive: true }); process.env.SUPERAGENT_HOME = home;
+  const episode = (id: string, status: string) => writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, project: root, status,
+    reasons: [], signature: 'duration_overrun', at: new Date(Date.now() - 86400_000).toISOString() }));
+  try {
+    for (const id of ['done-1', 'done-2', 'done-3']) episode(id, 'completed');
+    episode('stale-running', 'running');
+    const completed = planPrecheck(subject, root);
+    expect(completed.blocking).toEqual([]); expect(completed.info.join('\n')).toContain('3 个已完成 run 超时长');
+    for (const id of ['failed-1', 'failed-2', 'failed-3']) episode(id, 'failed');
+    expect(planPrecheck(subject, root).blocking.join('\n')).toMatch(/duration_overrun 3 次.*failed-/);
+  } finally { if (saved === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = saved; }
 });
