@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -2088,6 +2089,7 @@ function auxiliaryFixture(
   const policy = join(root, 'policy.json'),
     archon = join(root, 'archon-stub');
   cpSync(join(import.meta.dir, '../templates/.archon/scripts'), root, { recursive: true });
+  symlinkSync(join(import.meta.dir, '../bin/archon'), join(root, 'archon'));
   writeFileSync(
     policy,
     JSON.stringify({
@@ -2215,7 +2217,7 @@ for (const kind of ['accept', 'settle', 'env'])
     else {
       expect(r.out).toMatchObject({ ok: false, base_pass: false });
       expect(r.code).toBe(kind === 'settle' ? 1 : 0);
-      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(5);
+      expect(r.calls.filter(c => c.cmd[0] === 'bash')).toHaveLength(0);
     }
   });
 
@@ -3579,6 +3581,18 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       runScript(repo, { kind: 'accept', plan: planFile(root, 'true'), pkgs: 'a', tag: 'verify-a' })
         .out
     ).toMatchObject({ ok: false });
+  });
+  test('non-resource check timeout reaps process tree', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      child = join(root, 'child.pid'),
+      plan = planFile(root, `sh -c "sleep 60 & echo \\$! > '${child}'; wait"`, [], false, 0.1);
+    const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' });
+    expect(result.out, result.err).toMatchObject({
+      ok: false,
+      command_results: [{ exit: null, pass: null }],
+    });
+    expect(() => process.kill(Number(readFileSync(child, 'utf8')), 0)).toThrow();
   });
   test('accept: timeout kills the command and fails it', () => {
     const root = tmp();

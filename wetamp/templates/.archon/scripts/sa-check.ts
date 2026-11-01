@@ -778,37 +778,36 @@ async function run(
       if (remaining <= 0) return [undefined, 'timeout', undefined, false, Date.now() - t0] as const;
       // prettier-ignore
       const commandEnvironment = c.resource === 'heavy-test' ? { ...commandEnv, SA_HEAVY_LOCK_HELD: '1' } : commandEnv;
-      let p: { exitCode: number | null; signalCode: string | null; stdout: Buffer; stderr: Buffer };
       // prettier-ignore
-      if (c.resource) {
-        const { recordNodeProcessTrees, runStreamingSubprocess } = await subprocessOutput();
-        const recorder = recordNodeProcessTrees();
-        const sequence = String(resourceOutputSequence++), stdoutPath = `${log}.${sequence}.stdout`, stderrPath = `${log}.${sequence}.stderr`;
-        let failure: StreamedSubprocessError | undefined;
-        try {
-          await runStreamingSubprocess({
-            cmd: 'bash', args: ['-c', command], cwd: cwd ?? process.cwd(), env: commandEnvironment,
-            timeout: remaining, credentialValues: [], stdoutPath, stderrPath,
-          });
-        } catch (error) {
-          failure = error as StreamedSubprocessError;
-        } finally {
-          await recorder.end(); recorder.release();
-        }
-        p = {
-          exitCode: failure ? (typeof failure.code === 'number' ? failure.code : null) : 0,
-          signalCode: failure?.signal ?? (failure?.killed ? 'SIGTERM' : null),
-          stdout: readFileSync(stdoutPath), stderr: readFileSync(stderrPath),
-        };
-      } else {
-        const result = Bun.spawnSync(['bash', '-c', command], {
-          cwd, env: commandEnvironment, stdout: 'pipe', stderr: 'pipe', timeout: remaining,
+      const { recordNodeProcessTrees, runStreamingSubprocess } = await subprocessOutput();
+      const recorder = recordNodeProcessTrees();
+      const sequence = String(resourceOutputSequence++),
+        stdoutPath = `${log}.${sequence}.stdout`,
+        stderrPath = `${log}.${sequence}.stderr`;
+      let failure: StreamedSubprocessError | undefined;
+      try {
+        await runStreamingSubprocess({
+          cmd: 'bash',
+          args: ['-c', command],
+          cwd: cwd ?? process.cwd(),
+          env: commandEnvironment,
+          timeout: remaining,
+          credentialValues: [],
+          stdoutPath,
+          stderrPath,
         });
-        p = {
-          exitCode: result.exitCode, signalCode: result.signalCode ?? null,
-          stdout: result.stdout, stderr: result.stderr,
-        };
+      } catch (error) {
+        failure = error as StreamedSubprocessError;
+      } finally {
+        await recorder.end();
+        recorder.release();
       }
+      const p = {
+        exitCode: failure ? (typeof failure.code === 'number' ? failure.code : null) : 0,
+        signalCode: failure?.signal ?? (failure?.killed ? 'SIGTERM' : null),
+        stdout: readFileSync(stdoutPath),
+        stderr: readFileSync(stderrPath),
+      };
       const code = p.exitCode,
         displayedExit = p.signalCode ? `signal ${p.signalCode}` : (code ?? 'unknown');
       const structured = outputReport

@@ -68,6 +68,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'const recorder = recordNodeProcessTrees();',
+    to: 'const recorder = c.resource ? recordNodeProcessTrees() : { end: async () => undefined, release: () => undefined };',
+    test: 'tests/sa-check.test.ts',
+    name: 'non-resource check timeout reaps process tree',
+    expectedError: 'expect(received).toThrow()',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'LOCKFILES.has(basename(path))',
     to: 'false',
     test: 'tests/sa-check.test.ts',
