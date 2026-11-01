@@ -2497,7 +2497,7 @@ describe('decide (archon stub)', () => {
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts', scope), 'utf8')).toBe('1');
   });
   // prettier-ignore
-  test('scope approval is content-bound across review rounds and budget rejection cancels', () => {
+  test('scope decision request holds for approval and approval is content-bound', () => {
     const scope = stub([run('failed', { nodes: [{ nodeId: 'diff-m1-r2', state: 'failed' }] })]);
     packageRework(scope);
     const art = join(scope.root, 'out/artifacts/runs/r');

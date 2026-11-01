@@ -1006,6 +1006,15 @@ function saveCoder(tag: string, raw: string, errorClassIgnored = false): void {
   );
 }
 
+function onlyScopeDecision(raw: string): boolean {
+  try {
+    const needs = (JSON.parse(raw) as Coder).needs;
+    return !!needs?.length && needs.every(need => need.cap === 'scope_decision');
+  } catch {
+    return false;
+  }
+}
+
 /** Route structured blocks without turning acceptance failures into human waits. */
 export function nextDisposition(decision: DeliveryDecision): Disposition {
   const reason = reasons.find(r => r.code === decision.reason);
@@ -1458,29 +1467,33 @@ async function acceptOnce(
       failure.evidence = `${approvalPath}; ${candidate.report}`;
     } else adjudication ??= pending;
   }
-  const result = disposition(
-    coder,
-    ok,
-    {
+  const scopeDecisionRequest = ok && scope.out_of_scope.length > 0 && onlyScopeDecision(coder);
+  const result = {
+    ...disposition(
+      scopeDecisionRequest ? '' : coder,
       ok,
-      requirement_contract: requirementContract,
-      command_results: commandResults,
-      diff_hash: hash,
-      no_changes: noChanges,
-      same: false,
-      failed,
-      failures,
-      ...(adjudication ? { adjudication } : {}),
-      workspace_clean: !dirty,
-      log,
-      ...baseline,
-    },
-    env('ARCHON') && reviewRounds !== undefined
-      ? permissionEvidence(runEvents(), ids, env('MILESTONE'), reviewRounds)
-      : [],
-    join(artifacts, `${tag}.coder.json`),
-    reviewRounds
-  );
+      {
+        ok,
+        requirement_contract: requirementContract,
+        command_results: commandResults,
+        diff_hash: hash,
+        no_changes: noChanges,
+        same: false,
+        failed,
+        failures,
+        ...(adjudication ? { adjudication } : {}),
+        workspace_clean: !dirty,
+        log,
+        ...baseline,
+      },
+      env('ARCHON') && reviewRounds !== undefined
+        ? permissionEvidence(runEvents(), ids, env('MILESTONE'), reviewRounds)
+        : [],
+      join(artifacts, `${tag}.coder.json`),
+      reviewRounds
+    ),
+    ...(scopeDecisionRequest ? { self_report_conflict: true as const } : {}),
+  };
   const falseHandback =
     env('ARCHON') && reviewRounds !== undefined
       ? falseHandbackEvidence(runEvents(), coder)
@@ -1518,10 +1531,11 @@ async function acceptOnce(
     });
   const scopeApproval =
     scope.out_of_scope.length > 0 &&
-    approvableScopeTests(
-      scope.out_of_scope,
-      covered.flatMap(k => k.scope.write)
-    );
+    (scopeDecisionRequest ||
+      approvableScopeTests(
+        scope.out_of_scope,
+        covered.flatMap(k => k.scope.write)
+      ));
   const scopeBlobs = scopeApproval
     ? Object.fromEntries(
         [...scope.out_of_scope].sort().map(path => [path, git('rev-parse', `HEAD:${path}`).trim()])

@@ -5005,6 +5005,36 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     sh('git add tests/a.test.ts && git -c user.name=t -c user.email=t@l commit -qm changed-test', repo);
     expect(go('G1')).toMatchObject({ disposition: 'fail', reason: 'scope_approval' });
   }, testTimeout(15_000));
+  test('scope decision request holds for approval only when acceptance passes', () => {
+    // prettier-ignore
+    const root = tmp(), repo = gitRepo(root), base = sh('git rev-parse HEAD', repo).trim();
+    for (const path of ['schema.json', 'generated.ts', 'heartbeat.ts'])
+      writeFileSync(join(repo, path), `${path}\n`);
+    // prettier-ignore
+    sh('git add schema.json generated.ts heartbeat.ts && git -c user.name=t -c user.email=t@l commit -qm outside', repo);
+    const plan = join(root, 'plan.json'),
+      policy = join(root, 'policy.json');
+    // prettier-ignore
+    const writePlan = (cmd: string) => writeFileSync(plan, JSON.stringify({ packages: [{ id: 'a', scope: { write: ['owned/'] }, accept: [{ cmd, timeout_s: 5 }] }] }));
+    writePlan('true');
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    const scopeNeed = { cap: 'scope_decision', why: 'required files', minimal_ask: 'approve' };
+    // prettier-ignore
+    const go = (needs: object[]) => runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a', base, risk: 'G1', policy, coder: JSON.stringify({ status: 'blocked', error_class: 'scope_violation', needs }) }).out;
+    const held = go([scopeNeed]) as { diff_hash: string; scope_blobs: Record<string, string> };
+    expect(held).toMatchObject({
+      disposition: 'fail',
+      reason: 'scope_approval',
+      out_of_scope: ['generated.ts', 'heartbeat.ts', 'schema.json'],
+    });
+    mkdirSync(join(root, 'approvals'));
+    // prettier-ignore
+    writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ files: Object.keys(held.scope_blobs).sort(), blobs: held.scope_blobs }));
+    expect(go([scopeNeed])).toMatchObject({ disposition: 'advance' });
+    expect(go([scopeNeed, { cap: 'environment' }])).toMatchObject({ reason: 'coder_needs' });
+    writePlan('false');
+    expect(go([scopeNeed])).toMatchObject({ reason: 'coder_needs' });
+  });
   test('unknown kind fails loudly', () => {
     const root = tmp();
     expect(runScript(gitRepo(root), { kind: 'bogus' }).code).not.toBe(0);

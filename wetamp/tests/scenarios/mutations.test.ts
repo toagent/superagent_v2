@@ -68,6 +68,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: "scopeDecisionRequest ? '' : coder",
+    to: 'coder',
+    test: 'tests/sa-check.test.ts',
+    name: 'scope decision request holds for approval',
+    expectedError: 'scope_approval',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'const recorder = recordNodeProcessTrees();',
     to: 'const recorder = c.resource ? recordNodeProcessTrees() : { end: async () => undefined, release: () => undefined };',
     test: 'tests/sa-check.test.ts',
