@@ -117,6 +117,20 @@ export interface DecisionSourceState {
   at?: string;
 }
 
+export interface NtfyAnswerOutcome {
+  result: string;
+  executed: boolean;
+}
+const answerOutcome = (value: unknown): NtfyAnswerOutcome | undefined => {
+  if (!value || typeof value !== 'object') return;
+  const record = value as Record<string, unknown>,
+    result = record.result,
+    executed = record.executed;
+  return typeof result === 'string' && typeof executed === 'boolean'
+    ? { result, executed }
+    : undefined;
+};
+
 interface NtfyState {
   version: 1;
   cursor?: string;
@@ -628,7 +642,7 @@ function parseAnswer(message: unknown): SignedAnswer | undefined {
 }
 
 export async function syncNtfy(
-  onAnswer: (decision: NtfyAsk & { id: string }, option: string) => void | Promise<void>,
+  onAnswer: (decision: NtfyAsk & { id: string }, option: string) => unknown,
   supplied: Partial<NtfyConfig> = {},
   onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined
 ): Promise<{ accepted: number; ignored: number; failed: number }> {
@@ -738,15 +752,18 @@ export async function syncNtfy(
         state.used_nonces[answer.nonce] = config.now();
         state.cursor = event.id;
         try {
-          await onAnswer(decision, answer.option);
+          const outcome = answerOutcome(await onAnswer(decision, answer.option));
           decision.status = 'answered';
           decision.answer = answer.option;
-          const label = optionLabel(decision, answer.option);
+          const label = optionLabel(decision, answer.option),
+            executed = outcome?.executed ?? true;
           receipt(
             state,
             `receipt:${decision.id}:${answer.option}`,
-            `${gate ? '已收到' : '已记录'}：${label}｜${decisionPresentation(decision).title}`,
-            gate ? `已收到你的『${label}』，正在执行（门禁 ${gate}）` : '本次点按已执行',
+            `${gate ? '已收到' : executed ? '已记录' : '未执行'}：${label}｜${decisionPresentation(decision).title}`,
+            gate
+              ? `已收到你的『${label}』，正在执行（门禁 ${gate}）`
+              : (outcome?.result ?? '本次点按已执行'),
             config.now()
           );
           accepted++;

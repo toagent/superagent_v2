@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { Coordination, runScope, same, type Identity, type Presence, type RunRef } from '../src/coord';
 import { lock } from '../src/archon';
 import { answerHeldOwnerAsk, Reclaimer, reclaimCoord } from '../src/reclaim';
+import { publishPendingNtfy, syncNtfy, type NtfyConfig } from '../src/ntfy';
 import { gitRepo, tmp } from './helpers';
 
 // prettier-ignore
@@ -163,14 +164,18 @@ test('held owner online groups aged runs, applies yes with CAS, and reports ever
 });
 
 // prettier-ignore
-test('held owner online no keeps the run, reminds once, and stale pending asks are withdrawn', () => {
-  const now = 2_000_000_000_000, s = setup(() => ({ state: 'online', activity: 'idle' })), r = new Reclaimer(s.c, () => now); s.c.d.status = () => 'paused';
-  const heartbeat = (waiting: unknown[], held_runs = ['r1']) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ held_runs, marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting }] })), item = { id: 'r1', kind: 'decision', since: new Date(now - 86_400_000).toISOString(), what: 'package', waiting_for: 'human', waited_s: 86_400 };
-  heartbeat([item]); r.tick(); const first = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')), id = Object.keys(first.decisions)[0]!;
-  expect(answerHeldOwnerAsk(id, id, 'no', s.c, b, now)).toEqual(['r1:ok:kept']); r.tick();
+test('held owner online no keeps the run, reminds once, and stale pending asks are withdrawn', async () => {
+  let presence: Presence['state'] = 'offline'; const now = 2_000_000_000_000, s = setup(who => same(who, a) ? presence === 'online' ? { state: presence, activity: 'idle' } : { state: presence } : { state: 'online', activity: 'idle' }), r = new Reclaimer(s.c, () => now); s.c.d.status = () => 'paused';
+  const heartbeat = (waiting: unknown[], held_runs = ['r1']) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ held_runs, marshals: [{ owner: a, project: 'BestIFA', cwd: s.run.repo, waiting }] })), item = (waited_s: number) => ({ id: 'r1', kind: 'decision', since: new Date(now - waited_s * 1000).toISOString(), what: 'package', waiting_for: 'human', waited_s });
+  heartbeat([item(86_400)]); r.tick(); presence = 'unknown'; r.tick(); presence = 'online'; heartbeat([item(86_399)]); r.tick(); expect(existsSync(join(s.sa, 'ntfy/state.json'))).toBe(false);
+  heartbeat([item(86_400)]); r.tick(); r.tick(); const first = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')), id = Object.keys(first.decisions)[0]!; expect(Object.keys(first.decisions)).toHaveLength(1);
+  const events: string[] = [], posts: Record<string, unknown>[] = [], publisherToken = join(s.root, 'publisher'), answerToken = join(s.root, 'answer'); writeFileSync(publisherToken, 'publisher\n', { mode: 0o600 }); writeFileSync(answerToken, 'answer\n', { mode: 0o600 });
+  const config: NtfyConfig = { baseUrl: 'http://ntfy.test', publisherToken, answerToken, answerKey: join(s.sa, 'ntfy/answer.key'), statePath: join(s.sa, 'ntfy/state.json'), now: () => now, fetch: (async (request, init) => { if (new URL(String(request)).pathname === '/sa-answers/json') return new Response(events.splice(0).join('\n')); posts.push(JSON.parse(String(init?.body)) as Record<string, unknown>); return new Response('{}'); }) as typeof fetch };
+  await publishPendingNtfy(config); const action = JSON.parse(String((posts[0]!.actions as { body: string }[])[1]!.body)); events.push(JSON.stringify({ id: 'answer', event: 'message', message: JSON.stringify(action) })); await syncNtfy((decision, option) => { answerHeldOwnerAsk(decision.callback.kind === 'held' ? decision.callback.ref : '', decision.id, option, s.c, b, now); }, config); r.tick();
+  const answered = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')); expect(answered.decisions[id].status).toBe('answered'); expect(Object.keys(answered.decisions)).toHaveLength(1);
   expect(JSON.parse(readFileSync(join(s.sa, 'runs/r1.json'), 'utf8')).rejected).toBeUndefined(); expect(s.c.inbox(a).filter(message => message.title === 'held run 保留提醒')).toHaveLength(1);
   heartbeat([], []); r.tick(); expect(JSON.parse(readFileSync(join(s.sa, 'reclaim/held-online.json'), 'utf8'))).toEqual([]);
-  const pending = JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')); expect(pending.decisions[id].status).toBe('superseded');
+  expect(JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')).decisions[id].status).toBe('answered');
 });
 
 // prettier-ignore

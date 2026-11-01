@@ -3460,16 +3460,18 @@ export async function syncDecisionChannel(
         return;
       }
       if (decision.callback.kind === 'held') {
-        answerHeld(decision.callback.ref, decision.id, option);
+        const results = answerHeld(decision.callback.ref, decision.id, option),
+          result = results.length ? results.join('；') : '无匹配 run',
+          executed = results.some(item => item.includes(':ok:'));
         if (decision.originator)
           coord().receipt(
             decision.originator.scope,
             caller(true),
             decision.originator.identity,
             decision.id,
-            option
+            `${option}；${result}`
           );
-        return;
+        return { result, executed };
       }
       const callbackKey = decision.callback.key,
         asks = loadAsks(),
@@ -3478,6 +3480,7 @@ export async function syncDecisionChannel(
       const [currentKey, current] = entry;
       current.status = option;
       saveAsk(asks, currentKey);
+      return undefined;
     },
     supplied,
     decision => {

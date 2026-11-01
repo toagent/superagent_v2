@@ -171,10 +171,12 @@ describe('ntfy decision channel', () => {
     expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜No｜sent', message: expect.stringContaining('由引擎在') });
   });
   test('held owner online answers route through the dedicated callback once', async () => {
-    const f = fixture(), ref = 'a'.repeat(64), handled: string[] = [], id = askNtfy({ ...f.request(ref), callback: { kind: 'held', ref } }, f.config);
+    const f = fixture(), ref = 'a'.repeat(64), handled: string[] = [], who = caller(), request = { ...f.request(ref), originator: { identity: who, scope: { kind: 'repo' as const, id: f.root } }, callback: { kind: 'held' as const, ref } }, id = askNtfy(request, f.config);
     expect(id).toBe(ref); await publishPendingNtfy(f.config); const action = f.action(); f.push(action);
-    expect((await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }), undefined, 5, (group, ask, option) => { handled.push(`${group}:${ask}:${option}`); return []; })).accepted).toBe(1);
+    expect((await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }), undefined, 5, (group, ask, option) => { handled.push(`${group}:${ask}:${option}`); return ['r1:skip:owner_changed', 'r2:skip:not_held']; })).accepted).toBe(1);
     expect(handled).toEqual([`${ref}:${ref}:yes`]); f.push(action); await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }), undefined, 5, () => { throw new Error('replayed'); });
+    const receipt = f.posts.find(post => post.body.topic === 'sa-alerts'), message = String(receipt?.body.message); expect(String(receipt?.body.title)).toContain('未执行'); expect(message).toContain('r1:skip:owner_changed'); expect(message).toContain('r2:skip:not_held');
+    expect(coord().inbox(who, true).find(message => message.source === ref)?.body).toContain('r1:skip:owner_changed');
     expect(f.state().decisions[ref]).toMatchObject({ status: 'answered' });
   });
   test('persists dedupe and rolling limits, emits one summary, and drains after the window', async () => {
