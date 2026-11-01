@@ -190,7 +190,6 @@ function runtimeExecution(
       plan.mode,
       route,
       authors,
-      true,
       state
     ).candidates;
   let claudeAvailable = plan.mode === 'single:claude' || state.claude.state === 'up';

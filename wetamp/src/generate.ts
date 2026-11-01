@@ -246,7 +246,6 @@ export function buildWorkflow(
       plan.mode,
       descriptor,
       descriptor.role === 'review' ? [aliases['@sa-coder'].model] : [],
-      false,
       state
     ).candidates[0];
     return {
@@ -1737,7 +1736,7 @@ export function generate(
   if (!fake) {
     const executions = executionTable(plan, tiers);
     const candidateFor = (descriptor: (typeof executions)[string]) =>
-      executionRoute(tiers, plan.console ?? 'claude', plan.mode, descriptor, [], false, state)
+      executionRoute(tiers, plan.console ?? 'claude', plan.mode, descriptor, [], state)
         .candidates[0];
     for (const p of plan.packages) {
       if (draftFor(p) !== 'soldier' || !tiers.routing.soldier?.models.length) continue;
@@ -1821,7 +1820,6 @@ export function generate(
       risk,
       1,
       [aliases['@sa-coder'].model],
-      false,
       state
     ).candidates[0];
   for (const risk of ['G0', 'G1', 'G2'] as const) {

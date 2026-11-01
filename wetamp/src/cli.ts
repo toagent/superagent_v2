@@ -4516,7 +4516,7 @@ export function main(argv: string[]): number {
         state = routeState(tiers, mode, Date.now(), health);
       // prettier-ignore
       const models = Object.fromEntries((['claude', 'codex'] as const).map(c => [c,
-        Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r], 'G1', 1, [], false, state).candidates.map(a => a.model)]))]));
+        Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r], 'G1', 1, [], state).candidates.map(a => a.model)]))]));
       if (a.flags.json) print({ ...models, budget: state.budget, route_state: state });
       else
         for (const [c, roles] of Object.entries(models))
