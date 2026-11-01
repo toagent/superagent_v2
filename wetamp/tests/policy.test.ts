@@ -81,6 +81,15 @@ describe('B1-POLICY frozen routing', () => {
         expect(() => resolveRoute(tiers, 'codex', mode, role)).toThrow(`no eligible ${role}`);
   });
   test('single modes keep coder ownership while review follows the permitted pool', () => {
+    const configured = loadTiers();
+    expect(
+      resolveRoute(configured, 'claude', 'auto', 'review', 'G2', 1, ['gpt-5.6-sol']).candidates[0]
+        .model
+    ).toBe('claude-opus-5-5');
+    expect(
+      resolveRoute(configured, 'claude', 'single:chatgpt', 'review', 'G2', 1, ['gpt-5.6-sol'])
+        .candidates[0].model
+    ).toBe('gpt-6-astra');
     const tiers = fixtureTiers();
     tiers.routing.reviewer.by_console.claude = ['gpt-6-astra', 'claude-opus-5', 'claude-opus-5-5'];
     const claudeReview = resolveRoute(tiers, 'claude', 'single:claude', 'review', 'G1', 1, [

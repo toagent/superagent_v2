@@ -140,7 +140,7 @@
     },
     "strategist": {
       "name": "军师",
-      "purpose": "评审：同厂商不同模型优先，Claude 末位兜底；池内按序降级。",
+      "purpose": "评审：优先异厂商且不同于作者模型；池内按序降级，最后一项为兜底。",
       "pools": {
         "claude": ["claude-opus-5-5", "claude-fable-5-1"],
         "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"]
@@ -190,10 +190,10 @@
       },
       "by_console": {
         "claude": [
-          "gpt-6-astra",
-          "gpt-5.6-sol",
-          "claude-opus-5",
           "claude-opus-5-5",
+          "gpt-5.6-sol",
+          "gpt-6-astra",
+          "claude-opus-5",
           "claude-fable-5-1"
         ],
         "codex": ["gpt-5.6-sol", "gpt-6-astra"]
