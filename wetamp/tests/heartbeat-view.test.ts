@@ -32,7 +32,7 @@ const heartbeat = (
       project: 'demo',
       line: '',
       waiting: [
-        { id: 'wait', what: 'review', code: 'gate', waiting_for: '等待裁决', waited_s: 60 },
+        { id: 'wait', what: 'review', code: 'gate', waiting_for: '等待裁决', waited_s: 30 * 60 },
       ],
       running: states.map((state, index) => ({
         id: `20261030-run-${String(index + 1)}`,
@@ -102,6 +102,7 @@ test('问题置顶、验收流水线与 quota 状态栏', () => {
   expect(output).toContain('✓ 编码');
   expect(output).toContain('● 验收');
   expect(output).toContain('○ 评审');
+  expect(output).toContain('超时 · 已等 30m');
   expect(output.split('\n').find(line => line.includes('任务1'))).toContain('run-1');
   expect(output.trimEnd().split('\n').at(-1)).toContain('额度：Claude 今日 $1.23');
   expect(frame(heartbeat([]), 100, 20).trimEnd().split('\n').at(-1)).toContain('额度：未配置');
