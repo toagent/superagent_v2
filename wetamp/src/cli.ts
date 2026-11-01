@@ -60,6 +60,7 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import {
+  claimCancelledExecution,
   executionOwnership,
   ownershipUnknown,
   recoveryAdmissionUnknown,
@@ -1104,6 +1105,7 @@ function recoverRun(
     {
       lockId: l.adoptions?.[0]?.from ?? l.archon_run_id,
       operatorId: l.run_id,
+      claimCancelled: claimCancelledExecution,
       resolveId: () => {
         Object.assign(l, loadLedger(l.run_id));
         return l.archon_run_id;

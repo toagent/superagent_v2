@@ -246,6 +246,7 @@ export function resumeExecution(
     operatorId?: string;
     resolveId: () => string;
     adopt: (run: ExecutionRunView) => string[] | undefined;
+    claimCancelled?: (run: ExecutionRunView, claim: RecoveryAdmission) => boolean;
   },
   reconciled?: string,
   admit?: (run: ExecutionRunView) => string | undefined
@@ -324,10 +325,13 @@ export function resumeExecution(
       started_at: run.started_at ?? null,
       ...(effects.length ? { reconciled_snapshot: reconciled, reconciled_nodes: effects } : {}),
     };
-    if (run.status === 'running' || run.status === 'cancelled') {
+    if (run.status === 'running') {
       if (executionOwnership(run, host.inspectProcess).state !== 'offline')
         return { ok: false, reason: 'owner alive or on another host' };
       if (!host.claimInterrupted(run, claim)) return { ok: false, reason: 'owner_changed' };
+    } else if (run.status === 'cancelled') {
+      if (!strategy?.claimCancelled?.(run, claim))
+        return { ok: false, reason: 'cancelled execution changed before recovery' };
     } else if (run.status !== 'failed' && run.status !== 'paused') {
       return { ok: false, reason: `status ${run.status} is not resumable` };
     }
@@ -341,7 +345,8 @@ export function resumeExecution(
       result.code === 0 &&
       resumed?.ok === false &&
       resumed.executed === false &&
-      run.status !== 'running'
+      run.status !== 'running' &&
+      run.status !== 'cancelled'
     ) {
       // A structured pre-admission refusal guarantees no worker was launched.
       // Any other failure (including a lost acknowledgement) retains the fence.
