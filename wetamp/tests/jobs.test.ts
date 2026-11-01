@@ -877,7 +877,7 @@ if (args[0] === 'app-server') {
 else if (process.argv[1].endsWith('/claude')) {
   console.log(JSON.stringify({ type: 'system', subtype: 'init', plugins: [] }));
   console.log(JSON.stringify({ type: 'result', is_error: false, result: JSON.stringify(args) }));
-} else console.log(JSON.stringify(args));
+} else console.log(JSON.stringify({ args, cwd: process.cwd() }));
 `);
       chmodSync(path, 0o755);
     }
@@ -885,12 +885,17 @@ else if (process.argv[1].endsWith('/claude')) {
     const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
     for (const role of ['general', 'strategist'] as const) {
       const p = run(['job', 'exec', '--title', role, '--role', role, '--', codex, 'exec', 'prompt']);
-      expect(await p.exited).toBe(0); const args = JSON.parse(await new Response(p.stdout as ReadableStream).text());
+      expect(await p.exited).toBe(0); const { args } = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
       expect(readJobs().jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
       expect(args.some((a: string) => a.startsWith('mcp_servers='))).toBe(false);
     }
+    const changedCwd = run(['job', 'exec', '--title', 'cwd', '--role', 'general', '--', codex, 'exec', '-C', root, 'prompt']);
+    expect(await changedCwd.exited).toBe(0); const launched = JSON.parse(await new Response(changedCwd.stdout as ReadableStream).text());
+    expect(launched).toMatchObject({ cwd: root }); expect(launched.args).not.toContain('-C'); expect(readJobs().jobs.find(j => j.title === 'cwd')?.cwd).toBe(root);
+    const rejected = run(['job', 'exec', '--title', 'sandbox', '--role', 'general', '--', codex, 'exec', '-s', 'read-only', 'prompt']);
+    expect(await rejected.exited).not.toBe(0); expect(await new Response(rejected.stderr as ReadableStream).text()).toContain('allowed options: -m, --model, -C');
     for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
       expect(await p.exited).not.toBe(0); expect(await new Response(p.stderr as ReadableStream).text()).toContain('candidates:');

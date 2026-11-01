@@ -53,7 +53,7 @@ export function roleCommandArgs(
     throw new Error('job: role Codex requires exec');
   const values = new Set(
     provider === 'codex'
-      ? ['-o', '--output-last-message', '--output-schema', '--color']
+      ? ['-C', '-o', '--output-last-message', '--output-schema', '--color']
       : ['--output-format', '--json-schema']
   );
   const switches = new Set(
@@ -85,7 +85,19 @@ export function roleCommandArgs(
       if (value === undefined) throw new Error(`job: missing ${key} value`);
       out.push(key, value);
     } else if (switches.has(arg)) out.push(arg);
-    else throw new Error(`job: unsupported role agent option ${key}`);
+    else {
+      const allowed = [
+        '-m',
+        '--model',
+        ...values,
+        ...switches,
+        ...(provider === 'codex' ? ['-'] : []),
+        '--',
+      ];
+      throw new Error(
+        `job: unsupported role agent option ${key}; allowed options: ${allowed.join(', ')}`
+      );
+    }
   }
   if (provider === 'claude' && !out.some(a => a === '-p' || a === '--print'))
     throw new Error('job: role Claude requires --print');

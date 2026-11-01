@@ -367,7 +367,21 @@ async function exec(
       job.receipt.admitted_at = new Date().toISOString();
       save(job);
       // Headless jobs receive finite registered input or EOF, never an inherited terminal.
-      if (f.execution) cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
+      if (f.execution) {
+        cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
+        if (f.execution.provider === 'codex') {
+          let index;
+          while (
+            (index = cmd
+              .slice(0, !cmd.includes('--') ? cmd.length : cmd.indexOf('--'))
+              .indexOf('-C')) >= 0
+          ) {
+            job.cwd = resolve(job.cwd, cmd[index + 1]);
+            cmd.splice(index, 2);
+          }
+          save(job);
+        }
+      }
       // Only the scoped Claude wrapper consumes this flag; native provider args stay intact.
       if (input && f.execution?.provider === 'claude') cmd.push('--job-input');
       if (job.execution?.role === 'review') reviewBefore = reviewTree();
