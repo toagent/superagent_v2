@@ -1,7 +1,7 @@
 import { basename, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { home } from './config';
 import { coord, repoScope, same, type Identity, type Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
@@ -66,9 +66,25 @@ export function historicalReclaimRuns(
   }
 }
 
+export function adoptedRuns(path = join(home().sa, 'runs')): Set<string> {
+  return new Set(
+    (existsSync(path) ? readdirSync(path) : []).flatMap(file => {
+      if (!file.endsWith('.json')) return [];
+      try {
+        const ledger = JSON.parse(readFileSync(join(path, file), 'utf8')) as {
+          adoptions?: { from?: unknown }[];
+        };
+        return (ledger.adoptions ?? []).flatMap(a => (typeof a.from === 'string' ? [a.from] : []));
+      } catch {
+        return [];
+      }
+    })
+  );
+}
+
 /** Historical evidence is injectable for deterministic projections and tests. */
 // prettier-ignore
-export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence, historical = historicalReclaimRuns()): Heartbeat {
+export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, presenceOf: (owner: Identity) => Presence, historical = historicalReclaimRuns(), adopted = adoptedRuns()): Heartbeat {
   const groups = new Map<string, Marshal>();
   const coordination = new Map<string, { count: number; oldest: string }>();
   for (const message of snapshot.coordMessages ?? []) if (!message.type && ['queued', 'surfaced', 'escalated'].includes(message.state)) {
@@ -88,7 +104,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const key = `unknown\0${cwd}`, found = groups.get(key), value = found ?? { owner: 'unknown' as const, owner_key: 'unknown' as const, cwd, project: basename(cwd), running: [], waiting: [], line: '无人负责' };
     value.waiting.push(item); groups.set(key, value); unowned++;
   };
-  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id)), adopted = new Set(snapshot.adoptedRuns);
+  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id));
   for (const row of snapshot.rows) {
     if (row.archon_id && adopted.has(row.archon_id)) continue;
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;

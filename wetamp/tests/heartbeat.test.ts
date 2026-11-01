@@ -1,10 +1,13 @@
 import { expect, test } from 'bun:test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cockpit } from '../src/board/cockpit';
 import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
+import { adoptedRuns, heartbeat, heartbeatSummary, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
 import { generalKey } from '../src/stall';
+import { tmp } from './helpers';
 const now = Date.parse('2026-10-29T10:00:00Z');
 // prettier-ignore
 const owner = (pid: number): Identity => ({ client: 'codex', host: 'host', pid, pid_start: `start-${String(pid)}` });
@@ -140,7 +143,6 @@ test('heartbeat separates active runs from typed waits and reports coordination 
     at: new Date(now).toISOString(),
     summary: {},
     rows: [failed, held, needs, running, row('other', who)],
-    adoptedRuns: ['adopted'],
     coordMessages: [
       {
         id: 'run-queued',
@@ -163,11 +165,18 @@ test('heartbeat separates active runs from typed waits and reports coordination 
     ] as Snapshot['coordMessages'],
   };
   snap.rows.push(row('adopted', who, 'failed'));
+  const runs = join(tmp(), 'runs');
+  mkdirSync(runs);
+  writeFileSync(join(runs, 'next.json'), JSON.stringify({ adoptions: [{ from: 'adopted' }] }));
   snap.rows[4]!.repo = '/repo/project';
-  const result = heartbeat(snap, cockpit(snap, now), now, () => ({
-    state: 'online',
-    activity: 'active',
-  }));
+  const result = heartbeat(
+    snap,
+    cockpit(snap, now),
+    now,
+    () => ({ state: 'online', activity: 'active' }),
+    new Set(),
+    adoptedRuns(runs)
+  );
   const marshal = result.marshals[0]!;
   expect([...new Set(marshal.running.map(item => item.id))]).toEqual(['running', 'other']);
   expect(marshal.waiting.map(item => [item.id, item.waiting_for])).toEqual([

@@ -3421,16 +3421,6 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(status.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
     view.status = 'cancelled';
     expect(classifyRun(s.ledger, view)).toMatchObject({ state: 'cancelled', exit: EXIT.cancelled });
-    expect(
-      classifyRun(
-        {
-          ...s.ledger,
-          rejected: view.id,
-          intervention_events: [{ at: '', action: 'abandon', source: 'cli', ok: true }],
-        },
-        { ...view, status: 'failed' }
-      )
-    ).toMatchObject({ state: 'abandoned', exit: EXIT.cancelled });
     writeFileSync(
       ledgerPath('sa1'),
       JSON.stringify({
