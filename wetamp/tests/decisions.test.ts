@@ -11,7 +11,10 @@ import { Coordination as CoordinationRegistry, repoScope } from '../src/coord';
 
 function fixture() {
   const dir = tmp();
-  writeFileSync(join(dir, 'plan.json'), JSON.stringify({ packages: [{ title: '真实工作包' }] }));
+  writeFileSync(
+    join(dir, 'plan.json'),
+    JSON.stringify({ packages: [{ title: '真实工作包', goal: '交付可验证结果' }] })
+  );
   const ledger: Ledger = {
     run_id: 'unit',
     archon_run_id: 'engine',
@@ -55,6 +58,7 @@ test('native authored n-choice owner preserves identifiers, labels, context and 
   expect(d.options.map(o => o.id)).toEqual(['approve', 'detail', 'stop']);
   expect(d.question).toBe('选择哪份报告？');
   expect(d.context).toBe('真实工作包');
+  expect(d.purpose).toBe('真实工作包：交付可验证结果');
   f.gate.pauseId = 'next-occurrence';
   expect(describeDecision(f.ledger, f.run, f.ownership)!.id).not.toBe(d.id);
   f.ownership.generation++;
@@ -86,6 +90,11 @@ test('COORD decision consequences name repository, finder, and ownership effects
     'claude 成为 repo 负责人，可直接修改该仓库代码',
     '继续等待当前负责人，不转移 repo 归属',
   ]);
+  expect(coordinationDecisions(c)[0]).toMatchObject({
+    project: expect.any(String),
+    purpose: expect.stringContaining('private handoff text'),
+    source: { ref: expect.any(String) },
+  });
 });
 test('automatic, terminal, resolved and stale lifecycle never become actionable human work', () => {
   const f = fixture();

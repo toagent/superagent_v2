@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   classifyRun,
   holdOf,
@@ -91,7 +91,21 @@ export interface Decision {
   question: string;
   reason: string;
   context: string;
-  options: { id: string; label: string; consequence: string }[];
+  options: {
+    id: string;
+    label: string;
+    consequence: string;
+    timing?: string;
+    effect?: string;
+    reversible?: string;
+    risk?: string;
+  }[];
+  project?: string;
+  headline?: string;
+  purpose?: string;
+  why?: string;
+  recommend?: { option: string; reason: string };
+  source?: { ref: string; initiator?: string; queued_at?: string };
   disabled?: string;
   controller?: Controller;
   coordination?: { message: string; generation: number };
@@ -156,6 +170,18 @@ export function describeDecision(
     question: gate?.message ?? '旧式人工签收门',
     reason: hold === 'signoff' ? '交付里程碑要求人工签收' : '工作流明确要求人工选择',
     context: plan.packages.map(p => p.title).join(' / '),
+    project: basename(l.repo),
+    headline: gate?.message ?? '旧式人工签收门',
+    purpose: plan.packages.map(p => `${p.title}：${p.goal}`).join('\n'),
+    why: hold === 'signoff' ? '交付里程碑要求人工签收' : '工作流明确要求人工选择',
+    ...(hold === 'signoff' && options[0]
+      ? { recommend: { option: options[0].label, reason: '通过签收后继续执行，不自动合入或部署' } }
+      : {}),
+    source: {
+      ref: l.run_id,
+      initiator: `${controller?.client ?? '未知'} 元帅（${basename(l.repo)}）`,
+      queued_at: l.started_at,
+    },
     options,
     disabled,
   };
@@ -269,6 +295,12 @@ export function coordinationDecisions(c = coord()): Decision[] {
           question: m.ask.question,
           reason: 'COORD 交接需要操作者决定',
           context: m.title,
+          project: repo,
+          headline: m.ask.question,
+          purpose: `${m.title}${m.body ? `：${m.body.split('\n')[0]}` : ''}`,
+          why: `交接已升级；当前负责人状态：${view.presence.state}`,
+          recommend: { option: '否', reason: '未明确授权前保留现有归属' },
+          source: { ref: m.id, initiator: `${m.sender.client} 元帅（${repo}）`, queued_at: m.at },
           options: [
             {
               id: 'yes',

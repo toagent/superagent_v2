@@ -313,6 +313,9 @@ export const OPTIONS = {
   'default-on-expiry': { type: 'string' },
   callback: { type: 'string' },
   id: { type: 'string' },
+  recommend: { type: 'string' },
+  why: { type: 'string' },
+  priority: { type: 'string' },
 } as const;
 interface Args {
   _: string[];
@@ -2926,7 +2929,13 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
       }
     }
     if (r.delivery === 'sent') return;
-    queueNtfyAlert(r.key, r.body);
+    queueNtfyAlert(
+      r.key,
+      r.body,
+      {},
+      r.stage === 'succeeded' ? '已执行｜superagent｜决策回执' : '未执行｜superagent｜决策回执',
+      { priority: 2, tags: [r.stage === 'succeeded' ? 'green_circle' : 'white_circle'] }
+    );
     r.delivery = 'sent';
     delete r.error;
   } catch (e) {
@@ -3320,9 +3329,14 @@ export async function syncDecisionChannel(
   for (const decision of selected) {
     askNtfy(
       {
-        source: 'superagent',
         title: decision.question,
         body: `${decision.reason}\n对象：${decision.context}`,
+        project: decision.project,
+        headline: decision.headline,
+        purpose: decision.purpose,
+        why: decision.why,
+        recommend: decision.recommend,
+        source: decision.source ?? 'superagent',
         options: decision.options,
         risk: 'normal',
         expires_at: new Date(Date.now() + MAX_TTL_H * 3600e3).toISOString(),
@@ -4207,8 +4221,8 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
-  { command: 'ask', positionals: '[status <id>]', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback'] },
-  { command: 'notify', flags: ['id', 'title', 'body'] },
+  { command: 'ask', positionals: '[status <id>]', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
+  { command: 'notify', flags: ['id', 'title', 'body', 'priority'] },
   { command: 'ntfy', positionals: 'pause|resume|status', flags: [] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
@@ -4967,6 +4981,16 @@ export async function askCli(
       default_on_expiry: a.flags['default-on-expiry'],
       callback: { kind: 'external', ref: callback },
       dedupe_key: `external:${callback}`,
+      ...(a.flags.recommend
+        ? {
+            project: source,
+            headline: title,
+            purpose: body,
+            why: a.flags.why,
+            recommend: { option: a.flags.recommend, reason: a.flags.why ?? '' },
+            source: { ref: callback, initiator: source, queued_at: new Date().toISOString() },
+          }
+        : {}),
     },
     supplied
   );
@@ -4996,7 +5020,10 @@ export async function notifyCli(
   const id = required(a.flags.id),
     title = required(a.flags.title),
     body = required(a.flags.body);
-  queueNtfyAlert(id, body, supplied, title);
+  const priority = Number(a.flags.priority ?? 3);
+  if (!Number.isInteger(priority) || priority < 1 || priority > 5)
+    throw new Error('--priority must be 1-5');
+  queueNtfyAlert(id, body, supplied, title, { priority, tags: ['large_blue_circle'] });
   let delivery: 'sent' | 'pending';
   try {
     await publishPendingNtfy(supplied);
@@ -5069,7 +5096,13 @@ async function heartbeatCli(argv: string[]): Promise<number> {
   const notifyTickStale = async (model: ReturnType<typeof readModel>): Promise<void> => {
     const previous = queuedTickAlert;
     queuedTickAlert = queueTickStaleAlert(model.health.stale, previous, alert => {
-      queueNtfyAlert(alert.id, alert.message, {}, 'supervise-tick 停摆');
+      queueNtfyAlert(
+        alert.id,
+        `${'━'.repeat(14)}\n要你做：重启 supervise-tick\n${'━'.repeat(14)}\n▍发生了什么\n引擎巡检已停 ${String(alert.minutes)} 分钟\n${'─'.repeat(14)}\n▍影响\nrun 状态、回收与通知无法持续更新\n${'─'.repeat(14)}\n▍已自动尝试\n已由 heartbeat 检测并发出告警\n${'─'.repeat(14)}\n▍怎么处理\n${alert.message}\n${'─'.repeat(14)}\n▍证据\n${join(home().sa, 'tick.json')}`,
+        {},
+        `引擎巡检停摆 ${String(alert.minutes)} 分钟`,
+        { priority: 4, tags: ['red_circle'] }
+      );
     });
     if (queuedTickAlert && ntfyDeliveryStatus('alert', queuedTickAlert) === 'pending')
       await publishPendingNtfy();

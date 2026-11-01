@@ -67,6 +67,7 @@ describe('ntfy decision channel', () => {
     await publishPendingNtfy(f.config); f.push(f.action());
     expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(0);
     const confirmation = f.posts.filter(post => post.body.topic === 'sa-decisions').at(-1)!;
+    expect(confirmation.body).toMatchObject({ priority: 5, tags: ['red_circle'] });
     expect((confirmation.body.actions as { label: string }[])[0].label).toBe('确认批准');
     f.push(f.action(confirmation)); expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(1);
     expect(accepted).toEqual(['yes']);
@@ -82,7 +83,7 @@ describe('ntfy decision channel', () => {
     let expired = ''; f.config.now = () => 2_000_007_200_000;
     await syncNtfy(() => undefined, f.config, decision => { expired = decision.id; }); expect(expired).toBe(expires);
     f.push(expiredAction); await syncNtfy(() => undefined, f.config);
-    expect(f.posts.at(-1)!.body.message).toBe('该决策已过期，未执行');
+    expect(f.posts.at(-1)!.body.message).toContain('该决策已过期，未执行');
     f.config.now = () => 2_000_000_000_000; askNtfy(f.request('offline'), f.config);
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
@@ -94,14 +95,27 @@ describe('ntfy decision channel', () => {
     await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
     await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(1);
-    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: 'Stalled', message: 'Needs attention' });
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: 'Stalled', message: 'Needs attention', priority: 3, tags: ['large_blue_circle'] });
     expect(output).toEqual([{ id: 'alert-1', delivery: 'sent' }, { id: 'alert-1', delivery: 'sent' }]);
+    await notifyCli(['notify', '--id', 'urgent', '--title', 'Urgent', '--body', 'Act', '--priority', '5'], f.config, () => undefined);
+    expect(f.posts.at(-1)!.body.priority).toBe(5);
     const offline = (() => Promise.reject(new Error('publisher-secret'))) as unknown as typeof fetch;
     await notifyCli(['notify', '--id', 'alert-2', '--title', 'Offline', '--body', 'Queued'], { ...f.config, fetch: offline }, value => output.push(value));
     expect(output.at(-1)).toEqual({ id: 'alert-2', delivery: 'pending' });
     const persisted = readFileSync(f.config.statePath, 'utf8');
     expect(persisted).toContain('alert-2'); expect(persisted).not.toContain('publisher-secret');
     expect(JSON.stringify(f.posts) + JSON.stringify(output)).not.toContain('publisher-secret');
+    await expect(notifyCli(['notify', '--id', 'bad', '--title', 'Bad', '--body', 'Bad', '--priority', '6'], f.config)).rejects.toThrow('--priority must be 1-5');
+  });
+  test('renders structured decisions and receipts as full plain-text briefs', async () => {
+    const f = fixture(), request = { ...f.request('full'), source: { ref: 'run-24', initiator: 'codex 元帅（Archon）', queued_at: '2033-05-18T03:00:00.000Z' }, project: 'Archon', headline: '是否放行？', purpose: '修复 ntfy 决策信息', why: '人工门禁等待决策', recommend: { option: '是', reason: '验收已通过' }, options: [{ id: 'yes', label: '是', timing: '立即', effect: '继续 run', reversible: '可取消', risk: '可能需要修复' }, { id: 'no', label: '否', consequence: '保持停顿', risk: '延迟交付' }] };
+    askNtfy(request, f.config); await publishPendingNtfy(f.config);
+    expect(f.posts[0]!.body).toMatchObject({ title: '需你决定｜Archon｜是否放行？', priority: 4, tags: ['orange_circle'] });
+    const message = String(f.posts[0]!.body.message);
+    expect(message).toStartWith('━'.repeat(14)); expect(message).toContain('▍选项对比'); expect(message).toContain('来源：run-24'); expect(Buffer.byteLength(message)).toBeLessThanOrEqual(4000);
+    f.push(f.action(f.posts[0])); await syncNtfy(() => undefined, f.config);
+    expect(f.posts.at(-1)!.body).toMatchObject({ title: '已执行｜Archon｜是否放行？', priority: 2, tags: ['green_circle'] });
+    expect(String(f.posts.at(-1)!.body.message)).toContain('▍还需要你吗');
   });
   test('limits each tick to five new decisions without starving later decisions or limiting alerts', async () => {
     let now = Date.now(); const f = fixture(now); f.config.now = () => now;
@@ -131,6 +145,7 @@ describe('ntfy decision channel', () => {
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(6);
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(10);
     expect(f.posts.filter(post => post.body.title === 'superagent 推送已限流')).toHaveLength(1);
+    expect(f.posts.find(post => post.body.title === 'superagent 推送已限流')?.body).toMatchObject({ priority: 2, tags: ['white_circle'] });
     queueNtfyAlert('alert-0', 'duplicate', f.config); await publishPendingNtfy(f.config);
     now += 3_600_001; await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(8);

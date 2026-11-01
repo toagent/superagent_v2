@@ -18,10 +18,14 @@ export interface NtfyOption {
   id: string;
   label: string;
   consequence?: string;
+  timing?: string;
+  effect?: string;
+  reversible?: string;
+  risk?: string;
 }
 
 export interface NtfyAsk {
-  source: string;
+  source: string | { ref: string; initiator?: string; queued_at?: string };
   title: string;
   body: string;
   options: NtfyOption[];
@@ -33,6 +37,11 @@ export interface NtfyAsk {
     | { kind: 'decision'; id: string }
     | { kind: 'external'; ref: string };
   dedupe_key?: string;
+  project?: string;
+  headline?: string;
+  purpose?: string;
+  why?: string;
+  recommend?: { option: string; reason: string };
 }
 
 interface SignedAnswer {
@@ -64,7 +73,7 @@ interface NtfyState {
   cursor?: string;
   decisions: Record<string, StoredDecision>;
   used_nonces: Record<string, number>;
-  alerts: { id: string; title?: string; message: string }[];
+  alerts: { id: string; title?: string; message: string; priority?: number; tags?: string[] }[];
   alert_ids: string[];
   sent: Record<string, number>;
   limited: Record<string, number>;
@@ -209,7 +218,11 @@ function validSignature(answer: SignedAnswer, key: string): boolean {
 }
 
 function validateAsk(request: NtfyAsk, now: number): void {
-  if (!request.source.trim() || !request.title.trim() || !request.body.trim())
+  if (
+    (typeof request.source === 'string' && !request.source.trim()) ||
+    !request.title.trim() ||
+    !request.body.trim()
+  )
     throw new Error('ntfy ask requires source, title and body');
   if (!request.options.length || request.options.length > 3)
     throw new Error('ntfy ask requires one to three options');
@@ -292,7 +305,24 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
     state.activity.push({ at: now, kind: 'deduplicated' });
     return;
   }
-  state.alerts.push({ id, title, message });
+  const executed = title.startsWith('已记录');
+  const parts = title.split('｜'),
+    structured = parts.indexOf('需你决定');
+  const project = structured >= 0 ? parts[structured + 1] : 'superagent';
+  const problem = structured >= 0 ? parts[structured + 2] : parts.at(-1);
+  state.alerts.push({
+    id,
+    title:
+      structured >= 0
+        ? `${executed ? '已执行' : '未执行'}｜${project}｜${problem ?? '决策回执'}`
+        : title,
+    message:
+      structured >= 0
+        ? `${HEAVY}\n结论：${message}\n${HEAVY}\n▍你的选择\n${parts[0] || '未知'}\n${LIGHT}\n▍引擎做了什么\n${message}\n${LIGHT}\n▍现在的状态\n${executed ? '已生效' : '未改变状态'}\n${LIGHT}\n▍接下来谁做什么\n${executed ? '引擎继续执行' : '操作员重读最新决策'}\n${LIGHT}\n▍还需要你吗\n${executed ? '否' : '是'}\n${LIGHT}\n来源：${id}`
+        : message,
+    priority: 2,
+    tags: [executed ? 'green_circle' : 'white_circle'],
+  });
   state.alert_ids.push(id);
 }
 
@@ -401,6 +431,46 @@ function recordLimited(state: NtfyState, keys: string[], now: number): void {
 
 const pausedPath = (config: NtfyConfig): string => join(dirname(config.statePath), 'paused');
 
+const HEAVY = '━'.repeat(14),
+  LIGHT = '─'.repeat(14);
+const section = (title: string, body?: string): string[] =>
+  body?.trim() ? [`▍${title}`, body.trim()] : [];
+// prettier-ignore
+function decisionPresentation(decision: StoredDecision): { title: string; message: string; priority: number; tags: string[] } {
+  if (!decision.project && !decision.headline && !decision.purpose && !decision.why && !decision.recommend)
+    return { title: decision.title, message: decision.body, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
+  const source = typeof decision.source === 'string' ? undefined : decision.source;
+  const expires = new Date(decision.expires_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-');
+  let purpose = Array.from(decision.purpose ?? decision.body).slice(0, 300).join('');
+  const render = () => {
+    const recommendation = decision.recommend ? [HEAVY, `建议：选「${decision.recommend.option}」——${decision.recommend.reason}`, `同意就直接点「${decision.recommend.option}」`, HEAVY] : [];
+    const options = decision.options.map(option => `• ${option.label}｜${option.timing ?? '点按后生效'}｜${option.effect ?? option.consequence ?? ''}｜可回滚：${option.reversible ?? '未说明'}`);
+    if (decision.default_on_expiry)
+      options.push(`• 不处理｜= ${optionLabel(decision, decision.default_on_expiry)}｜${expires} 过期`);
+    const risks = decision.options.flatMap(option => option.risk ? [`• 选${option.label}：${option.risk}`] : []);
+    const queued = source?.queued_at ? new Date(source.queued_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-') : undefined;
+    const origin = source ? [source.ref, source.initiator, queued].filter(Boolean).join('｜') : '';
+    return [
+      ...recommendation,
+      ...section('一句话', decision.headline ?? decision.body),
+      LIGHT,
+      ...section('选项对比', options.join('\n')),
+      LIGHT,
+      ...section('这个任务是什么', purpose),
+      LIGHT,
+      ...section('为什么找你', decision.why),
+      ...(risks.length ? [LIGHT, ...section('风险与代价', risks.join('\n'))] : []),
+      ...(decision.recommend ? [LIGHT, ...section('建议理由', decision.recommend.reason)] : []),
+      ...(origin ? [LIGHT, `来源：${origin}`] : []),
+    ].join('\n');
+  };
+  let message = render();
+  while (Buffer.byteLength(message) > 4000 && purpose.length) { purpose = purpose.slice(0, -1); message = render(); }
+  if (purpose !== (decision.purpose ?? decision.body).slice(0, 300) && source?.ref)
+    message += `\n详情：superagent brief ${source.ref}`;
+  return { title: `需你决定｜${decision.project ?? '未知项目'}｜${decision.headline ?? decision.title}`, message, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
+}
+
 async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
   const now = config.now();
   prune(state, now);
@@ -422,12 +492,14 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
       continue;
     }
     const answer = secureSecret(config.answerToken, 'answer token');
+    const presented = decisionPresentation(decision);
     await publish(config, 'sa-decisions', {
-      title: decision.red_phase === 'confirm' ? `确认：${decision.title}` : decision.title,
+      ...presented,
+      title: decision.red_phase === 'confirm' ? `确认：${presented.title}` : presented.title,
       message:
         decision.red_phase === 'confirm'
-          ? `${decision.body}\n影响：${decision.options[0]?.consequence ?? decision.options[0]?.label}`
-          : decision.body,
+          ? `${presented.message}\n影响：${decision.options[0]?.consequence ?? decision.options[0]?.label}`
+          : presented.message,
       actions: decision.actions.map(action => actionFor(decision, action, answer, config.baseUrl)),
     });
     decision.delivery = 'sent';
@@ -452,6 +524,8 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
     await publish(config, 'sa-alerts', {
       ...(alert.title ? { title: alert.title } : {}),
       message: alert.message,
+      priority: alert.priority ?? 3,
+      tags: alert.tags ?? ['large_blue_circle'],
     });
     state.sent[key] = now;
     state.activity.push({ at: now, kind: 'alert' });
@@ -466,6 +540,8 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
     await publish(config, 'sa-alerts', {
       title: 'superagent 推送已限流',
       message: `另有 ${String(limitedKeys.length)} 条未推送，见 superagent brief`,
+      priority: 2,
+      tags: ['white_circle'],
     });
     state.summary_at = now;
     state.activity.push({ at: now, kind: 'alert' });
@@ -564,8 +640,8 @@ export async function syncNtfy(
             decision?.status === 'superseded'
               ? supersededReceipt(decision, answer.option)[0]
               : decision?.status === 'failed'
-                ? `未执行｜${optionLabel(decision, answer.option)}｜${shortTopic(decision.title)}`
-                : `未执行｜${decision?.title ?? '未知决策'}`,
+                ? `未执行｜${optionLabel(decision, answer.option)}｜${decisionPresentation(decision).title}`
+                : `未执行｜${decision ? decisionPresentation(decision).title : '未知决策'}`,
             rejection,
             config.now()
           );
@@ -588,7 +664,7 @@ export async function syncNtfy(
           receipt(
             state,
             `receipt:${decision.id}:request`,
-            `已收到批准申请｜${decision.title}`,
+            `已收到批准申请｜${decisionPresentation(decision).title}`,
             '请在新通知中确认',
             config.now()
           );
@@ -604,7 +680,7 @@ export async function syncNtfy(
           receipt(
             state,
             `receipt:${decision.id}:${answer.option}`,
-            `已记录：${label}｜${decision.title}`,
+            `已记录：${label}｜${decisionPresentation(decision).title}`,
             '本次点按已执行',
             config.now()
           );
@@ -621,7 +697,7 @@ export async function syncNtfy(
             `receipt:${decision.id}:failed`,
             decision.status === 'superseded'
               ? staleReceipt[0]
-              : `未执行｜${label}｜${shortTopic(decision.title)}`,
+              : `未执行｜${label}｜${decisionPresentation(decision).title}`,
             decision.status === 'superseded'
               ? staleReceipt[1]
               : `处理失败（${decision.error.code}）；你的选择未改变任何状态`,
@@ -648,7 +724,7 @@ export async function syncNtfy(
             receipt(
               state,
               `receipt:${decision.id}:${decision.default_on_expiry}`,
-              `已记录：${label}｜${decision.title}`,
+              `已记录：${label}｜${decisionPresentation(decision).title}`,
               '已按到期默认值执行',
               config.now()
             );
@@ -685,7 +761,8 @@ export function queueNtfyAlert(
   id: string,
   message: string,
   supplied: Partial<NtfyConfig> = {},
-  title?: string
+  title?: string,
+  presentation: { priority?: number; tags?: string[] } = {}
 ): void {
   const config = { ...defaultConfig(), ...supplied };
   const guard = stateLock(config.statePath);
@@ -697,7 +774,7 @@ export function queueNtfyAlert(
       state.activity.push({ at: config.now(), kind: 'deduplicated' });
     } else {
       state.alert_ids.push(id);
-      state.alerts.push({ id, message, ...(title ? { title } : {}) });
+      state.alerts.push({ id, message, ...(title ? { title } : {}), ...presentation });
     }
     saveState(config.statePath, state);
   } finally {
