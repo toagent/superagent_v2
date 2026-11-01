@@ -10,6 +10,7 @@ import { FAILOVER_PREFIX, latestFailover } from './decisions';
 import {
   askNtfy,
   ntfyControl,
+  ntfyPauseInfo,
   ntfyDecisionStatus,
   ntfyDeliveryStatus,
   publishPendingNtfy,
@@ -5225,14 +5226,23 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     filter = cwdFilter(cwd);
     scopeLabel = basename(cwd);
   }
-  const readModel = () =>
-    panelModel(
+  const readModel = () => {
+    const pause = ntfyPauseInfo(),
+      pauseCwd =
+        pause?.by && 'cwd' in pause.by && typeof pause.by.cwd === 'string'
+          ? basename(pause.by.cwd)
+          : undefined;
+    return panelModel(
       readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
       readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
       Date.now(),
       filter,
-      scopeLabel
+      scopeLabel,
+      pause
+        ? { at: pause.at, by: pause.by && pauseCwd ? `${pause.by.client} ${pauseCwd}` : null }
+        : undefined
     );
+  };
   const draw = (): string =>
     renderPanel(
       readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,

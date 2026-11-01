@@ -91,6 +91,7 @@ export interface PanelModel {
   attention: PanelAttention[];
   runs: PanelRun[];
   stats: { running: number; waiting: number; reclaimPending: number; legacy: number };
+  ntfyPaused?: { at: string; by: string | null };
 }
 
 export function panelModel(
@@ -98,7 +99,8 @@ export function panelModel(
   tick: TickRecord | undefined,
   now: number,
   filter: PanelFilter = allMarshals,
-  scopeLabel = '全部项目'
+  scopeLabel = '全部项目',
+  ntfyPaused?: PanelModel['ntfyPaused']
 ): PanelModel {
   const selected = heartbeat?.marshals.filter(filter) ?? [];
   const grouped = new Map<string, { marshal: Marshal; items: Marshal['running'] }>();
@@ -161,6 +163,7 @@ export function panelModel(
       reclaimPending: heartbeat?.reclaim_pending ?? 0,
       legacy: heartbeat?.legacy ?? 0,
     },
+    ...(ntfyPaused ? { ntfyPaused } : {}),
   };
 }
 

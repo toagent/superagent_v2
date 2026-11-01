@@ -472,17 +472,20 @@ function recordLimited(state: NtfyState, keys: string[], now: number): void {
 
 const pausedPath = (config: NtfyConfig): string => join(dirname(config.statePath), 'paused');
 
-function pauseRecord(marker: string): { paused_at: string; paused_by: Identity | null } {
+export function ntfyPauseInfo(
+  supplied: Partial<NtfyConfig> = {}
+): { at: string; by: Identity | null } | null {
+  const marker = pausedPath({ ...defaultConfig(), ...supplied });
+  if (!existsSync(marker)) return null;
   try {
     const value = JSON.parse(readFileSync(marker, 'utf8')) as { at?: unknown; by?: unknown };
     const by = value.by as Partial<Identity> | null;
     const validBy = by === null || (typeof by.client === 'string' && typeof by.pid === 'number');
-    if (typeof value.at === 'string' && validBy)
-      return { paused_at: value.at, paused_by: by as Identity | null };
+    if (typeof value.at === 'string' && validBy) return { at: value.at, by: by as Identity | null };
   } catch {
     /* Legacy or malformed marker: fall back to mtime. */
   }
-  return { paused_at: statSync(marker).mtime.toISOString(), paused_by: null };
+  return { at: statSync(marker).mtime.toISOString(), by: null };
 }
 
 const HEAVY = '━'.repeat(14),
@@ -867,13 +870,13 @@ export function ntfyControl(
     });
   }
   if (action === 'resume' && existsSync(marker)) unlinkSync(marker);
-  const paused = existsSync(marker),
+  const pause = ntfyPauseInfo(config),
     state = readState(config.statePath),
     cutoff = config.now() - HOUR,
     activity = state.activity.filter(event => event.at >= cutoff);
   return {
-    paused,
-    ...(paused ? pauseRecord(marker) : {}),
+    paused: pause !== null,
+    ...(pause ? { paused_at: pause.at, paused_by: pause.by } : {}),
     sent: activity.filter(event => event.kind === 'decision' || event.kind === 'alert').length,
     limited: activity.filter(event => event.kind === 'limited').length,
     deduplicated: activity.filter(event => event.kind === 'deduplicated').length,

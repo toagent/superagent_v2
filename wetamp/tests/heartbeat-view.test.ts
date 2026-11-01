@@ -59,11 +59,12 @@ const frame = (
   rows: number,
   quota?: string,
   scopeLabel?: string,
-  currentTick: TickRecord | null = tick
+  currentTick: TickRecord | null = tick,
+  ntfyPaused?: { at: string; by: string | null }
 ): string =>
   renderToString(
     createElement(HeartbeatFrame, {
-      model: panelModel(value, currentTick ?? undefined, now, undefined, scopeLabel),
+      model: panelModel(value, currentTick ?? undefined, now, undefined, scopeLabel, ntfyPaused),
       quota,
       now,
       width,
@@ -117,6 +118,25 @@ test('标题与状态栏按巡检时间显示新鲜度，tick 缺失时回退心
   expect(fresh.match(/巡检 30s 前/g)).toHaveLength(2);
   expect(fresh).not.toContain('数据 360s 前');
   expect(frame(old, 100, 20, undefined, undefined, null)).toContain('巡检 360s 前');
+});
+
+test('ntfy pause notice 显示来源、未知来源且未暂停输出不变', () => {
+  const value = heartbeat([]),
+    baseline = frame(value, 100, 20);
+  const paused = { at: '2026-10-30T12:05:00Z', by: 'codex superagent_v2' },
+    pauseTime = new Date(paused.at).toLocaleTimeString('zh-CN', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  expect(frame(value, 100, 20, undefined, undefined, tick, paused)).toContain(
+    `⏸ ntfy 已暂停 ${pauseTime} codex superagent_v2`
+  );
+  expect(frame(value, 100, 20, undefined, undefined, tick, { ...paused, by: null })).toContain(
+    `⏸ ntfy 已暂停 ${pauseTime} 来源未知`
+  );
+  expect(frame(value, 50, 20, undefined, undefined, tick, paused)).toContain('⏸ ntfy 已暂停');
+  expect(baseline).not.toContain('ntfy 已暂停');
 });
 
 test('tick 停摆超过五分钟置顶提示，恢复后消失', () => {
