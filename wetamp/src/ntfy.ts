@@ -354,7 +354,7 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
     return;
   }
   const executed = title.startsWith('已记录'),
-    processing = title.startsWith('已收到');
+    processing = title.startsWith('已收到：');
   const parts = title.split('｜'),
     structured = parts.indexOf('需你决定');
   const project = structured >= 0 ? parts[structured + 1] : 'superagent';

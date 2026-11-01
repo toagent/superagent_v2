@@ -64,9 +64,10 @@ describe('ntfy decision channel', () => {
     expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
   });
   test('requires a fresh red confirmation and expires without one', async () => {
-    const f = fixture(), accepted: string[] = []; askNtfy(f.request('red', 'red'), f.config);
+    const f = fixture(), accepted: string[] = []; askNtfy({ ...f.request('red', 'red'), project: 'Archon', headline: '红线操作' }, f.config);
     await publishPendingNtfy(f.config); f.push(f.action());
     expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(0);
+    expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜Archon｜红线操作', message: expect.stringContaining('▍还需要你吗\n是') });
     const confirmation = f.posts.filter(post => post.body.topic === 'sa-decisions').at(-1)!;
     expect(confirmation.body).toMatchObject({ priority: 5, tags: ['red_circle'] });
     expect((confirmation.body.actions as { label: string }[])[0].label).toBe('确认批准');
@@ -134,15 +135,17 @@ describe('ntfy decision channel', () => {
     const f = fixture(), saved = process.env.SUPERAGENT_HOME;
     process.env.SUPERAGENT_HOME = f.root;
     try {
-      const oldKey = 'run:signoff:old', currentKey = 'run:signoff:current';
+      const oldKey = 'run:signoff:old', middleKey = 'run:signoff:middle', currentKey = 'run:signoff:current';
       const id = askNtfy({ ...f.request('gate'), project: 'Archon', headline: '是否批准签收并续跑？', callback: { kind: 'ask', key: oldKey } }, f.config);
       await publishPendingNtfy(f.config);
-      writeFileSync(join(f.root, 'asks.json'), JSON.stringify({ [oldKey]: { id, status: 'superseded' }, [currentKey]: { id, status: 'pending', legacy_key: oldKey } }));
+      writeFileSync(join(f.root, 'asks.json'), JSON.stringify({ [oldKey]: { id, status: 'superseded' }, [middleKey]: { id, status: 'superseded', legacy_key: oldKey }, [currentKey]: { id, status: 'pending', legacy_key: oldKey } }));
       f.push(f.action());
       expect((await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }))).accepted).toBe(1);
       expect(JSON.parse(readFileSync(join(f.root, 'asks.json'), 'utf8'))[currentKey].status).toBe('yes');
       expect(f.posts.at(-1)!.body).toMatchObject({ title: '正在执行｜Archon｜是否批准签收并续跑？', priority: 2, tags: ['white_circle'] });
       expect(String(f.posts.at(-1)!.body.message)).toContain('已收到你的『Yes』，正在执行（门禁 signoff）');
+      const expires = askNtfy({ ...f.request('expires'), expires_at: new Date(2_000_000_001_000).toISOString(), callback: { kind: 'ask', key: oldKey } }, f.config); writeFileSync(join(f.root, 'asks.json'), JSON.stringify({ [middleKey]: { id: expires, status: 'superseded', legacy_key: oldKey }, [currentKey]: { id: expires, status: 'pending', legacy_key: oldKey } })); f.config.now = () => 2_000_000_002_000;
+      await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] })); expect(JSON.parse(readFileSync(join(f.root, 'asks.json'), 'utf8'))[currentKey].status).toBe('expired');
     } finally {
       if (saved === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = saved;
     }

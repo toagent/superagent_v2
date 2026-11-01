@@ -17,6 +17,7 @@ export interface FixtureOptions {
   persistCancellation?: boolean;
   snapshotIntents?: string;
   rejectReply?: Record<string, unknown>;
+  approveReply?: Record<string, unknown>;
 }
 
 export function fixtureOptions(dir: string, options: FixtureOptions): void {
@@ -50,6 +51,7 @@ export function fixtureArchon(dir: string, args: string[]): Exec {
     );
   if (args[1] === 'due') return reply({ ok: true, action: 'due', runs: ['r'] });
   if (args[1] === 'resume' && options.resumeReply) return reply(options.resumeReply);
+  if (args[1] === 'approve' && options.approveReply) return reply(options.approveReply);
   const run: RunView | undefined = current ? JSON.parse(readFileSync(current, 'utf8')) : undefined;
   if (args[1] === 'reject') {
     const result = options.rejectReply ?? { ok: true, cancelled: false, resumable: true };

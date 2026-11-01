@@ -61,10 +61,10 @@ export function supersedeAsks(asks: Asks, run: string, hold?: string, episode?: 
       (!node || a.context?.target?.endsWith(`:${node}`)) &&
       !asks[current]
     ) {
-      asks[current] = { ...a, legacy_key: key };
+      asks[current] = { ...a, legacy_key: a.legacy_key ?? key };
     }
     if (key !== current) {
-      if (['yes', 'no'].includes(a.status) && asks[current ?? '']?.legacy_key !== key)
+      if (['yes', 'no'].includes(a.status) && asks[current ?? '']?.id !== a.id)
         a.stale_answer = true;
       a.status = 'superseded';
     }

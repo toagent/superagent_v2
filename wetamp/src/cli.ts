@@ -2794,13 +2794,6 @@ export function supervisor(args: string[]): string {
 function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks: Asks): void {
   const run = getRun(l.archon_run_id, l.repo);
   a.decision = { answer, node, engine_run: l.archon_run_id, terminal_before: terminalFact(run) };
-  a.receipt = {
-    key: `${a.id ?? 'unknown'}:${answer}:received`,
-    stage: 'received',
-    body: `run=${l.run_id}；答复=${answer}；任务已收到，执行结果尚未确认`,
-    delivery: 'pending',
-    at: new Date().toISOString(),
-  };
   const key = Object.entries(asks).find(([, value]) => value === a)?.[0];
   if (key) saveAsk(asks, key);
 }
@@ -2826,11 +2819,9 @@ function reconcileAnswers(l: Ledger, asks: Asks, out: Action[]): boolean {
       out.push({ run_id: l.run_id, action: 'receipt_reconciled', ok: true });
     } catch (e) {
       unresolved = true;
-      if (a.receipt?.stage === 'received') {
-        a.receipt.stage = 'unknown';
-        a.receipt.key += ':unknown';
-        a.receipt.body += '；执行效果未确认，请检查引擎证据，不会自动重放';
-        a.receipt.delivery = 'pending';
+      if (!a.receipt || a.receipt.stage === 'received') {
+        // prettier-ignore
+        a.receipt = { key: `${a.id ?? key}:${d.answer}:unknown`, stage: 'unknown', body: `run=${l.run_id}；答复=${d.answer}；执行效果未确认，请检查引擎证据，不会自动重放`, delivery: 'pending', at: new Date().toISOString() };
         saveAsk(asks, key);
         deliverReceipt(l, key, a, asks);
       }
@@ -3328,6 +3319,9 @@ const rotateTickLog = (sa: string): void => {
   renameSync(file, `${file}.1`);
 };
 
+// prettier-ignore
+const liveCallbackAsk = (asks: Asks, key: string, id: string): [string, Ask] | undefined => Object.entries(asks).find((entry): entry is [string, Ask] => !!entry[1] && entry[1].id === id && ['pending', 'unknown'].includes(entry[1].status) && (entry[0] === key || entry[1].legacy_key === key));
+
 export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
@@ -3394,30 +3388,21 @@ export async function syncDecisionChannel(
       }
       const callbackKey = decision.callback.key,
         asks = loadAsks(),
-        direct = asks[callbackKey],
-        current =
-          direct?.id === decision.id && ['pending', 'unknown'].includes(direct.status)
-            ? direct
-            : Object.values(asks).find(a => a?.legacy_key === callbackKey);
-      if (
-        !current ||
-        current.id !== decision.id ||
-        !['pending', 'unknown'].includes(current.status)
-      )
-        throw new Error('ntfy decision changed');
+        entry = liveCallbackAsk(asks, callbackKey, decision.id);
+      if (!entry) throw new Error('ntfy decision changed');
+      const [currentKey, current] = entry;
       current.status = option;
-      const currentKey = Object.entries(asks).find(([, ask]) => ask === current)?.[0];
-      if (!currentKey) throw new Error('ntfy decision changed');
       saveAsk(asks, currentKey);
     },
     supplied,
     decision => {
       if (decision.callback.kind !== 'ask') return;
       const asks = loadAsks(),
-        current = asks[decision.callback.key];
-      if (!current || current.id !== decision.id) return;
+        entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
+      if (!entry) return;
+      const [currentKey, current] = entry;
       current.status = 'expired';
-      saveAsk(asks, decision.callback.key);
+      saveAsk(asks, currentKey);
     }
   );
 }

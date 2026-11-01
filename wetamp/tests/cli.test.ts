@@ -2853,6 +2853,14 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     ).toBe(true);
   });
   // prettier-ignore
+  test('a refused gate action does not publish or occupy the final initiator receipt', () => {
+    const gate = run('paused', { metadata: { approval: { nodeId: 'human-m2', pauseId: 'p1' } }, nodes: [{ nodeId: 'human-m2', state: 'running', startedAt: '2026-11-01T01:00:00.000Z' }] });
+    const s = stub([gate]); s.due.mockReturnValue([]); s.ledger.launcher = { ...coordModule.caller(), client: 'codex', tty: null, cwd: s.root }; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); fixtureOptions(s.dir, { approveReply: { ok: false, error: 'approval changed' } });
+    cliMod.superviseTick(); const path = join(s.root, 'home', 'asks.json'), asks = JSON.parse(readFileSync(path, 'utf8')), key = Object.keys(asks)[0]; asks[key].status = 'yes'; writeFileSync(path, JSON.stringify(asks));
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({ action: 'approve', ok: false });
+    expect(JSON.parse(readFileSync(path, 'utf8'))[key]).not.toHaveProperty('receipt'); expect(coordModule.coord().inbox(s.ledger.launcher!, true).some(message => message.source === asks[key].id)).toBe(false);
+  });
+  // prettier-ignore
   test('approval occurrences and owner-loss snapshots create stable ask episodes', () => {
     const approval = stub([run('paused', { metadata: { approval: { nodeId: 'review', pauseId: 'p1' } } })]); approval.due.mockReturnValue([]); const approvalTick = cliMod.superviseTick();
     expect('actions' in approvalTick ? approvalTick.actions[0] : approvalTick).toMatchObject({ action: 'ask', ok: true }); const lost = stub([run('running', { metadata: { execution_owner: LOST } })]);

@@ -162,6 +162,10 @@ test('I4 canonical migration, hold change and terminal supersession expose stale
     legacy_key: 'r:signoff:old',
   });
   expect(migrated['r:signoff:old']?.stale_answer).toBeUndefined();
+  const next = askKey('r', 'signoff', 'human-budget@2026-11-02');
+  supersedeAsks(migrated, 'r', 'signoff', 'human-budget@2026-11-02');
+  expect(migrated[next]).toMatchObject({ id: 'gate', status: 'yes', legacy_key: 'r:signoff:old' });
+  expect(migrated[askKey('r', 'signoff', 'human-budget@2026-11-01')]?.stale_answer).toBeUndefined();
   const changedNode: Asks = {
     'r:signoff:old': { id: 'old-gate', status: 'yes', context: { target: '/repo:r:human-m1' } },
   };
