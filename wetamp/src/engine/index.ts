@@ -380,7 +380,8 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
       dependencies.prepare(worktree, sha, log, remaining());
       prepared = true;
     } else {
-      git(['worktree', 'add', '--detach', worktree, sha]);
+      git(['clone', '--local', '--no-checkout', sourceRoot(), worktree]);
+      git(['checkout', '--detach', sha], worktree);
       prepared = true;
       const install = (() => { const output = openSync(log, 'a'); try { return Bun.spawnSync([process.execPath, 'install', '--frozen-lockfile'], { cwd: worktree, stdout: output, stderr: output, timeout: remaining() }); } finally { closeSync(output); } })();
       if (install.exitCode !== 0)
@@ -408,8 +409,7 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
     try {
       if (prepared && dependencies.cleanup) dependencies.cleanup(worktree);
       else if (prepared || existsSync(worktree)) {
-        git(['worktree', 'remove', '--force', worktree]);
-        if (existsSync(worktree)) rmSync(worktree, { recursive: true, force: true });
+        rmSync(worktree, { recursive: true, force: true });
       }
     } catch (error) {
       result.status = 'failed';
