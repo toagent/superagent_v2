@@ -2228,6 +2228,14 @@ describe('run (archon stub)', () => {
       const reviewer = reviewers[0];
       expect(pinned(call)).toEqual({
         '@sa-coder': { ...coder, effort: 'high' },
+        ...(tiers.routing.soldier?.models.length
+          ? {
+              '@sa-soldier': {
+                ...resolveRoute(tiers, console, 'auto', 'soldier').candidates[0],
+                effort: 'high',
+              },
+            }
+          : {}),
         '@sa-reviewer': { ...reviewer, effort: 'high' },
         '@sa-reviewer-alt': {
           ...(reviewers.find(a => a.provider !== reviewer.provider) ?? reviewers.at(1) ?? reviewer),
