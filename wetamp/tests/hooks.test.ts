@@ -580,6 +580,7 @@ describe('guard.cjs', () => {
       };
     writeFileSync(join(home, 'heartbeat.json'), JSON.stringify(heartbeat));
     const hooks = createRequire(import.meta.url)('../hooks/coord.cjs') as any;
+    expect(readFileSync(join(HOOKS, 'coord.cjs'), 'utf8')).not.toContain('spawnSync');
     const at = (minutes: number) => () =>
       Date.parse(`2026-10-29T09:${String(minutes).padStart(2, '0')}:00Z`);
     expect(hooks.unread(home, who, [], undefined, undefined, at(4))).toEqual([]);

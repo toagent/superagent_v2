@@ -41,13 +41,15 @@ export function historicalReclaimRuns(
       observations.flatMap(value => {
         if (!value || typeof value !== 'object') return [];
         const row = value as {
+          kind?: unknown;
           run?: unknown;
           count?: unknown;
           first_offline_at?: unknown;
           last_offline_at?: unknown;
           last_online_at?: unknown;
         };
-        return typeof row.run === 'string' &&
+        return row.kind !== 'job' &&
+          typeof row.run === 'string' &&
           typeof row.count === 'number' &&
           row.count >= 2 &&
           typeof row.first_offline_at === 'number' &&

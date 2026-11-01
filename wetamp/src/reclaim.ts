@@ -10,9 +10,12 @@ import { queueNtfyAlert } from './ntfy';
 
 const OFFLINE_CLEANUP_MS = 24 * 60 * 60_000; // Cross one night before terminal cleanup.
 const RESPONSIBILITY_ESCALATION_MS = 30 * 60_000; // PagerDuty-style second escalation.
+const abandoned = (run: RunRef): boolean =>
+  run.rejected === run.archon_run_id &&
+  !!run.intervention_events?.some(event => event.action === 'abandon' && event.ok);
 
 // prettier-ignore
-interface Observation { run: string; repo: string; first_offline_at?: number; last_offline_at?: number; last_online_at?: number; count: number; owner: Identity; generation: number }
+interface Observation { kind?: 'job'; run: string; repo: string; first_offline_at?: number; last_offline_at?: number; last_online_at?: number; count: number; owner: Identity; generation: number }
 // prettier-ignore
 interface Entry { id: string; run: string; from: Identity; to: Identity; expected_generation: number; observation?: Pick<Observation, 'first_offline_at' | 'last_offline_at' | 'count'>; state: 'transferring' | 'transferred' | 'reauthorized' | 'abandoned_attempt'; at: string }
 // prettier-ignore
@@ -62,11 +65,13 @@ export class Reclaimer {
       });
     }); });
   }
-  private maintain(): void {
+  private maintain(observations: Observation[]): void {
     const now = this.now();
-    for (const job of readJobs().jobs) if (job.state === 'lost' && now - Date.parse(job.started_at) >= OFFLINE_CLEANUP_MS && job.launcher && this.c.d.presence(job.launcher).state === 'offline' && !this.successorOnline(job.launcher, Date.parse(job.started_at))) {
+    const offlineJobs = new Map(observations.filter(o => o.kind === 'job').map(o => [o.run, o]));
+    for (const job of readJobs().jobs) if (job.state === 'lost' && job.launcher) {
+      const observed = offlineJobs.get(job.id);
       let repositoryOnline = false; try { repositoryOnline = this.c.owner(repoScope(job.cwd)).presence.state === 'online'; } catch { /* Missing historical repositories have no online owner. */ }
-      if (!repositoryOnline) try { cleanJob(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
+      if (observed?.first_offline_at !== undefined && now - observed.first_offline_at >= OFFLINE_CLEANUP_MS && this.c.d.presence(job.launcher).state === 'offline' && !repositoryOnline && !this.successorOnline(job.launcher, 0)) try { cleanJob(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
     }
     const heartbeat = json(join(this.c.d.sa, 'heartbeat.json')) as { marshals?: { owner: Identity | 'unknown'; waiting: { id: string; since?: string; waited_s: number; waiting_for: string; next?: string }[] }[] } | undefined;
     for (const marshal of heartbeat?.marshals ?? []) for (const item of marshal.waiting) {
@@ -78,12 +83,14 @@ export class Reclaimer {
   observe(): Observation[] {
     this.unavailable.clear();
     const prior = new Map(values<Observation>(this.observations).flatMap(o => {
-      try { return [[this.key(runScope({ run_id: o.run, repo: o.repo }), o.owner, o.generation), o] as const]; }
+      try { return [[o.kind === 'job' ? this.jobKey(o.run, o.owner) : this.key(runScope({ run_id: o.run, repo: o.repo }), o.owner, o.generation), o] as const]; }
       catch { return []; }
     }));
-    const next: Observation[] = [], at = this.now();
+    const next: Observation[] = [], at = this.now(), statuses = this.c.d.statuses();
     for (const run of this.c.d.runs()) {
-      if (!this.c.isRunOwnershipEvidence(run)) { try { if (!['failed', 'cancelled'].includes(this.run(run.archon_run_id, run.repo).status)) continue; } catch { continue; } }
+      let status = run.state === 'failed' ? 'failed' : statuses?.get(run.archon_run_id) ?? 'unknown';
+      if (!statuses) try { status = this.c.d.status(run); } catch { /* Unknown remains ownership evidence. */ }
+      if (!this.c.isRunOwnershipEvidence(run, statuses ?? new Map([[run.archon_run_id, status]])) && (abandoned(run) || !['failed', 'cancelled'].includes(status))) continue;
       let scope: ReturnType<typeof runScope>;
       try { scope = runScope(run); } catch { this.unavailable.add(run.run_id); continue; }
       const view = this.c.owner(scope);
@@ -92,9 +99,14 @@ export class Reclaimer {
       if (view.presence.state === 'online') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: at, count: 0 });
       else if (view.presence.state === 'offline') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: old?.last_online_at, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 });
     }
+    for (const job of readJobs().jobs) if (job.state === 'lost' && job.launcher && this.c.d.presence(job.launcher).state === 'offline') {
+      let repositoryOnline = false; try { repositoryOnline = this.c.owner(repoScope(job.cwd)).presence.state === 'online'; } catch { /* Historical repository may be gone. */ }
+      if (!repositoryOnline && !this.successorOnline(job.launcher, 0)) { const key = this.jobKey(job.id, job.launcher), old = prior.get(key); next.push({ kind: 'job', run: job.id, repo: job.cwd, owner: job.launcher, generation: 0, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 }); }
+    }
     this.write(this.observations, next); return next;
   }
   private key(scope: ReturnType<typeof runScope>, owner: Identity, generation: number): string { return JSON.stringify([scope, identityKey(owner), generation]); }
+  private jobKey(id: string, owner: Identity): string { return JSON.stringify(['job', id, identityKey(owner)]); }
   private finish(run: RunRef, entry: Entry): 'transferred' | 'pending' | 'skipped' {
     return this.c.scoped(runScope(run), () => {
       let view = this.c.owner(runScope(run));
@@ -122,16 +134,18 @@ export class Reclaimer {
   reclaim(observations = values<Observation>(this.observations)): ReclaimResult {
     const out: ReclaimResult = { transferred: [], unclaimed: [], skipped: [...this.unavailable], skip_reasons: Object.fromEntries([...this.unavailable].map(run => [run, 'repository_unavailable'])), pending: [], historical: [] }, pending = this.latest();
     for (const o of observations) {
+      if (o.kind === 'job') continue;
       if (o.count < 2 || o.first_offline_at === undefined || o.last_offline_at === undefined || o.last_offline_at - o.first_offline_at < 120_000) continue;
       if (['transferring', 'transferred'].includes(pending.get(o.run)?.state ?? '')) { out.pending.push(o.run); continue; }
       const run = this.c.resolveRun(o.run); if (!run) { out.skipped.push(o.run); continue; }
       let scope: ReturnType<typeof runScope>; try { scope = runScope(run); } catch { if (!out.skipped.includes(o.run)) out.skipped.push(o.run); out.skip_reasons[o.run] = 'repository_unavailable'; continue; }
       const target = this.c.owner({ kind: 'repo', id: scope.repo });
       const lastOnline = o.last_online_at ?? this.acceptedAt(o, scope);
-      let current; try { current = this.run(run.archon_run_id, run.repo); } catch { if (lastOnline === undefined) out.historical.push(o.run); else out.skipped.push(o.run); continue; }
-      if (['failed', 'cancelled'].includes(current.status) && this.now() - o.first_offline_at >= OFFLINE_CLEANUP_MS && target.presence.state !== 'online') { this.abandon(run, o); continue; }
+      let status = 'unknown'; try { status = this.c.d.status(run); } catch { /* Unknown is not terminal. */ }
+      if (['failed', 'cancelled'].includes(status)) { if (!abandoned(run) && this.now() - o.first_offline_at >= OFFLINE_CLEANUP_MS && target.presence.state !== 'online') this.abandon(run, o); else out.skipped.push(o.run); continue; }
       if (lastOnline === undefined) { out.historical.push(o.run); continue; }
       if (!target.owner || target.presence.state !== 'online' || same(target.owner, o.owner)) { out.unclaimed.push(o.run); continue; }
+      let current; try { current = this.run(run.archon_run_id, run.repo); } catch { out.skipped.push(o.run); continue; }
       if (current.nodes?.some(n => n.state === 'running' && /^(?:resync|sync|integrate|publish)-/.test(n.nodeId))) { out.skipped.push(o.run); continue; }
       const entry: Entry = { id: crypto.randomUUID(), run: o.run, from: o.owner, to: target.owner, expected_generation: o.generation, observation: { first_offline_at: o.first_offline_at, last_offline_at: o.last_offline_at, count: o.count }, state: 'transferring', at: new Date(this.now()).toISOString() };
       try { this.c.scoped(scope, () => { this.append(entry); const state = this.finish(run, entry); out[state === 'transferred' ? 'transferred' : state === 'pending' ? 'pending' : 'skipped'].push(o.run); }, 0); } catch { out.skipped.push(o.run); }
@@ -142,7 +156,7 @@ export class Reclaimer {
     this.complete(); const observed = this.observe(), now = this.now(), path = join(this.root, 'schedule.json');
     const state = values<number>(path);
     if (!state.length || now - state[0] >= 300_000) { this.reclaim(observed); this.write(path, { last_reclaim_at: now }); }
-    this.maintain();
+    this.maintain(observed);
   }
 }
 
