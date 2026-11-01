@@ -486,6 +486,7 @@ export const environmentIdentity = (values: NodeJS.ProcessEnv): string =>
     .digest('hex');
 
 const acceptanceCachePath = (
+  head: string,
   tree: string,
   check: Check,
   envKey: string,
@@ -498,6 +499,7 @@ const acceptanceCachePath = (
       JSON.stringify([
         'hmac-v2',
         FAILURE_CLASSES,
+        head,
         tree,
         check.cmd,
         check.timeout_s,
@@ -521,16 +523,17 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
   const requirements = packages.map(({ id, accept, requirements }) => ({ id, accept, ...(requirements ? { requirements } : {}) }));
   // prettier-ignore
   const envKey = sha(cacheJson(packages.some(pkg => pkg.requirements) ? [environmentChecks(p), requirements] : environmentChecks(p)));
-  const tree = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'], {
+  const revision = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD', 'HEAD^{tree}'], {
     stdout: 'pipe',
     stderr: 'pipe',
     timeout: CHECK_AUX_TIMEOUT_MS,
   });
-  if (tree.exitCode !== 0) return false;
+  if (revision.exitCode !== 0) return false;
+  const [head, tree] = revision.stdout.toString().trim().split('\n');
   const environment = environmentIdentity(projectEnvironment(process.env));
   return checks.every(check => {
     if (check.cache === false) return false;
-    const path = acceptanceCachePath(tree.stdout.toString().trim(), check, envKey, environment);
+    const path = acceptanceCachePath(head, tree, check, envKey, environment);
     if (!existsSync(path)) return false;
     try {
       const saved = JSON.parse(readFileSync(path, 'utf8')) as {
@@ -538,8 +541,13 @@ export function acceptanceCacheReady(cwd = process.cwd()): boolean {
         pass?: boolean;
         exit?: number | string;
         structured?: StructuredCases;
+        started_at?: string;
+        ended_at?: string;
+        attempts?: CommandResult['attempts'];
+        summary?: CommandResult['summary'];
       };
-      if (saved.failure || saved.pass === false || (saved.exit !== undefined && saved.exit !== 0))
+      // prettier-ignore
+      if (saved.failure || saved.pass !== true || saved.exit !== 0 || !saved.started_at || !saved.ended_at || !saved.attempts?.length || !saved.summary)
         return false;
       if (!check.report) return true;
       const structured = saved.structured;
@@ -644,17 +652,15 @@ async function run(
     env('KIND') === 'env'
       ? Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'SA_ACCEPTANCE'))
       : projectEnvironment(process.env);
-  const treeResult =
-    artifacts && envKey
-      ? auxiliary(
-          cwd ? ['git', '-C', cwd, 'rev-parse', 'HEAD^{tree}'] : ['git', 'rev-parse', 'HEAD^{tree}']
-        )
-      : undefined;
-  const tree = treeResult?.exitCode === 0 ? treeResult.stdout.toString().trim() : '';
+  // prettier-ignore
+  const revision = artifacts && envKey ? auxiliary(cwd ? ['git', '-C', cwd, 'rev-parse', 'HEAD', 'HEAD^{tree}'] : ['git', 'rev-parse', 'HEAD', 'HEAD^{tree}']) : undefined;
+  // prettier-ignore
+  const [head = '', tree = ''] = revision?.exitCode === 0 ? revision.stdout.toString().trim().split('\n') : [];
   const environment =
     tree && checks.some(c => c.cache !== false) ? environmentIdentity(commandEnv) : '';
   for (const c of checks) {
     if (c.requires_prior_pass && failed.length) {
+      const at = new Date().toISOString();
       appendFileSync(log, `$ ${c.cmd}\n# 前置检查失败，未运行\n\n`);
       results.push({
         check: c,
@@ -662,10 +668,15 @@ async function run(
         evidence: log,
         exit: 'skipped',
         duration_ms: 0,
+        started_at: at,
+        ended_at: at,
+        attempts: [],
+        summary: { pass: 0, fail: 0, skip: 1, retry: 0 },
       });
       continue;
     }
-    const hit = tree && c.cache !== false ? acceptanceCachePath(tree, c, envKey, environment) : '';
+    // prettier-ignore
+    const hit = tree && c.cache !== false ? acceptanceCachePath(head, tree, c, envKey, environment) : '';
     if (hit && existsSync(hit)) {
       const saved = JSON.parse(readFileSync(hit, 'utf8')) as {
         tag: string;
@@ -676,13 +687,13 @@ async function run(
         stdout?: string;
         stderr?: string;
         structured?: StructuredCases;
+        started_at?: string;
+        ended_at?: string;
+        attempts?: CommandResult['attempts'];
+        summary?: CommandResult['summary'];
       };
-      if (
-        !saved.failure &&
-        saved.pass !== false &&
-        (saved.exit === undefined || saved.exit === 0) &&
-        (!c.report || saved.structured?.complete === true)
-      ) {
+      // prettier-ignore
+      if (!saved.failure && saved.pass === true && saved.exit === 0 && saved.started_at && saved.ended_at && saved.attempts?.length && saved.summary && (!c.report || saved.structured?.complete === true)) {
         appendFileSync(
           log,
           `$ ${c.cmd}\n# reused pass from ${saved.tag}\n${saved.stdout ?? ''}${
@@ -691,10 +702,14 @@ async function run(
         );
         results.push({
           check: c,
-          pass: saved.pass ?? (saved.exit === undefined ? null : true),
+          pass: true,
           exit: saved.exit,
           evidence: log,
           duration_ms: saved.duration_ms ?? 0,
+          started_at: saved.started_at,
+          ended_at: saved.ended_at,
+          attempts: saved.attempts,
+          summary: saved.summary,
           ...(saved.structured ? { structured: saved.structured } : {}),
         });
         continue;
@@ -708,7 +723,9 @@ async function run(
       lease = remainingWait > 0 ? await acquireResource(c.resource, remainingWait) : undefined;
       resourceWaitElapsedMs += lease?.waitedMs ?? Math.max(0, remainingWait);
       if (!lease) {
-        results.push({ check: c, pass: false, evidence: log, exit: 'resource_wait_timeout', duration_ms: 0 });
+        const at = new Date().toISOString();
+        results.push({ check: c, pass: false, evidence: log, exit: 'resource_wait_timeout', duration_ms: 0,
+          started_at: at, ended_at: at, attempts: [], summary: { pass: 0, fail: 1, skip: 0, retry: 0 } });
         failures.push({ command: c.cmd, failure_class: 'test_env', evidence: log });
         resourceWaitTimeoutCommand = c.cmd;
         throw new ResourceWaitTimeout(c.cmd);
@@ -716,6 +733,7 @@ async function run(
     }
     const t0 = Date.now(),
       deadline = t0 + c.timeout_s * 1000;
+    const attempts: NonNullable<CommandResult['attempts']> = [];
     let reportPath = '';
     let expected: string[] = [];
     if (c.report) {
@@ -740,6 +758,7 @@ async function run(
       }
     }
     const execute = async (command = c.cmd, outputReport = reportPath) => {
+      const executionStarted = Date.now();
       if (outputReport) rmSync(outputReport, { force: true });
       const remaining = deadline - Date.now();
       if (remaining <= 0) return [undefined, 'timeout', undefined, false, Date.now() - t0] as const;
@@ -777,7 +796,13 @@ async function run(
         };
       }
       const code = p.signalCode ? `signal ${p.signalCode}` : (p.exitCode ?? 'unknown');
-      const structured = outputReport ? junitCases(outputReport, expected, t0) : undefined;
+      const structured = outputReport
+        ? junitCases(outputReport, expected, executionStarted)
+        : undefined;
+      // prettier-ignore
+      const junit = outputReport && artifacts ? join(artifacts, `${env('TAG')}.attempt-${String(attempts.length + 1)}.junit.xml`) : outputReport;
+      if (outputReport && junit !== outputReport && existsSync(outputReport))
+        writeFileSync(junit, readFileSync(outputReport));
       const consistent =
         !structured ||
         (!p.signalCode &&
@@ -789,6 +814,10 @@ async function run(
         log,
         `$ ${command}\n${p.stdout.toString()}${p.stderr.toString()}# exit=${String(code)} ms=${String(duration)}\n\n`
       );
+      // prettier-ignore
+      attempts.push({ started_at: new Date(executionStarted).toISOString(), ended_at: new Date().toISOString(),
+        exit: code, duration_ms: Date.now() - executionStarted, log, ...(junit ? { junit } : {}),
+        tests: structured?.tests ?? 0, failures: structured?.failures.length ?? 0, skipped: structured?.skipped.length ?? 0 });
       return [
         p,
         code,
@@ -863,6 +892,15 @@ async function run(
       evidence: log,
       exit: code,
       duration_ms: duration,
+      started_at: new Date(t0).toISOString(),
+      ended_at: new Date().toISOString(),
+      attempts,
+      summary: {
+        pass: passed ? 1 : 0,
+        fail: passed ? 0 : 1,
+        skip: 0,
+        retry: Math.max(0, attempts.length - 1),
+      },
       ...(flaky ? { flaky: true } : {}),
       ...(structured ? { structured } : {}),
     });
@@ -912,6 +950,10 @@ async function run(
           stdout: p.stdout.toString(),
           stderr: p.stderr.toString(),
           structured,
+          started_at: new Date(t0).toISOString(),
+          ended_at: new Date().toISOString(),
+          attempts,
+          summary: { pass: 1, fail: 0, skip: 0, retry: 0 },
         })
       );
     }
@@ -1132,9 +1174,10 @@ export function acceptanceContractHash(): string {
 // prettier-ignore
 export function reusableAcceptance(prior: Accept | undefined, head: string): boolean {
   const checks = plan().packages.filter(k => env('PKGS').split(',').includes(k.id)).flatMap(k => k.accept);
-  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && cacheJson(prior.command_results?.map(r => r.check)) === cacheJson(checks) && prior.command_results?.every(r => r.pass === true && !r.flaky) === true;
+  return prior?.ok === true && prior.workspace_clean === true && prior.head === head && prior.contract_hash === acceptanceContractHash() && checks.every(c => c.cache !== false) && cacheJson(prior.command_results?.map(r => r.check)) === cacheJson(checks) && prior.command_results?.every(r => r.pass === true && r.exit === 0 && !!r.started_at && !!r.ended_at && !!r.attempts?.length && !!r.summary && !r.flaky) === true;
 }
 
+// prettier-ignore
 function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolean {
   const checks = plan()
     .packages.filter(k => env('PKGS').split(',').includes(k.id))
@@ -1145,7 +1188,7 @@ function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolea
     prior.head === head &&
     prior.contract_hash === acceptanceContractHash() &&
     cacheJson(prior.command_results?.map(r => r.check)) === cacheJson(checks) &&
-    prior.command_results?.every(r => r.pass === true && !r.flaky) === true
+    prior.command_results?.every(r => r.pass === true && r.exit === 0 && !!r.started_at && !!r.ended_at && !!r.attempts?.length && !!r.summary && !r.flaky) === true
   );
 }
 

@@ -293,6 +293,26 @@ export interface CommandResult {
   duration_ms: number;
   flaky?: boolean;
   structured?: StructuredCases;
+  started_at?: string;
+  ended_at?: string;
+  attempts?: CommandAttempt[];
+  summary?: {
+    pass: number;
+    fail: number;
+    skip: number;
+    retry: number;
+  };
+}
+export interface CommandAttempt {
+  started_at: string;
+  ended_at: string;
+  exit: number | string;
+  duration_ms: number;
+  log: string;
+  junit?: string;
+  tests: number;
+  failures: number;
+  skipped: number;
 }
 export interface Adjudication {
   diff_hash: string;
@@ -525,8 +545,45 @@ export const acceptOutputFormat = {
         duration_ms: { type: 'integer', minimum: 0 },
         flaky: { type: 'boolean' },
         structured: { $ref: '#/$defs/StructuredCases' },
+        started_at: { type: 'string' },
+        ended_at: { type: 'string' },
+        attempts: { type: 'array', items: { $ref: '#/$defs/CommandAttempt' } },
+        summary: {
+          type: 'object',
+          properties: {
+            pass: { type: 'integer', minimum: 0 },
+            fail: { type: 'integer', minimum: 0 },
+            skip: { type: 'integer', minimum: 0 },
+            retry: { type: 'integer', minimum: 0 },
+          },
+          required: ['pass', 'fail', 'skip', 'retry'],
+        },
       },
       required: ['check', 'pass', 'evidence', 'duration_ms'],
+    },
+    CommandAttempt: {
+      type: 'object',
+      properties: {
+        started_at: { type: 'string' },
+        ended_at: { type: 'string' },
+        exit: { type: ['number', 'string'] },
+        duration_ms: { type: 'integer', minimum: 0 },
+        log: { type: 'string' },
+        junit: { type: 'string' },
+        tests: { type: 'integer', minimum: 0 },
+        failures: { type: 'integer', minimum: 0 },
+        skipped: { type: 'integer', minimum: 0 },
+      },
+      required: [
+        'started_at',
+        'ended_at',
+        'exit',
+        'duration_ms',
+        'log',
+        'tests',
+        'failures',
+        'skipped',
+      ],
     },
     BaseResult: {
       type: 'object',

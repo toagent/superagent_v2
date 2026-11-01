@@ -84,6 +84,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'saved.pass === true && saved.exit === 0 && saved.started_at',
+    to: 'saved.pass === true && (saved.exit === undefined || saved.exit === 0) && saved.started_at',
+    test: 'tests/sa-check.test.ts',
+    name: 'delivery-truth: cache binds',
+    expectedError: 'Expected  - 1',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'return { owned: prior.id === adoption && ownsCheckout(prior, cwd) };',
     to: 'return { owned: false };',
     test: 'tests/sa-check.test.ts',

@@ -2858,7 +2858,15 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' }, SCRIPT,
       { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
     expect(result.out, readFileSync(join(result.art, 'verify-a.log'), 'utf8')).toMatchObject({ ok: true,
-      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] } }] });
+      command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] },
+        summary: { pass: 1, fail: 0, skip: 0, retry: 1 } }] });
+    const attempts = (result.out as { command_results: CommandResult[] }).command_results[0].attempts!;
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({ exit: 1, tests: 2, failures: 1, skipped: 0 });
+    expect(attempts[1]).toMatchObject({ exit: 0, tests: 2, failures: 0, skipped: 1 });
+    expect(attempts.map(attempt => attempt.junit)).toEqual([
+      join(result.art, 'verify-a.attempt-1.junit.xml'), join(result.art, 'verify-a.attempt-2.junit.xml')]);
+    expect(attempts.every(attempt => existsSync(attempt.junit!))).toBeTrue();
     expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\ntarget\n');
     expect(readdirSync(join(result.art, 'accept-cache'))).toEqual(['.key']);
     expect(JSON.parse(readFileSync(join(home, 'flaky-acceptance.jsonl'), 'utf8'))).toMatchObject({ test_ids: ['suite::target'], attempts: 2 });
@@ -4336,6 +4344,12 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     expect(go('legacy-rejected', 'bad').out).toMatchObject({ ok: false });
     expect(go('first').out).toMatchObject({ ok: true });
     expect(go('same').out).toMatchObject({ ok: true });
+    const entry = readdirSync(cache).find(file => file !== '.key' &&
+      JSON.parse(readFileSync(join(cache, file), 'utf8')).tag === 'first')!;
+    const incomplete = JSON.parse(readFileSync(join(cache, entry), 'utf8'));
+    delete incomplete.exit;
+    writeFileSync(join(cache, entry), JSON.stringify(incomplete));
+    expect(go('missing-exit').out).toMatchObject({ ok: true });
     expect(
       go('excluded', 'good', {
         INPUTS_UNUSED: 'changed',
@@ -4362,13 +4376,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         CONTEXT: 'changed',
       }).out
     ).toMatchObject({ ok: true });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
     expect(go('path-changed', 'good', { PATH: `${process.env.PATH}:/changed` }).out).toMatchObject({
       ok: true,
     });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\n');
     expect(go('changed', 'worse').out).toMatchObject({ ok: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\n');
     const keyPath = join(cache, '.key'),
       key = readFileSync(keyPath);
     expect(key.length).toBe(32);
@@ -4386,10 +4400,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     unlinkSync(keyPath);
     expect(go('lost-context').out).toMatchObject({ ok: true });
     expect(readFileSync(keyPath).equals(key)).toBe(false);
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
+    sh('git -c user.name=t -c user.email=t@l commit --allow-empty -qm candidate', repo);
+    expect(go('new-commit').out).toMatchObject({ ok: true });
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\n');
     writeFileSync(join(repo, 'dirty.txt'), 'dirty');
     expect(go('dirty').out).toMatchObject({ ok: false, workspace_clean: false });
-    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\n');
+    expect(readFileSync(counter, 'utf8')).toBe('x\nx\nx\nx\nx\nx\nx\nx\nx\nx\n');
   }, testTimeout(10_000));
   test('U5: hmac-v1 cache entries cannot satisfy the new identity version', () => {
     const root = tmp(),
