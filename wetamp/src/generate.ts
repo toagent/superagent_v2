@@ -1137,6 +1137,7 @@ export function buildWorkflow(
           ...attemptInputs(attemptPath(gen, `pkg/${p.id}`)),
           with: { counter: attemptPath(gen, `pkg/${p.id}`), gen, context_node: `repair-${p.id}` },
           depends_on: repairDeps,
+          ...(budgetGate ? { trigger_rule: 'none_failed_min_one_success' } : {}),
           when: repairWhen,
           output_format: contextOutputFormat,
         });
@@ -1163,6 +1164,7 @@ export function buildWorkflow(
               },
             }),
         depends_on: [...repairDeps, ...(!fake ? [repairContext] : [])],
+        ...(budgetGate ? { trigger_rule: 'none_failed_min_one_success' } : {}),
         when: repairWhen,
         output_format: coderOutputFormat,
       });
@@ -1470,8 +1472,9 @@ export function assertGeneratedWorkflow(definition: Node, background = true): vo
   const assertReferenceClosure = (nodes: Node[], enclosing = new Set<string>()): void => {
     const byId = new Map(nodes.map(node => [String(node.id), node]));
     for (const node of nodes) {
-      const upstream = new Set(enclosing),
-        pending = [...((node.depends_on as string[] | undefined) ?? [])];
+      const direct = new Set((node.depends_on as string[] | undefined) ?? []),
+        upstream = new Set(enclosing),
+        pending = [...direct];
       for (const id of pending) {
         if (upstream.has(id)) continue;
         upstream.add(id);
@@ -1484,6 +1487,16 @@ export function assertGeneratedWorkflow(definition: Node, background = true): vo
           const id = match[1];
           if (id !== 'LOOP_PREV' && id !== 'INPUTS' && !upstream.has(id))
             throw new Error(`${String(node.id)}: non-upstream output reference ${id}`);
+          const dependency = byId.get(id);
+          if (
+            value === node.when &&
+            direct.has(id) &&
+            dependency?.when !== undefined &&
+            dependency.when !== node.when &&
+            [...direct].some(dependencyId => byId.get(dependencyId)?.when === undefined) &&
+            !['none_failed_min_one_success', 'all_done'].includes(String(node.trigger_rule))
+          )
+            throw new Error(`${String(node.id)}: skippable dependency ${id} needs trigger_rule`);
         }
       }
       const group = node.loop_group as { nodes?: Node[] } | undefined;
