@@ -107,16 +107,6 @@ function setup(probe: (who: Identity) => Presence = () => online) {
   const c = new Coordination({ sa, runs: () => [], status: () => 'running', presence: probe });
   return { root, repo, sa, c, scope: repoScope(repo) };
 }
-
-test('unfinished handoff evidence appends by structured cause until completion', () => {
-  const s = setup();
-  s.c.claim(s.scope, b);
-  const result = s.c.handoff(s.scope, a, input);
-  expect(s.c.appendEvidence(String(result.id), ['sha', '/tmp/new.log'])).toBe(true);
-  expect(s.c.messages()[0].evidence).toEqual([...input.evidence, 'sha', '/tmp/new.log']);
-  s.c.ack(String(result.id), b, 'done', 'fixed');
-  expect(s.c.appendEvidence(String(result.id), ['later'])).toBe(false);
-});
 // Virtual time exercises real flock contention without sleeping for minutes.
 // prettier-ignore
 test.each(['release', 'truncated', 'timeout', 'default'])('delivery scope wait: %s', kind => {

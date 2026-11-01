@@ -706,17 +706,6 @@ export class Coordination {
   messages(): Message[] {
     return shared.files(this.d.sa, 'inbox');
   }
-  appendEvidence(id: string, evidence: string[]): boolean {
-    return this.locked(() => {
-      const message = this.read('inbox', id);
-      if (!message || ['done', 'rejected'].includes(message.state)) return false;
-      this.save('inbox', message.id, {
-        ...message,
-        evidence: [...new Set([...message.evidence, ...evidence])],
-      });
-      return true;
-    });
-  }
   private routedMessages(
     who: Identity,
     all: boolean

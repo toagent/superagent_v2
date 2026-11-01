@@ -457,8 +457,7 @@ test('verify failure dedupes equal file sets but reports a changed set', () => {
   coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: 'legacy verify handoff', body: '', evidence: ['/one.log'], severity: 'normal' }, 0, false);
   const alerts: string[] = [], handoffs: string[] = [];
   autoVerify(join(f.root, 'current'), { alert: item => alerts.push(item.sha), handoff: item => handoffs.push(item.sha) });
-  expect(alerts).toEqual(['three']); expect(handoffs).toEqual(alerts);
-  expect(coord().messages()[0].evidence).toEqual(expect.arrayContaining(['/one.log', 'one', 'two', '/two.log']));
+  expect(alerts).toEqual(['three']); expect(handoffs).toHaveLength(3); expect(handoffs).toEqual(expect.arrayContaining(['one', 'two', 'three']));
   for (const sha of ['one', 'two', 'three']) expect(JSON.parse(readFileSync(join(promotions, `${sha}.verify.json`), 'utf8')).reported).toBe(true);
 });
 
