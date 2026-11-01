@@ -44,6 +44,52 @@ export interface NtfyAsk {
   recommend?: { option: string; reason: string };
 }
 
+// prettier-ignore
+export function parseNtfyAskSpec(value: unknown): NtfyAsk {
+  const fail = (field: string): never => { throw new Error(`ask spec field ${field} is invalid`); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('$');
+  const spec = value as Record<string, unknown>;
+  const text = (item: unknown, field: string, optional = false): string | undefined => {
+    if (item === undefined && optional) return undefined;
+    if (typeof item !== 'string' || !item.trim()) fail(field);
+    return item as string;
+  };
+  const object = (item: unknown, field: string): Record<string, unknown> => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail(field);
+    return item as Record<string, unknown>;
+  };
+  const fields = (item: Record<string, unknown>, field: string, required: string[], optional: string[] = []): void => {
+    required.forEach(key => text(item[key], `${field}.${key}`));
+    optional.forEach(key => text(item[key], `${field}.${key}`, true));
+  };
+  const rawSource = spec.source;
+  if (typeof rawSource === 'string') text(rawSource, 'source');
+  else fields(object(rawSource, 'source'), 'source', ['ref'], ['initiator', 'queued_at']);
+  let source = rawSource;
+  if (spec.source_ref !== undefined) {
+    const ref = object(spec.source_ref, 'source_ref');
+    fields(ref, 'source_ref', ['ref'], ['initiator', 'queued_at']);
+    source = { ref: ref.ref, ...(ref.queued_at ? { queued_at: ref.queued_at } : {}),
+      ...(ref.initiator || typeof rawSource === 'string' ? { initiator: ref.initiator ?? rawSource } : {}) };
+  }
+  const rawOptions = Array.isArray(spec.options) ? spec.options : fail('options');
+  const options = rawOptions.map((option, index) => {
+    const field = `options[${String(index)}]`, parsed = object(option, field);
+    fields(parsed, field, ['id', 'label'], ['consequence', 'timing', 'effect', 'reversible', 'risk']);
+    return parsed as unknown as NtfyOption;
+  });
+  if (spec.recommend !== undefined) fields(object(spec.recommend, 'recommend'), 'recommend', ['option', 'reason']);
+  const callback = object(spec.callback, 'callback');
+  if (!['ask', 'decision', 'external'].includes(String(callback.kind))) fail('callback.kind');
+  fields(callback, 'callback', ['kind', callback.kind === 'ask' ? 'key' : callback.kind === 'decision' ? 'id' : 'ref']);
+  const risk = text(spec.risk, 'risk');
+  if (risk !== 'normal' && risk !== 'red') fail('risk');
+  ['default_on_expiry', 'dedupe_key', 'project', 'headline', 'purpose', 'why'].forEach(field => text(spec[field], field, true));
+  const request = { ...spec }; Reflect.deleteProperty(request, 'source_ref');
+  return { ...request, source, title: text(spec.title, 'title'), body: text(spec.body, 'body'), risk,
+    expires_at: text(spec.expires_at, 'expires_at'), options, callback } as unknown as NtfyAsk;
+}
+
 interface SignedAnswer {
   id: string;
   option: string;
@@ -437,14 +483,14 @@ const section = (title: string, body?: string): string[] =>
   body?.trim() ? [`▍${title}`, body.trim()] : [];
 // prettier-ignore
 function decisionPresentation(decision: StoredDecision): { title: string; message: string; priority: number; tags: string[] } {
-  if (!decision.project && !decision.headline && !decision.purpose && !decision.why && !decision.recommend)
+  if (!decision.project && !decision.headline && !decision.purpose && !decision.why && !decision.recommend && typeof decision.source === 'string')
     return { title: decision.title, message: decision.body, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
   const source = typeof decision.source === 'string' ? undefined : decision.source;
   const expires = new Date(decision.expires_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-');
-  let purpose = Array.from(decision.purpose ?? decision.body).slice(0, 300).join('');
+  let purpose = Array.from(decision.purpose ?? '').slice(0, 300).join('');
   const render = () => {
     const recommendation = decision.recommend ? [HEAVY, `建议：选「${decision.recommend.option}」——${decision.recommend.reason}`, `同意就直接点「${decision.recommend.option}」`, HEAVY] : [];
-    const options = decision.options.map(option => `• ${option.label}｜${option.timing ?? '点按后生效'}｜${option.effect ?? option.consequence ?? ''}｜可回滚：${option.reversible ?? '未说明'}`);
+    const options = decision.options.map(option => `• ${[option.label, option.timing, option.effect ?? option.consequence, option.reversible && `可回滚：${option.reversible}`].filter(Boolean).join('｜')}`);
     if (decision.default_on_expiry)
       options.push(`• 不处理｜= ${optionLabel(decision, decision.default_on_expiry)}｜${expires} 过期`);
     const risks = decision.options.flatMap(option => option.risk ? [`• 选${option.label}：${option.risk}`] : []);
@@ -452,13 +498,11 @@ function decisionPresentation(decision: StoredDecision): { title: string; messag
     const origin = source ? [source.ref, source.initiator, queued].filter(Boolean).join('｜') : '';
     return [
       ...recommendation,
-      ...section('一句话', decision.headline ?? decision.body),
+      ...section('一句话', decision.headline ?? decision.title),
       LIGHT,
       ...section('选项对比', options.join('\n')),
-      LIGHT,
-      ...section('这个任务是什么', purpose),
-      LIGHT,
-      ...section('为什么找你', decision.why),
+      ...(purpose ? [LIGHT, ...section('这个任务是什么', purpose)] : []),
+      ...(decision.why ? [LIGHT, ...section('为什么找你', decision.why)] : []),
       ...(risks.length ? [LIGHT, ...section('风险与代价', risks.join('\n'))] : []),
       ...(decision.recommend ? [LIGHT, ...section('建议理由', decision.recommend.reason)] : []),
       ...(origin ? [LIGHT, `来源：${origin}`] : []),
@@ -466,9 +510,9 @@ function decisionPresentation(decision: StoredDecision): { title: string; messag
   };
   let message = render();
   while (Buffer.byteLength(message) > 4000 && purpose.length) { purpose = purpose.slice(0, -1); message = render(); }
-  if (purpose !== (decision.purpose ?? decision.body).slice(0, 300) && source?.ref)
+  if (purpose !== (decision.purpose ?? '').slice(0, 300) && source?.ref)
     message += `\n详情：superagent brief ${source.ref}`;
-  return { title: `需你决定｜${decision.project ?? '未知项目'}｜${decision.headline ?? decision.title}`, message, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
+  return { title: ['需你决定', decision.project, decision.headline ?? decision.title].filter(Boolean).join('｜'), message, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
 }
 
 async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {

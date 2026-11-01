@@ -18,6 +18,7 @@ import {
   syncNtfy,
   type NtfyConfig,
   type NtfyOption,
+  parseNtfyAskSpec,
 } from './ntfy';
 import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { runAttention } from '../../packages/workflows/src/schemas/workflow-run';
@@ -307,6 +308,7 @@ export const OPTIONS = {
   'no-global': { type: 'boolean' },
   'bootstrap-evidence': { type: 'string' },
   source: { type: 'string' },
+  spec: { type: 'string' },
   body: { type: 'string' },
   option: { type: 'string', multiple: true },
   'expires-at': { type: 'string' },
@@ -4963,6 +4965,30 @@ export async function askCli(
     if (!id || !label) throw new Error('--option must be id=label[=consequence]');
     return { id, label, ...(consequence.length ? { consequence: consequence.join('=') } : {}) };
   };
+  const specPath = a.flags.spec;
+  if (specPath) {
+    const conflicting = [
+      'source',
+      'title',
+      'body',
+      'option',
+      'expires-at',
+      'default-on-expiry',
+      'callback',
+      'recommend',
+      'why',
+      'risk',
+    ].find(flag => Reflect.get(a.flags, flag) !== undefined);
+    if (conflicting) throw new Error(`--spec cannot be combined with --${conflicting}`);
+    let value: unknown;
+    try {
+      value = JSON.parse(readFileSync(specPath, 'utf8'));
+    } catch (error) {
+      throw new Error(`ask spec: ${(error as Error).message}`);
+    }
+    const id = askNtfy(parseNtfyAskSpec(value), supplied);
+    return publishAsk(id, supplied, emit);
+  }
   const source = need(a.flags.source, 'ask --source <source>'),
     title = need(a.flags.title, 'ask --title <title>'),
     body = need(a.flags.body, 'ask --body <body>'),
@@ -4994,6 +5020,14 @@ export async function askCli(
     },
     supplied
   );
+  return publishAsk(id, supplied, emit);
+}
+
+async function publishAsk(
+  id: string,
+  supplied: Partial<NtfyConfig>,
+  emit: (value: unknown) => void
+): Promise<number> {
   let delivery: 'sent' | 'pending';
   try {
     await publishPendingNtfy(supplied);

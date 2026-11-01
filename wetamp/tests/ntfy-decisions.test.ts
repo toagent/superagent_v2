@@ -89,6 +89,17 @@ describe('ntfy decision channel', () => {
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
     expect(ntfyTickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
   });
+  test('accepts validated ask specs and omits missing presentation fields', async () => {
+    const f = fixture(), path = join(f.root, 'ask.json'), base = { source: 'marshal', source_ref: { ref: 'run-27', initiator: 'marshal' }, title: '是否放行？', body: '正文不应重复', options: [{ id: 'yes', label: '是', effect: '继续 run' }, { id: 'no', label: '否' }], recommend: { option: '是', reason: '验收通过' }, risk: 'normal', expires_at: f.request('x').expires_at, callback: { kind: 'external', ref: 'external:27' } };
+    writeFileSync(path, JSON.stringify(base)); await askCli(['ask', '--spec', path], f.config, () => undefined);
+    expect(f.posts[0]!.body.title).toBe('需你决定｜是否放行？');
+    const message = String(f.posts[0]!.body.message);
+    expect(message).toContain('▍一句话\n是否放行？'); expect(message).not.toContain('正文不应重复');
+    expect(message).toContain('• 是｜继续 run\n• 否'); expect(message).not.toContain('未说明'); expect(message).not.toContain('▍这个任务是什么');
+    writeFileSync(path, JSON.stringify({ ...base, options: [{ id: 'yes', label: 1 }] }));
+    await expect(askCli(['ask', '--spec', path], f.config)).rejects.toThrow('options[0].label');
+    await expect(askCli(['ask', '--spec', path, '--title', 'conflict'], f.config)).rejects.toThrow('--spec cannot be combined with --title');
+  });
   test('publishes titled notifications once and keeps outages pending without leaking tokens', async () => {
     const f = fixture(), output: unknown[] = [];
     await expect(notifyCli(['notify', '--id', 'missing'], f.config)).rejects.toThrow('usage: superagent notify');
