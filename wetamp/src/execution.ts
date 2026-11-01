@@ -135,7 +135,12 @@ export function executionForNode(
   node: string,
   tiers: Tiers
 ): ExecutionDescriptor {
-  const descriptor = Object.hasOwn(table, node) ? table[node] : undefined;
+  let descriptor = Object.hasOwn(table, node) ? table[node] : undefined;
+  if (!descriptor) {
+    const staticNode = /^(soldier-.+)__[0-9a-f]+__draft$/.exec(node)?.[1];
+    if (staticNode && Object.hasOwn(table, staticNode) && table[staticNode].role === 'soldier')
+      descriptor = table[staticNode];
+  }
   if (!descriptor) throw new Error(`policy: unknown node ${node}`);
   if (
     !['soldier', 'code', 'repair', 'review', 'command'].includes(descriptor.role) ||

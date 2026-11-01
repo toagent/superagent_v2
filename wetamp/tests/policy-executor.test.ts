@@ -324,6 +324,43 @@ async function inRuntime<T>(root: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
+test('soldier runtime node resolves policy and rejects unregistered namespaces', async () => {
+  const s = runtimeFixture(),
+    calls: SendQueryOptions[] = [],
+    runtimeNode = 'soldier-core__a664b27666cfca76__draft';
+  s.plan.packages[0].draft = 'soldier';
+  writeFileSync(join(s.root, 'plan.json'), JSON.stringify(s.plan));
+  const provider = wrapPolicyProvider(
+    fake(options => {
+      calls.push(options);
+      return success;
+    }),
+    'codex'
+  );
+  await inRuntime(s.root, () =>
+    collect(
+      provider.sendQuery('p', s.root, undefined, {
+        model: 'placeholder',
+        env: { SA_POLICY_PATH: s.policyPath },
+        nodeConfig: { nodeId: runtimeNode },
+      })
+    )
+  );
+  expect(calls.map(options => options.model)).toEqual([s.tiers.routing.soldier!.models[0]]);
+  expect(calls[0].abortSignal).toBeDefined();
+  expect(readPolicyAttempts(s.artifacts)[0]).toMatchObject({ node: runtimeNode });
+  await expect(
+    inRuntime(s.root, () =>
+      collect(
+        provider.sendQuery('p', s.root, undefined, {
+          env: { SA_POLICY_PATH: s.policyPath },
+          nodeConfig: { nodeId: 'soldier-missing__a664b27666cfca76__draft' },
+        })
+      )
+    )
+  ).rejects.toThrow('policy: unknown node');
+});
+
 test('POLICY-R1-01/02: same-vendor fallback preserves protected child env and the admitted slot', async () => {
   const s = runtimeFixture(),
     calls: SendQueryOptions[] = [];
