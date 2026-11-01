@@ -37,6 +37,7 @@ export interface NtfyAsk {
   callback:
     | { kind: 'ask'; key: string }
     | { kind: 'decision'; id: string }
+    | { kind: 'held'; ref: string }
     | { kind: 'external'; ref: string };
   dedupe_key?: string;
   project?: string;
@@ -115,6 +116,20 @@ export interface DecisionSourceState {
   status: string;
   at?: string;
 }
+
+export interface NtfyAnswerOutcome {
+  result: string;
+  executed: boolean;
+}
+const answerOutcome = (value: unknown): NtfyAnswerOutcome | undefined => {
+  if (!value || typeof value !== 'object') return;
+  const record = value as Record<string, unknown>,
+    result = record.result,
+    executed = record.executed;
+  return typeof result === 'string' && typeof executed === 'boolean'
+    ? { result, executed }
+    : undefined;
+};
 
 interface NtfyState {
   version: 1;
@@ -306,7 +321,9 @@ export function askNtfy(request: NtfyAsk, supplied: Partial<NtfyConfig> = {}): s
       : undefined;
     if (existing) return existing.id;
     const key = secureSecret(config.answerKey, 'answer key', true);
-    const id = randomUUID();
+    const id = request.callback.kind === 'held' ? request.callback.ref : randomUUID();
+    if (request.callback.kind === 'held' && Object.hasOwn(state.decisions, id))
+      Reflect.deleteProperty(state.sent, `decision:${id}:normal`);
     const expires = Math.floor(Date.parse(request.expires_at) / 1000);
     state.decisions[id] = {
       ...request,
@@ -408,7 +425,7 @@ const supersededReceipt = (decision: StoredDecision, option: string): [string, s
 };
 
 // prettier-ignore
-export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Partial<NtfyConfig> = {}, sourceOf: (id: string) => DecisionSourceState | undefined = () => undefined): void {
+export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Partial<NtfyConfig> = {}, sourceOf: (id: string) => DecisionSourceState | undefined = () => undefined, kind: 'decision' | 'held' = 'decision'): void {
   const config = { ...defaultConfig(), ...supplied };
   const active = new Set(activeIds);
   const guard = stateLock(config.statePath);
@@ -416,8 +433,8 @@ export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Pa
   try {
     const state = readState(config.statePath);
     for (const decision of Object.values(state.decisions)) {
-      if (decision.status !== 'pending' || decision.callback.kind !== 'decision' || active.has(decision.callback.id)) continue;
-      const source = sourceOf(decision.callback.id);
+      if (decision.status !== 'pending' || decision.callback.kind !== kind || active.has(kind === 'decision' && decision.callback.kind === 'decision' ? decision.callback.id : decision.id)) continue;
+      const source = sourceOf(decision.callback.kind === 'decision' ? decision.callback.id : decision.id);
       decision.status = 'superseded';
       decision.handled_at = new Date(config.now()).toISOString();
       decision.error = {
@@ -625,7 +642,7 @@ function parseAnswer(message: unknown): SignedAnswer | undefined {
 }
 
 export async function syncNtfy(
-  onAnswer: (decision: NtfyAsk & { id: string }, option: string) => void | Promise<void>,
+  onAnswer: (decision: NtfyAsk & { id: string }, option: string) => unknown,
   supplied: Partial<NtfyConfig> = {},
   onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined
 ): Promise<{ accepted: number; ignored: number; failed: number }> {
@@ -735,15 +752,18 @@ export async function syncNtfy(
         state.used_nonces[answer.nonce] = config.now();
         state.cursor = event.id;
         try {
-          await onAnswer(decision, answer.option);
+          const outcome = answerOutcome(await onAnswer(decision, answer.option));
           decision.status = 'answered';
           decision.answer = answer.option;
-          const label = optionLabel(decision, answer.option);
+          const label = optionLabel(decision, answer.option),
+            executed = outcome?.executed ?? true;
           receipt(
             state,
             `receipt:${decision.id}:${answer.option}`,
-            `${gate ? '已收到' : '已记录'}：${label}｜${decisionPresentation(decision).title}`,
-            gate ? `已收到你的『${label}』，正在执行（门禁 ${gate}）` : '本次点按已执行',
+            `${gate ? '已收到' : executed ? '已记录' : '未执行'}：${label}｜${decisionPresentation(decision).title}`,
+            gate
+              ? `已收到你的『${label}』，正在执行（门禁 ${gate}）`
+              : (outcome?.result ?? '本次点按已执行'),
             config.now()
           );
           accepted++;
