@@ -160,6 +160,7 @@ export function runProbe(level: ProbeLevel, shimOverride?: string): ProbeEvidenc
           waited = run([
             'wait',
             runId,
+            '--json',
             '--timeout',
             String(Math.max(1, Math.floor(remaining / 1000))),
           ]),
