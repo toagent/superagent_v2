@@ -68,6 +68,9 @@ const portEvidence = {
   ...replay['project-port'],
   decision: { kind: 'repair', reason: 'acceptance_failed', evidence: [], debt: [] },
 };
+const heldEvidence = {
+  decision: { kind: 'block', reason: 'coder_partial', evidence: [], debt: [] },
+};
 let root: string, sa: string, plan: Plan, ledger: Ledger, raw: RunView;
 const saved = new Map<string, string | undefined>();
 const keys = [
@@ -168,6 +171,11 @@ const lesson = (id: string, patch: Partial<Lesson> = {}): Lesson => ({
   ...patch,
 });
 const seed = (...lessons: Lesson[]): void => memoryWrite(() => ({ lessons }));
+test('terminal control evidence does not create an orphan hold', () => {
+  writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify(heldEvidence));
+  raw.nodes = [{ nodeId: 'verify-core', state: 'failed' }];
+  expect(foldEpisode(ledger, plan, raw, [], {}, NOW + 610000).signals.orphan_hold).toBe(0);
+});
 // Real Archon validation is covered by generate.test.ts and selftest; these tests inspect memory injection.
 const fakeValidation = (): void => {
   const bin = join(root, 'validate-archon');

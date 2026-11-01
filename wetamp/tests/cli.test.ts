@@ -2617,7 +2617,7 @@ describe('brief / land (archon stub)', () => {
       nodes: [{ nodeId: 'integrate-m1.resolve-resync-m1-decision', state: 'failed' }],
     });
     expect(classifyRun(s.ledger, blockedResolve)).toMatchObject({
-      state: 'held:gate',
+      state: 'failed',
       node: 'integrate-m1.resolve-resync-m1-decision',
     });
     writeFileSync(
@@ -3224,7 +3224,12 @@ describe('RCPT consumed decision receipts', () => {
 
 describe('explicit continuation (supervise-tick, archon stub)', () => {
   /** 失败在 failedNode 的 run；gen 带 attempt-m1 节点；artifacts 按 files 写入。 */
-  const held = (failedNode: string, files: Record<string, unknown> = {}, attempt = true) => {
+  const held = (
+    failedNode: string,
+    files: Record<string, unknown> = {},
+    attempt = true,
+    status: 'failed' | 'paused' = 'failed'
+  ) => {
     const s = stub([]);
     const art = join(s.root, 'out', 'artifacts', 'runs', 'r');
     mkdirSync(art, { recursive: true });
@@ -3232,9 +3237,12 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     writeFileSync(
       join(s.dir, 'get-000.json'),
       JSON.stringify(
-        run('failed', {
+        run(status, {
           output_root: join(s.root, 'out'),
           nodes: [{ nodeId: failedNode, state: 'failed' }],
+          ...(status === 'paused'
+            ? { metadata: { wait: { nodeId: failedNode, kind: 'event', resumeAt: '' } } }
+            : {}),
         })
       )
     );
@@ -3335,6 +3343,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation(fastGenerate));
     const gen = generate(plan, 'sa1', true);
     mkdirSync(join(gen.dir, 'hints'), { recursive: true });
+    writeFileSync(join(gen.dir, 'hints/core.md'), 'retry hint\n');
     mkdirSync(join(gen.dir, 'approvals'), { recursive: true });
     writeFileSync(join(gen.dir, 'approvals/verify-core.json'), '{"approved":true}\n');
     mkdirSync(join(gen.dir, 'review-checkpoints'), { recursive: true });
@@ -3343,16 +3352,13 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     s.ledger.gen_dir = gen.dir;
     s.ledger.engine_snapshot = join(s.root, 'missing-engine');
     writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-    expect(
-      captured(() => main(['decide', 'sa1', 'retry', '--pkg', 'core', '--hint', 'retry hint'])).code
-    ).toBe(0);
+    expect(captured(() => main(['recover', 'sa1'])).code).toBe(0);
     const adopted = loadLedger('sa1');
     expect(adopted).toMatchObject({
       archon_run_id: 'r2',
       adoptions: [expect.objectContaining({ from: 'r', to: 'r2' })],
     });
     for (const [path, value] of [
-      ['attempts/.packages/core', '1'],
       ['hints/core.md', 'retry hint\n'],
       ['approvals/verify-core.json', '{"approved":true}\n'],
     ])
@@ -3373,7 +3379,12 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         no_changes: true,
       }
     );
-    held('verify-core', { 'verify-core.json': { ...result, ok: true, milestone: 'm1' } });
+    held(
+      'verify-core',
+      { 'verify-core.json': { ...result, ok: true, milestone: 'm1' } },
+      true,
+      'paused'
+    );
     for (const command of ['status', 'wait']) {
       const response = captured(() => main([command, 'sa1', '--timeout', '1']));
       const out = JSON.parse(response.out);
@@ -3383,7 +3394,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       expect(out.delivery[0].decision).toMatchObject({ reason: 'coder_needs', blockers, needs });
     }
   });
-  test('later coder_needs outrank an earlier failure and retry the existing package scope', () => {
+  test('terminal coder_needs keeps the engine status and recommends recovery', () => {
     const blockers = ['scope conflict'];
     const needs = [{ cap: 'scope_decision', why: 'conflict', minimal_ask: 'choose scope' }];
     const result = gate('coder_needs');
@@ -3397,11 +3408,25 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       '  - id: package-attempt-core\n'
     );
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
-    expect(status).toMatchObject({ state: 'held:gate', node: 'verify-core' });
+    expect(status).toMatchObject({ state: 'failed', node: 'soldier-core' });
     expect(status.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
-    expect(captured(() => main(['brief', 'sa1'])).out).toContain('superagent decide sa1 retry');
-    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
-    expect(readFileSync(join(s.root, 'gen/attempts/.packages/core'), 'utf8')).toBe('1');
+    expect(status.action).toBe('superagent recover sa1');
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('superagent recover sa1');
+    view.status = 'cancelled';
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out)).toMatchObject({
+      state: 'cancelled',
+      action: 'superagent recover sa1',
+    });
+    view.status = 'failed';
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
+    patchLedger(s.root, {
+      rejected: 'r',
+      intervention_events: [
+        { action: 'abandon', ok: true, at: new Date().toISOString(), source: 'superagent' },
+      ],
+    });
+    expect(JSON.parse(captured(() => main(['status', 'sa1'])).out).state).toBe('abandoned');
     expect(existsSync(join(s.root, 'gen/attempts/m1'))).toBe(false);
   });
   test('decide stays refused when an earlier failure has no structured control artifact', () => {
@@ -3508,7 +3533,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         error: 'exhausted review rounds',
       },
     ]) {
-      const s = held('gate-m1-r3', sample.files);
+      const s = held('gate-m1-r3', sample.files, true, 'paused');
       writeFileSync(join(s.root, 'gen', 'policy.json'), JSON.stringify(loadTiers().policy));
       expect(() => captured(() => main(['decide', 'sa1', 'retry']))).toThrow(sample.error);
       expect(existsSync(join(s.root, 'gen', 'attempts', 'm1'))).toBe(false);
@@ -3519,7 +3544,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
   test.each(['gate-m1-rresync1', 'fix-resync-m1-r2', 'resync-base-m1'])(
     'resync node %s retries the owning milestone',
     node => {
-      const s = held(node, { [`${node}.json`]: gate('coder_partial') });
+      const s = held(node, { [`${node}.json`]: gate('coder_partial') }, true, 'paused');
       const result = captured(() => main(['decide', 'sa1', 'retry']));
       expect(result.code, result.out).toBe(0);
       expect(readFileSync(join(s.root, 'gen', 'attempts', 'm1'), 'utf8')).toBe('1');
@@ -3677,18 +3702,23 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       return { s, first: {} };
     },
     acceptance_adjudication: () => ({
-      s: held('verify-core', {
-        'verify-core.json': {
-          decision: gate('acceptance_adjudication').decision,
-          adjudication: {
-            diff_hash: 'diff',
-            contract_hash: 'contract',
-            command: 'bun test',
-            failed_tests: ['suite::case'],
-            failure_digest: 'digest',
+      s: held(
+        'verify-core',
+        {
+          'verify-core.json': {
+            decision: gate('acceptance_adjudication').decision,
+            adjudication: {
+              diff_hash: 'diff',
+              contract_hash: 'contract',
+              command: 'bun test',
+              failed_tests: ['suite::case'],
+              failure_digest: 'digest',
+            },
           },
         },
-      }),
+        true,
+        'paused'
+      ),
       first: {},
     }),
   };
@@ -3703,7 +3733,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
         failure_digest: `digest-${command}`,
       },
     });
-    const s = held('diff-m1-r1', { 'diff-m1-r1.json': artifact('bun test b') });
+    const s = held('diff-m1-r1', { 'diff-m1-r1.json': artifact('bun test b') }, true, 'paused');
     const prior = artifact('bun test a').adjudication;
     mkdirSync(join(s.ledger.gen_dir, 'approvals'), { recursive: true });
     writeFileSync(
@@ -3713,7 +3743,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(captured(() => main(['brief', 'sa1'])).out).toContain('superagent decide sa1 approve');
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
     expect(readFileSync(join(s.ledger.gen_dir, 'attempts/m1'), 'utf8')).toBe('1');
-    expect(s.calls().some(call => call.startsWith('workflow run sa-sa1 '))).toBe(true);
+    expect(s.calls()).toContain('workflow resume r --detach --json');
     const saved = JSON.parse(
       readFileSync(join(s.ledger.gen_dir, 'approvals/diff-m1-r1.json'), 'utf8')
     );
