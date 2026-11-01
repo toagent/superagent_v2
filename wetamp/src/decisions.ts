@@ -20,7 +20,7 @@ import {
   updateLedger,
   type Ledger,
 } from './cli';
-import { coord, runScope, same, type Controller } from './coord';
+import { coord, runScope, same, scopeRepoName, type Controller } from './coord';
 import type { Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
 
@@ -250,6 +250,7 @@ export function coordinationDecisions(c = coord()): Decision[] {
         !same(view.owner, m.ask.owner)
       )
         return [];
+      const repo = scopeRepoName(m.scope);
       return [
         {
           id: digest(JSON.stringify(['coord', m.id, m.ask.generation, m.ask.question])),
@@ -261,8 +262,16 @@ export function coordinationDecisions(c = coord()): Decision[] {
           reason: 'COORD 交接需要操作者决定',
           context: m.title,
           options: [
-            { id: 'yes', label: '是', consequence: '交给发现者处理' },
-            { id: 'no', label: '否', consequence: '继续等待当前负责人' },
+            {
+              id: 'yes',
+              label: '是',
+              consequence: `${m.sender.client} 成为 ${repo} 负责人，可直接修改该仓库代码`,
+            },
+            {
+              id: 'no',
+              label: '否',
+              consequence: `继续等待当前负责人，不转移 ${repo} 归属`,
+            },
           ],
           coordination: { message: m.id, generation: m.ask.generation },
         },
