@@ -53,11 +53,20 @@ function waiterGate(payload, client, deps = {}) {
       for (const row of rows)
         if (tree.has(row.ppid) && !tree.has(row.pid)) (tree.add(row.pid), (changed = true));
     }
-    const missing = active.filter(run => {
-      const id = String(run.run_id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const wait = new RegExp(`(?:superagent|cli\\.ts)\\s+wait\\s+${id}(?:\\s|$)`);
-      return !rows.some(row => tree.has(row.pid) && wait.test(row.command));
-    });
+    const waited = new Set(
+      rows
+        .filter(row => tree.has(row.pid))
+        .flatMap(row => {
+          const args = row.command.trim().split(/\s+/),
+            wait = args.findIndex(
+              (arg, index) =>
+                arg === 'wait' && /(?:^|\/)(?:superagent|cli\.ts)$/.test(args[index - 1] ?? '')
+            ),
+            option = args.findIndex((arg, index) => index > wait && arg.startsWith('--'));
+          return wait < 0 ? [] : args.slice(wait + 1, option < 0 ? undefined : option);
+        })
+    );
+    const missing = active.filter(run => !waited.has(String(run.run_id)));
     if (!missing.length) return null;
     const reason = `SUPERAGENT：请在后台运行以下缺失的等待进程：\n${missing.map(run => `superagent wait ${run.run_id} --timeout 7000`).join('\n')}`;
     return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };

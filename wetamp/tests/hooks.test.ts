@@ -535,7 +535,7 @@ describe('guard.cjs', () => {
     expect(guard('claude', { hook_event_name: 'Stop', session_id: 'idle' })).toBeNull();
   });
 
-  test('HB5: commander Stop requires waits once and fails open when evidence is unavailable', () => {
+  test('multi-run wait: commander Stop recognizes every listed run', () => {
     const gate = (createRequire(import.meta.url)('../hooks/stop-gate.cjs') as any).waiterGate;
     const payload = { hook_event_name: 'Stop', session_id: 's' };
     const runs = () => [
@@ -550,6 +550,9 @@ describe('guard.cjs', () => {
     expect(blocked.reason).toContain('superagent wait run-b --timeout 7000');
     expect(blocked.reason).not.toContain('wait run-a');
     expect(check({}, { ...payload, stop_hook_active: true }).decision).toBeUndefined();
+    expect(
+      check({ processes: () => '10 1 claude\n11 10 superagent wait run-a run-b --timeout 900' })
+    ).toBeNull();
     expect(check({ processes: () => `${processes()}\n12 10 bun cli.ts wait run-b` })).toBeNull();
     expect(check({ derived: true })).toBeNull();
     expect(check({ runs: () => [{ run_id: 'held', status: 'held' }] })).toBeNull();
