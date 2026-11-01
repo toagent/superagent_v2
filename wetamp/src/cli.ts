@@ -887,7 +887,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     });
     if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
     const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
-    if (c.node.startsWith('verify-') && decision?.reason === 'scope_approval')
+    if (/^(verify|diff)-/.test(c.node) && decision?.reason === 'scope_approval')
       return { ...c, state: 'held:scope', exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
@@ -2344,13 +2344,26 @@ function approveAdjudication(l: Ledger, run: RunView, c: Classified,
 function recordDiffApproval(l: Ledger, run: RunView, node: string): () => void {
   const match = /^human-(scope|budget)-(.+)$/.exec(node);
   if (!match) return () => undefined;
+  if (match[1] === 'scope') return recordScopeApproval(l, run, `verify-${match[2]}`);
   const out = evidenceJson(l, artifactsOf(run), `verify-${match[2]}.json`) as { diff_hash?: unknown; out_of_scope?: unknown } | undefined;
   if (typeof out?.diff_hash !== 'string' || !out.diff_hash) throw new Error(`${match[1]} approval evidence missing diff_hash`);
-  const files = match[1] === 'scope' && Array.isArray(out.out_of_scope) ? out.out_of_scope.filter((path): path is string => typeof path === 'string').sort() : undefined;
-  if (match[1] === 'scope' && !files?.length) throw new Error('scope approval files missing');
   mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
   const path = join(l.gen_dir, 'approvals', `${node}.json`), prior = existsSync(path) ? readFileSync(path) : undefined;
-  writeFileSync(path, JSON.stringify({ diff_hash: out.diff_hash, ...(files ? { files } : {}) }) + '\n');
+  writeFileSync(path, JSON.stringify({ diff_hash: out.diff_hash }) + '\n');
+  return () => { if (prior) writeFileSync(path, prior); else rmSync(path, { force: true }); };
+}
+
+// prettier-ignore
+function recordScopeApproval(l: Ledger, run: RunView, node: string): () => void {
+  const out = evidenceJson(l, artifactsOf(run), `${node}.json`) as { diff_hash?: unknown; out_of_scope?: unknown; scope_package?: unknown; scope_blobs?: unknown } | undefined;
+  const files = Array.isArray(out?.out_of_scope) ? out.out_of_scope.filter((path): path is string => typeof path === 'string').sort() : [];
+  if (!files.length || typeof out?.scope_package !== 'string') throw new Error('scope approval evidence missing files or package');
+  const blobs = out.scope_blobs && typeof out.scope_blobs === 'object' ? out.scope_blobs as Record<string, unknown> : undefined;
+  const stable = blobs && files.every(file => typeof blobs[file] === 'string' && /^[0-9a-f]{40,64}$/.test(blobs[file]));
+  if (!stable && (typeof out.diff_hash !== 'string' || !out.diff_hash)) throw new Error('scope approval evidence missing fingerprint');
+  mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
+  const path = join(l.gen_dir, 'approvals', `human-scope-${out.scope_package}.json`), prior = existsSync(path) ? readFileSync(path) : undefined;
+  writeFileSync(path, JSON.stringify(stable ? { files, blobs } : { diff_hash: out.diff_hash, files }) + '\n');
   return () => { if (prior) writeFileSync(path, prior); else rmSync(path, { force: true }); };
 }
 
@@ -2407,8 +2420,7 @@ function decide(l: Ledger, a: Args): number {
       return res.ok ? 0 : res.held ? EXIT.held : 1;
     }
     if (c.state === 'held:scope' && c.node) {
-      const pkg = c.node.replace(/^verify-/, ''),
-        rollback = recordDiffApproval(l, run, `human-scope-${pkg}`);
+      const rollback = recordScopeApproval(l, run, c.node);
       const res = retry(l, c);
       if (!res.ok) rollback();
       print({ run_id: l.run_id, decision: 'approve', ...res });

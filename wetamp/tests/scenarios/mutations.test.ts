@@ -92,8 +92,8 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
-    from: 'saved.pass === true && saved.exit === 0 && saved.started_at',
-    to: 'saved.pass === true && (saved.exit === undefined || saved.exit === 0) && saved.started_at',
+    from: 'saved.pass === true && saved.exit === 0 && typeof saved.duration_ms',
+    to: 'saved.pass === true && (saved.exit === undefined || saved.exit === 0) && typeof saved.duration_ms',
     test: 'tests/sa-check.test.ts',
     name: 'delivery-truth: cache binds',
     expectedError: 'Expected  - 1',

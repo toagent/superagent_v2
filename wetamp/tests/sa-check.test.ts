@@ -4812,7 +4812,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         risk,
         policy: pol,
         ...extra,
-      }).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[] };
+      }).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[]; scope_blobs: Record<string, string> };
     const r = go('G0');
     expect(readFileSync(r.delta, 'utf8')).toContain('src/b.md');
     expect(readFileSync(r.delta, 'utf8')).not.toContain('src/a.ts');
@@ -4939,7 +4939,10 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     mkdirSync(join(root, 'approvals'));
     writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ diff_hash: held.diff_hash, files: ['tests/a.test.ts'] }));
     expect(go('G1')).toMatchObject({ disposition: 'advance', out_of_scope: ['tests/a.test.ts'] });
-    commit('src/c.ts');
+    writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ diff_hash: 'stale', files: ['tests/a.test.ts'], blobs: held.scope_blobs }));
+    expect(go('G1')).toMatchObject({ disposition: 'advance', out_of_scope: ['tests/a.test.ts'] });
+    writeFileSync(join(repo, 'tests/a.test.ts'), 'changed\n');
+    sh('git add tests/a.test.ts && git -c user.name=t -c user.email=t@l commit -qm changed-test', repo);
     expect(go('G1')).toMatchObject({ disposition: 'fail', reason: 'scope_approval' });
   }, testTimeout(15_000));
   test('unknown kind fails loudly', () => {

@@ -2456,17 +2456,17 @@ describe('decide (archon stub)', () => {
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts', scope), 'utf8')).toBe('1');
   });
   // prettier-ignore
-  test('scope approval is diff-bound and budget rejection cancels with a readable reason', () => {
-    const scope = stub([run('failed', { nodes: [{ nodeId: 'verify-core', state: 'failed' }] })]);
+  test('scope approval is content-bound across review rounds and budget rejection cancels', () => {
+    const scope = stub([run('failed', { nodes: [{ nodeId: 'diff-m1-r2', state: 'failed' }] })]);
     packageRework(scope);
     const art = join(scope.root, 'out/artifacts/runs/r');
     mkdirSync(art, { recursive: true });
-    writeFileSync(join(art, 'verify-core.json'), JSON.stringify({ diff_hash: 'diff-a', out_of_scope: ['tests/core.test.ts'], decision: { kind: 'block', reason: 'scope_approval', evidence: [], debt: [] } }));
+    writeFileSync(join(art, 'diff-m1-r2.json'), JSON.stringify({ diff_hash: 'diff-a', out_of_scope: ['tests/core.test.ts'], scope_package: 'core', scope_blobs: { 'tests/core.test.ts': 'a'.repeat(40) }, decision: { kind: 'block', reason: 'scope_approval', evidence: [], debt: [] } }));
     const view = JSON.parse(readFileSync(join(scope.dir, 'get-000.json'), 'utf8'));
     view.output_root = join(scope.root, 'out');
     writeFileSync(join(scope.dir, 'get-000.json'), JSON.stringify(view));
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
-    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ diff_hash: 'diff-a', files: ['tests/core.test.ts'] });
+    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ files: ['tests/core.test.ts'], blobs: { 'tests/core.test.ts': 'a'.repeat(40) } });
 
     const budget = stub([run('paused', { metadata: { approval: { nodeId: 'human-budget-core' } } })]);
     expect(captured(() => main(['decide', 'sa1', 'reject', '--hint', 'remove wrapper'])).code).toBe(0);

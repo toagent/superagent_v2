@@ -1200,10 +1200,13 @@ export function approvableScopeTests(paths: string[], write: string[], root = pr
 }
 
 // prettier-ignore
-function approvedDiff(kind: 'scope' | 'budget', pkg: string, hash: string, paths: string[] = []): boolean {
+function approvedDiff(kind: 'scope' | 'budget', pkg: string, hash: string, paths: string[] = [], blobs: Record<string, string> = {}): boolean {
   try {
-    const value = JSON.parse(readFileSync(join(dirname(env('PLAN')), 'approvals', `human-${kind}-${pkg}.json`), 'utf8')) as { diff_hash?: unknown; files?: unknown };
-    return value.diff_hash === hash && (kind !== 'scope' || JSON.stringify(value.files) === JSON.stringify([...paths].sort()));
+    const value = JSON.parse(readFileSync(join(dirname(env('PLAN')), 'approvals', `human-${kind}-${pkg}.json`), 'utf8')) as { diff_hash?: unknown; files?: unknown; blobs?: unknown };
+    if (kind !== 'scope') return value.diff_hash === hash;
+    const sorted = [...paths].sort(), filesMatch = JSON.stringify(value.files) === JSON.stringify(sorted);
+    const approvedBlobs = value.blobs && typeof value.blobs === 'object' ? value.blobs as Record<string, unknown> : undefined;
+    return filesMatch && (approvedBlobs === undefined ? value.diff_hash === hash : JSON.stringify(Object.keys(approvedBlobs).sort()) === JSON.stringify(sorted) && sorted.every(path => approvedBlobs[path] === blobs[path]));
   } catch { return false; }
 }
 
@@ -1512,12 +1515,17 @@ async function acceptOnce(
       scope.out_of_scope,
       covered.flatMap(k => k.scope.write)
     );
+  const scopeBlobs = scopeApproval
+    ? Object.fromEntries(
+        [...scope.out_of_scope].sort().map(path => [path, git('rev-parse', `HEAD:${path}`).trim()])
+      )
+    : {};
   const scopeReason =
     scopeApproval && result.disposition === 'advance' ? 'scope_approval' : 'scope_violation';
   if (
     scope.out_of_scope.length &&
     (result.disposition === 'advance' || result.disposition === 'repair') &&
-    !approvedDiff('scope', pkgs[0].id, hash, scope.out_of_scope)
+    !approvedDiff('scope', pkgs[0].id, hash, scope.out_of_scope, scopeBlobs)
   ) {
     const approval = scopeApproval && result.disposition === 'advance';
     result.disposition = approval ? 'fail' : 'repair';
@@ -1564,6 +1572,7 @@ async function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
+    ...(scopeApproval ? { scope_package: pkgs[0].id, scope_blobs: scopeBlobs } : {}),
     ...(lines ? { net_lines: lines } : {}),
     head,
     checkout_fingerprint: fingerprint,
