@@ -1,11 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 // prettier-ignore
-import { Coordination, coord, identityKey, runScope, same, type Identity, type RunRef } from './coord';
+import { Coordination, caller, coord, identityKey, ownerLabel, runScope, same, type Identity, type RunRef } from './coord';
 import { getRun, runStatuses } from './archon';
 import { writeAtomic } from './config';
 import { loadLedger, mutateLedger } from './ledger';
 import { cleanJob, readJobs } from './jobs';
+import { askNtfy, supersedeNtfyDecisions } from './ntfy';
 
 const OFFLINE_CLEANUP_MS = 24 * 60 * 60_000; // Cross one night before terminal cleanup.
 const LOST_JOB_CLEANUP_MS = 60 * 60_000;
@@ -18,11 +20,18 @@ interface Observation { kind?: 'job'; run: string; repo: string; first_offline_a
 // prettier-ignore
 interface Entry { id: string; run: string; from: Identity; to: Identity; expected_generation: number; observation?: Pick<Observation, 'first_offline_at' | 'last_offline_at' | 'count'>; state: 'transferring' | 'transferred' | 'reauthorized' | 'abandoned_attempt'; at: string }
 // prettier-ignore
+interface HeldAsk { ref: string; ask_id: string; owner: Identity; project: string; repo: string; runs: { id: string; generation: number; since: string; reason: string; title: string }[]; answer?: 'yes' | 'no'; answered_at?: string; results?: string[] }
+// prettier-ignore
 export interface ReclaimResult { transferred: string[]; unclaimed: string[]; skipped: string[]; skip_reasons: Record<string, 'repository_unavailable'>; pending: string[]; historical: string[] }
 // prettier-ignore
 const values = <T>(path: string): T[] => { try { const value = JSON.parse(readFileSync(path, 'utf8')) as unknown; return (Array.isArray(value) ? value : Object.values(value ?? {})) as T[]; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
 // prettier-ignore
 const records = <T>(path: string): T[] => { try { return readdirSync(path).filter(file => file.endsWith('.json')).map(file => JSON.parse(readFileSync(join(path, file), 'utf8')) as T); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
+const heldPath = (c: Coordination): string => join(c.d.sa, 'reclaim', 'held-online.json');
+const saveHeld = (c: Coordination, value: HeldAsk[]): void => {
+  mkdirSync(join(c.d.sa, 'reclaim'), { recursive: true });
+  writeAtomic(heldPath(c), JSON.stringify(value, null, 2) + '\n');
+};
 
 // prettier-ignore
 export class Reclaimer {
@@ -69,6 +78,27 @@ export class Reclaimer {
       const observed = offlineJobs.get(job.id);
       if (observed?.first_offline_at !== undefined && now - observed.first_offline_at >= LOST_JOB_CLEANUP_MS) try { cleanJob(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
     }
+  }
+  private heldOnline(): void {
+    let heartbeat: { held_runs?: string[]; marshals?: { owner: Identity | 'unknown'; project: string; cwd: string; waiting: { id: string; kind?: string; since?: string; what: string; waiting_for: string; waited_s: number }[] }[] };
+    try { heartbeat = JSON.parse(readFileSync(join(this.c.d.sa, 'heartbeat.json'), 'utf8')) as typeof heartbeat; } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return; throw e; }
+    const held = new Set(heartbeat.held_runs ?? []), prior = new Map(values<HeldAsk>(heldPath(this.c)).map(value => [value.ref, value])), next: HeldAsk[] = [], active: string[] = [];
+    for (const marshal of heartbeat.marshals ?? []) {
+      const owner = marshal.owner; if (owner === 'unknown' || this.c.d.presence(owner).state !== 'online') continue;
+      const runs = marshal.waiting.filter(item => held.has(item.id) && ['run', 'decision'].includes(item.kind ?? 'run') && item.waited_s >= OFFLINE_CLEANUP_MS / 1000).flatMap(item => {
+        const run = this.c.resolveRun(item.id); if (!run) return [];
+        const view = this.c.owner(runScope(run)); let status = 'unknown'; try { status = this.c.d.status(run); } catch { return []; }
+        return same(view.owner, owner) && view.presence.state === 'online' && ['paused', 'failed'].includes(status) && !abandoned(run) ? [{ id: item.id, generation: view.generation, since: item.since ?? 'unknown', reason: item.waiting_for, title: item.what }] : [];
+      }).sort((a, b) => a.id.localeCompare(b.id));
+      if (!runs.length) continue;
+      const ref = createHash('sha256').update(JSON.stringify([identityKey(owner), marshal.cwd, runs.map(run => run.id)])).digest('hex'), old = prior.get(ref);
+      const recent = old?.answered_at && this.now() - Date.parse(old.answered_at) < OFFLINE_CLEANUP_MS;
+      const record: HeldAsk = { ref, ask_id: ref, owner, project: marshal.project, repo: marshal.cwd, runs, ...(old?.answer && recent ? { answer: old.answer, answered_at: old.answered_at, results: old.results } : {}) };
+      active.push(ref); next.push(record); if (record.answer) continue;
+      const detail = runs.map(run => { const since = Date.parse(run.since), hours = Number.isFinite(since) ? `${String(Math.floor((this.now() - since) / 3_600_000))}h` : 'unknown'; return `${run.id}｜${run.title}｜${run.reason}｜${run.since}｜${hours}｜${ownerLabel(owner)}`; }).join('\n');
+      askNtfy({ originator: { identity: owner, scope: { kind: 'run', id: runs[0].id, repo: marshal.cwd } }, source: { ref, initiator: 'superagent reclaim', queued_at: new Date(this.now()).toISOString() }, title: `${marshal.project} held run 清理`, body: detail, project: marshal.project, headline: `${String(runs.length)} 个 held run 已等待超过 24h`, purpose: detail, why: '在线负责人名下的 held run 不会自动离线回收', recommend: { option: '是', reason: '清理长期未处理的 held run' }, options: [{ id: 'yes', label: '是', effect: `abandon ${String(runs.length)} 个仍满足 CAS 的 run` }, { id: 'no', label: '否', effect: '保留并提醒负责人处理' }], risk: 'normal', expires_at: new Date(this.now() + 7 * OFFLINE_CLEANUP_MS).toISOString(), callback: { kind: 'held', ref }, dedupe_key: `held:${ref}` });
+    }
+    if (active.length || existsSync(join(this.c.d.sa, 'ntfy/state.json'))) supersedeNtfyDecisions(active, {}, () => ({ status: 'held group changed', at: new Date(this.now()).toISOString() }), 'held'); saveHeld(this.c, next);
   }
   observe(): Observation[] {
     this.unavailable.clear();
@@ -146,7 +176,31 @@ export class Reclaimer {
     const state = values<number>(path);
     if (!state.length || now - state[0] >= 300_000) { this.reclaim(observed); this.write(path, { last_reclaim_at: now }); }
     this.maintain(observed);
+    this.heldOnline();
   }
+}
+
+// prettier-ignore
+export function answerHeldOwnerAsk(ref: string, askId: string, choice: string, c = coord(), sender = caller(true), now = Date.now()): string[] {
+  if (!['yes', 'no'].includes(choice)) throw new Error('held owner online answer must be yes or no');
+  const state = values<HeldAsk>(heldPath(c)), group = state.find(value => value.ref === ref);
+  if (!group) throw Object.assign(new Error('决定已变化，请重读'), { code: 'decision_changed' });
+  if (group.results) return group.results;
+  group.answer = choice as 'yes' | 'no'; group.answered_at = new Date(now).toISOString(); saveHeld(c, state);
+  let current = new Set<string>(); try { const heartbeat = JSON.parse(readFileSync(join(c.d.sa, 'heartbeat.json'), 'utf8')) as { held_runs?: string[]; marshals?: { owner: Identity | 'unknown'; cwd: string; waiting: { id: string }[] }[] }, held = new Set(heartbeat.held_runs ?? []); current = new Set(heartbeat.marshals?.filter(m => m.owner !== 'unknown' && same(m.owner, group.owner) && m.cwd === group.repo).flatMap(m => m.waiting.filter(item => held.has(item.id)).map(item => item.id)) ?? []); } catch { /* Missing current evidence fails closed below. */ }
+  const results = group.runs.map(item => {
+    const run = c.resolveRun(item.id); if (!run) return `${item.id}:skip:missing`;
+    try { return c.scoped(runScope(run), () => c.locked(() => {
+      const view = c.owner(runScope(run)); let status = 'unknown'; try { status = c.d.status(run); } catch { return `${item.id}:skip:status` as const; }
+      if (!same(view.owner, group.owner) || view.generation !== item.generation) return `${item.id}:skip:owner_changed`;
+      if (!current.has(item.id) || !['paused', 'failed'].includes(status) || abandoned(run)) return `${item.id}:skip:not_held`;
+      if (choice === 'yes') mutateLedger(loadLedger(run.run_id), ledger => { if (ledger.rejected === ledger.archon_run_id) return; (ledger.intervention_events ??= []).push({ at: new Date(now).toISOString(), action: 'abandon', reason: `用户 ntfy 授权 ${askId}`, origin: 'operator', source: 'superagent', ask_id: askId, ok: true, evidence: { owner: group.owner, generation: item.generation } }); ledger.rejected = ledger.archon_run_id; });
+      return `${item.id}:ok:${choice === 'yes' ? 'abandoned' : 'kept'}`;
+    }), 0); } catch { return `${item.id}:skip:error`; }
+  });
+  const first = group.runs.map(item => c.resolveRun(item.id)).find(Boolean);
+  if (first) c.handoff(runScope(first), sender, { kind: 'task', title: choice === 'yes' ? 'held run 清理结果' : 'held run 保留提醒', body: results.join('\n'), evidence: group.runs.map(run => run.id), dedupe_key: `${ref}:${choice}`, severity: 'normal' }, 0, false);
+  group.results = results; saveHeld(c, state); return results;
 }
 
 // prettier-ignore

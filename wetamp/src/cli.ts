@@ -82,7 +82,7 @@ import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
-import { reclaimOnce, reclaimTick } from './reclaim';
+import { answerHeldOwnerAsk, reclaimOnce, reclaimTick } from './reclaim';
 import { responsibilityList } from './resume-card';
 import {
   askQuestion,
@@ -3398,7 +3398,8 @@ export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
   answer: typeof answerNtfyDecision = answerNtfyDecision,
-  newDecisionLimit = 5
+  newDecisionLimit = 5,
+  answerHeld: typeof answerHeldOwnerAsk = answerHeldOwnerAsk
 ) {
   const inbox = await loadInbox();
   const enabled = inbox.decisions.filter(decision => !decision.disabled);
@@ -3458,6 +3459,20 @@ export async function syncDecisionChannel(
           );
         return;
       }
+      if (decision.callback.kind === 'held') {
+        const results = answerHeld(decision.callback.ref, decision.id, option),
+          result = results.length ? results.join('；') : '无匹配 run',
+          executed = results.some(item => item.includes(':ok:'));
+        if (decision.originator)
+          coord().receipt(
+            decision.originator.scope,
+            caller(true),
+            decision.originator.identity,
+            decision.id,
+            `${option}；${result}`
+          );
+        return { result, executed };
+      }
       const callbackKey = decision.callback.key,
         asks = loadAsks(),
         entry = liveCallbackAsk(asks, callbackKey, decision.id);
@@ -3465,6 +3480,7 @@ export async function syncDecisionChannel(
       const [currentKey, current] = entry;
       current.status = option;
       saveAsk(asks, currentKey);
+      return undefined;
     },
     supplied,
     decision => {
@@ -4428,7 +4444,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   if (snapshot)
     await result('publish', () => {
       const path = join(home().sa, 'heartbeat.json'), now = Date.now();
-      const next = heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa));
+      const next = Object.assign(heartbeat(snapshot, cockpit(snapshot, now), now, who => presence(who, home().sa)), { held_runs: snapshot.rows.filter(row => row.state.startsWith('held:')).map(row => row.run_id) });
       let previous: Heartbeat | undefined;
       try { previous = readJson(path) as Heartbeat | undefined; } catch { /* corrupt cache is replaced */ }
       const changed = shouldWriteHeartbeat(previous, next, now);
