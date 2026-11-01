@@ -1827,6 +1827,20 @@ describe('verbs (archon stub)', () => {
       reason: 'superseded',
     });
   });
+  // prettier-ignore
+  test('wait-on requires ownership, persists its dependency, and takeover returns responsibilities', () => {
+    const s = stub([run('failed')]), c = coordModule.coord(), who = coordModule.caller();
+    writeFileSync(ledgerPath('sa2'), JSON.stringify({ ...s.ledger, run_id: 'sa2', archon_run_id: 'r2' }));
+    c.claim(coordModule.runScope(loadLedger('sa2')), who);
+    expect(captured(() => main(['wait-on', 'sa1', '--on', 'sa2', '--reason', 'dependency'])).code).toBe(0);
+    expect(loadLedger('sa1').waiting_on).toMatchObject({ run: 'sa2', reason: 'dependency' });
+    const old = { ...who, session_id: 'old', pid: 2 ** 22, pid_start: 'gone' };
+    c.claim(coordModule.runScope(s.ledger), old, true, 'fixture');
+    expect(() => main(['wait-on', 'sa1', '--on', 'sa2'])).toThrow('current run owner');
+    writeFileSync(join(s.root, 'home', 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: old, waiting: [{ id: 'sa1' }] }] }));
+    const claimed = JSON.parse(captured(() => main(['claim', 'sa1', '--takeover', '--reason', '用户授权'])).out);
+    expect(claimed.responsibilities).toEqual([{ id: 'sa1' }]);
+  });
   test('cancel without reason records unstated and rejects labels outside the closed set', () => {
     stub([run('running')]);
     expect(() => main(['cancel', 'sa1', '--reason', 'invented_label'])).toThrow(

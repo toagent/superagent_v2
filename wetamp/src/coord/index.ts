@@ -733,6 +733,10 @@ export class Coordination {
   inbox(who: Identity, all = false): Message[] {
     return this.routedMessages(who, all).map(({ message }) => message);
   }
+  receipt(scope: Scope, sender: Identity, recipient: Identity, ask: string, option: string): void {
+    const at = new Date(this.d.now()).toISOString();
+    this.notice('receipt', scope, sender, recipient, 0, `ask ${ask}：${option}（${at}）`, ask);
+  }
   private notice(
     type: 'receipt' | 'takeover',
     scope: Scope,

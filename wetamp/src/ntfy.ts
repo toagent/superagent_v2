@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { lock } from './archon';
 import { home, writeAtomic } from './config';
+import type { Identity, Scope } from './coord';
 
 export interface NtfyOption {
   id: string;
@@ -25,6 +26,7 @@ export interface NtfyOption {
 }
 
 export interface NtfyAsk {
+  originator?: { identity: Identity; scope: Scope };
   source: string | { ref: string; initiator?: string; queued_at?: string };
   title: string;
   body: string;
