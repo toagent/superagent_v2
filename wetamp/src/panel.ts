@@ -48,6 +48,7 @@ const generalState = (item: PanelRun, drift: number): string => {
   if (item.general === 'handed_back') return '已交回';
   if (!item.generalDetails) return '未知';
   const idle = panelDuration(item.generalDetails.idle_s + drift);
+  if (item.general === 'working' && item.generalDetails.spinning) return `空转 ${idle}（在跑命令）`;
   return {
     working: '干活',
     idle: `空转 ${idle}${item.generalDetails.waiting_command ? '（在等命令）' : ''}`,
@@ -142,7 +143,8 @@ export function panelModel(
       if (
         item.coder !== false &&
         item.general &&
-        ['idle', 'stalled'].includes(item.general.state)
+        (['idle', 'stalled'].includes(item.general.state) ||
+          (item.general.state === 'working' && item.general.spinning))
       ) {
         const run = byRun.get(`${marshal.project}\0${item.id}`);
         if (!run) continue;
