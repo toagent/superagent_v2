@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { cockpit } from '../src/board/cockpit';
 import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
+import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
 import { generalKey } from '../src/stall';
 const now = Date.parse('2026-10-29T10:00:00Z');
@@ -185,6 +185,15 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     actions: { ok: true },
   } satisfies TickRecord;
   expect(tickHealth(tick, now).messages).toEqual(['未收到巡检心跳 4m', 'orca异常：down']);
+  const stale = tickHealth({ at: new Date(now - 6 * 60_000).toISOString() }, now).stale;
+  const queued: string[] = [];
+  let queuedId = queueTickStaleAlert(stale, undefined, alert => queued.push(alert.id));
+  queuedId = queueTickStaleAlert(stale, queuedId, alert => queued.push(alert.id));
+  expect(queued).toEqual([`tick-stale:${String(Math.floor((now - 6 * 60_000) / 60_000))}`]);
+  expect(stale?.message).toContain(
+    'launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.wetamp.superagent.supervise-tick.plist'
+  );
+  expect(queueTickStaleAlert(undefined, queuedId, () => undefined)).toBeUndefined();
   // prettier-ignore
   expect(tickHealth({ at: new Date(now).toISOString(), collect: { ok: true }, publish: { ok: true } }, now)).toEqual({ ok: true, messages: [] });
   expect(
