@@ -1885,6 +1885,27 @@ describe('verbs (archon stub)', () => {
     ]);
     expect(main(['status', 'sa1'])).toBe(EXIT.held);
   });
+  test('status reports soldier outcome without changing runs that have no soldier', () => {
+    stub([
+      run('completed', {
+        nodes: [
+          { nodeId: 'soldier-reset-used', state: 'completed', outputPreview: 'used' },
+          { nodeId: 'soldier-reset-reset', state: 'completed', outputPreview: 'reset' },
+          { nodeId: 'soldier-reset-bad', state: 'completed', outputPreview: 'reset' },
+          { nodeId: 'soldier-bad__a__draft', state: 'failed', error: 'token=secret\nsecond line' },
+        ],
+      }),
+      run('completed', { nodes: [] }),
+    ]);
+    const withSoldier = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    expect(withSoldier.soldier).toEqual({
+      used: { outcome: 'used' },
+      reset: { outcome: 'reset' },
+      bad: { outcome: 'failed', error: 'token=***' },
+    });
+    const withoutSoldier = JSON.parse(captured(() => main(['status', 'sa1'])).out);
+    expect(withoutSoldier).not.toHaveProperty('soldier');
+  });
   test('cancel: a running run goes through archon workflow cancel with the archon run id', () => {
     const s = stub([run('running')]);
     expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);

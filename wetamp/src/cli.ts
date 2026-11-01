@@ -805,6 +805,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     state: c.state,
     exit: c.exit,
     ...projection,
+    ...soldierOutcomes(nodes),
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
       nodes.length
     )} completed`,
@@ -840,6 +841,31 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
+  };
+}
+
+function soldierOutcomes(nodes: NonNullable<RunView['nodes']>): Record<string, unknown> {
+  const prefix = 'soldier-reset-';
+  const resets = nodes.filter(node => node.nodeId.startsWith(prefix));
+  if (!resets.length) return {};
+  return {
+    soldier: Object.fromEntries(
+      resets.map(reset => {
+        const pkg = reset.nodeId.slice(prefix.length);
+        if (reset.state !== 'completed') return [pkg, { outcome: 'pending' }];
+        if (reset.outputPreview === 'used') return [pkg, { outcome: 'used' }];
+        const base = `soldier-${pkg}`;
+        const failed = nodes.find(
+          node =>
+            (node.nodeId === base ||
+              (node.nodeId.startsWith(`${base}__`) && node.nodeId.endsWith('__draft'))) &&
+            node.error
+        );
+        if (!failed?.error) return [pkg, { outcome: 'reset' }];
+        const error = errorExcerpt(redact(failed.error).split(/\r?\n/, 1)[0], 200);
+        return [pkg, { outcome: 'failed', error }];
+      })
+    ),
   };
 }
 
