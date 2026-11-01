@@ -2844,6 +2844,44 @@ describe('sa-check script', () => {
     expect(r.out).toMatchObject({ ok: true, failed: [] });
     expect(readFileSync(join(r.art, 'verify-a.log'), 'utf8')).toContain('accepted');
   });
+  test('accept: line budget excludes lock and generated files but keeps scope evidence', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'uv.lock'), 'lock\n'.repeat(500));
+    writeFileSync(join(repo, 'client.generated.ts'), 'generated\n'.repeat(100));
+    writeFileSync(join(repo, 'main.ts'), 'source\n'.repeat(20));
+    sh('git add . && git commit -qm budget-fixture', repo);
+    const plan = planFile(root, 'true'),
+      value = JSON.parse(readFileSync(plan, 'utf8'));
+    value.packages[0].max_net_lines = 50;
+    value.packages[0].scope = { write: ['main.ts'] };
+    value.packages[0].risk = 'G1';
+    writeFileSync(plan, JSON.stringify(value));
+    const r = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      tag: 'verify-a',
+      run_base: base,
+      generated_paths: '[]',
+      base,
+      scope_base: base,
+      risk: 'G1',
+    });
+    expect(r.out).toMatchObject({
+      reason: 'scope_violation',
+      net_lines: {
+        used: 20,
+        limit: 50,
+        excluded: [
+          { path: 'client.generated.ts', lines: 100 },
+          { path: 'uv.lock', lines: 500 },
+        ],
+      },
+      out_of_scope: ['client.generated.ts', 'uv.lock'],
+    });
+  });
   // prettier-ignore
   test('accept: JUnit failure reruns only its exact Bun case and records flaky without cache', () => {
     const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts');

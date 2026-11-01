@@ -1083,43 +1083,73 @@ export function scopeBase(runStart: string, base: string): string {
   return merged.exitCode === 0 && !merged.signalCode ? merged.stdout.toString().trim() : base;
 }
 
+const LOCKFILES = new Set([
+  'bun.lock',
+  'bun.lockb',
+  'Cargo.lock',
+  'composer.lock',
+  'Gemfile.lock',
+  'npm-shrinkwrap.json',
+  'package-lock.json',
+  'packages.lock.json',
+  'Pipfile.lock',
+  'pnpm-lock.yaml',
+  'poetry.lock',
+  'pubspec.lock',
+  'uv.lock',
+  'yarn.lock',
+]);
+interface NetLineExclusion {
+  path: string;
+  lines: number;
+}
+
 /** Count only authored source growth; exclusions are structural or generator-declared. */
-export function netLinesFromNumstat(raw: string, generated: readonly string[]): number {
+function netLineBudgetFromNumstat(raw: string, generated: readonly string[]) {
   const excluded = (path: string): boolean => {
     const parts = path.split('/');
     return (
       parts.includes('tests') ||
       parts.includes('golden') ||
       path.endsWith('.test.ts') ||
+      path.endsWith('.generated.ts') ||
+      LOCKFILES.has(basename(path)) ||
       generated.some(output => path === output || path.startsWith(output.replace(/\/*$/, '/')))
     );
   };
   let net = 0;
+  const exclusions: NetLineExclusion[] = [];
   for (const row of raw.split('\0').filter(Boolean)) {
     const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(row);
     if (!match) throw new Error('budget numstat: malformed git output');
-    if (excluded(match[3])) continue;
     // Binary files have no lines; the budget measures source lines, so they count as zero.
-    if (match[1] === '-' || match[2] === '-') continue;
-    net += Number(match[1]) - Number(match[2]);
+    const lines = match[1] === '-' || match[2] === '-' ? 0 : Number(match[1]) - Number(match[2]);
+    if (excluded(match[3])) exclusions.push({ path: match[3], lines });
+    else net += lines;
   }
-  return Math.max(0, net);
+  return { used: Math.max(0, net), excluded: exclusions };
 }
+
+export const netLinesFromNumstat = (raw: string, generated: readonly string[]): number =>
+  netLineBudgetFromNumstat(raw, generated).used;
 
 export const budgetExceeded = (limit: number | undefined, used: number): boolean =>
   limit !== undefined && used > limit;
 
-function lineBudget(pkgs: Pkg[], tag: string): Accept['net_lines'] {
+function lineBudget(
+  pkgs: Pkg[],
+  tag: string
+): (NonNullable<Accept['net_lines']> & { excluded: NetLineExclusion[] }) | undefined {
   if (!tag.startsWith('verify-') || pkgs.length !== 1 || pkgs[0].max_net_lines === undefined)
     return undefined;
   const generated = json('GENERATED_PATHS');
   if (!Array.isArray(generated) || generated.some(path => typeof path !== 'string'))
     throw new Error('generated_paths must be a string array');
-  const used = netLinesFromNumstat(
+  const lines = netLineBudgetFromNumstat(
     git('diff', '--numstat', '-z', '--no-renames', env('RUN_BASE'), 'HEAD', '--'),
     generated as string[]
   );
-  return { used, limit: pkgs[0].max_net_lines };
+  return { ...lines, limit: pkgs[0].max_net_lines };
 }
 
 /**

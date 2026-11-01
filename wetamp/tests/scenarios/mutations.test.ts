@@ -68,6 +68,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'LOCKFILES.has(basename(path))',
+    to: 'false',
+    test: 'tests/sa-check.test.ts',
+    name: 'line budget excludes lock',
+    expectedError: '"used": 520',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'authors.push(attemptIdentity([], node, e.data?.binding));',
     to: 'authors.push(unknown);',
     test: 'tests/sa-check.test.ts',
