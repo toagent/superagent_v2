@@ -60,6 +60,7 @@ import {
 } from './cockpit-signals';
 import { launcher, type Launcher } from './launcher';
 import {
+  claimCancelledExecution,
   executionOwnership,
   ownershipUnknown,
   recoveryAdmissionUnknown,
@@ -1104,6 +1105,7 @@ function recoverRun(
     {
       lockId: l.adoptions?.[0]?.from ?? l.archon_run_id,
       operatorId: l.run_id,
+      claimCancelled: claimCancelledExecution,
       resolveId: () => {
         Object.assign(l, loadLedger(l.run_id));
         return l.archon_run_id;
@@ -1271,7 +1273,17 @@ function recoverRun(
       },
     },
     reconciled,
-    admit
+    run => {
+      if (run.status === 'cancelled') {
+        const cancelled = [...(l.intervention_events ?? [])]
+          .reverse()
+          .find(event => event.action === 'cancel' && event.ok);
+        if (!cancelled || cancelled.reason === 'rejected')
+          return 'cancelled recovery requires a successful engine/operator cancellation';
+        if (publishProjection(l, run)) return 'cancelled recovery refuses published delivery';
+      }
+      return admit?.(run);
+    }
   );
   return invalidWorkingPath && !result.ok
     ? { ...result, working_path: invalidWorkingPath }

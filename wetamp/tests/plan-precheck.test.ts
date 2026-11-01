@@ -110,24 +110,28 @@ test('valid shell quoting, heredocs, and nested zsh source remain parse-only', (
 });
 
 // prettier-ignore
-test('three recent typed failures block only their repo unless a mechanism override is recorded', () => {
-  const root = fixture(), home = tmp(), dir = join(home, 'memory/episodes'), subject = plan(root, [], []);
+test('an unresolved repeated mechanism signature blocks until a promoted PV1 passes', () => {
+  const root = fixture(), home = tmp(), dir = join(home, 'memory/episodes'), promotions = join(home, 'engine/promotions'), subject = plan(root, [], []);
   mkdirSync(dir, { recursive: true });
   const saved = [process.env.SUPERAGENT_HOME, process.env.SUPERAGENT_MEMORY];
   process.env.SUPERAGENT_HOME = home;
-  const episode = (id: string, days: number, project = root, reasons = ['scope_violation']) =>
-    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, project, reasons,
-      at: new Date(Date.now() - days * 86400_000).toISOString() }));
+  const episode = (id: string, days: number, signature = 'verify:scope') => writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, project: root,
+    reasons: ['scope_violation'], signature, at: new Date(Date.now() - days * 86400_000).toISOString() }));
   try {
-    episode('one', 1); episode('two', 2);
+    episode('one', 3); episode('two', 2); episode('other', 1, 'integrate:scope');
     expect(planPrecheck(subject, root).blocking).toEqual([]);
-    episode('old', 8); episode('foreign', 1, tmp());
-    expect(planPrecheck(subject, root).blocking).toEqual([]);
-    episode('three', 3);
-    expect(planPrecheck(subject, root).blocking.join('\n')).toContain('scope 3 次');
+    episode('three', 1);
+    expect(planPrecheck(subject, root).blocking.join('\n')).toMatch(/verify:scope 3 次.*three/);
     const overridden = planPrecheck(subject, root, 'implemented scope guard');
     expect(overridden.blocking).toEqual([]);
-    expect(overridden.info.join('\n')).toMatch(/run ids: (?=.*one)(?=.*two)(?=.*three)/);
+    expect(overridden.info.join('\n')).toContain('verify:scope 3 次');
+    mkdirSync(promotions, { recursive: true });
+    const sha = 'a'.repeat(40), at = new Date(Date.now() + 1_000).toISOString();
+    writeFileSync(join(promotions, `${sha}.json`), JSON.stringify({ sha, status: 'promoted', at }));
+    writeFileSync(join(promotions, `${sha}.verify.json`), JSON.stringify({ sha, status: 'passed', at }));
+    const cleared = planPrecheck(subject, root);
+    expect(cleared.blocking).toEqual([]);
+    expect(cleared.info.join('\n')).toMatch(/verify:scope.*PV1.*已解除/);
     process.env.SUPERAGENT_MEMORY = 'off';
     expect(planPrecheck(subject, root).info).toContain('重复失败检查已跳过：memory 关闭');
   } finally {

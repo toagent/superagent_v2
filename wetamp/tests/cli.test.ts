@@ -1,4 +1,8 @@
-import { admitExecution, resumeExecution } from '@archon/workflows/execution-lifecycle';
+import {
+  admitExecution,
+  recoverySnapshot,
+  resumeExecution,
+} from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as coordModule from '../src/coord';
 import * as launcherModule from '../src/launcher';
@@ -289,6 +293,14 @@ test('plan check validates without dispatch or launch-failure writes', () => {
     ok: true,
     plan_lint: { rejected: false },
   });
+  process.env.SUPERAGENT_MEMORY = 'on';
+  const episodes = join(s.root, 'home/memory/episodes');
+  mkdirSync(episodes, { recursive: true });
+  // prettier-ignore
+  for (let i = 0; i < 3; i++)
+    writeFileSync(join(episodes, `repeat-${i}.json`), JSON.stringify({ id: `repeat-${i}`,
+      project: repo, reasons: ['ruler_invalid'], signature: 'acceptance', at: new Date().toISOString() }));
+  expect(invoke().stderr.toString()).toContain('机制签名 acceptance 3 次');
   mkdirSync(join(repo, '.superagent'));
   writeFileSync(
     join(repo, '.superagent/rules.json'),
@@ -298,14 +310,6 @@ test('plan check validates without dispatch or launch-failure writes', () => {
     })
   );
   expect(invoke().stderr.toString()).toContain('intersects frozen path');
-  process.env.SUPERAGENT_MEMORY = 'on';
-  const episodes = join(s.root, 'home/memory/episodes');
-  mkdirSync(episodes, { recursive: true });
-  // prettier-ignore
-  for (let i = 0; i < 3; i++)
-    writeFileSync(join(episodes, `repeat-${i}.json`), JSON.stringify({ id: `repeat-${i}`,
-      project: repo, reasons: ['ruler_invalid'], at: new Date().toISOString() }));
-  expect(invoke().stderr.toString()).toContain('acceptance 3 次');
   const overridden = invoke(['--lint-override', 'approved exception']);
   expect(overridden.exitCode).toBe(0);
   expect(JSON.parse(overridden.stdout.toString())).toMatchObject({
@@ -849,11 +853,22 @@ describe('HF3 latest-engine recovery', () => {
       ['cancelled', 'fix-m1-r2'],
     ] as const) {
       const s = setup('old', true);
-      writeFileSync(
-        join(s.dir, 'get-000.json'),
-        JSON.stringify(run(status, { nodes: [{ nodeId, state: 'completed' }] }))
+      const terminal = run(status, {
+        nodes: [{ nodeId, state: 'completed' }],
+        ...(status === 'cancelled' ? { metadata: { execution_owner: LOST } } : {}),
+      });
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(terminal));
+      if (status === 'cancelled') {
+        s.ledger.intervention_events = [{ at: '', action: 'cancel', source: 'cli', ok: true }];
+        writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      }
+      const result = captured(() =>
+        main([
+          'resume',
+          'sa1',
+          ...(status === 'cancelled' ? ['--reconciled', recoverySnapshot(terminal)] : []),
+        ])
       );
-      const result = captured(() => main(['resume', 'sa1']));
       expect(result.code).toBe(0);
       expect(loadLedger('sa1').adoptions?.at(-1)).toMatchObject({
         from: 'r',
@@ -1168,8 +1183,23 @@ describe('HF3 latest-engine recovery', () => {
   test('stale failed/cancelled adopt; stale paused owner keeps its snapshot', () => {
     for (const status of ['cancelled', 'paused'] as const) {
       const s = setup('old', true);
-      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run(status)));
-      expect(captured(() => main(['resume', 'sa1'])).code).toBe(0);
+      const terminal = run(status, {
+        ...(status === 'cancelled' ? { metadata: { execution_owner: LOST } } : {}),
+      });
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(terminal));
+      if (status === 'cancelled') {
+        s.ledger.intervention_events = [{ at: '', action: 'cancel', source: 'cli', ok: true }];
+        writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+      }
+      expect(
+        captured(() =>
+          main([
+            'resume',
+            'sa1',
+            ...(status === 'cancelled' ? ['--reconciled', recoverySnapshot(terminal)] : []),
+          ])
+        ).code
+      ).toBe(0);
       expect(
         s
           .calls()
@@ -1231,13 +1261,17 @@ const humanWait = (resumeAt = '2099-01-01T00:00:00.000Z'): RunView =>
   });
 
 const LOST = { host: hostname(), pid: 2 ** 22 + 1 };
-/** archon.db 的 runs 表（只含 recover 读写的列），行 r 处于 running、metadata 记着 owner。 */
-function runsDb(owner: { host: string; pid: number }): Database {
+/** archon.db 的 runs 表（只含 recover 读写的列），行 r 处于指定状态、metadata 记着 owner。 */
+function runsDb(
+  owner: { host: string; pid: number },
+  status: RunView['status'] = 'running'
+): Database {
   const db = new Database(join(process.env.ARCHON_HOME ?? '', 'archon.db'));
   db.run(
     'create table remote_agent_workflow_runs (id text, status text, metadata text, started_at text)'
   );
-  db.run("insert into remote_agent_workflow_runs values ('r', 'running', ?, null)", [
+  db.run("insert into remote_agent_workflow_runs values ('r', ?, ?, null)", [
+    status,
     JSON.stringify({ execution_owner: owner }),
   ]);
   return db;
@@ -1703,6 +1737,59 @@ describe('waitRun (archon stub)', () => {
       writeFileSync(join(process.env.ARCHON_HOME ?? '', 'execution-admissions/r.lock'), junk);
       expect(archonMod.recover('r').ok).toBe(true);
     }
+  });
+  test('cancelled recover preserves the run ledger while reject and a live owner stay refused', () => {
+    const cancelled = run('cancelled', { metadata: { execution_owner: LOST } });
+    const s = stub([cancelled]);
+    writeFileSync(
+      ledgerPath('sa1'),
+      JSON.stringify({
+        ...loadLedger('sa1'),
+        review_rounds_used: { m1: 2 },
+        findings: [{ id: 'r1-finding', status: 'open' }],
+        intervention_events: [
+          { at: '', action: 'cancel', source: 'cli', origin: 'operator', ok: true },
+        ],
+      })
+    );
+    const db = runsDb(LOST, 'cancelled');
+    const snapshot = recoverySnapshot(cancelled);
+    expect(captured(() => main(['recover', 'sa1'])).out).toContain(
+      'cancelled_reconciliation_required'
+    );
+    expect(s.calls().some(call => call.startsWith('workflow resume'))).toBe(false);
+    expect(captured(() => main(['recover', 'sa1', '--reconciled', snapshot])).code).toBe(0);
+    expect(loadLedger('sa1')).toMatchObject({
+      archon_run_id: 'r',
+      review_rounds_used: { m1: 2 },
+      findings: [{ id: 'r1-finding', status: 'open' }],
+    });
+    expect(s.calls()).toContain('workflow resume r --detach --json');
+    db.close();
+
+    const rejected = stub([cancelled]);
+    writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...loadLedger('sa1'), rejected: 'r' }));
+    expect(captured(() => main(['recover', 'sa1', '--reconciled', snapshot])).out).toContain(
+      'rejected run is not resumable'
+    );
+    expect(rejected.calls().some(call => call.startsWith('workflow resume'))).toBe(false);
+
+    const liveRun = run('cancelled', {
+      started_at: '2099-01-01T00:00:00.000Z',
+      metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+    });
+    const live = stub([liveRun]);
+    writeFileSync(
+      ledgerPath('sa1'),
+      JSON.stringify({
+        ...loadLedger('sa1'),
+        intervention_events: [{ at: '', action: 'cancel', source: 'cli', ok: true }],
+      })
+    );
+    expect(
+      captured(() => main(['recover', 'sa1', '--reconciled', recoverySnapshot(liveRun)])).out
+    ).toContain('cancelled_owner_alive');
+    expect(live.calls().some(call => call.startsWith('workflow resume'))).toBe(false);
   });
 });
 
