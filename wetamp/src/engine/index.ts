@@ -23,7 +23,6 @@ import { SCRATCH_ROOT } from '../plan';
 import { runProbe, type ProbeEvidence } from '../probe';
 import { printLaunchd, type LaunchctlRunner } from '../launchd';
 import { caller, coord, repoScope } from '../coord';
-import { queueNtfyAlert } from '../ntfy';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
 
@@ -36,7 +35,7 @@ export interface EngineReceipt {
   bootstrap_evidence?: string;
 }
 // prettier-ignore
-export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed'; files: string[]; failed_files: string[]; log: string; at: string; pid?: number; pid_start?: string; host?: string; token?: string; error?: string; reported?: boolean; }
+export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; pid?: number; pid_start?: string; host?: string; token?: string; error?: string; reported?: boolean; retries?: number; }
 
 const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
@@ -420,7 +419,7 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
   return result;
 }
 // prettier-ignore
-export interface AutoVerifyDependencies { spawn?: (command: string[], env: Record<string, string | undefined>) => { pid: number; unref(): void }; inspect?: typeof inspectProcess; handoff?: (record: EngineVerifyRecord) => void; alert?: (record: EngineVerifyRecord) => void; dedupe?: (record: EngineVerifyRecord) => boolean; }
+export interface AutoVerifyDependencies { spawn?: (command: string[], env: Record<string, string | undefined>) => { pid: number; unref(): void }; inspect?: typeof inspectProcess; handoff?: (record: EngineVerifyRecord, title: string) => void; }
 const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): string => {
   let subject = '';
   try {
@@ -433,10 +432,11 @@ const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): str
   } catch {
     subject = '';
   }
-  return `引擎上线后复验发现回归｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
+  const kind = record.error === 'verify_process_lost' ? '基础设施异常' : '发现回归';
+  return `引擎上线后复验${kind}｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
 };
 // prettier-ignore
-const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const title = verifyFailureTitle(record, currentSha), files = record.failed_files.slice(0, 3).join('、') || '未知', more = record.failed_files.length > 3 ? ` 等 ${String(record.failed_files.length)} 个` : '', sameFiles = (candidate: EngineVerifyRecord): boolean => JSON.stringify([...candidate.failed_files].sort()) === JSON.stringify([...record.failed_files].sort()), duplicate = (dependencies.dedupe ?? (() => { const prior = verifyRecords().filter(sameFiles); return coord().messages().some(candidate => !['done', 'rejected'].includes(candidate.state) && candidate.evidence.some(value => prior.some(previous => previous.log === value))); }))(record); if (!duplicate) (dependencies.alert ?? (item => { queueNtfyAlert(`engine-verify-${item.sha}`, `失败测试文件：${files}${more}\n已自动转交引擎负责人修复，无需你操作\n日志路径：${item.log}`, {}, title); }))(record); (dependencies.handoff ?? (item => { coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.sha, item.log], severity: 'normal' }, 0, false); }))(record); writeVerify({ ...record, reported: true }); };
+const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const title = verifyFailureTitle(record, currentSha); (dependencies.handoff ?? ((item, messageTitle) => { coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: messageTitle, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.sha, item.log], severity: 'normal' }, 0, false); }))(record, title); writeVerify({ ...record, reported: true }); };
 // prettier-ignore
 export function autoVerify(current: string | undefined, dependencies: AutoVerifyDependencies = {}): { sha: string; base?: string; started: boolean; error?: string } | undefined {
   if (!current) return;
@@ -444,23 +444,24 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
     currentSha = basename(current);
   try {
     let records = verifyRecords();
-    for (const record of records.filter(r => r.status === 'failed' && !r.reported))
-      reportVerifyFailure(record, currentSha, dependencies);
-    records = verifyRecords();
     for (const record of records.filter(r => r.status === 'running')) {
       if (!record.pid || !record.pid_start || !record.host || record.host !== hostname())
         return { sha: record.sha, started: false };
       const identity = inspect(record.pid);
       if (identity.state === 'unknown' || (identity.state === 'online' && identity.start === record.pid_start)) return { sha: record.sha, started: false };
-      writeVerify({ ...record, status: 'failed', error: 'verify_process_lost', at: new Date().toISOString() });
+      writeVerify({ ...record, status: record.sha !== currentSha && isAncestor(record.sha, currentSha) ? 'superseded' : 'failed', error: 'verify_process_lost', at: new Date().toISOString() });
     }
-    if (verifyRecord(currentSha)) return { sha: currentSha, started: false };
+    records = verifyRecords();
+    for (const record of records.filter(r => r.status === 'failed' && !r.reported && !(r.error === 'verify_process_lost' && (r.retries ?? 0) < 1)))
+      reportVerifyFailure(record, currentSha, dependencies);
+    const prior = verifyRecord(currentSha), retry = prior?.status === 'failed' && prior.error === 'verify_process_lost' && (prior.retries ?? 0) < 1 ? prior : undefined;
+    if (prior && !retry) return { sha: currentSha, started: false };
     const passed = records
         .filter(r => r.status === 'passed' && isAncestor(r.sha, currentSha))
         .sort((a, b) => a.at.localeCompare(b.at))
         .at(-1),
       base =
-        passed?.sha ??
+        retry?.base ?? passed?.sha ??
         receipts()
           .filter(r => r.sha !== currentSha && isAncestor(r.sha, currentSha))
           .at(-1)?.sha;
@@ -479,7 +480,7 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
       identity = inspect(spawned.pid);
     if (identity.state !== 'online')
       throw new Error('engine auto-verify: process identity unavailable');
-    writeVerify({ sha: currentSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${currentSha}.verify.log`), at: new Date().toISOString(), pid: spawned.pid, pid_start: identity.start, host: hostname(), token });
+    writeVerify({ sha: currentSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${currentSha}.verify.log`), at: new Date().toISOString(), pid: spawned.pid, pid_start: identity.start, host: hostname(), token, ...(retry ? { retries: (retry.retries ?? 0) + 1 } : {}) });
     spawned.unref();
     return { sha: currentSha, base, started: true };
   } catch (error) { return { sha: currentSha, started: false, error: error instanceof Error ? error.message : String(error) }; }
