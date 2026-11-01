@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { Coordination, type RunRef } from '../src/coord';
-import { resumeCard, waitingRuns } from '../src/resume-card';
+import { responsibilityList, resumeCard, waitingRuns } from '../src/resume-card';
 process.env.TZ = 'Asia/Taipei';
 const trackTempRoot = trackTempRoots();
 const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'resume-card-')));
@@ -17,6 +17,25 @@ const ledger = (run_id: string, session_id: string): RunRef => ({
   controller: { client: 'codex', pid: 1, generation: 1, session_id },
 });
 describe('resume card', () => {
+  test('responsibilities are rechecked against live run states in one batch', () => {
+    const home = tmp(),
+      // prettier-ignore
+      waiting = (id: string, code = 'gate') => ({ id, kind: 'run' as const, what: code, code, waiting_for: code, waited_s: 0 });
+    process.env.SUPERAGENT_HOME = home;
+    // prettier-ignore
+    writeFileSync(join(home, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: { client: 'claude', session_id: 's' }, waiting: [waiting('done'), waiting('resumed'), waiting('held'), waiting('unknown')] }] }));
+    let reads = 0;
+    const result = responsibilityList('s', items => {
+      reads++;
+      expect(items.map(item => item.id)).toEqual(['done', 'resumed', 'held', 'unknown']);
+      // prettier-ignore
+      return new Map<string, string | Error>([['done', 'cancelled'], ['resumed', 'running'], ['held', 'paused'], ['unknown', new Error('unreadable')]]);
+    });
+    expect(reads).toBe(1);
+    expect(result.map(item => item.id)).toEqual(['held', 'unknown']);
+    expect(result[1]?.waiting_for).toContain('状态未确认');
+  });
+
   test('wait bridge returns only running and pending runs', () => {
     expect(
       waitingRuns(
