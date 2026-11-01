@@ -99,13 +99,16 @@ afterAll(() => {
 const views = new Map<string, archon.RunView>();
 let query: ReturnType<typeof spyOn<typeof archon, 'getRun'>> | undefined;
 let revisions: ReturnType<typeof spyOn<typeof archon, 'reportRunRevisions'>> | undefined;
+let projections: ReturnType<typeof spyOn<typeof archon, 'runProjections'>> | undefined;
 let statuses: ReturnType<typeof spyOn<typeof archon, 'runStatuses'>> | undefined;
 afterEach(() => {
   query?.mockRestore();
   revisions?.mockRestore();
+  projections?.mockRestore();
   statuses?.mockRestore();
   query = undefined;
   revisions = undefined;
+  projections = undefined;
   statuses = (delete process.env.DATABASE_URL, undefined);
   views.clear();
   keys.forEach((k, i) => {
@@ -126,6 +129,19 @@ test('batch status avoids getRun and null or missing entries fall back', () => {
   statuses.mockReturnValue(new Map());
   gc(false, 'missing');
   expect(query).toHaveBeenCalledTimes(2);
+});
+
+test('gc loads run projections once and only falls back for a missing run', () => {
+  const f = fixture(),
+    batch = projections!;
+  batch.mockReturnValue(new Map([[f.view.id, f.view]]));
+  gc(true);
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(batch.mock.calls[0]?.[0]).toEqual([f.view.id]);
+  expect(query).not.toHaveBeenCalled();
+  batch.mockReturnValue(new Map());
+  gc(true);
+  expect(query).toHaveBeenCalledTimes(1);
 });
 
 test('real repository worktree mutations are identified without executing them', () => {
@@ -217,6 +233,7 @@ function fixture(
     if (!run) throw new Error('Archon record unavailable');
     return run;
   });
+  projections ??= spyOn(archon, 'runProjections').mockReturnValue(null);
   const branchExists = (): boolean =>
     git('for-each-ref', '--format=%(refname)', `refs/heads/sa/${id}`) !== '';
   return { root, repo, id, path, gen, git, ledger, save, view, branchExists };

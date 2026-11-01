@@ -194,6 +194,26 @@ export function runStatuses(): Map<string, RunView['status']> | null {
   }
 }
 
+/** GC needs only these run-row fields; keep PostgreSQL and CLI stubs on their existing path. */
+export function runProjections(ids: string[]): Map<string, RunView> | null {
+  const path = join(home().archon, 'archon.db');
+  if (process.env.DATABASE_URL || process.env.SA_ARCHON_BIN || !existsSync(path)) return null;
+  const requested = [...new Set(ids)];
+  if (requested.length === 0) return new Map();
+  const db = new Database(path, { readonly: true });
+  try {
+    const rows = db
+      .query<RunView, string[]>(
+        `SELECT id, status, working_path, output_root FROM remote_agent_workflow_runs
+         WHERE id IN (${requested.map(() => '?').join(',')})`
+      )
+      .all(...requested);
+    return new Map(rows.map(run => [run.id, run]));
+  } finally {
+    db.close();
+  }
+}
+
 /** Report snapshot: read-only SQLite, complete histories of runs selected by started_at.
  * No provider/CLI processes, and no truncation of attempts crossing the window boundary. */
 // prettier-ignore

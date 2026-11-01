@@ -35,6 +35,9 @@ test('targeted batch query reads only requested database runs', async () => {
     const runs = await transport.getRunsAsync(['r-2', 'missing'], root, { timeoutMs: 1000 });
     expect([...runs.keys()]).toEqual(['r-2']);
     expect(runs.get('r-2')).toMatchObject({ id: 'r-2', status: 'completed', nodes: [] });
+    const projections = transport.runProjections(['r-1', 'r-2', 'missing']);
+    expect([...projections!.keys()]).toEqual(['r-1', 'r-2']);
+    expect(projections!.get('r-1')).toMatchObject({ id: 'r-1', status: 'completed' });
   } finally {
     const { closeDatabase } = await import('../../packages/core/src/db/connection');
     await closeDatabase();

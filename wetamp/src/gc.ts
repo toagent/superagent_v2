@@ -12,7 +12,7 @@ import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
 // prettier-ignore
-import { archonJson, getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runStatuses, type RunView } from './archon';
+import { archonJson, getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runProjections, runStatuses, type RunView } from './archon';
 import { home, writeAtomic } from './config';
 import {
   artifactsOf,
@@ -388,6 +388,7 @@ export function gc(
   const out: GcAction[] = [];
   let statuses: Map<string, RunView['status']> | null = null;
   let revisions: Map<string, string> | null = null;
+  let runs: Map<string, RunView> | null = null;
   let adoptions: Map<string, string> | null = null;
   try {
     adoptions = liveAdoptions();
@@ -414,14 +415,22 @@ export function gc(
   const next: Partial<Record<string, GcInput>> = {},
     repos = new Map<string, RepoState>(),
     successors = new Map<string, { id: string; ledger: Ledger }>();
-  for (const ledgerId of ledgerIds()) {
+  const ids = ledgerIds(),
+    archonIds: string[] = [];
+  for (const ledgerId of ids) {
     try {
       const ledger = loadLedger(ledgerId);
+      archonIds.push(ledger.archon_run_id);
       for (const adoption of ledger.adoptions ?? [])
         successors.set(adoption.from, { id: adoption.to, ledger });
     } catch {
       // The owning ledger will report its own read failure below.
     }
+  }
+  try {
+    runs = runProjections(archonIds);
+  } catch (e) {
+    console.error(`gc run projection unavailable: ${(e as Error).message}`);
   }
   const repoState = (repo: string): RepoState => {
     const hit = repos.get(repo);
@@ -461,7 +470,7 @@ export function gc(
     return JSON.stringify([l.archon_run_id, mtimeMs, size, revision, tree, sha, landed]);
   };
   try {
-    for (const id of ledgerIds()) {
+    for (const id of ids) {
       const events: GcAction[] = [];
       const failures: unknown[] = [];
       let workingPath: string | null | undefined = cached[id]?.working_path;
@@ -492,10 +501,10 @@ export function gc(
           const listed = state[1];
           const refs = state[2].trim().split('\n');
           const sha = refs.find(r => r.startsWith(`${ref} `))?.slice(ref.length + 1);
-          const knownStatus = statuses?.get(l.archon_run_id);
+          const knownStatus = runs?.get(l.archon_run_id)?.status ?? statuses?.get(l.archon_run_id);
           if (knownStatus && !['completed', 'failed', 'cancelled'].includes(knownStatus))
             throw new GcSkip(`run ${knownStatus} remains recoverable`);
-          const run = getRun(l.archon_run_id, plan.repo);
+          const run = runs?.get(l.archon_run_id) ?? getRun(l.archon_run_id, plan.repo);
           if (run.id !== l.archon_run_id) throw new Error('Archon run identity mismatch');
           workingPath = run.working_path;
           if (!['completed', 'failed', 'cancelled'].includes(run.status))
@@ -551,6 +560,7 @@ export function gc(
           if (resourcesCollected) return;
           if (successor) {
             const successorStatus =
+              runs?.get(successor.ledger.archon_run_id)?.status ??
               statuses?.get(successor.ledger.archon_run_id) ??
               getRun(successor.ledger.archon_run_id, successor.ledger.repo).status;
             if (successorStatus !== 'completed' && !abandoned(successor.ledger))
