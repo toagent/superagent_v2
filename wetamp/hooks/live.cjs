@@ -58,7 +58,7 @@ function inspectPid(pid) {
   return r.status === 0 && /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(r.stdout.trim());
 }
 // Only identity metadata is returned; absent/ambiguous heartbeat identity stays absent.
-function launcher(home) {
+function launcher(home, env = process.env) {
   try {
     const who = owner(true);
     if (!who) return undefined;
@@ -98,13 +98,20 @@ function launcher(home) {
         ?.slice(1) || str(beats[0]?.cwd);
     if (!cwd) return undefined;
     const session = new Set(beats.map(b => str(b.session_id)).filter(Boolean));
+    const environmentSession = [env.CODEX_SESSION_ID, env.CODEX_THREAD_ID]
+      .map(str)
+      .find(id => session.has(id));
     return {
       client: cli.kind,
       ...who,
       cwd,
       host: os.hostname(),
       pid_start: p.start,
-      ...(session.size === 1 ? { session_id: [...session][0] } : {}),
+      ...(session.size === 1
+        ? { session_id: [...session][0] }
+        : environmentSession
+          ? { session_id: environmentSession }
+          : {}),
     };
   } catch {
     return undefined;

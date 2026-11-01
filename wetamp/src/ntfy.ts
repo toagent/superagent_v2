@@ -292,9 +292,15 @@ async function publish(
   if (!response.ok) throw new Error(`ntfy publish failed (${String(response.status)})`);
 }
 
-async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
+async function flush(
+  config: NtfyConfig,
+  state: NtfyState,
+  decisionLimit = Number.POSITIVE_INFINITY
+): Promise<void> {
+  let publishedDecisions = 0;
   for (const decision of Object.values(state.decisions)) {
     if (decision.status !== 'pending' || decision.delivery !== 'pending') continue;
+    if (publishedDecisions >= decisionLimit) break;
     const answer = secureSecret(config.answerToken, 'answer token');
     await publish(config, 'sa-decisions', {
       title: decision.red_phase === 'confirm' ? `确认：${decision.title}` : decision.title,
@@ -305,6 +311,7 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
       actions: decision.actions.map(action => actionFor(decision, action, answer, config.baseUrl)),
     });
     decision.delivery = 'sent';
+    publishedDecisions++;
   }
   while (state.alerts.length) {
     await publish(config, 'sa-alerts', {
@@ -521,7 +528,10 @@ export function ntfyDecisionStatus(
   );
 }
 
-export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {
+export async function publishPendingNtfy(
+  supplied: Partial<NtfyConfig> = {},
+  decisionLimit = Number.POSITIVE_INFINITY
+): Promise<void> {
   if (!ntfyEnabled(supplied)) return;
   const config = { ...defaultConfig(), ...supplied };
   const guard = stateLock(config.statePath);
@@ -529,7 +539,7 @@ export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Pr
   try {
     const state = readState(config.statePath);
     try {
-      await flush(config, state);
+      await flush(config, state, decisionLimit);
     } finally {
       saveState(config.statePath, state);
     }

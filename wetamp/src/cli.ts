@@ -4220,7 +4220,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
     return synced;
   });
   const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
-  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishDecisions());
+  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishDecisions({}, 5));
   if (exit)
     stages.actions = {
       ok: false,
