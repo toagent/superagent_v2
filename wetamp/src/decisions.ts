@@ -24,9 +24,17 @@ import { coord, runScope, same, scopeRepoName, type Controller } from './coord';
 import type { Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
 
-export class DecisionError extends Error {}
-function requireDecision(ok: unknown, message: string): asserts ok {
-  if (!ok) throw new DecisionError(message);
+export class DecisionError extends Error {
+  constructor(
+    message: string,
+    readonly code = 'decision_error'
+  ) {
+    super(message);
+    this.name = 'DecisionError';
+  }
+}
+function requireDecision(ok: unknown, message: string, code?: string): asserts ok {
+  if (!ok) throw new DecisionError(message, code);
 }
 export const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 export interface DecisionReceipt {
@@ -421,14 +429,18 @@ export async function answerDecision(
     decision => decision.id === id
   );
   const candidate = deferredCandidate ?? (await loadInbox()).decisions.find(d => d.id === id);
-  requireDecision(candidate, '决定已变化，请重读');
+  requireDecision(candidate, '决定已变化，请重读', 'decision_changed');
   if (candidate.coordination ?? candidate.engine === 'failover') {
     requireDecision(['yes', 'no'].includes(choice), '不支持此选项');
     const decisionGuard = store.decisionLock(id);
     try {
       const current = [...coordinationDecisions(), ...failoverDecisions()].find(d => d.id === id);
-      requireDecision(current, '决定已变化，请重读');
-      requireDecision(current.coordination ?? current.engine === 'failover', '决定已变化，请重读');
+      requireDecision(current, '决定已变化，请重读', 'decision_changed');
+      requireDecision(
+        current.coordination ?? current.engine === 'failover',
+        '决定已变化，请重读',
+        'decision_changed'
+      );
       return store.transaction(s => {
         requireDecision(!s.receipts.some(r => r.id === id), '该决定已有答复；请查看回执，不会重放');
         const receipt: DecisionReceipt = {
@@ -460,7 +472,11 @@ export async function answerDecision(
         requireDecision(!old, '该决定已有答复；请查看回执，不会重放');
         const run = getRun(l.archon_run_id, l.repo),
           d = describeDecision(l, run, c.owner(scope));
-        requireDecision(d && !d.disabled && d.id === id && d.controller, '决定已变化，请重读');
+        requireDecision(
+          d && !d.disabled && d.id === id && d.controller,
+          '决定已变化，请重读',
+          'decision_changed'
+        );
         requireDecision(
           d.options.some(o => o.id === choice),
           '不支持此选项'

@@ -928,17 +928,7 @@ export class Coordination {
             m.ask.generation === view.generation
           )
             return [];
-          const held = this.d.runs().some(l => {
-            try {
-              return (
-                repoScope(l.repo).id === (m.scope.kind === 'repo' ? m.scope.id : m.scope.repo) &&
-                ['paused', 'failed'].includes(this.d.status(l))
-              );
-            } catch {
-              return false;
-            }
-          });
-          const immediate = view.presence.state === 'offline' && (m.severity === 'urgent' || held);
+          const immediate = view.presence.state === 'offline' && m.severity === 'urgent';
           if (!immediate && this.d.now() - Date.parse(m.at) < ACK_TIMEOUT_MS) return [];
           if (view.presence.state === 'offline' && !immediate) return [];
           if (same(view.owner, m.sender)) return [];
