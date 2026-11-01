@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerNtfyDecision, DecisionStore, type DecisionReceipt } from '../src/decisions';
-import { askCli, notifyCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
+import { askCli, notifyCli, ntfyCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
 import {
   askNtfy,
   publishPendingNtfy,
@@ -46,7 +46,7 @@ describe('ntfy decision channel', () => {
     expect((f.posts[0].body.actions as { clear: boolean }[]).every(action => action.clear)).toBeTrue();
     const valid = f.action(); f.push({ ...valid, sig: '0'.repeat(64) }); f.push(valid); f.push(valid); f.push({ ...valid, id: 'missing' });
     expect(await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).toEqual({ accepted: 1, ignored: 3, failed: 0 });
-    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => post.body.title)).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜Decision', '未执行｜未知决策']);
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => post.body.title)).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜未知决策']);
     const bad = askNtfy(f.request('bad'), f.config), live = askNtfy(f.request('live'), f.config);
     await publishPendingNtfy(f.config); const badAction = f.action(f.posts.at(-2)); f.push(badAction); f.push(f.action());
     expect(await syncNtfy(d => { if (d.id === bad) throw new Error('stale'); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 1 });
@@ -97,13 +97,38 @@ describe('ntfy decision channel', () => {
     expect(JSON.stringify(f.posts) + JSON.stringify(output)).not.toContain('publisher-secret');
   });
   test('limits each tick to five new decisions without starving later decisions or limiting alerts', async () => {
-    const f = fixture(Date.now()), decisions = [...Array(7)].map((_, i) => ({ id: `decision-${i}`, run: `run-${i}`, engine: '', node: '', pause: '', question: `Decision ${i}`, reason: 'reason', context: 'context', options: f.request('x').options.map(option => ({ ...option, consequence: option.consequence ?? option.label })) }));
+    let now = Date.now(); const f = fixture(now); f.config.now = () => now;
+    const decisions = [...Array(7)].map((_, i) => ({ id: `decision-${i}`, run: `run-${i}`, engine: '', node: '', pause: '', question: `Decision ${i}`, reason: 'reason', context: 'context', options: f.request('x').options.map(option => ({ ...option, consequence: option.consequence ?? option.label })) }));
     const inbox = async () => ({ decisions, unknown: [] });
     queueNtfyAlert('alert', 'unlimited', f.config); await syncDecisionChannel(f.config, inbox, undefined, 5); await publishPendingNtfy(f.config);
     expect(f.posts.map(post => post.body.topic)).toEqual([...Array(5).fill('sa-decisions'), 'sa-alerts']);
     expect(f.posts.slice(0, 5).map(post => post.body.title)).toEqual([...Array(5)].map((_, i) => `Decision ${i}`));
-    await syncDecisionChannel(f.config, inbox, undefined, 5); await publishPendingNtfy(f.config);
+    await syncDecisionChannel(f.config, inbox, undefined, 5); now += 3_600_001; await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(7);
+  });
+  test('persists dedupe and rolling limits, emits one summary, and drains after the window', async () => {
+    let now = 2_000_000_000_000; const f = fixture(now); f.config.now = () => now;
+    for (let i = 0; i < 8; i++) askNtfy(f.request(`decision-${i}`), f.config);
+    for (let i = 0; i < 12; i++) queueNtfyAlert(`alert-${i}`, `Alert ${i}`, f.config);
+    await publishPendingNtfy(f.config); await publishPendingNtfy(f.config);
+    expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(6);
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(10);
+    expect(f.posts.filter(post => post.body.title === 'superagent 推送已限流')).toHaveLength(1);
+    queueNtfyAlert('alert-0', 'duplicate', f.config); await publishPendingNtfy(f.config);
+    now += 3_600_001; await publishPendingNtfy(f.config);
+    expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(8);
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(13);
+    expect(JSON.stringify(f.posts)).not.toContain('duplicate');
+  });
+  test('pause keeps work pending while status reports the gate counters', async () => {
+    const f = fixture(), output: unknown[] = [];
+    ntfyCli(['ntfy', 'pause'], f.config, value => output.push(value));
+    askNtfy(f.request('paused'), f.config); queueNtfyAlert('paused-alert', 'pending', f.config);
+    await publishPendingNtfy(f.config); expect(f.posts).toHaveLength(0);
+    ntfyCli(['ntfy', 'status'], f.config, value => output.push(value));
+    expect(output.at(-1)).toMatchObject({ paused: true, sent: 0 });
+    ntfyCli(['ntfy', 'resume'], f.config, () => undefined); await publishPendingNtfy(f.config);
+    expect(f.posts.map(post => post.body.topic)).toEqual(['sa-decisions', 'sa-alerts']);
   });
   test('keeps secrets out of state and routes answers through the durable decision store', async () => {
     const f = fixture(); askNtfy(f.request('secret'), f.config); await publishPendingNtfy(f.config);

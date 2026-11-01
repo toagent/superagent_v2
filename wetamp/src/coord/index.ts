@@ -905,7 +905,7 @@ export class Coordination {
           !same(view.owner, m.ask.owner)
         )
           return false;
-        persist(`coord:${m.id}:${String(generation)}:${String(m.ask_round ?? 0)}`);
+        persist(`coord:${m.id}:${String(generation)}:0`);
         return true;
       })
     );
@@ -921,9 +921,13 @@ export class Coordination {
           const view = this.owner(m.scope);
           if (view.conflicts.length) throw new Error(view.next);
           if ((m.deferred_until ?? 0) > this.d.now()) return [];
-          // 否=继续等 is the user's answer for this owner; re-asking every interval turned it into a nag.
-          // A new owner generation is a different question, so it may ask again.
-          if (m.ask?.status === 'no' && m.ask.generation === view.generation) return [];
+          // An answer or expiry settles this owner's question. A new owner generation may ask once.
+          if (
+            m.ask &&
+            ['no', 'expired'].includes(m.ask.status) &&
+            m.ask.generation === view.generation
+          )
+            return [];
           const held = this.d.runs().some(l => {
             try {
               return (
@@ -938,7 +942,7 @@ export class Coordination {
           if (!immediate && this.d.now() - Date.parse(m.at) < ACK_TIMEOUT_MS) return [];
           if (view.presence.state === 'offline' && !immediate) return [];
           if (same(view.owner, m.sender)) return [];
-          const key = `coord:${m.id}:${String(view.generation)}:${String(m.ask_round ?? 0)}`;
+          const key = `coord:${m.id}:${String(view.generation)}:0`;
           const title = escalationTitle(m, view.presence.state);
           const a = ask(key, title);
           m.state = 'escalated';
@@ -958,9 +962,6 @@ export class Coordination {
             );
           }
           if (['no', 'expired'].includes(a.status)) {
-            // Only an unanswered (expired) ask comes back after the interval; 'no' is fenced above.
-            m.deferred_until = this.d.now() + ACK_TIMEOUT_MS;
-            m.ask_round = (m.ask_round ?? 0) + 1;
             m.state = 'queued';
             this.save('inbox', m.id, m);
           }

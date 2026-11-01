@@ -8,7 +8,9 @@ import {
 import { FAILOVER_PREFIX, latestFailover } from './decisions';
 import {
   askNtfy,
+  ntfyControl,
   ntfyDecisionStatus,
+  ntfyDeliveryStatus,
   publishPendingNtfy,
   queueNtfyAlert,
   syncNtfy,
@@ -4137,6 +4139,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
   { command: 'ask', positionals: '[status <id>]', flags: ['source', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback'] },
   { command: 'notify', flags: ['id', 'title', 'body'] },
+  { command: 'ntfy', positionals: 'pause|resume|status', flags: [] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
   { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
@@ -4897,9 +4900,10 @@ export async function askCli(
     },
     supplied
   );
-  let delivery = 'sent';
+  let delivery: 'sent' | 'pending';
   try {
     await publishPendingNtfy(supplied);
+    delivery = ntfyDeliveryStatus('decision', id, supplied);
   } catch {
     delivery = 'pending';
   }
@@ -4923,13 +4927,27 @@ export async function notifyCli(
     title = required(a.flags.title),
     body = required(a.flags.body);
   queueNtfyAlert(id, body, supplied, title);
-  let delivery: 'sent' | 'pending' = 'sent';
+  let delivery: 'sent' | 'pending';
   try {
     await publishPendingNtfy(supplied);
+    delivery = ntfyDeliveryStatus('alert', id, supplied);
   } catch {
     delivery = 'pending';
   }
   emit({ id, delivery });
+  return 0;
+}
+
+export function ntfyCli(
+  argv: string[],
+  supplied: Partial<NtfyConfig> = {},
+  emit: (value: unknown) => void = print
+): number {
+  const a = parseArgs(argv),
+    action = a._[1];
+  if (a._.length !== 2 || !['pause', 'resume', 'status'].includes(action))
+    throw new Error('usage: superagent ntfy pause|resume|status');
+  emit(ntfyControl(action as 'pause' | 'resume' | 'status', supplied));
   return 0;
 }
 
@@ -5099,6 +5117,7 @@ async function runCli(): Promise<void> {
         'heartbeat',
         'ask',
         'notify',
+        'ntfy',
         'supervise-tick',
         'console',
         'web',
@@ -5113,6 +5132,7 @@ async function runCli(): Promise<void> {
     if (verb === 'heartbeat') process.exit(await heartbeatCli(argv));
     if (verb === 'ask') process.exit(await askCli(argv));
     if (verb === 'notify') process.exit(await notifyCli(argv));
+    if (verb === 'ntfy') process.exit(ntfyCli(argv));
     if (verb === 'supervise-tick') {
       const parsed = parseArgs(argv);
       process.exit(

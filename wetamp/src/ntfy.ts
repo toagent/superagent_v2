@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -58,6 +59,10 @@ interface NtfyState {
   used_nonces: Record<string, number>;
   alerts: { id: string; title?: string; message: string }[];
   alert_ids: string[];
+  sent: Record<string, number>;
+  limited: Record<string, number>;
+  activity: { at: number; kind: 'decision' | 'alert' | 'limited' | 'deduplicated' }[];
+  summary_at?: number;
   ignored: number;
   callback_failures: number;
 }
@@ -105,6 +110,9 @@ const emptyState = (): NtfyState => ({
   used_nonces: {},
   alerts: [],
   alert_ids: [],
+  sent: {},
+  limited: {},
+  activity: [],
   ignored: 0,
   callback_failures: 0,
 });
@@ -153,6 +161,9 @@ function readState(path: string): NtfyState {
       alert_ids: Array.isArray(value.alert_ids)
         ? value.alert_ids
         : value.alerts.map(alert => alert.id),
+      sent: value.sent ?? {},
+      limited: value.limited ?? {},
+      activity: Array.isArray(value.activity) ? value.activity : [],
       callback_failures: value.callback_failures ?? 0,
     } as NtfyState;
   } catch {
@@ -269,8 +280,13 @@ function actionFor(
   };
 }
 
-function receipt(state: NtfyState, id: string, title: string, message: string): void {
+function receipt(state: NtfyState, id: string, title: string, message: string, now: number): void {
+  if (state.sent[`alert:${id}`] || state.alerts.some(alert => alert.id === id)) {
+    state.activity.push({ at: now, kind: 'deduplicated' });
+    return;
+  }
   state.alerts.push({ id, title, message });
+  state.alert_ids.push(id);
 }
 
 async function publish(
@@ -292,9 +308,47 @@ async function publish(
   if (!response.ok) throw new Error(`ntfy publish failed (${String(response.status)})`);
 }
 
+const HOUR = 3_600_000;
+const RETENTION = 7 * 86_400_000;
+
+function prune(state: NtfyState, now: number): void {
+  const retained = now - RETENTION;
+  state.activity = state.activity.filter(event => event.at >= retained);
+  for (const values of [state.sent, state.limited])
+    for (const [key, at] of Object.entries(values))
+      if (at < retained) Reflect.deleteProperty(values, key);
+}
+
+function recordLimited(state: NtfyState, keys: string[], now: number): void {
+  for (const key of keys) {
+    if ((state.limited[key] ?? 0) >= now - HOUR) continue;
+    state.limited[key] = now;
+    state.activity.push({ at: now, kind: 'limited' });
+  }
+}
+
+const pausedPath = (config: NtfyConfig): string => join(dirname(config.statePath), 'paused');
+
 async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
+  const now = config.now();
+  prune(state, now);
+  if (existsSync(pausedPath(config))) return;
+  const recent = state.activity.filter(event => event.at >= now - HOUR);
+  let decisionSlots = Math.max(0, 6 - recent.filter(event => event.kind === 'decision').length);
+  const decisionLimitedKeys: string[] = [];
   for (const decision of Object.values(state.decisions)) {
     if (decision.status !== 'pending' || decision.delivery !== 'pending') continue;
+    const key = `decision:${decision.id}:${decision.red_phase ?? 'normal'}`;
+    if (state.sent[key]) {
+      decision.delivery = 'sent';
+      state.activity.push({ at: now, kind: 'deduplicated' });
+      continue;
+    }
+    if (decisionSlots === 0) {
+      decisionLimitedKeys.push(key);
+      recordLimited(state, [key], now);
+      continue;
+    }
     const answer = secureSecret(config.answerToken, 'answer token');
     await publish(config, 'sa-decisions', {
       title: decision.red_phase === 'confirm' ? `确认：${decision.title}` : decision.title,
@@ -305,14 +359,46 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
       actions: decision.actions.map(action => actionFor(decision, action, answer, config.baseUrl)),
     });
     decision.delivery = 'sent';
+    state.sent[key] = now;
+    state.activity.push({ at: now, kind: 'decision' });
+    decisionSlots--;
   }
-  while (state.alerts.length) {
+  const alertCount = recent.filter(event => event.kind === 'alert').length;
+  let alertSlots = Math.max(0, 10 - alertCount);
+  const pending = state.alerts.filter(alert => !state.sent[`alert:${alert.id}`]);
+  const needsSummary = decisionLimitedKeys.length > 0 || pending.length > alertSlots;
+  const canSummarize = needsSummary && alertSlots > 0 && (state.summary_at ?? 0) < now - HOUR;
+  const regularSlots = Math.max(0, alertSlots - (canSummarize ? 1 : 0));
+  while (state.alerts.length && regularSlots > 0 && alertSlots > (canSummarize ? 1 : 0)) {
+    const alert = state.alerts[0];
+    const key = `alert:${alert.id}`;
+    if (state.sent[key]) {
+      state.alerts.shift();
+      state.activity.push({ at: now, kind: 'deduplicated' });
+      continue;
+    }
     await publish(config, 'sa-alerts', {
-      ...(state.alerts[0].title ? { title: state.alerts[0].title } : {}),
-      message: state.alerts[0].message,
+      ...(alert.title ? { title: alert.title } : {}),
+      message: alert.message,
     });
+    state.sent[key] = now;
+    state.activity.push({ at: now, kind: 'alert' });
     state.alerts.shift();
+    alertSlots--;
   }
+  const limitedKeys = decisionLimitedKeys.concat(
+    state.alerts.filter(alert => !state.sent[`alert:${alert.id}`]).map(alert => `alert:${alert.id}`)
+  );
+  recordLimited(state, limitedKeys, now);
+  if (canSummarize && limitedKeys.length) {
+    await publish(config, 'sa-alerts', {
+      title: 'superagent 推送已限流',
+      message: `另有 ${String(limitedKeys.length)} 条未推送，见 superagent brief`,
+    });
+    state.summary_at = now;
+    state.activity.push({ at: now, kind: 'alert' });
+  }
+  state.alert_ids = state.alerts.map(alert => alert.id);
 }
 
 function parseAnswer(message: unknown): SignedAnswer | undefined {
@@ -397,7 +483,13 @@ export async function syncNtfy(
         if (rejection) {
           ignored++;
           state.cursor = event.id;
-          receipt(state, event.id, `未执行｜${decision?.title ?? '未知决策'}`, rejection);
+          receipt(
+            state,
+            `receipt:${answer.id}:rejected`,
+            `未执行｜${decision?.title ?? '未知决策'}`,
+            rejection,
+            config.now()
+          );
           continue;
         }
         if (!decision) continue;
@@ -414,7 +506,13 @@ export async function syncNtfy(
             ),
           ];
           state.cursor = event.id;
-          receipt(state, event.id, `已收到批准申请｜${decision.title}`, '请在新通知中确认');
+          receipt(
+            state,
+            `receipt:${decision.id}:request`,
+            `已收到批准申请｜${decision.title}`,
+            '请在新通知中确认',
+            config.now()
+          );
           continue;
         }
         state.used_nonces[answer.nonce] = config.now();
@@ -425,11 +523,23 @@ export async function syncNtfy(
           decision.answer = answer.option;
           const label =
             decision.options.find(option => option.id === answer.option)?.label ?? answer.option;
-          receipt(state, event.id, `已记录：${label}｜${decision.title}`, '本次点按已执行');
+          receipt(
+            state,
+            `receipt:${decision.id}:${answer.option}`,
+            `已记录：${label}｜${decision.title}`,
+            '本次点按已执行',
+            config.now()
+          );
           accepted++;
         } catch {
           decision.status = 'failed';
-          receipt(state, event.id, `未执行｜${decision.title}`, '处理失败，请使用命令行重试');
+          receipt(
+            state,
+            `receipt:${decision.id}:failed`,
+            `未执行｜${decision.title}`,
+            '处理失败，请使用命令行重试',
+            config.now()
+          );
           failed++;
           state.callback_failures++;
         }
@@ -450,9 +560,10 @@ export async function syncNtfy(
               decision.default_on_expiry;
             receipt(
               state,
-              decision.id,
+              `receipt:${decision.id}:${decision.default_on_expiry}`,
               `已记录：${label}｜${decision.title}`,
-              '已按到期默认值执行'
+              '已按到期默认值执行',
+              config.now()
             );
             accepted++;
           } catch {
@@ -472,7 +583,7 @@ export async function syncNtfy(
       }
       state.ignored += ignored;
       for (const [nonce, usedAt] of Object.entries(state.used_nonces))
-        if (usedAt < config.now() - 7 * 86400_000) Reflect.deleteProperty(state.used_nonces, nonce);
+        if (usedAt < config.now() - RETENTION) Reflect.deleteProperty(state.used_nonces, nonce);
       await flush(config, state);
     } finally {
       saveState(config.statePath, state);
@@ -494,7 +605,10 @@ export function queueNtfyAlert(
   if (!guard.ok) throw new Error('ntfy state busy');
   try {
     const state = readState(config.statePath);
-    if (!state.alert_ids.includes(id)) {
+    const key = `alert:${id}`;
+    if (state.sent[key] || state.alert_ids.includes(id)) {
+      state.activity.push({ at: config.now(), kind: 'deduplicated' });
+    } else {
       state.alert_ids.push(id);
       state.alerts.push({ id, message, ...(title ? { title } : {}) });
     }
@@ -502,6 +616,26 @@ export function queueNtfyAlert(
   } finally {
     guard.release();
   }
+}
+
+export function ntfyControl(
+  action: 'pause' | 'resume' | 'status',
+  supplied: Partial<NtfyConfig> = {}
+): { paused: boolean; sent: number; limited: number; deduplicated: number } {
+  const config = { ...defaultConfig(), ...supplied },
+    marker = pausedPath(config);
+  mkdirSync(dirname(marker), { recursive: true, mode: 0o700 });
+  if (action === 'pause' && !existsSync(marker)) writeFileSync(marker, '', { mode: 0o600 });
+  if (action === 'resume' && existsSync(marker)) unlinkSync(marker);
+  const state = readState(config.statePath),
+    cutoff = config.now() - HOUR,
+    activity = state.activity.filter(event => event.at >= cutoff);
+  return {
+    paused: existsSync(marker),
+    sent: activity.filter(event => event.kind === 'decision' || event.kind === 'alert').length,
+    limited: activity.filter(event => event.kind === 'limited').length,
+    deduplicated: activity.filter(event => event.kind === 'deduplicated').length,
+  };
 }
 
 export function ntfyDecisionStatus(
@@ -536,4 +670,17 @@ export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Pr
   } finally {
     guard.release();
   }
+}
+
+export function ntfyDeliveryStatus(
+  kind: 'decision' | 'alert',
+  id: string,
+  supplied: Partial<NtfyConfig> = {}
+): 'sent' | 'pending' {
+  const state = readState({ ...defaultConfig(), ...supplied }.statePath);
+  if (kind === 'decision') {
+    const decision = Reflect.get(state.decisions, id) as StoredDecision | undefined;
+    return decision ? decision.delivery : 'pending';
+  }
+  return state.sent[`alert:${id}`] ? 'sent' : 'pending';
 }

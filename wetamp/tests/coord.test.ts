@@ -867,7 +867,7 @@ test('hook legacy fallback, repository backlog after takeover, and released tomb
   expect(c.owner(runScope).owner).toBeNull();
   expect(hooks.unread(s.sa, a, []).filter(m => !m.type)).toHaveLength(0);
 });
-test('no stops re-asking for this owner; expired re-asks after an interval with a new key; stale yes is fenced', () => {
+test('no or expiry settles one owner generation; a new owner asks once; stale yes is fenced', () => {
   const s = setup();
   s.c.claim(s.scope, a);
   s.c.handoff(s.scope, b, { ...input, severity: 'urgent' });
@@ -900,14 +900,16 @@ test('no stops re-asking for this owner; expired re-asks after an interval with 
     return { status: 'expired' };
   });
   now += ACK_TIMEOUT_MS + 1;
-  c.tick(key => {
-    keys.push(key);
-    return { status: 'pending' };
-  });
-  expect(new Set(keys).size).toBe(3);
+  expect(
+    c.tick(() => {
+      throw new Error('expired must not be re-asked');
+    })
+  ).toEqual([]);
+  expect(new Set(keys).size).toBe(2);
+  c.claim(s.scope, { ...a, session_id: 'D' }, true, 'newer owner');
   expect(() =>
     c.tick(() => {
-      c.claim(s.scope, { ...a, session_id: 'D' }, true, 'newer owner');
+      c.claim(s.scope, { ...a, session_id: 'E' }, true, 'owner changed while asking');
       return { status: 'yes' };
     })
   ).toThrow(/stale takeover/);
