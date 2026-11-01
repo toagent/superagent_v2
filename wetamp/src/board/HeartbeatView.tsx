@@ -260,6 +260,8 @@ function MobileHeartbeatFrame({
 }: HeartbeatFrameProps): ReactElement {
   const drift = driftAt(model, now),
     availableRows = Math.max(0, rows - 1),
+    staleLines = model.health.stale ? wrappedLines(model.health.stale.message, width) : [],
+    staleRows = Math.min(availableRows, staleLines.length),
     quotaPrefix = '额度：',
     quotaIndent = ' '.repeat(Bun.stringWidth(quotaPrefix)),
     quotaWidth = Math.max(1, width - Bun.stringWidth(quotaPrefix)),
@@ -273,7 +275,7 @@ function MobileHeartbeatFrame({
       fit((index ? quotaIndent : quotaPrefix) + line, width)
     ),
     footerRows = Math.min(availableRows, 1 + quotaLines.length),
-    bodyBudget = Math.max(0, availableRows - footerRows),
+    bodyBudget = Math.max(0, availableRows - footerRows - staleRows),
     attention = model.attention.slice(0, 5),
     runningReserve = 1 + (model.runs.length ? 3 : 1),
     attentionBudget = Math.max(0, bodyBudget - 4 - runningReserve),
@@ -294,6 +296,16 @@ function MobileHeartbeatFrame({
     health = model.health.ok ? `● 正常 · 巡检 ${String(checkedAge)}s 前` : '⚠ 巡检可能停了';
   return (
     <Box flexDirection="column" width={width}>
+      {staleLines.slice(0, staleRows).map((line, index) => (
+        <Text
+          key={`tick-stale-${String(index)}`}
+          backgroundColor="red"
+          color="white"
+          wrap="truncate-end"
+        >
+          {line}
+        </Text>
+      ))}
       {bodyBudget >= 1 && (
         <Text bold color="cyan" wrap="truncate-end">
           {fit(`◆ 心跳 · ${model.projects}`, width)}
@@ -380,6 +392,8 @@ export function HeartbeatFrame({
   if (width < 60) return <MobileHeartbeatFrame model={model} quota={quota} now={now} width={width} rows={rows} />;
   const drift = driftAt(model, now),
     availableRows = Math.max(0, rows - 1),
+    staleLines = model.health.stale ? wrappedLines(model.health.stale.message, width) : [],
+    staleRows = Math.min(availableRows, staleLines.length),
     compact = width < 60,
     columns = width >= 120 ? 2 : 1,
     cardWidth = columns === 2 ? Math.floor(width / 2) : width,
@@ -393,7 +407,7 @@ export function HeartbeatFrame({
       Math.min(2, Math.max(0, availableRows - 1))
     ).map((line, index) => fit((index ? quotaIndent : quotaPrefix) + line, width)),
     footerRows = Math.min(availableRows, 1 + quotaLines.length),
-    bodyBudget = Math.max(0, availableRows - footerRows),
+    bodyBudget = Math.max(0, availableRows - footerRows - staleRows),
     runningRows = model.runs.length ? 1 : 2,
     shownAttentionRows = Math.min(attentionRows, Math.max(0, bodyBudget - 3 - runningRows)),
     fixedBodyRows = Math.min(bodyBudget, 3 + shownAttentionRows + runningRows),
@@ -418,6 +432,16 @@ export function HeartbeatFrame({
     );
   return (
     <Box flexDirection="column" width={width}>
+      {staleLines.slice(0, staleRows).map((line, index) => (
+        <Text
+          key={`tick-stale-${String(index)}`}
+          backgroundColor="red"
+          color="white"
+          wrap="truncate-end"
+        >
+          {line}
+        </Text>
+      ))}
       {bodyBudget >= 1 && (
         <Text bold color="cyan" wrap="truncate-end">
           {header}

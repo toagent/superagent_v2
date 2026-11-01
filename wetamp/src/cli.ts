@@ -75,7 +75,7 @@ import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
+import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { reclaimOnce, reclaimTick } from './reclaim';
 import {
@@ -5007,6 +5007,15 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     return 0;
   }
   const startedEngine = currentEngineSnapshot();
+  let queuedTickAlert: string | undefined;
+  const notifyTickStale = async (model: ReturnType<typeof readModel>): Promise<void> => {
+    const previous = queuedTickAlert;
+    queuedTickAlert = queueTickStaleAlert(model.health.stale, previous, alert => {
+      queueNtfyAlert(alert.id, alert.message, {}, 'supervise-tick 停摆');
+    });
+    if (queuedTickAlert && ntfyDeliveryStatus('alert', queuedTickAlert) === 'pending')
+      await publishPendingNtfy();
+  };
   if (process.stdout.isTTY) {
     const [{ createElement }, { renderToString }, { HeartbeatFrame }] = await Promise.all([
       import('react'),
@@ -5019,6 +5028,7 @@ async function heartbeatCli(argv: string[]): Promise<number> {
       resolveExit = resolve;
     });
     let model = readModel();
+    await notifyTickStale(model);
     let fingerprint = JSON.stringify(model);
     let quotaValue = quota();
     const screen = openTerminalScreen({
@@ -5044,6 +5054,11 @@ async function heartbeatCli(argv: string[]): Promise<number> {
     };
     const refresh = (): void => {
       const next = readModel();
+      void notifyTickStale(next).catch((error: unknown) => {
+        console.error(
+          `heartbeat tick alert failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
       const serialized = JSON.stringify(next);
       if (serialized === fingerprint) return;
       model = next;
@@ -5089,6 +5104,7 @@ async function heartbeatCli(argv: string[]): Promise<number> {
   process.once('SIGINT', stop);
   try {
     for (;;) {
+      await notifyTickStale(readModel());
       process.stdout.write(`\x1b[2J\x1b[H${draw()}\n`);
       if ((await Promise.race([Bun.sleep(15_000), interrupted])) === 'stop') break;
       const exit = heartbeatEngineExitCode(startedEngine);
