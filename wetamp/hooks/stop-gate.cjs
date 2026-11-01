@@ -3,6 +3,14 @@ const path = require('node:path'),
   os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { policy } = require('../tiers.json');
+const childEnv = () => {
+  const superagent = process.env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
+  return {
+    ...process.env,
+    SUPERAGENT_HOME: superagent,
+    ARCHON_HOME: process.env.ARCHON_HOME || path.join(superagent, 'archon'),
+  };
+};
 const advisory = error => ({
   systemMessage: `SUPERAGENT advisory：无法确认等待进程（${error.message}），本次已放行。`,
 });
@@ -10,9 +18,10 @@ function waiterGate(payload, client, deps = {}) {
   if (payload.hook_event_name !== 'Stop' || client !== 'claude' || deps.derived) return null;
   try {
     if (!payload.session_id) throw new Error('缺少 session_id');
+    // prettier-ignore
     const responsibilities = deps.responsibilities
       ? deps.responsibilities(payload.session_id)
-      : JSON.parse(spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'responsibilities'], { input: JSON.stringify(payload), encoding: 'utf8', timeout: 10000 }).stdout);
+      : JSON.parse(spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'responsibilities'], { input: JSON.stringify(payload), encoding: 'utf8', env: childEnv(), timeout: 10000 }).stdout);
     if (responsibilities.length) {
       const reason = `SUPERAGENT：需要处理 ${responsibilities.length} 项：\n${responsibilities.map(item => `${item.id} ${item.waiting_for} → ${item.next}`).join('\n')}`;
       return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
@@ -23,15 +32,7 @@ function waiterGate(payload, client, deps = {}) {
           spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'waiting-runs'], {
             input: JSON.stringify(payload),
             encoding: 'utf8',
-            env: {
-              ...process.env,
-              ARCHON_HOME:
-                process.env.ARCHON_HOME ||
-                path.join(
-                  process.env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent'),
-                  'archon'
-                ),
-            },
+            env: childEnv(),
             timeout: 10000,
           }).stdout
         );
