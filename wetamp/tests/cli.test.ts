@@ -3582,9 +3582,9 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(existsSync(join(s.root, 'gen/attempts/m1'))).toBe(false);
   });
   test('decide stays refused when an earlier failure has no structured control artifact', () => {
-    held('code-core');
+    held('package-attempt-core');
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
-    expect(status).toMatchObject({ state: 'failed', node: 'code-core' });
+    expect(status).toMatchObject({ state: 'failed', node: 'package-attempt-core' });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(1);
   });
   test('single delivery decision: green redline self-report has identical status, brief and board projections', () => {
