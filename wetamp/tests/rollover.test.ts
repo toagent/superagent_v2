@@ -45,6 +45,7 @@ function fixture(section = true, status: (run: RunRef) => string = () => 'runnin
     now: () => new Date(now),
     sleep: async ms => { now += ms; },
     jobs: () => [],
+    responsibilities: () => [],
   });
   return { root, repo, sa, task, transcript, runs, c, r, taskCalls, launchCalls, scratchCalls, launches, setWho: (v: Identity) => { who = v; } };
 }
@@ -74,8 +75,10 @@ test('start and accept transfer run/repo, reauthorize delivery and fence the old
     repoGeneration = s.c.owner(repoScope(s.repo)).generation;
   expect(() => s.r.accept(String(started.token))).toThrow('新会话');
   s.setWho(b);
+  s.r.d.responsibilities = () => [{ id: 'held', kind: 'run', since: '2026-10-29T09:00:00Z', what: 'held', code: 'review_limit', waiting_for: '评审轮次用尽', waited_s: 600, next: 'superagent decide held retry' }];
   const accepted = s.r.accept(String(started.token));
   expect(accepted).toMatchObject({ state: 'accepted', repo: 'unchanged', scratch: { action: 'transferred' }, runs: [{ wait: 'superagent wait run1 --timeout 7000' }] });
+  expect(accepted).toMatchObject({ responsibilities: [{ id: 'held' }] });
   expect(s.r.accept(String(started.token))).toMatchObject({ state: 'accepted' });
   expect(s.scratchCalls).toHaveLength(1);
   expect(s.taskCalls.slice(-2)).toEqual([['adopt', 'session', '--owner', 'new'], ['resume', 'session', '执行中']]);

@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { home } from './config';
-import { same, type Identity, type Presence } from './coord';
+import { coord, repoScope, same, type Identity, type Presence } from './coord';
 import { elapsedAt, type Snapshot } from './board/data';
 import { reasonText, roleTag, type Cockpit } from './board/cockpit';
 import { unknownProgress, type Progress } from './board/eta';
@@ -13,7 +13,9 @@ import { generalKey, type GeneralAssessment } from './stall';
 // prettier-ignore
 interface Item { id: string; kind: 'run' | 'job'; title: string; stage: string; node?: string; coder?: boolean; role: string; model?: string | null; state: string; elapsed_s: number | null; last_activity_s: number | null; estimate: Progress; attention?: string; general?: GeneralAssessment }
 // prettier-ignore
-interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: { id: string; what: string; code: string; waiting_for: string; waited_s: number; next?: string }[]; line: string }
+export interface Responsibility { id: string; kind?: 'run' | 'coord' | 'decision' | 'job'; since?: string; what: string; code: string; waiting_for: string; waited_s: number; next?: string }
+// prettier-ignore
+interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | null)[] | 'unknown'; cwd: string; project: string; running: Item[]; waiting: Responsibility[]; line: string }
 // prettier-ignore
 export interface Heartbeat { at: string; reclaim_pending: number; legacy?: number; unowned: number; unreadable: number; marshals: Marshal[] }
 export const HEARTBEAT_INTERVAL_MS = 900_000;
@@ -106,19 +108,22 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     if (row.state !== 'running') {
       const code = row.engine?.reason.trim() ? row.engine.reason : row.askReason ?? row.state.replace('held:', ''), registered = reasonOf(code), hold = registered?.hold ?? code, translated = reasonText(code), policy = (HOLD_POLICY as Partial<Record<string, { next?: string }>>)[hold];
       const next = policy?.next ? `${policy.next}；${holdAction(row.run_id, hold)}` : hold === 'acceptance_adjudication' ? holdAction(row.run_id, hold) : undefined;
-      marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code, waiting_for: translated !== code ? translated : registered?.description ?? '需要决策', waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0, ...(next ? { next } : {}) });
-    } else if (runPending) marshal.waiting.push({ id: row.run_id, what: run?.stage ?? row.state, code: 'coordination_pending', waiting_for: `${String(runPending.count)} 条协调消息`, waited_s: age(runPending.oldest, now) ?? 0 });
+      const since = row.lastEvent ?? row.started_at;
+      marshal.waiting.push({ id: row.run_id, kind: row.humanDecision ? 'decision' : 'run', since, what: run?.stage ?? row.state, code, waiting_for: translated !== code ? translated : registered?.description ?? '需要决策', waited_s: age(since, now) ?? 0, next: next ?? `superagent wait ${row.run_id} --timeout 7000` });
+    } else if (runPending) marshal.waiting.push({ id: row.run_id, kind: 'coord', since: runPending.oldest, what: run?.stage ?? row.state, code: 'coordination_pending', waiting_for: `${String(runPending.count)} 条协调消息`, waited_s: age(runPending.oldest, now) ?? 0, next: 'superagent inbox' });
   }
   for (const marshal of groups.values()) {
     const pending = coordination.get(`repo:${marshal.cwd}`);
-    if (pending) marshal.waiting.push({ id: `repo:${marshal.cwd}`, what: '仓库交接', code: 'coordination_pending', waiting_for: `${String(pending.count)} 条协调消息`, waited_s: age(pending.oldest, now) ?? 0 });
+    if (pending) marshal.waiting.push({ id: `repo:${marshal.cwd}`, kind: 'coord', since: pending.oldest, what: '仓库交接', code: 'coordination_pending', waiting_for: `${String(pending.count)} 条协调消息`, waited_s: age(pending.oldest, now) ?? 0, next: 'superagent inbox' });
   }
-  for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running'].includes(j.state)) ?? []) {
+  for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running', 'lost'].includes(j.state)) ?? []) {
     if (!job.launcher) { unowned++; continue; }
-    const marshal = group(job.launcher, job.cwd), run = cockpit.active.find(item => item.id === job.id);
+    let owner: Identity = job.launcher;
+    try { owner = coord().owner(repoScope(job.cwd)).owner ?? owner; } catch { /* Historical cwd may no longer resolve. */ }
+    const marshal = group(owner, job.cwd), run = cockpit.active.find(item => item.id === job.id);
     if (!marshal) { reclaim++; continue; }
     if (job.state === 'running' && active.has(job.id)) marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
-    if (job.state === 'queued') marshal.waiting.push({ id: job.id, what: '作业排队', code: 'queued', waiting_for: '执行槽位', waited_s: age(job.started_at, now) ?? 0 });
+    if (job.state === 'lost') marshal.waiting.push({ id: job.id, kind: 'job', since: job.started_at, what: '作业丢失', code: 'lost', waiting_for: job.title, waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` });
   }
   for (const marshal of groups.values()) {
     const roles = marshal.running.map(item => `${item.role} ${item.general ? ({ working: '干活', idle: `空转 ${String(Math.floor(item.general.idle_s / 60))}m${item.general.waiting_command ? '（在等命令）' : ''}`, stalled: `停滞 ${String(Math.floor(item.general.idle_s / 60))}m`, handed_back: '已交回', unknown: `观测未知${item.general.reason ? `（${item.general.reason}）` : ''}` }[item.general.state]) : item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
@@ -140,6 +145,8 @@ export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): 
   const minutes = Math.floor((now - Date.parse(value.at)) / 60_000), warnings = minutes > 18 ? [`心跳过期 ${String(minutes)}m`] : [];
   return { available: true, line: marshal.line, running: marshal.running, waiting: marshal.waiting, ...(warnings.length ? { warnings } : {}) };
 }
+export const responsibilities = (value: Heartbeat, who: Identity): Responsibility[] =>
+  value.marshals.find(item => item.owner !== 'unknown' && same(who, item.owner))?.waiting ?? [];
 
 // prettier-ignore
 export interface TickStage { ok: boolean; duration_ms?: number; error?: string; skipped?: string }

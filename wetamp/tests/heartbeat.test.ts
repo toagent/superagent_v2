@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { cockpit } from '../src/board/cockpit';
 import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
+import { heartbeat, heartbeatSummary, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import type { Identity, Presence } from '../src/coord';
 import { generalKey } from '../src/stall';
 const now = Date.parse('2026-10-29T10:00:00Z');
@@ -131,6 +131,8 @@ test('heartbeat separates active runs from typed waits and reports coordination 
     ['repo:/repo/project', '1 条协调消息'],
   ]);
   expect(marshal.waiting[1]).toMatchObject({
+    kind: 'run',
+    since: '2026-10-29T09:55:00Z',
     code: 'review_limit',
     next: '重新确认遗留blocker和工作包范围；superagent decide held retry',
   });
@@ -140,6 +142,7 @@ test('heartbeat separates active runs from typed waits and reports coordination 
   });
   expect(marshal.waiting[3]).toMatchObject({ code: 'coordination_pending' });
   expect(marshal.waiting.filter(item => item.id.startsWith('repo:'))).toHaveLength(1);
+  expect(responsibilities(result, who)).toEqual(marshal.waiting);
   expect(marshal.line).toContain('等待5：交付包含 scope.write 之外的路径、评审轮次用尽');
 });
 
