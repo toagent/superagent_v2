@@ -21,7 +21,14 @@ import { testTimeout } from '@archon/paths/test-utils';
 import { lock } from '../src/archon';
 import { inspectProcess } from '../src/launcher';
 import * as coordination from '../src/coord';
-import { artifactsOf, ledgerPath, loadLedger, main, type Ledger } from '../src/cli';
+import {
+  artifactsOf,
+  consoleLaunchdPlist,
+  ledgerPath,
+  loadLedger,
+  main,
+  type Ledger,
+} from '../src/cli';
 import { collectEngineSnapshots, gc as collect } from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
@@ -849,7 +856,7 @@ test('engine gc removes read-only failed candidates and preserves protected or l
   expect(dry.find(e => e.path === join(root, shas.unknown))?.action).toBe('skipped');
   process.env.SA_LAUNCHD_DIR = join(f.root, 'LaunchAgents');
   mkdirSync(process.env.SA_LAUNCHD_DIR);
-  const plist = join(process.env.SA_LAUNCHD_DIR, 'com.wetamp.superagent-console.plist');
+  const plist = consoleLaunchdPlist(); // preload isolates the console label per test process
   const consolePlist = `<plist><dict><key>ProgramArguments</key><array><string>${join(root, shas.console, 'wetamp/src/cli.ts')}</string></array></dict></plist>`;
   writeFileSync(plist, consolePlist);
   expect(collectEngineSnapshots(true).find(e => e.path === join(root, shas.console))).toMatchObject(

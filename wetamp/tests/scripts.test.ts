@@ -65,7 +65,8 @@ describe('gc.sh', () => {
     const r = exec([join(SCRIPTS, 'gc.sh')], env);
     expect(r.out).toContain('gc done:');
     expect(r.out).toContain('skip open: sa/open not merged into main');
-    expect(r.out).toContain('skip busy: not terminal (status exit 3)'); // no owner: held, never GC
+    // No owner and no node yet is a launch still starting (running, exit 4); either way never GC.
+    expect(r.out).toContain('skip busy: not terminal (status exit 4)');
     expect(r.out).toContain('refuse: worktree');
     expect(r.out).toContain('(dry-run');
     expect(r.code).toBe(1); // stray 被拒
