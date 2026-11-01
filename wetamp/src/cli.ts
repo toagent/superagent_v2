@@ -1504,6 +1504,36 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
   }
 }
 
+export function waitRuns(
+  ledgers: Ledger[],
+  timeoutS: number,
+  who = caller(true)
+): Record<string, unknown> {
+  const deadline = waitClock.now() + timeoutS * 1000;
+  for (;;) {
+    for (const ledger of ledgers) {
+      const left = (deadline - waitClock.now()) / 1000;
+      if (left <= 0) break;
+      const result = waitRun(ledger, Math.min(left, 1 / ledgers.length), who);
+      if (!result.timed_out)
+        return {
+          ...result,
+          pending: ledgers.filter(item => item !== ledger).map(item => item.run_id),
+        };
+    }
+    if (waitClock.now() >= deadline) {
+      const runs = ledgers.map(ledger => waitRun(ledger, 0, who));
+      const event = runs.find(result => !result.timed_out);
+      if (event)
+        return {
+          ...event,
+          pending: ledgers.filter(item => item.run_id !== event.run_id).map(item => item.run_id),
+        };
+      return { timed_out: true, runs, exit: EXIT.running };
+    }
+  }
+}
+
 /** Materialize and validate the ordinary plan contract before using the run launcher. */
 export function quickPlan(a: Args): string {
   if (a.flags.card !== undefined && a.flags.goal !== undefined)
@@ -4347,7 +4377,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
   { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap', 'adopt'] },
   { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
-  { command: 'wait', positionals: '<run>', flags: ['timeout'] },
+  { command: 'wait', positionals: '<run>...', flags: ['timeout'] },
   { command: 'wait-on', positionals: '<run>', flags: ['on', 'reason'] },
   { command: 'status', flags: [] },
   { command: 'brief', flags: [] },
@@ -4837,11 +4867,13 @@ export function main(argv: string[]): number {
       }
       // Resolve before waiting: a background shell may exit and reparent this process.
       const who = caller(true);
-      const l = ledger(),
-        s = waitRun(l, t, who);
-      if (s.state === 'completed') s.delivery = deliveryProjection(l);
+      const ids = [need(target, 'wait <run>'), ...a._.slice(2)],
+        ledgers = ids.map(id => loadLedger(coord().resolveRun(id)?.run_id ?? id)),
+        s = ledgers.length === 1 ? waitRun(ledgers[0], t, who) : waitRuns(ledgers, t, who),
+        eventLedger = ledgers.find(item => item.run_id === s.run_id);
+      if (s.state === 'completed' && eventLedger) s.delivery = deliveryProjection(eventLedger);
       // prettier-ignore
-      print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) ? relayQuota(l.gen_dir, 'end') : {}) });
+      print({ ...s, ...(['completed', 'failed', 'cancelled'].includes(String(s.state)) && eventLedger ? relayQuota(eventLedger.gen_dir, 'end') : {}) });
       return Number(s.exit);
     }
     case 'quota': {

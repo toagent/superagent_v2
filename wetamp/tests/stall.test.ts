@@ -35,6 +35,14 @@ const result = (stdout = '', status = 0, stderr = '') =>
   ({ status, stdout: Buffer.from(stdout), stderr: Buffer.from(stderr) }) as never;
 
 // prettier-ignore
+test('assessGeneral reports spinning during a live command and resets it on scoped progress', () => {
+  const spinning = assessGeneral(undefined, observation({ cpu: 20 }), now);
+  expect(spinning).toMatchObject({ state: 'working', spinning: true, idle_s: 600, waiting_command: true });
+  const edited = assessGeneral(spinning, observation({ entries: 'b', mtime: now, cpu: 20 }), now + 1000);
+  expect(edited).toMatchObject({ state: 'working', spinning: false, idle_s: 0 });
+});
+
+// prettier-ignore
 test('assessGeneral tracks progress, idle, stalled episodes, restart, and handoff', () => {
   const waiting = assessGeneral(undefined, observation({ cpu: 20 }), now);
   expect(waiting).toMatchObject({ state: 'working', idle_s: 600, waiting_command: true }); expect(waiting.episode).toBeUndefined();
@@ -61,7 +69,7 @@ test('observeGeneral counts scoped untracked/deleted files and uses adopted work
   const run = ((_name: string, _args: string[], options: { cwd?: string }) => { cwd = options.cwd ?? ''; return result(output); }) as never;
   const processes: ProcessSnapshot = { at: () => ({ cpu: 8, root: { pid: 7, command: 'bun test' } }) };
   const first = observeGeneral(row(adopted), row(adopted).activeNodes![0], ['src/**'], processes, run);
-  output = '?? src/new.ts\0 D src/gone.ts\0?? other/out.md\0';
+  output = '?? src/new.ts\0 D src/gone.ts\0?? .context/x\0?? openspec/out.md\0';
   const outsideChanged = observeGeneral(row(adopted), row(adopted).activeNodes![0], ['src/**'], processes, run);
   expect(cwd).toBe(adopted); expect(first.entries).toBe(outsideChanged.entries); expect(first).toMatchObject({ cpu: 8, root: { pid: 7 } });
   output = 'R  docs/moved.ts\0src/new.ts\0';

@@ -1331,6 +1331,38 @@ const featureRepo = (root: string): string => {
 };
 
 describe('waitRun (archon stub)', () => {
+  test('multi-run wait returns the first event and validates every run before waiting', () => {
+    const s = stub([run('running')]),
+      second = { ...s.ledger, run_id: 'sa2', archon_run_id: 'r2' };
+    writeFileSync(ledgerPath('sa2'), JSON.stringify(second));
+    let now = 0,
+      completed = true;
+    fixtureSpies.push(
+      spyOn(cliMod.waitClock, 'now').mockImplementation(() => now),
+      spyOn(archonMod, 'waitNotification').mockImplementation((_id, _repo, seconds) => {
+        now += seconds * 1000;
+        return { kind: 'deadline', runId: _id, observedStatus: 'running' };
+      }),
+      spyOn(archonMod, 'getRun').mockImplementation(id =>
+        completed && id === 'r2' ? run('completed', { id: 'r2' }) : run('running', { id })
+      )
+    );
+    expect(() => main(['wait', 'sa1', 'missing', '--timeout', '1'])).toThrow('unknown run');
+    const result = JSON.parse(captured(() => main(['wait', 'sa1', 'sa2', '--timeout', '2'])).out);
+    expect(result).toMatchObject({ run_id: 'sa2', state: 'completed', pending: ['sa1'] });
+    expect(result.timed_out).toBeUndefined();
+    completed = false;
+    now = 0;
+    const timeout = JSON.parse(captured(() => main(['wait', 'sa1', 'sa2', '--timeout', '1'])).out);
+    expect(timeout).toMatchObject({
+      timed_out: true,
+      exit: EXIT.running,
+      runs: [
+        { run_id: 'sa1', state: 'running' },
+        { run_id: 'sa2', state: 'running' },
+      ],
+    });
+  });
   test('terminal status and wait expose non-empty out-of-scope evidence', () => {
     const s = stub([run('completed')]);
     const output = join(s.root, 'out'),
