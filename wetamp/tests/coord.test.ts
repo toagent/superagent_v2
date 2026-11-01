@@ -308,6 +308,7 @@ test('5: unowned finder claims and receives own task; urgent offline asks immedi
   const c = new Coordination({
     sa: other.sa,
     runs: () => [],
+    now: () => Date.parse('2026-10-31T23:32:00.000Z'),
     presence: () => ({ state: 'offline' }),
   });
   c.handoff(other.scope, b, { ...input, severity: 'urgent' });
@@ -317,7 +318,14 @@ test('5: unowned finder claims and receives own task; urgent offline asks immedi
     return { id: 'stub', status: 'yes' };
   });
   expect(titles).toHaveLength(1);
+  expect(titles[0]).toContain('repo bug 交接');
+  expect(titles[0]).toContain('是=claude 成为 repo 负责人，可直接修改该仓库代码');
+  expect(titles[0]).toContain('否=继续等待当前负责人，不转移 repo 归属');
   expect(c.owner(other.scope).owner).toEqual(b);
+  expect(c.inbox(a)[0]).toMatchObject({
+    type: 'takeover',
+    body: 'repo 已于 2026-10-31T23:32:00.000Z 经用户批准转给 claude',
+  });
 });
 test('6: delivery and ack are idempotent; only recipient acks; sender receives durable receipt', () => {
   const s = setup();
@@ -802,7 +810,9 @@ test('CLI mutation obeys owner fencing before invoking engine; read-only owner r
   );
   expect(() => main(['decide', 'r', 'retry'])).toThrow(/fencing/);
   expect(() => main(['cancel', 'r'])).toThrow(/fencing/);
-  expect(escalationTitle({ ...input, id: 'abc123' } as Message, 'offline')).toContain('负责人离线');
+  expect(
+    escalationTitle({ ...input, id: 'abc123', scope: s.scope, sender: b } as Message, 'offline')
+  ).toContain('负责人离线');
 });
 
 test('ambiguous legacy controllers require explicit takeover; all previous owners are notified', () => {
