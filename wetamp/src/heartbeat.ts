@@ -88,8 +88,9 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const key = `unknown\0${cwd}`, found = groups.get(key), value = found ?? { owner: 'unknown' as const, owner_key: 'unknown' as const, cwd, project: basename(cwd), running: [], waiting: [], line: '无人负责' };
     value.waiting.push(item); groups.set(key, value); unowned++;
   };
-  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id));
+  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id)), adopted = new Set(snapshot.adoptedRuns);
   for (const row of snapshot.rows) {
+    if (row.archon_id && adopted.has(row.archon_id)) continue;
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
     if (row.state === 'unreadable') { unreadable++; continue; }
     const owner = row.coordination?.owner;

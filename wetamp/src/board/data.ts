@@ -97,6 +97,7 @@ export interface BoardRow {
 }
 
 export interface Snapshot {
+  adoptedRuns?: string[];
   general?: Record<string, import('../stall').GeneralAssessment>;
   reflection?: ReturnType<typeof memoryData>['reflection'];
   eta?: Record<string, Estimate>;
@@ -643,7 +644,10 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     } catch {
       /* Missing memory remains unknown. */
     }
+    const adoptedRuns = [...new Set([...initialLedgers.values()].flatMap(l =>
+      typeof l === 'string' ? [] : (l.adoptions ?? []).map(a => a.from)))];
     return {
+      ...(adoptedRuns.length ? { adoptedRuns } : {}),
       reflection,
       heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
         ?.mtimeMs,

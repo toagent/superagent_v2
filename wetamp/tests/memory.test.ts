@@ -168,6 +168,19 @@ const lesson = (id: string, patch: Partial<Lesson> = {}): Lesson => ({
   ...patch,
 });
 const seed = (...lessons: Lesson[]): void => memoryWrite(() => ({ lessons }));
+test('cancelled and abandoned runs do not retain immutable orphan holds', () => {
+  writeFileSync(
+    join(artifactsOf(raw), 'verify-core.json'),
+    JSON.stringify({ decision: { kind: 'block', reason: 'coder_partial' } })
+  );
+  raw.nodes = [{ nodeId: 'verify-core', state: 'failed' }];
+  raw.status = 'cancelled';
+  expect(foldEpisode(ledger, plan, raw, [], {}, NOW + 610000).signals.orphan_hold).toBe(0);
+  raw.status = 'failed';
+  ledger.rejected = raw.id;
+  ledger.intervention_events = [{ at: '', action: 'abandon', source: 'cli', ok: true }];
+  expect(foldEpisode(ledger, plan, raw, [], {}, NOW + 610000).signals.orphan_hold).toBe(0);
+});
 // Real Archon validation is covered by generate.test.ts and selftest; these tests inspect memory injection.
 const fakeValidation = (): void => {
   const bin = join(root, 'validate-archon');

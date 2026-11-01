@@ -10,6 +10,7 @@ const now = Date.parse('2026-10-29T10:00:00Z');
 const owner = (pid: number): Identity => ({ client: 'codex', host: 'host', pid, pid_start: `start-${String(pid)}` });
 const row = (id: string, who: Identity | null, state = 'running'): BoardRow => ({
   run_id: id,
+  archon_id: id,
   repo: `/repo/${id}`,
   state,
   exit: 4,
@@ -139,6 +140,7 @@ test('heartbeat separates active runs from typed waits and reports coordination 
     at: new Date(now).toISOString(),
     summary: {},
     rows: [failed, held, needs, running, row('other', who)],
+    adoptedRuns: ['adopted'],
     coordMessages: [
       {
         id: 'run-queued',
@@ -160,6 +162,7 @@ test('heartbeat separates active runs from typed waits and reports coordination 
       },
     ] as Snapshot['coordMessages'],
   };
+  snap.rows.push(row('adopted', who, 'failed'));
   snap.rows[4]!.repo = '/repo/project';
   const result = heartbeat(snap, cockpit(snap, now), now, () => ({
     state: 'online',

@@ -3419,6 +3419,28 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
     expect(status).toMatchObject({ state: 'held:gate', node: 'verify-core' });
     expect(status.delivery).toContainEqual({ tag: 'verify-core', decision: result.decision });
+    view.status = 'cancelled';
+    expect(classifyRun(s.ledger, view)).toMatchObject({ state: 'cancelled', exit: EXIT.cancelled });
+    expect(
+      classifyRun(
+        {
+          ...s.ledger,
+          rejected: view.id,
+          intervention_events: [{ at: '', action: 'abandon', source: 'cli', ok: true }],
+        },
+        { ...view, status: 'failed' }
+      )
+    ).toMatchObject({ state: 'abandoned', exit: EXIT.cancelled });
+    writeFileSync(
+      ledgerPath('sa1'),
+      JSON.stringify({
+        ...s.ledger,
+        rejected: 'r',
+        intervention_events: [{ at: '', action: 'abandon', source: 'cli', ok: true }],
+      })
+    );
+    expect(captured(() => main(['brief', 'sa1'])).out).toContain('→ none');
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
     expect(captured(() => main(['brief', 'sa1'])).out).toContain('superagent decide sa1 retry');
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
     expect(readFileSync(join(s.root, 'gen/attempts/.packages/core'), 'utf8')).toBe('1');

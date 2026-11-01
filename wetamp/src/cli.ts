@@ -727,7 +727,8 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
       : c.state.startsWith('held:') ? holdAction(l.run_id, reason)
       : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? `superagent recover ${l.run_id}`
-      : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}` : '读 evidence_path');
+      : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}`
+      : c.state === 'abandoned' ? 'none' : '读 evidence_path');
   const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
   return { delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action } };
 }
@@ -837,6 +838,8 @@ const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
 /** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
+  if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
+  if (run.status === 'cancelled') return c;
   if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const art = artifactsOf(run);
