@@ -36,11 +36,14 @@ const result = (stdout = '', status = 0, stderr = '') =>
 
 // prettier-ignore
 test('assessGeneral tracks progress, idle, stalled episodes, restart, and handoff', () => {
-  const idle = assessGeneral(undefined, observation({ cpu: 20 }), now);
-  expect(idle).toMatchObject({ state: 'idle', idle_s: 600, waiting_command: true });
-  const edited = assessGeneral(idle, observation({ entries: 'b', mtime: now, cpu: 20 }), now + 1000);
+  const waiting = assessGeneral(undefined, observation({ cpu: 20 }), now);
+  expect(waiting).toMatchObject({ state: 'working', idle_s: 600, waiting_command: true }); expect(waiting.episode).toBeUndefined();
+  const quietChild = assessGeneral(undefined, observation({ root: { pid: 7, command: 'bun test' } }), now);
+  expect(quietChild).toMatchObject({ state: 'working', idle_s: 600, waiting_command: true }); expect(quietChild.episode).toBeUndefined();
+  const edited = assessGeneral(waiting, observation({ entries: 'b', mtime: now, cpu: 20 }), now + 1000);
   expect(edited).toMatchObject({ state: 'working', idle_s: 0 }); expect(edited.episode).toBeUndefined();
-  const idleAgain = assessGeneral(edited, observation({ entries: 'b', mtime: now, cpu: 20 }), now + 301_000);
+  const idleAgain = assessGeneral(edited, observation({ entries: 'b', mtime: now, lastActivityAt: new Date(now + 300_000).toISOString() }), now + 301_000);
+  expect(idleAgain).toMatchObject({ state: 'idle', waiting_command: false });
   const stalled = assessGeneral(idleAgain, observation({ entries: 'b', mtime: now, lastActivityAt: ago(10), cpu: 0 }), now + 302_000);
   expect(stalled.state).toBe('stalled'); expect(stalled.episode?.id).toBe(idleAgain.episode?.id);
   const restarted = assessGeneral(stalled, observation({ startedAt: new Date(now + 303_000).toISOString() }), now + 303_000);
