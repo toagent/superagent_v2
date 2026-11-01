@@ -1001,7 +1001,7 @@ export function buildWorkflow(
             id: soldier,
             include: `sa-soldier-${p.id}`,
             depends_on: [`soldier-items-${p.id}`],
-            with: { pkg: p.id, context_node: pkgAttempt },
+            with: { pkg: p.id, context_pack: `$${pkgAttempt}.output.context_pack_path` },
             fan_out: {
               items: `$soldier-items-${p.id}.output`,
               as: 'draft',
@@ -1803,7 +1803,7 @@ export function generate(
             mutates_checkout: true,
             inputs: {
               pkg: { required: true },
-              context_node: { required: true },
+              context_pack: { required: true },
               draft: { required: true },
             },
             returns: 'draft',
@@ -1815,7 +1815,7 @@ export function generate(
                 model: '@sa-soldier',
                 ...launch,
                 idle_timeout: SOLDIER_IDLE_MS,
-                with: { pkg: '$INPUTS.pkg', context_node: '$INPUTS.context_node' },
+                with: { pkg: '$INPUTS.pkg', context_pack: '$INPUTS.context_pack' },
               },
             ],
           },

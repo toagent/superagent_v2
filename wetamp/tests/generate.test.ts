@@ -52,6 +52,10 @@ import {
 } from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
+import {
+  expandWorkflowIncludes,
+  instantiateResolvedInclude,
+} from '../../packages/workflows/src/include-expander';
 import type { CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
 import reasonMirror from '../templates/.archon/scripts/reasons.json';
@@ -749,7 +753,7 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
       include: 'sa-soldier-core',
       depends_on: ['soldier-items-core'],
-      with: { pkg: 'core', context_node: 'package-attempt-core' },
+      with: { pkg: 'core', context_pack: '$package-attempt-core.output.context_pack_path' },
       fan_out: {
         items: '$soldier-items-core.output',
         as: 'draft',
@@ -838,6 +842,44 @@ describe('buildWorkflow', () => {
     expect(readFileSync(join(WETAMP, 'templates/.archon/commands/sa-code.md'), 'utf8')).toContain(
       '`$$INPUTS.soldier_ok.output`'
     );
+  });
+  test('soldier include resolves context pack', () => {
+    const plan = structuredClone(fixture);
+    plan.packages[0].draft = 'soldier';
+    const soldier = nodesOf(
+      buildWorkflow(plan, milestones(plan), 'soldier-context', '/GEN', false, NOW, fixtureTiers())
+    ).find(n => n.id === 'soldier-core')!;
+    const parsed = parseWorkflow(
+      `name: sa-soldier-core\ndescription: draft\ninputs:\n  pkg: { required: true }\n  context_pack: { required: true }\n  draft: { required: true }\nnodes:\n  - id: draft\n    script: process.stdout.write(process.env.INPUTS_CONTEXT_PACK ?? '')\n    runtime: bun\n    with:\n      context_pack: $INPUTS.context_pack\n`,
+      'sa-soldier-core.yaml',
+      { get: () => undefined, list: () => [] }
+    );
+    if (parsed.workflow === null) throw new Error(parsed.error.error);
+    const expanded = expandWorkflowIncludes(new Map([[parsed.workflow.name, parsed.workflow]]));
+    const child = expanded.workflows.get(parsed.workflow.name)!;
+    const contextPack = '/artifacts/contexts/code-core.md';
+    // prettier-ignore
+    const nodeOutputs: ShellInputContext['nodeOutputs'] = new Map([['package-attempt-core', { state: 'completed', output: JSON.stringify({ context_pack_path: contextPack }) }]]);
+    const inputs = resolveNodeBindings(
+      soldier.id,
+      soldier.with! as Parameters<typeof resolveNodeBindings>[1],
+      {
+        workflowRun: { id: 'run', user_message: '', metadata: {} },
+        artifactsDir: '/artifacts',
+        stateDir: '/state',
+        baseBranch: 'dev',
+        docsDir: '/docs',
+        nodeOutputs,
+      },
+      undefined
+    );
+    // prettier-ignore
+    const instance = instantiateResolvedInclude(
+      { id: 'soldier-core__draft', kind: 'include', include: child.name, with: { ...inputs, draft: null } },
+      child
+    ).namespaced[0]!;
+    expect(instance).toMatchObject({ with: { context_pack: contextPack } });
+    expect(JSON.stringify(instance)).not.toContain('$package-attempt-core.output');
   });
   test('draft routing emits soldiers only for eligible packages', () => {
     const tiers = fixtureTiers();
