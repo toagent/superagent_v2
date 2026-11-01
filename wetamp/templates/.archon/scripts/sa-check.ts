@@ -2887,7 +2887,6 @@ export function readAuthorEvidence(
         authors.push(attemptIdentity([], node, interrupted.data?.binding));
     }
     const prior = run.adopted_from_run_id;
-    if (!prior && seen.size > 1 && !receipts.length && !nodes.size) authors.push(unknown);
     if (!prior) return pkgs.every(p => covered.has(p)) ? authors : [...authors, unknown];
     try {
       run = load(prior);

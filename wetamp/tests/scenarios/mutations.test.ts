@@ -84,6 +84,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'if (!prior) return pkgs.every(p => covered.has(p)) ? authors : [...authors, unknown];',
+    to: 'if (!prior && seen.size > 1 && !receipts.length && !nodes.size) authors.push(unknown);\n    if (!prior) return pkgs.every(p => covered.has(p)) ? authors : [...authors, unknown];',
+    test: 'tests/sa-check.test.ts',
+    name: 'adoption chain empty ancestor',
+    expectedError: '"model": null',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'rerun <= (pytest ? 1 : 2) && merged.failures.length',
     to: 'rerun < (pytest ? 1 : 2) && merged.failures.length',
     test: 'tests/sa-check.test.ts',

@@ -499,6 +499,40 @@ test('author carry reads each adopted generation and refuses unknown or invalid 
   ).toEqual([{ model: 'local', strength: 'pinned' }]);
 });
 
+test('adoption chain empty ancestor preserves authors and true unknowns', () => {
+  type Run = Parameters<typeof readAuthorEvidence>[0];
+  const event = {
+    event_type: 'node_completed',
+    step_name: 'code-core',
+    data: {
+      binding: {
+        model: { requested: 'author', resolved: { source: 'unavailable', reason: 'unsupported' } },
+      },
+    },
+  };
+  const runs: Record<string, Run> = {
+    current: { id: 'current', codebase_id: 'repo', adopted_from_run_id: 'empty', events: [] },
+    empty: {
+      id: 'empty',
+      codebase_id: 'repo',
+      adopted_from_run_id: 'author',
+      output_root: tmp(),
+      events: [],
+    },
+    author: { id: 'author', codebase_id: 'repo', output_root: tmp(), events: [event] },
+  };
+  const read = (pkgs = ['core']) =>
+    readAuthorEvidence(runs.current!, [], pkgs, 'm1', MAX_ROUNDS, id => runs[id]!);
+
+  expect(read()).toEqual([{ model: 'author', strength: 'pinned' }]);
+  runs.current!.events = [event];
+  runs.author!.events = [];
+  expect(read()).toEqual([{ model: 'author', strength: 'pinned' }]);
+  expect(independence(read(['missing']), { model: 'reviewer', strength: 'pinned' })).toBe(
+    'author_unknown'
+  );
+});
+
 test('author evidence binds failed and interrupted attempts while preserving true unknowns', () => {
   type Run = Parameters<typeof readAuthorEvidence>[0];
   const binding = {
