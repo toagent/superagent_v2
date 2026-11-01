@@ -14,6 +14,7 @@ import {
   ntfyDeliveryStatus,
   publishPendingNtfy,
   queueNtfyAlert,
+  receiptPresentation,
   supersedeNtfyDecisions,
   syncNtfy,
   type NtfyConfig,
@@ -2648,6 +2649,7 @@ interface AnswerReceipt {
   effect?: DecisionEffect;
   terminal_before?: string;
   error?: string;
+  answer?: 'yes' | 'no';
 }
 interface AnswerIntent {
   answer: 'yes' | 'no';
@@ -2796,6 +2798,7 @@ function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks
   a.receipt = {
     key: `${a.id ?? 'unknown'}:${answer}:received`,
     stage: 'received',
+    answer,
     body: `run=${l.run_id}；答复=${answer}；任务已收到，执行结果尚未确认`,
     delivery: 'pending',
     at: new Date().toISOString(),
@@ -2876,6 +2879,7 @@ function consumeAnswer(
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
     stage: 'succeeded',
+    answer,
     effect,
     delivery: 'pending',
     terminal_before: a.decision?.terminal_before,
@@ -2921,14 +2925,24 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
     if (r.delivery === 'sent') return;
     const project = a.context?.project ?? 'superagent',
       headline = a.context?.headline ?? '决策回执',
-      succeeded = r.stage === 'succeeded';
-    queueNtfyAlert(
-      r.key,
-      `${'━'.repeat(14)}\n结论：${r.body}\n${'━'.repeat(14)}\n▍你的选择\n${a.status === 'approved' ? '是' : '否'}\n${'─'.repeat(14)}\n▍引擎做了什么\n${r.body}\n${'─'.repeat(14)}\n▍现在的状态\n${succeeded ? '已生效' : '未改变状态'}\n${'─'.repeat(14)}\n▍接下来谁做什么\n${succeeded ? '引擎继续执行' : '操作员检查原因后重新决定'}\n${'─'.repeat(14)}\n▍还需要你吗\n${succeeded ? '否' : '是'}\n${'─'.repeat(14)}\n来源：${l?.run_id ?? key}`,
-      {},
-      `${succeeded ? '已执行' : '未执行'}｜${project}｜${headline}`,
-      { priority: 2, tags: [succeeded ? 'green_circle' : 'white_circle'] }
-    );
+      succeeded = r.stage === 'succeeded',
+      next = succeeded
+        ? r.effect?.action === 'reject'
+          ? '无需操作；run 已终止'
+          : r.effect?.action === 'wait'
+            ? '无需操作；引擎继续等待'
+            : '引擎继续执行'
+        : '你需要：检查原因后重新决定',
+      presentation = receiptPresentation({
+        outcome: succeeded ? 'executed' : 'not_executed',
+        project,
+        headline,
+        selection: r.answer === 'yes' ? '是' : '否',
+        result: r.body,
+        next,
+        source: l?.run_id ?? key,
+      });
+    queueNtfyAlert(r.key, presentation.message, {}, presentation.title, presentation);
     r.delivery = 'sent';
     delete r.error;
     if (l && a.context?.initiator && a.context.initiator !== 'unknown')
@@ -2957,6 +2971,7 @@ function dispatchAsk(
   context: (question: string) => DecisionContext
 ): { a: Ask; asked?: string; note?: string } | { conflict: string } {
   const a = asks[key];
+  if (a?.legacy_key && a.id && ['pending', 'unknown'].includes(a.status)) return { a };
   if (!a || ['pending', 'unknown'].includes(a.status)) {
     const title = text();
     const ctx = a?.context ?? context(title);
@@ -3760,9 +3775,12 @@ function holdEpisode(_l: Ledger, run: RunView, c: Classified, hold?: Hold): stri
       .sort()
       .join('|');
   }
+  if (hold === 'auto_recover') return `auto_recover@${recoverySnapshot(run)}`;
   const node = c.node ?? run.metadata?.wait?.nodeId ?? run.metadata?.approval?.nodeId ?? '';
   const since =
-    run.metadata?.wait?.waitingSince ?? run.nodes?.find(n => n.nodeId === node)?.startedAt;
+    run.metadata?.wait?.waitingSince ??
+    run.nodes?.find(n => n.nodeId === node)?.startedAt ??
+    run.metadata?.approval?.pauseId;
   if (!node || !since) throw new Error(`gate episode missing node_started: ${node || 'unknown'}`);
   return `${node}@${since}`;
 }

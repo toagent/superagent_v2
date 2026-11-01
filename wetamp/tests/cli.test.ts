@@ -2788,13 +2788,13 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     db.close();
   });
   test('gate episode uses node start, renders P24 fields, and sends the final result to its initiator', () => {
-    const gate = (last: string): RunView =>
+    const gate = (last: string, startedAt = '2026-11-01T01:00:00.000Z'): RunView =>
       run('paused', {
         last_activity_at: last,
         metadata: { approval: { nodeId: 'human-m2', pauseId: 'p1' } },
-        nodes: [{ nodeId: 'human-m2', state: 'running', startedAt: '2026-11-01T01:00:00.000Z' }],
+        nodes: [{ nodeId: 'human-m2', state: 'running', startedAt }],
       });
-    const s = stub([gate('first'), gate('changed')]);
+    const s = stub([gate('first'), gate('changed', '2026-11-01T02:00:00.000Z')]);
     s.due.mockReturnValue([]);
     s.ledger.launcher = {
       ...coordModule.caller(),
@@ -2821,13 +2821,21 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
       headline: '是否批准签收并续跑？',
       purpose: '核心包：完成门禁',
     });
-    first[key].status = 'yes';
-    writeFileSync(path, JSON.stringify(first));
+    cliMod.superviseTick();
+    const migrated = JSON.parse(readFileSync(path, 'utf8')),
+      currentKey = Object.keys(migrated).find(candidate => candidate !== key)!;
+    expect(migrated[currentKey]).toMatchObject({ id: ask.id, legacy_key: key });
+    expect(
+      Object.keys(
+        JSON.parse(readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8')).decisions
+      )
+    ).toHaveLength(1);
+    migrated[currentKey].status = 'yes';
+    writeFileSync(path, JSON.stringify(migrated));
     const result = JSON.parse(captured(() => main(['supervise-tick'])).out);
     expect(result.actions[0]).toMatchObject({ action: 'approve', ok: true });
     const after = JSON.parse(readFileSync(path, 'utf8'));
-    expect(Object.keys(after)).toEqual([key]);
-    expect(after[key]).not.toHaveProperty('stale_answer');
+    expect(after[currentKey]).not.toHaveProperty('stale_answer');
     const alert = JSON.parse(
       readFileSync(join(s.root, 'home', 'ntfy/state.json'), 'utf8')
     ).alerts.at(-1);
@@ -2843,6 +2851,15 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
         .inbox(s.ledger.launcher!, true)
         .some(message => message.body.includes('已执行'))
     ).toBe(true);
+  });
+  // prettier-ignore
+  test('approval occurrences and owner-loss snapshots create stable ask episodes', () => {
+    const approval = stub([run('paused', { metadata: { approval: { nodeId: 'review', pauseId: 'p1' } } })]); approval.due.mockReturnValue([]); const approvalTick = cliMod.superviseTick();
+    expect('actions' in approvalTick ? approvalTick.actions[0] : approvalTick).toMatchObject({ action: 'ask', ok: true });
+    const lost = stub([run('running', { metadata: { execution_owner: LOST } })]);
+    lost.due.mockReturnValue([]); runsDb(LOST); writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...lost.ledger, auto_recover_paused: 'effects_unknown' }));
+    const recoveryTick = cliMod.superviseTick();
+    expect('actions' in recoveryTick ? recoveryTick.actions[0] : recoveryTick).toMatchObject({ action: 'ask', ok: true });
   });
   test('failed runs settle only without a future deadline', () => {
     const s = stub([run('failed')]),

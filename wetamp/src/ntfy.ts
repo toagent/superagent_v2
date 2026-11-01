@@ -359,19 +359,22 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
     structured = parts.indexOf('需你决定');
   const project = structured >= 0 ? parts[structured + 1] : 'superagent';
   const problem = structured >= 0 ? parts[structured + 2] : parts.at(-1);
-  state.alerts.push({
-    id,
-    title:
-      structured >= 0
-        ? `${processing ? '正在执行' : executed ? '已执行' : '未执行'}｜${project}｜${problem ?? '决策回执'}`
-        : title,
-    message:
-      structured >= 0
-        ? `${HEAVY}\n结论：${message}\n${HEAVY}\n▍你的选择\n${parts[0] || '未知'}\n${LIGHT}\n▍引擎做了什么\n${message}\n${LIGHT}\n▍现在的状态\n${processing ? '正在执行' : executed ? '已生效' : '未改变状态'}\n${LIGHT}\n▍接下来谁做什么\n${processing || executed ? '引擎继续执行' : '操作员重读最新决策'}\n${LIGHT}\n▍还需要你吗\n${processing || executed ? '否' : '是'}\n${LIGHT}\n来源：${id}`
-        : message,
-    priority: 2,
-    tags: [executed ? 'green_circle' : 'white_circle'],
-  });
+  state.alerts.push(
+    structured >= 0
+      ? {
+          id,
+          ...receiptPresentation({
+            outcome: processing ? 'processing' : executed ? 'executed' : 'not_executed',
+            project,
+            headline: problem ?? '决策回执',
+            selection: parts[0]?.split('：').at(-1) ?? '未知',
+            result: message,
+            next: processing || executed ? '引擎继续执行' : '操作员重读最新决策',
+            source: id,
+          }),
+        }
+      : { id, title, message, priority: 2, tags: [executed ? 'green_circle' : 'white_circle'] }
+  );
   state.alert_ids.push(id);
 }
 
@@ -482,6 +485,11 @@ const pausedPath = (config: NtfyConfig): string => join(dirname(config.statePath
 
 const HEAVY = '━'.repeat(14),
   LIGHT = '─'.repeat(14);
+// prettier-ignore
+export function receiptPresentation(input: { outcome: 'processing' | 'executed' | 'not_executed'; project: string; headline: string; selection: string; result: string; next: string; source: string }): { title: string; message: string; priority: number; tags: string[] } {
+  const done = input.outcome === 'executed', processing = input.outcome === 'processing';
+  return { title: `${processing ? '正在执行' : done ? '已执行' : '未执行'}｜${input.project}｜${input.headline}`, message: `${HEAVY}\n结论：${input.result}\n${HEAVY}\n▍你的选择\n${input.selection}\n${LIGHT}\n▍引擎做了什么\n${input.result}\n${LIGHT}\n▍现在的状态\n${processing ? '正在执行' : done ? '已生效' : '未改变状态'}\n${LIGHT}\n▍接下来谁做什么\n${input.next}\n${LIGHT}\n▍还需要你吗\n${processing || done ? '否' : '是'}\n${LIGHT}\n来源：${input.source}`, priority: 2, tags: [done ? 'green_circle' : 'white_circle'] };
+}
 const section = (title: string, body?: string): string[] =>
   body?.trim() ? [`▍${title}`, body.trim()] : [];
 // prettier-ignore
