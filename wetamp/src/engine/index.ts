@@ -436,7 +436,7 @@ const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): str
   return `引擎上线后复验${kind}｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
 };
 // prettier-ignore
-const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const title = verifyFailureTitle(record, currentSha); (dependencies.handoff ?? ((item, messageTitle) => { coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: messageTitle, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.sha, item.log], severity: 'normal' }, 0, false); }))(record, title); writeVerify({ ...record, reported: true }); };
+const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const title = verifyFailureTitle(record, currentSha); (dependencies.handoff ?? ((item, messageTitle) => { const dedupe_key = JSON.stringify(['post-promotion-verify', item.error === 'verify_process_lost' ? 'infrastructure' : 'regression', [...new Set(item.failed_files)].sort()]); coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: messageTitle, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.sha, item.log], dedupe_key, severity: 'normal' }, 0, false); }))(record, title); writeVerify({ ...record, reported: true }); };
 // prettier-ignore
 export function autoVerify(current: string | undefined, dependencies: AutoVerifyDependencies = {}): { sha: string; base?: string; started: boolean; error?: string } | undefined {
   if (!current) return;

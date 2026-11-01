@@ -345,6 +345,16 @@ test('6: delivery and ack are idempotent; only recipient acks; sender receives d
   expect(s.c.messages().filter(m => m.type === 'receipt')).toHaveLength(2);
   expect(() => s.c.ack(String(one.id), a, 'accepted', 'again')).toThrow(/invalid state/);
 });
+// prettier-ignore
+test('handoff dedupe keys append evidence until the prior message is terminal', () => {
+  const s = setup(); s.c.claim(s.scope, a); let now = 0; s.c.d.now = () => ++now;
+  const keyed = (evidence: string[]) => s.c.handoff(s.scope, b, { ...input, evidence, dedupe_key: 'verify:caller' });
+  const first = keyed(['sha-one', '/one.log']), firstAt = s.c.messages()[0]!.at, second = keyed(['sha-two', '/two.log']);
+  expect(second.id).toBe(first.id); expect(s.c.messages()[0]).toMatchObject({ evidence: ['sha-one', '/one.log', 'sha-two', '/two.log'] }); expect(s.c.messages()[0]!.at > firstAt).toBe(true);
+  s.c.ack(String(first.id), a, 'rejected', 'not mine'); const afterRejected = keyed(['sha-three']);
+  expect(afterRejected.id).not.toBe(first.id); s.c.ack(String(afterRejected.id), a, 'accepted', 'working'); s.c.ack(String(afterRejected.id), a, 'done', 'fixed');
+  expect(keyed(['sha-four']).id).not.toBe(afterRejected.id); expect(s.c.messages().filter(message => !message.type)).toHaveLength(3);
+});
 test('registry lock waits for release and times out with a typed reason', () => {
   const s = setup();
   mkdirSync(join(s.sa, 'coord'));

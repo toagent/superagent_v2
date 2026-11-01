@@ -12,8 +12,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
-import { caller, coord, repoScope } from '../src/coord';
-import { WETAMP } from '../src/config';
+import { coord } from '../src/coord';
 import { isWithinWriteRoots } from '../src/plan';
 import {
   autoPromote,
@@ -450,15 +449,15 @@ test('verify uses an independent local clone without registering a worktree', ()
 }, testTimeout(60_000));
 
 // prettier-ignore
-test('verify failures create handoffs without queueing ntfy alerts', () => {
+test('P19 invariant: verify failures dedupe handoffs by cause without queueing ntfy alerts', () => {
   const f = sourceFixture(), promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); mkdirSync(promotions, { recursive: true });
-  const record = (sha: string, at: string, failed_files: string[]) => ({ sha, base: 'base', status: 'failed', files: failed_files, failed_files, log: `/${sha}.log`, at });
-  for (const item of [record('one', '1', ['a.test.ts', 'b.test.ts']), record('two', '2', ['b.test.ts', 'a.test.ts']), record('three', '3', ['a.test.ts', 'c.test.ts'])]) writeFileSync(join(promotions, `${item.sha}.verify.json`), JSON.stringify(item));
-  coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: 'legacy verify handoff', body: '', evidence: ['/one.log'], severity: 'normal' }, 0, false);
-  const handoffs: string[] = [];
-  autoVerify(join(f.root, 'current'), { handoff: item => handoffs.push(item.sha) });
-  expect(handoffs).toEqual(expect.arrayContaining(['one', 'two', 'three'])); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
-  for (const sha of ['one', 'two', 'three']) expect(JSON.parse(readFileSync(join(promotions, `${sha}.verify.json`), 'utf8')).reported).toBe(true);
+  const record = (sha: string, failed_files: string[], error?: string) => ({ sha, base: 'base', status: 'failed', files: failed_files, failed_files, log: `/${sha}.log`, at: sha, error, retries: error ? 1 : undefined });
+  for (const item of [record('one', ['a.test.ts', 'b.test.ts', 'a.test.ts']), record('two', ['b.test.ts', 'a.test.ts']), record('three', ['a.test.ts', 'c.test.ts']), record('infra', ['a.test.ts', 'b.test.ts'], 'verify_process_lost')]) writeFileSync(join(promotions, `${item.sha}.verify.json`), JSON.stringify(item));
+  autoVerify(join(f.root, 'current'));
+  const messages = coord().messages().filter(message => !message.type);
+  expect(messages).toHaveLength(3); expect(messages.find(message => message.evidence.includes('one'))?.evidence).toEqual(expect.arrayContaining(['one', '/one.log', 'two', '/two.log']));
+  expect(new Set(messages.map(message => message.dedupe_key)).size).toBe(3); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
+  for (const sha of ['one', 'two', 'three', 'infra']) expect(JSON.parse(readFileSync(join(promotions, `${sha}.verify.json`), 'utf8')).reported).toBe(true);
 });
 
 // prettier-ignore
