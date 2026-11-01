@@ -41,13 +41,15 @@ export function historicalReclaimRuns(
       observations.flatMap(value => {
         if (!value || typeof value !== 'object') return [];
         const row = value as {
+          kind?: unknown;
           run?: unknown;
           count?: unknown;
           first_offline_at?: unknown;
           last_offline_at?: unknown;
           last_online_at?: unknown;
         };
-        return typeof row.run === 'string' &&
+        return row.kind !== 'job' &&
+          typeof row.run === 'string' &&
           typeof row.count === 'number' &&
           row.count >= 2 &&
           typeof row.first_offline_at === 'number' &&
@@ -82,6 +84,10 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     groups.set(key, value);
     return value;
   };
+  const orphan = (cwd: string, item: Responsibility): void => {
+    const key = `unknown\0${cwd}`, found = groups.get(key), value = found ?? { owner: 'unknown' as const, owner_key: 'unknown' as const, cwd, project: basename(cwd), running: [], waiting: [], line: '无人负责' };
+    value.waiting.push(item); groups.set(key, value); unowned++;
+  };
   const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id));
   for (const row of snapshot.rows) {
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
@@ -89,8 +95,12 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const owner = row.coordination?.owner;
     if (!owner) { unowned++; continue; }
     if (presenceOf(owner).state !== 'online') {
-      if (row.state === 'failed' && historical.has(row.run_id)) legacy++;
-      else reclaim++;
+      if (row.state === 'failed') { if (historical.has(row.run_id)) legacy++; else reclaim++; }
+      else {
+        let repoOnline = false; try { repoOnline = coord().owner(repoScope(row.repo)).presence.state === 'online'; } catch { /* Historical repository may be gone. */ }
+        if (repoOnline) reclaim++;
+        else orphan(row.repo, { id: row.run_id, kind: 'run', since: row.lastEvent ?? row.started_at, what: row.state, code: 'unowned', waiting_for: '无人负责', waited_s: age(row.lastEvent ?? row.started_at, now) ?? 0, next: `superagent claim ${row.run_id}` });
+      }
       continue;
     }
     const marshal = group(owner, row.repo);
@@ -121,9 +131,9 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     let owner: Identity = job.launcher;
     try { owner = coord().owner(repoScope(job.cwd)).owner ?? owner; } catch { /* Historical cwd may no longer resolve. */ }
     const marshal = group(owner, job.cwd), run = cockpit.active.find(item => item.id === job.id);
-    if (!marshal) { reclaim++; continue; }
+    if (!marshal) { if (job.state === 'lost') reclaim++; else orphan(job.cwd, { id: job.id, kind: 'job', since: job.started_at, what: job.state, code: 'unowned', waiting_for: '无人负责', waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` }); continue; }
     if (job.state === 'running' && active.has(job.id)) marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
-    if (job.state === 'lost') marshal.waiting.push({ id: job.id, kind: 'job', since: job.started_at, what: '作业丢失', code: 'lost', waiting_for: job.title, waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` });
+    if (job.state === 'lost' && !job.ended_at) marshal.waiting.push({ id: job.id, kind: 'job', since: job.started_at, what: '作业丢失', code: 'lost', waiting_for: job.title, waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` });
   }
   for (const marshal of groups.values()) {
     const roles = marshal.running.map(item => `${item.role} ${item.general ? ({ working: '干活', idle: `空转 ${String(Math.floor(item.general.idle_s / 60))}m${item.general.waiting_command ? '（在等命令）' : ''}`, stalled: `停滞 ${String(Math.floor(item.general.idle_s / 60))}m`, handed_back: '已交回', unknown: `观测未知${item.general.reason ? `（${item.general.reason}）` : ''}` }[item.general.state]) : item.stage} ${item.last_activity_s === null ? '活动未知' : `活动${String(Math.floor(item.last_activity_s / 60))}m前`} ${item.estimate.basis === 'history' ? `历史耗时估算~${String(item.estimate.pct ?? '?')}%` : '估算未知'}`);
