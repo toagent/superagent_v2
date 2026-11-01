@@ -68,6 +68,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'LOCKFILES.has(basename(path))',
+    to: 'false',
+    test: 'tests/sa-check.test.ts',
+    name: 'line budget excludes lock',
+    expectedError: '"used": 520',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'authors.push(attemptIdentity([], node, e.data?.binding));',
     to: 'authors.push(unknown);',
     test: 'tests/sa-check.test.ts',
@@ -81,6 +89,14 @@ const mutations: Mutation[] = [
     test: 'tests/sa-check.test.ts',
     name: 'typed Bun rerun adapter',
     expectedError: 'Expected length: 3',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'saved.pass === true && saved.exit === 0 && saved.started_at',
+    to: 'saved.pass === true && (saved.exit === undefined || saved.exit === 0) && saved.started_at',
+    test: 'tests/sa-check.test.ts',
+    name: 'delivery-truth: cache binds',
+    expectedError: 'Expected  - 1',
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',

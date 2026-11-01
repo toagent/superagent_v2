@@ -2,8 +2,10 @@ import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs'
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { runStatuses } from './archon';
 import { coord } from './coord';
 import { responsibilities, type Heartbeat, type Responsibility } from './heartbeat';
+import { loadLedger } from './ledger';
 type Client = 'claude' | 'codex';
 type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
@@ -11,15 +13,50 @@ type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
 export const waitingRuns = (sessionId: string, runs = coord().unfinishedRuns(sessionId)): Run[] =>
   runs.filter(run => run.status === 'running' || run.status === 'pending');
-export function responsibilityList(sessionId: string): Responsibility[] {
+type LiveStates = (items: Responsibility[]) => Map<string, string | Error>;
+const liveStates: LiveStates = items => {
+  const statuses = runStatuses();
+  if (!statuses) throw new Error('live run statuses unavailable');
+  return new Map(
+    items.map(item => {
+      try {
+        const ledger = loadLedger(item.id);
+        // prettier-ignore
+        return [item.id, ledger.rejected ? 'abandoned' : (statuses.get(ledger.archon_run_id) ?? new Error('run status missing'))];
+      } catch (error) {
+        return [item.id, error as Error];
+      }
+    })
+  );
+};
+export function responsibilityList(
+  sessionId: string,
+  readStates: LiveStates = liveStates
+): Responsibility[] {
   try {
     const root = process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent');
     const heartbeat = JSON.parse(readFileSync(join(root, 'heartbeat.json'), 'utf8')) as Heartbeat;
-    return heartbeat.marshals.flatMap(m =>
+    const items = heartbeat.marshals.flatMap(m =>
       m.owner !== 'unknown' && m.owner.session_id === sessionId
         ? responsibilities(heartbeat, m.owner)
         : []
     );
+    let states: Map<string, string | Error>;
+    try {
+      states = readStates(items.filter(item => item.kind === 'run'));
+    } catch (error) {
+      states = new Map(items.map(item => [item.id, error as Error]));
+    }
+    return items.flatMap(item => {
+      if (item.kind !== 'run') return [item];
+      const state = states.get(item.id) ?? new Error('run status missing');
+      if (state instanceof Error)
+        return [{ ...item, waiting_for: `${item.waiting_for}（状态未确认）` }];
+      if (['completed', 'cancelled', 'abandoned'].includes(state)) return [];
+      return ['running', 'pending'].includes(state) && item.code !== 'coordination_pending'
+        ? []
+        : [item];
+    });
   } catch {
     return [];
   }

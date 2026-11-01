@@ -560,6 +560,20 @@ describe('guard.cjs', () => {
         ],
       }).reason
     ).toContain('held 评审轮次用尽');
+    const liveHome = tmp(),
+      archonHome = join(liveHome, 'archon');
+    mkdirSync(join(liveHome, 'runs'), { recursive: true });
+    mkdirSync(archonHome);
+    // prettier-ignore
+    writeFileSync(join(liveHome, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: { client: 'claude', session_id: 'live' }, waiting: [{ id: 'live-run', kind: 'run', code: 'gate', waiting_for: 'gate', waited_s: 0 }] }] }));
+    // prettier-ignore
+    writeFileSync(join(liveHome, 'runs/live-run.json'), JSON.stringify({ run_id: 'live-run', archon_run_id: 'archon-live', repo: '/r', gen_dir: '/g', branch: 'b', workflow: 'w' }));
+    const db = new Database(join(archonHome, 'archon.db'));
+    // prettier-ignore
+    db.exec("CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT); INSERT INTO remote_agent_workflow_runs VALUES ('archon-live', 'running')");
+    db.close();
+    // prettier-ignore
+    expect(run('guard.cjs', 'claude', { hook_event_name: 'Stop', session_id: 'live' }, { SUPERAGENT_HOME: liveHome, DATABASE_URL: '' })).toBeNull();
     const home = tmp(),
       who = { client: 'claude', session_id: 's', host: 'h', pid: 1, pid_start: 'x' },
       heartbeat = {
