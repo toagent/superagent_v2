@@ -2854,9 +2854,9 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
   });
   // prettier-ignore
   test('a refused gate action does not publish or occupy the final initiator receipt', () => {
-    const gate = run('paused', { metadata: { approval: { nodeId: 'human-m2', pauseId: 'p1' } }, nodes: [{ nodeId: 'human-m2', state: 'running', startedAt: '2026-11-01T01:00:00.000Z' }] }); const s = stub([gate]); s.due.mockReturnValue([]); s.ledger.launcher = { ...coordModule.caller(), client: 'codex', tty: null, cwd: s.root }; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); fixtureOptions(s.dir, { approveReply: { ok: false, error: 'approval changed' } });
+    const lost = run('running', { metadata: { execution_owner: LOST } }); const s = stub([lost]); s.due.mockReturnValue([]); runsDb(LOST); s.ledger.launcher = { ...coordModule.caller(), client: 'codex', tty: null, cwd: s.root }; writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...s.ledger, auto_recover_paused: 'effects_unknown' })); fixtureOptions(s.dir, { resumeReply: { ok: false, error: 'resume changed' } });
     cliMod.superviseTick(); const path = join(s.root, 'home', 'asks.json'), asks = JSON.parse(readFileSync(path, 'utf8')), key = Object.keys(asks)[0]; asks[key].status = 'yes'; writeFileSync(path, JSON.stringify(asks));
-    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({ action: 'approve', ok: false });
+    expect(JSON.parse(captured(() => main(['supervise-tick'])).out).actions[0]).toMatchObject({ action: 'resume', ok: false });
     expect(JSON.parse(readFileSync(path, 'utf8'))[key]).not.toHaveProperty('receipt'); expect(coordModule.coord().inbox(s.ledger.launcher!, true).some(message => message.source === asks[key].id)).toBe(false);
   });
   // prettier-ignore
