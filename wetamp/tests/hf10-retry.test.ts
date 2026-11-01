@@ -170,14 +170,7 @@ for (const scope of ['package', 'milestone'] as const)
     );
     const sa = (...args: string[]) => {
       const p = Bun.spawnSync(
-        [
-          process.execPath,
-          '--preload',
-          scratchPreload,
-          join(WETAMP, 'src/cli.ts'),
-          ...args,
-          '--json',
-        ],
+        [process.execPath, '--preload', scratchPreload, join(WETAMP, 'src/cli.ts'), ...args],
         {
           env,
           stdout: 'pipe',
