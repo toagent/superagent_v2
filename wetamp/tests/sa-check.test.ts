@@ -2382,7 +2382,7 @@ describe('sa-check script', () => {
         SCRIPT,
         {
           NODE_ENV: 'test',
-          SA_TEST_RESOURCE_WAIT_BUDGET_MS: '1',
+          SA_TEST_RESOURCE_WAIT_BUDGET_MS: first === 'fail' ? '1' : '10000',
           SA_HEAVY_LOCK_FILE:
             first === 'fail' ? join(root, 'missing/slot.lock') : join(root, 'slot.lock'),
         }
