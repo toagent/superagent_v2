@@ -130,7 +130,6 @@ export interface Tiers {
     budget: { claude_daily_usd: number; claude_medium_usd: number; codex_warning_usd: number };
     commander: { by_console: Record<Console, string[]> };
     coder: { models: string[] };
-    soldier?: { provider: 'codex'; models: string[] };
     reviewer: {
       by_console: Record<Console, string[]>;
       by_risk?: Partial<Record<Pkg['risk'], string[]>>;
@@ -177,13 +176,13 @@ export interface Tiers {
  */
 export function effortFor(
   t: Tiers,
-  role: 'soldier' | 'code' | 'repair' | 'review',
+  role: 'code' | 'repair' | 'review',
   risk: string,
   round = 1
 ): string {
   const e = t.policy.effort;
   if (risk === 'G0') return e.G0;
-  if (role === 'soldier' || role === 'code') return e.coder.first;
+  if (role === 'code') return e.coder.first;
   if (role === 'repair') return e.coder.repair;
   const v = (risk === 'G2' ? e.G2_reviewer : e.reviewer)[`R${String(round)}`];
   if (!v) throw new Error(`tiers.policy.effort: no reviewer effort for ${risk} R${String(round)}`);
@@ -210,10 +209,6 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))
       throw new Error(`tiers.routing.commander.by_console.${c}: expected models for ${c}`);
   }
-  const rawSoldier = obj(t.routing).soldier;
-  const soldier = obj(rawSoldier);
-  if (rawSoldier !== undefined && (soldier.provider !== 'codex' || !Array.isArray(soldier.models) || soldier.models.some(m => typeof m !== 'string' || !m)))
-    throw new Error('tiers.routing.soldier: expected explicit codex provider and model names');
   return t;
 }
 
@@ -257,7 +252,7 @@ export function resolveRoute(
   t: Tiers,
   console: Console,
   mode = 'auto',
-  role: 'soldier' | 'code' | 'repair' | 'review' | 'command' = 'code',
+  role: 'code' | 'repair' | 'review' | 'command' = 'code',
   risk: Pkg['risk'] = 'G1',
   round = 1,
   authors: string[] = [],
@@ -273,16 +268,13 @@ export function resolveRoute(
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
       ? (t.routing.reviewer.by_risk?.[risk] ?? t.routing.reviewer.by_console[console])
-      : role === 'soldier' ? (t.routing.soldier?.models ?? []) : t.routing.coder.models;
-  const soldierProvider = role === 'soldier' ? t.routing.soldier?.provider : undefined;
-  if (role === 'soldier' && !soldierProvider)
-    throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
+      : t.routing.coder.models;
   const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
-    .map(model => ({ model, provider: soldierProvider ?? providerOf(model), effort }))
+    .map(model => ({ model, provider: providerOf(model), effort }))
     .filter(a => !['code', 'repair'].includes(role) || a.provider === (mode === 'single:claude' ? 'claude' : 'codex'))
     .filter(
-      a => (role === 'soldier' || role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
+      a => (role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
   if (!candidates.length)
     throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
@@ -347,9 +339,6 @@ export function runAliases(c: Console, t = loadTiers(), mode = 'auto', state = H
   const reviewer = reviewers[0];
   return {
     '@sa-coder': { ...coder, effort: 'high' },
-    ...(t.routing.soldier?.models.length
-      ? { '@sa-soldier': { ...route('soldier')[0], effort: 'high' } }
-      : {}),
     '@sa-reviewer': { ...reviewer, effort: 'high' },
     '@sa-reviewer-alt': {
       ...reviewerAlt(reviewers, reviewer),

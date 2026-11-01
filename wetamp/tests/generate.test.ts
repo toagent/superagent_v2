@@ -52,10 +52,6 @@ import {
 } from '../../packages/workflows/src/loader';
 import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
-import {
-  expandWorkflowIncludes,
-  instantiateResolvedInclude,
-} from '../../packages/workflows/src/include-expander';
 import type { CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
 import reasonMirror from '../templates/.archon/scripts/reasons.json';
@@ -247,7 +243,6 @@ const fixture = JSON.parse(
 const NOW = Date.parse('2026-10-09T00:00:00Z');
 const legacyTiers = () => {
   const tiers = loadTiers();
-  if (tiers.routing.soldier) tiers.routing.soldier.models = [];
   return tiers;
 };
 const build = (fake: boolean, plan = fixture): unknown =>
@@ -740,178 +735,6 @@ test('EV reflection and memory views are read live; lesson data is outside both 
 });
 
 describe('buildWorkflow', () => {
-  test('soldier branch records use, stashes failed leftovers, and fails closed on reset error', () => {
-    const tiers = fixtureTiers();
-    const plan = structuredClone(fixture);
-    plan.packages[0].draft = 'soldier';
-    const nodes = nodesOf(
-      buildWorkflow(plan, milestones(plan), 'soldier', '/GEN', false, NOW, tiers)
-    );
-    const ok = nodes.find(n => n.id === 'soldier-ok-core')!;
-    const okSource = String(ok.script);
-    expect(okSource).toContain('archon_failed === true');
-    expect(nodes.find(n => n.id === 'soldier-core')).toMatchObject({
-      include: 'sa-soldier-core',
-      depends_on: ['soldier-items-core'],
-      with: { pkg: 'core', context_pack: '$package-attempt-core.output.context_pack_path' },
-      fan_out: {
-        items: '$soldier-items-core.output',
-        as: 'draft',
-        max_parallel: 1,
-        join: 'all_done',
-      },
-    });
-    expect(nodes.find(n => n.id === 'soldier-items-core')).toMatchObject({
-      depends_on: ['sync-m1-ready', 'package-attempt-core'],
-    });
-    expect(nodes.find(n => n.id === 'package-attempt-core')?.timeout).toBe(
-      120_000 + LOAD_WAIT_BUDGET_MS
-    );
-    expect(nodes.find(n => n.id === 'soldier-ok-core')).toMatchObject({
-      id: 'soldier-ok-core',
-      depends_on: ['soldier-core'],
-      runtime: 'bun',
-      with: { result: '$soldier-core.output' },
-    });
-    expect(nodes.find(n => n.id === 'soldier-reset-core')).toEqual({
-      id: 'soldier-reset-core',
-      depends_on: ['soldier-ok-core'],
-      trigger_rule: 'all_done',
-      with: { result: { from: '$soldier-ok-core.output', if_skipped: '' } },
-      bash: 'if [ "$INPUTS_RESULT" = used ]; then printf used; else git stash push --include-untracked -m soldier-leftover-core >/dev/null && printf reset; fi',
-    });
-    const runOk = (output: string): string => {
-      const result = Bun.spawnSync([process.execPath, '-e', okSource], {
-        env: { ...process.env, INPUTS_RESULT: output },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      expect(result.exitCode, result.stderr.toString()).toBe(0);
-      return result.stdout.toString();
-    };
-    expect(runOk(JSON.stringify([{ ok: "it's" }]))).toBe('used');
-    expect(runOk(JSON.stringify([{ archon_failed: true }]))).toBe('');
-    expect(() =>
-      assertGeneratedWorkflow({ name: 'soldier', description: 'soldier', nodes }, false)
-    ).not.toThrow();
-    expect(nodes.find(n => n.id === 'soldier-reset-core')?.when).toBeUndefined();
-    expect(nodes.find(n => n.id === 'code-core')).toMatchObject({
-      depends_on: [
-        'sync-m1-ready',
-        'package-attempt-core',
-        'soldier-core',
-        'soldier-ok-core',
-        'soldier-reset-core',
-      ],
-      trigger_rule: 'all_done',
-      with: { soldier_ok: 'soldier-ok-core' },
-    });
-    expect(() =>
-      evaluateCondition(
-        nodes.find(n => n.id === 'code-core')!.when!,
-        new Map([
-          [
-            'sync-m1-ready',
-            { state: 'completed' as const, output: JSON.stringify({ head: 'abc' }) },
-          ],
-          [
-            'package-attempt-core',
-            { state: 'completed' as const, output: JSON.stringify({ attempt: '1' }) },
-          ],
-          [
-            'soldier-reset-core',
-            { state: 'failed' as const, output: 'stale', error: 'stash failed' },
-          ],
-        ])
-      )
-    ).toThrow("references node 'soldier-reset-core', but it failed");
-    expect(
-      nodesOf(buildWorkflow(plan, milestones(plan), 'fake', '/GEN', true, NOW, tiers)).some(n =>
-        n.id.startsWith('soldier-')
-      )
-    ).toBe(false);
-    expect(
-      nodesOf(
-        buildWorkflow(plan, milestones(plan), 'carry', '/GEN', false, NOW, tiers, {
-          from: 'old',
-          packages: ['core'],
-        })
-      ).some(n => n.id === 'soldier-core')
-    ).toBe(false);
-    expect(validateDagStructure(validNodes(nodes))).toBeNull();
-    expect(readFileSync(join(WETAMP, 'templates/.archon/commands/sa-code.md'), 'utf8')).toContain(
-      '`$$INPUTS.soldier_ok.output`'
-    );
-  });
-  test('soldier include resolves context pack', () => {
-    const plan = structuredClone(fixture);
-    plan.packages[0].draft = 'soldier';
-    const soldier = nodesOf(
-      buildWorkflow(plan, milestones(plan), 'soldier-context', '/GEN', false, NOW, fixtureTiers())
-    ).find(n => n.id === 'soldier-core')!;
-    const parsed = parseWorkflow(
-      `name: sa-soldier-core\ndescription: draft\ninputs:\n  pkg: { required: true }\n  context_pack: { required: true }\n  draft: { required: true }\nnodes:\n  - id: draft\n    script: process.stdout.write(process.env.INPUTS_CONTEXT_PACK ?? '')\n    runtime: bun\n    with:\n      context_pack: $INPUTS.context_pack\n`,
-      'sa-soldier-core.yaml',
-      { get: () => undefined, list: () => [] }
-    );
-    if (parsed.workflow === null) throw new Error(parsed.error.error);
-    const expanded = expandWorkflowIncludes(new Map([[parsed.workflow.name, parsed.workflow]]));
-    const child = expanded.workflows.get(parsed.workflow.name)!;
-    const contextPack = '/artifacts/contexts/code-core.md';
-    // prettier-ignore
-    const nodeOutputs: ShellInputContext['nodeOutputs'] = new Map([['package-attempt-core', { state: 'completed', output: JSON.stringify({ context_pack_path: contextPack }) }]]);
-    const inputs = resolveNodeBindings(
-      soldier.id,
-      soldier.with! as Parameters<typeof resolveNodeBindings>[1],
-      {
-        workflowRun: { id: 'run', user_message: '', metadata: {} },
-        artifactsDir: '/artifacts',
-        stateDir: '/state',
-        baseBranch: 'dev',
-        docsDir: '/docs',
-        nodeOutputs,
-      },
-      undefined
-    );
-    // prettier-ignore
-    const instance = instantiateResolvedInclude(
-      { id: 'soldier-core__draft', kind: 'include', include: child.name, with: { ...inputs, draft: null } },
-      child
-    ).namespaced[0]!;
-    expect(instance).toMatchObject({ with: { context_pack: contextPack } });
-    expect(JSON.stringify(instance)).not.toContain('$package-attempt-core.output');
-  });
-  test('draft routing emits soldiers only for eligible packages', () => {
-    const tiers = fixtureTiers();
-    const plan = structuredClone(fixture) as Plan;
-    const core = plan.packages[0],
-      api = plan.packages[1];
-    core.size = 'L';
-    api.risk = 'G1';
-    api.size = 'M';
-    api.draft = 'general';
-    const direct = nodesOf(
-      buildWorkflow(plan, milestones(plan), 'direct', '/GEN', false, NOW, tiers)
-    );
-    expect(direct.some(n => n.id.startsWith('soldier-'))).toBe(false);
-    expect(direct.filter(n => n.id.startsWith('code-')).map(n => n.with?.soldier_ok)).toEqual([
-      '',
-      '',
-    ]);
-    core.draft = 'soldier';
-    api.draft = undefined;
-    const drafted = nodesOf(
-      buildWorkflow(plan, milestones(plan), 'drafted', '/GEN', false, NOW, tiers)
-    );
-    expect(drafted.filter(n => /^soldier-(core|api)$/.test(n.id)).map(n => n.id)).toEqual([
-      'soldier-core',
-    ]);
-    expect(
-      drafted.some(
-        n => /^(repair|fix)-/.test(n.id) && n.depends_on?.some(d => d.startsWith('soldier-'))
-      )
-    ).toBe(false);
-  });
   test('P2: two-package data dependencies exclude milestone and review retry counters', () => {
     for (const sameMilestone of [false, true]) {
       const plan = structuredClone(fixture);
@@ -960,9 +783,7 @@ describe('buildWorkflow', () => {
     expect(buildNodes(multi).some(n => n.id.startsWith('fix-') && n.context)).toBeFalse();
     const carry = buildNodes(plan, false, { from: 'old', packages: ['core'] });
     const fake = buildNodes(plan, true);
-    plan.packages[0].draft = 'soldier';
-    const soldier = buildNodes(plan);
-    for (const nodes of [carry, fake, soldier])
+    for (const nodes of [carry, fake])
       expect(nodes.filter(n => /^(repair|fix)-/.test(n.id)).every(n => !n.context)).toBeTrue();
   });
   test('P2: carry changes code/verify and scope wiring; an empty carry preserves every byte', () => {
@@ -1192,7 +1013,6 @@ describe('buildWorkflow', () => {
       brief: join(gen, 'briefs/core.md'),
       hint: join(gen, 'hints/core.md'),
       context_node: 'package-attempt-core',
-      soldier_ok: '',
     });
     const retryOutput = JSON.stringify({ status: 'done', notes: 'retried' });
     ctx.nodeOutputs.set(code.id, { state: 'completed', output: retryOutput });
@@ -2365,7 +2185,7 @@ function checkGeneratedRepo(): void {
   for (const n of nodesOf(singleWorkflow).filter(n => n.command)) {
     const model = (n as N & { model: string }).model;
     expect(singleConfig.aliases[model].provider).toBe(
-      n.command!.startsWith('sa-review') || n.command === 'sa-soldier' ? 'codex' : 'claude'
+      n.command!.startsWith('sa-review') ? 'codex' : 'claude'
     );
   }
   const thin = loadPlan(

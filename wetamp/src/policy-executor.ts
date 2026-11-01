@@ -30,31 +30,11 @@ import {
   type DispatchExecution,
 } from '@archon/workflows/policy-dispatch';
 export { MODEL_FAILURE_COOLDOWN_MS } from '@archon/workflows/policy-dispatch';
-export const SOLDIER_BUDGET_MS = 10 * 60_000;
 type Events = Parameters<typeof budgetUsage>[0];
 interface Execution extends Omit<DispatchExecution<Alias>, 'usage'> {
   floor: number;
   events(): Events;
   role?: string;
-  soldierBudgetMs?: number;
-}
-const timedOut = (signal?: AbortSignal): boolean => {
-  const reason: unknown = signal?.reason;
-  return reason instanceof DOMException && reason.name === 'TimeoutError';
-};
-function budgetedSender(
-  send: IAgentProvider['sendQuery'],
-  budgetMs: number
-): IAgentProvider['sendQuery'] {
-  return async function* (prompt, cwd, resume, options) {
-    try {
-      yield* send(prompt, cwd, resume, options);
-    } catch (error) {
-      if (!timedOut(options?.abortSignal)) throw error;
-    }
-    if (timedOut(options?.abortSignal))
-      throw new Error(`soldier_budget_exceeded: ${String(budgetMs)}ms`);
-  };
 }
 /** Delivery policy supplies limits and evidence; Archon owns every dispatch and receipt. */
 export function executePolicy(
@@ -63,27 +43,6 @@ export function executePolicy(
   cwd: string,
   resume?: string
 ): AsyncGenerator<MessageChunk> {
-  if (execution.role === 'soldier') {
-    const budgetMs = execution.soldierBudgetMs ?? SOLDIER_BUDGET_MS;
-    const options = execution.options;
-    const sendQueryFor = execution.sendQueryFor;
-    execution = {
-      ...execution,
-      candidates: execution.candidates.slice(0, 1),
-      sendQuery: budgetedSender(execution.sendQuery, budgetMs),
-      sendQueryFor: sendQueryFor
-        ? candidate => budgetedSender(sendQueryFor(candidate), budgetMs)
-        : undefined,
-      options: candidate => {
-        const value = options(candidate);
-        const timeout = AbortSignal.timeout(budgetMs);
-        return {
-          ...value,
-          abortSignal: value.abortSignal ? AbortSignal.any([value.abortSignal, timeout]) : timeout,
-        };
-      },
-    };
-  }
   return dispatchPolicy(
     {
       ...execution,
@@ -224,11 +183,13 @@ function runtimeExecution(
       if (outcome.ok) claudeAvailable = true;
       else if (claudeOutcomeTrips(outcome)) claudeAvailable = false;
       const saved = recordClaudeOutcome(outcome);
-      if (!saved.persisted)
+      if (!saved.persisted) {
+        const error = 'error' in saved && typeof saved.error === 'string' ? saved.error : 'unknown';
         return Promise.resolve({
           code: 'superagent.health_persist_failed',
-          message: JSON.stringify({ run: run.id, node, error: saved.error }),
+          message: JSON.stringify({ run: run.id, node, error }),
         });
+      }
       return Promise.resolve(undefined);
     },
     options: candidate => {

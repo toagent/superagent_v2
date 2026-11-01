@@ -12,7 +12,7 @@ import {
 import { effortFor, loadTiers } from '../src/config';
 import type { Plan } from '../src/plan';
 import { reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
-import { fixtureTiers, tmp } from './helpers';
+import { tmp } from './helpers';
 import { executePolicy } from '../src/policy-executor';
 
 const tiers = loadTiers();
@@ -40,38 +40,6 @@ test('frozen descriptors and both entry points share risk/round effort and nativ
   expect(() => executionRoute(tiers, 'codex', 'strict', descriptor, authors)).toThrow(
     'no eligible review'
   );
-});
-
-test('soldier and general dispatch pools remain isolated during failover', () => {
-  const soldierTiers = fixtureTiers();
-  const configured = soldierTiers.routing.soldier?.models ?? [];
-  const soldier = executionRoute(
-    soldierTiers,
-    'codex',
-    'auto',
-    describeExecution(soldierTiers, 'soldier')
-  ).candidates;
-  const general = executionRoute(
-    soldierTiers,
-    'codex',
-    'auto',
-    describeExecution(soldierTiers, 'code')
-  ).candidates;
-  expect(configured.length).toBeGreaterThan(0);
-  expect(soldier.map(candidate => candidate.model)).toEqual(configured);
-  expect(soldier.every(candidate => candidate.provider === 'codex')).toBe(true);
-  expect(
-    executionRoute(
-      soldierTiers,
-      'claude',
-      'single:claude',
-      describeExecution(soldierTiers, 'soldier')
-    ).candidates
-  ).toEqual(soldier);
-  expect(general.every(candidate => !configured.includes(candidate.model))).toBe(true);
-  expect(
-    soldier.every(candidate => !soldierTiers.routing.coder.models.includes(candidate.model))
-  ).toBe(true);
 });
 
 test('new runs read persisted identities; only missing tables use the historical adapter', () => {

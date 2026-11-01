@@ -14,8 +14,6 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 
 上下文文件：$$INPUTS.context_node.output.context_pack_path
 
-读取 `$$INPUTS.soldier_ok.output` 的引擎值：值为 `used` 时核对士兵改动、修订 bug 并补齐测试；值为空时没有可用士兵初稿（失败残留已由引擎收起），从零完成全部编码。若士兵初稿方向或接口与任务书不符，执行 `git stash push --include-untracked -m soldier-rejected-$INPUTS.pkg` 整体放弃后从零实现，并在 commit message 注明 `soldier draft rejected`。士兵输出不是契约或验收证据，不解析其自然语言结论。
-
 ## 要求
 
 1. 在当前工作目录（本 run 的 worktree）内修改代码。预期改动范围只是预期：为达成目标必须改范围外的文件时直接改，并在 `deviations` 逐条登记 `{path, why}`。完成后 `git add <改动文件> && git commit -m "$INPUTS.pkg: <摘要>"`，验收时工作区必须干净。

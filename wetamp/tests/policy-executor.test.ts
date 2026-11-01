@@ -13,7 +13,6 @@ import { codexDescriptor } from '@archon/providers';
 import {
   executePolicy,
   MODEL_FAILURE_COOLDOWN_MS,
-  SOLDIER_BUDGET_MS,
   wrapPolicyProvider,
 } from '../src/policy-executor';
 import { loadTiers, snapshotPolicy, type Alias } from '../src/config';
@@ -231,51 +230,6 @@ test('untyped failure, unknown/auth classes and throws never trigger fallback', 
   expect(readPolicyAttempts(s.artifacts)[0].status).toBe('failed');
 });
 
-test('soldier wall-clock budget aborts once without cooldown or fallback', async () => {
-  const s = setup(success);
-  let calls = 0;
-  const hanging = fake(async options => {
-    calls++;
-    await new Promise<void>(resolve =>
-      options.abortSignal?.addEventListener('abort', () => resolve(), { once: true })
-    );
-    return success;
-  });
-  await expect(
-    collect(
-      executePolicy(
-        {
-          ...s.execution,
-          role: 'soldier',
-          soldierBudgetMs: 5,
-          sendQuery: hanging.sendQuery,
-        },
-        'p',
-        '/scratch'
-      )
-    )
-  ).rejects.toThrow('soldier_budget_exceeded: 5ms');
-  expect(SOLDIER_BUDGET_MS).toBe(600_000);
-  expect(calls).toBe(1);
-  const attempts = readPolicyAttempts(s.artifacts);
-  expect(attempts).toHaveLength(1);
-  expect(attempts[0].status).toBe('failed');
-  expect(attempts[0].cooldown_until).toBeUndefined();
-  let signal: AbortSignal | undefined;
-  const ordinary = setup(success);
-  await collect(
-    executePolicy(
-      {
-        ...ordinary.execution,
-        sendQuery: fake(options => ((signal = options.abortSignal), success)).sendQuery,
-      },
-      'p',
-      '/scratch'
-    )
-  );
-  expect(signal).toBeUndefined();
-});
-
 function runtimeFixture() {
   const root = tmp(),
     artifacts = join(root, 'artifacts/runs/run');
@@ -323,43 +277,6 @@ async function inRuntime<T>(root: string, run: () => Promise<T>): Promise<T> {
       else process.env[key] = value;
   }
 }
-
-test('soldier runtime node resolves policy and rejects unregistered namespaces', async () => {
-  const s = runtimeFixture(),
-    calls: SendQueryOptions[] = [],
-    runtimeNode = 'soldier-core__a664b27666cfca76__draft';
-  s.plan.packages[0].draft = 'soldier';
-  writeFileSync(join(s.root, 'plan.json'), JSON.stringify(s.plan));
-  const provider = wrapPolicyProvider(
-    fake(options => {
-      calls.push(options);
-      return success;
-    }),
-    'codex'
-  );
-  await inRuntime(s.root, () =>
-    collect(
-      provider.sendQuery('p', s.root, undefined, {
-        model: 'placeholder',
-        env: { SA_POLICY_PATH: s.policyPath },
-        nodeConfig: { nodeId: runtimeNode },
-      })
-    )
-  );
-  expect(calls.map(options => options.model)).toEqual([s.tiers.routing.soldier!.models[0]]);
-  expect(calls[0].abortSignal).toBeDefined();
-  expect(readPolicyAttempts(s.artifacts)[0]).toMatchObject({ node: runtimeNode });
-  await expect(
-    inRuntime(s.root, () =>
-      collect(
-        provider.sendQuery('p', s.root, undefined, {
-          env: { SA_POLICY_PATH: s.policyPath },
-          nodeConfig: { nodeId: 'soldier-missing__a664b27666cfca76__draft' },
-        })
-      )
-    )
-  ).rejects.toThrow('policy: unknown node');
-});
 
 test('POLICY-R1-01/02: same-vendor fallback preserves protected child env and the admitted slot', async () => {
   const s = runtimeFixture(),

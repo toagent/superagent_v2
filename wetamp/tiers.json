@@ -173,10 +173,6 @@
         "gpt-6-astra"
       ]
     },
-    "soldier": {
-      "provider": "codex",
-      "models": []
-    },
     "reviewer": {
       "by_risk": {
         "G0": [

@@ -12,9 +12,6 @@ export type Plan = Omit<PlanInput, 'budget'> & { budget: NonNullable<PlanInput['
 export type Pkg = Plan['packages'][number];
 export type Requirement = NonNullable<Pkg['requirements']>[number];
 export type Check = Pkg['accept'][number];
-/** Soldier drafting is opt-in; G2 always routes directly to a general. */
-export const draftFor = (p: Pkg): 'soldier' | 'general' =>
-  p.risk === 'G2' ? 'general' : (p.draft ?? 'general');
 /** Resolved capability defaults; the wire schema keeps every override optional. */
 export type Caps = Required<NonNullable<Plan['caps']>>;
 
@@ -107,8 +104,6 @@ export function loadPlan(path: string, roots = writeRoots()): Plan {
     budget: input.budget ?? { weighted_tokens: 0, unlimited_tokens: true },
   };
   for (const p of plan.packages) {
-    if (p.risk === 'G2' && p.draft === 'soldier')
-      throw new Error(`plan invalid: ${p.id} draft soldier is forbidden for G2`);
     const ids = new Set<string>();
     for (const r of p.requirements ?? []) {
       if (ids.has(r.id)) throw new Error(`plan invalid: duplicate requirement id ${p.id}/${r.id}`);

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { resolveRoute, type Alias, type Console, type RouteState, type Tiers } from './config';
-import { capsOf, draftFor, milestones, type Caps, type Plan, type Pkg } from './plan';
+import { capsOf, milestones, type Caps, type Plan, type Pkg } from './plan';
 import { workflowLaunchPolicy, type LaunchPolicy } from '@archon/providers/launch-policy';
 import { reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 
@@ -29,8 +29,7 @@ export function nodePackages(plan: Plan, maxRounds = 6): Map<string, string[]> {
   const nodes = new Map<string, string[]>();
   for (const m of milestones(plan))
     for (const p of m.packages) {
-      for (const role of ['soldier', 'code', 'repair'] as const)
-        nodes.set(`${role}-${p.id}`, p.scope.write);
+      for (const role of ['code', 'repair'] as const) nodes.set(`${role}-${p.id}`, p.scope.write);
       for (let round = 2; round <= maxRounds; round++)
         nodes.set(
           `fix-${m.id}-r${String(round)}`,
@@ -69,8 +68,6 @@ export function executionTable(plan: Plan, tiers: Tiers): Record<string, Executi
   const scopes = nodePackages(plan, reviewRoundLimit(tiers.policy));
   for (const m of milestones(plan)) {
     for (const p of m.packages) {
-      if (draftFor(p) === 'soldier' && tiers.routing.soldier?.models.length)
-        table[`soldier-${p.id}`] = describeExecution(tiers, 'soldier', p.risk, 1, m.id, [p], plan);
       for (const role of ['code', 'repair'] as const)
         table[`${role}-${p.id}`] = describeExecution(tiers, role, p.risk, 1, m.id, [p], plan);
     }
@@ -135,15 +132,10 @@ export function executionForNode(
   node: string,
   tiers: Tiers
 ): ExecutionDescriptor {
-  let descriptor = Object.hasOwn(table, node) ? table[node] : undefined;
-  if (!descriptor) {
-    const staticNode = /^(soldier-.+)__[0-9a-f]+__draft$/.exec(node)?.[1];
-    if (staticNode && Object.hasOwn(table, staticNode) && table[staticNode].role === 'soldier')
-      descriptor = table[staticNode];
-  }
+  const descriptor = Object.hasOwn(table, node) ? table[node] : undefined;
   if (!descriptor) throw new Error(`policy: unknown node ${node}`);
   if (
-    !['soldier', 'code', 'repair', 'review', 'command'].includes(descriptor.role) ||
+    !['code', 'repair', 'review', 'command'].includes(descriptor.role) ||
     !['G0', 'G1', 'G2'].includes(descriptor.risk) ||
     !Number.isInteger(descriptor.round) ||
     descriptor.round < 1 ||

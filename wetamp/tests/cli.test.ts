@@ -1917,27 +1917,6 @@ describe('verbs (archon stub)', () => {
     ]);
     expect(main(['status', 'sa1'])).toBe(EXIT.held);
   });
-  test('status reports soldier outcome without changing runs that have no soldier', () => {
-    stub([
-      run('completed', {
-        nodes: [
-          { nodeId: 'soldier-reset-used', state: 'completed', ...{ outputPreview: 'used' } },
-          { nodeId: 'soldier-reset-reset', state: 'completed', ...{ outputPreview: 'reset' } },
-          { nodeId: 'soldier-reset-bad', state: 'completed', ...{ outputPreview: 'reset' } },
-          { nodeId: 'soldier-bad__a__draft', state: 'failed', error: 'token=secret\nsecond line' },
-        ],
-      }),
-      run('completed', { nodes: [] }),
-    ]);
-    const withSoldier = JSON.parse(captured(() => main(['status', 'sa1'])).out);
-    expect(withSoldier.soldier).toEqual({
-      used: { outcome: 'used' },
-      reset: { outcome: 'reset' },
-      bad: { outcome: 'failed', error: 'token=***' },
-    });
-    const withoutSoldier = JSON.parse(captured(() => main(['status', 'sa1'])).out);
-    expect(withoutSoldier).not.toHaveProperty('soldier');
-  });
   test('cancel: a running run goes through archon workflow cancel with the archon run id', () => {
     const s = stub([run('running')]);
     expect(captured(() => main(['cancel', 'sa1'])).code).toBe(0);
@@ -2281,14 +2260,6 @@ describe('run (archon stub)', () => {
       const reviewer = reviewers[0];
       expect(pinned(call)).toEqual({
         '@sa-coder': { ...coder, effort: 'high' },
-        ...(tiers.routing.soldier?.models.length
-          ? {
-              '@sa-soldier': {
-                ...resolveRoute(tiers, console, 'auto', 'soldier').candidates[0],
-                effort: 'high',
-              },
-            }
-          : {}),
         '@sa-reviewer': { ...reviewer, effort: 'high' },
         '@sa-reviewer-alt': {
           ...(reviewers.find(a => a.provider !== reviewer.provider) ?? reviewers.at(1) ?? reviewer),
@@ -3582,7 +3553,7 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     const needs = [{ cap: 'scope_decision', why: 'conflict', minimal_ask: 'choose scope' }];
     const result = gate('coder_needs');
     Object.assign(result.decision, { blockers, needs });
-    const s = held('soldier-core', { 'verify-core.json': { ...result, milestone: 'm1' } });
+    const s = held('code-core', { 'verify-core.json': { ...result, milestone: 'm1' } });
     const view = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8')) as RunView;
     view.nodes!.push({ nodeId: 'verify-core', state: 'failed' });
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
@@ -3611,9 +3582,9 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
     expect(existsSync(join(s.root, 'gen/attempts/m1'))).toBe(false);
   });
   test('decide stays refused when an earlier failure has no structured control artifact', () => {
-    held('soldier-core');
+    held('code-core');
     const status = JSON.parse(captured(() => main(['status', 'sa1'])).out);
-    expect(status).toMatchObject({ state: 'failed', node: 'soldier-core' });
+    expect(status).toMatchObject({ state: 'failed', node: 'code-core' });
     expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(1);
   });
   test('single delivery decision: green redline self-report has identical status, brief and board projections', () => {

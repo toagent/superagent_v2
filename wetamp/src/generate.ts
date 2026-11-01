@@ -47,7 +47,6 @@ import {
 } from './config';
 import {
   capsOf,
-  draftFor,
   GENERATED_OUTPUT_PATHS,
   milestones,
   type Caps,
@@ -125,7 +124,6 @@ export function newRunId(now = new Date()): string {
 }
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
-const SOLDIER_IDLE_MS = 10 * 60 * 1000;
 
 export interface Carried {
   from: string;
@@ -984,53 +982,6 @@ export function buildWorkflow(
       const carriedEvidence = carried?.evidence?.[p.id]
         ? join(gen, 'carried-evidence', `${p.id}.json`)
         : undefined;
-      const soldier =
-        !fake && !carry && draftFor(p) === 'soldier' && tiers.routing.soldier?.models.length
-          ? `soldier-${p.id}`
-          : undefined;
-      const soldierOk = soldier ? `soldier-ok-${p.id}` : undefined;
-      const soldierReset = soldier ? `soldier-reset-${p.id}` : undefined;
-      if (soldier && soldierOk && soldierReset)
-        nodes.push(
-          {
-            id: `soldier-items-${p.id}`,
-            depends_on: [packageStart, pkgAttempt],
-            bash: `printf '%s' '[{"pkg":"${p.id}"}]'`,
-          },
-          {
-            id: soldier,
-            include: `sa-soldier-${p.id}`,
-            depends_on: [`soldier-items-${p.id}`],
-            with: { pkg: p.id, context_pack: `$${pkgAttempt}.output.context_pack_path` },
-            fan_out: {
-              items: `$soldier-items-${p.id}.output`,
-              as: 'draft',
-              max_parallel: 1,
-              join: 'all_done',
-            },
-          },
-          {
-            id: soldierOk,
-            depends_on: [soldier],
-            script: [
-              'try {',
-              '  const v = JSON.parse(process.env.INPUTS_RESULT ?? "");',
-              '  if (Array.isArray(v) && v.length === 1 && v[0] !== "" && v[0] !== null && !v.some(x => x?.archon_failed === true)) process.stdout.write("used");',
-              '} catch {}',
-            ].join('\n'),
-            runtime: 'bun',
-            with: { result: ref.value(output<unknown[]>(soldier)) },
-          },
-          {
-            id: soldierReset,
-            depends_on: [soldierOk],
-            trigger_rule: 'all_done',
-            with: { result: ref.optionalValue(conditionalOutput<string>(soldierOk), '') },
-            bash:
-              'if [ "$INPUTS_RESULT" = used ]; then printf used; else ' +
-              `git stash push --include-untracked -m soldier-leftover-${p.id} >/dev/null && printf reset; fi`,
-          }
-        );
       const coder = fake
         ? { bash: fakeEdit(p, p.id) }
         : {
@@ -1044,7 +995,6 @@ export function buildWorkflow(
               brief: brief(p),
               hint: join(gen, 'hints', `${p.id}.md`),
               context_node: pkgAttempt,
-              soldier_ok: soldierOk ?? '',
             },
           };
       const codeHandle = output<CoderOutput>(`code-${p.id}`);
@@ -1052,22 +1002,8 @@ export function buildWorkflow(
       nodes.push({
         id: `code-${p.id}`,
         ...coder,
-        ...(fake ? { with: { soldier_ok: '' } } : {}),
-        depends_on: [
-          packageStart,
-          pkgAttempt,
-          ...(soldier && soldierOk && soldierReset ? [soldier, soldierOk, soldierReset] : []),
-        ],
-        ...(soldier && soldierReset
-          ? {
-              trigger_rule: 'all_done',
-              when:
-                `$${prev}.output.head != '' && $${pkgAttempt}.output.attempt != '' && ` +
-                `$${soldierReset}.output != '__failed__'`,
-            }
-          : carry
-            ? { when: `$${pkgAttempt}.output.attempt != '0'` }
-            : {}),
+        depends_on: [packageStart, pkgAttempt],
+        ...(carry ? { when: `$${pkgAttempt}.output.attempt != '0'` } : {}),
         output_format: coderOutputFormat,
       });
       const previousHandle = output<DeliveryOutput>(prev);
@@ -1142,7 +1078,7 @@ export function buildWorkflow(
         });
       nodes.push({
         id: `repair-${p.id}`,
-        ...(!fake && !carry && !soldier ? { context: { resume: `code-${p.id}` } } : {}),
+        ...(!fake && !carry ? { context: { resume: `code-${p.id}` } } : {}),
         ...(fake
           ? { bash: fakeEdit(p, `repair ${p.id}`) }
           : {
@@ -1777,52 +1713,6 @@ export function generate(
         '\n' +
         renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p), tiers.policy.test_budget)
     );
-  }
-  if (!fake) {
-    const executions = executionTable(plan, tiers);
-    const candidateFor = (descriptor: (typeof executions)[string]) =>
-      executionRoute(tiers, plan.console ?? 'claude', plan.mode, descriptor, [], state)
-        .candidates[0];
-    for (const p of plan.packages) {
-      if (draftFor(p) !== 'soldier' || !tiers.routing.soldier?.models.length) continue;
-      const id = `soldier-${p.id}`;
-      const descriptor = executions[id];
-      const candidate = candidateFor(descriptor);
-      const launch = {
-        ...executionNode(descriptor, candidate),
-        ...(candidate.provider === 'claude'
-          ? { maxBudgetUsd: tiers.policy.coder_budget_usd.claude }
-          : {}),
-      };
-      writeFileSync(
-        join(dir, '.archon', 'workflows', `sa-soldier-${p.id}.yaml`),
-        YAML.stringify(
-          {
-            name: `sa-soldier-${p.id}`,
-            description: `Optional draft for ${p.id}`,
-            mutates_checkout: true,
-            inputs: {
-              pkg: { required: true },
-              context_pack: { required: true },
-              draft: { required: true },
-            },
-            returns: 'draft',
-            nodes: [
-              {
-                id: 'draft',
-                command: 'sa-soldier',
-                retry: { on_error: 'transient' },
-                model: '@sa-soldier',
-                ...launch,
-                idle_timeout: SOLDIER_IDLE_MS,
-                with: { pkg: '$INPUTS.pkg', context_pack: '$INPUTS.context_pack' },
-              },
-            ],
-          },
-          { lineWidth: 0, aliasDuplicateObjects: false }
-        )
-      );
-    }
   }
   const lessons = injectMemory(
     plan,

@@ -122,10 +122,6 @@ export interface Plan {
      */
     max_net_lines?: number;
     /**
-     * Initial author: general by default; set soldier explicitly for a non-G2 package to draft for general review
-     */
-    draft?: 'soldier' | 'general';
-    /**
      * G2 qualified PASS integrates automatically unless human signoff is requested
      */
     signoff?: 'auto' | 'human';

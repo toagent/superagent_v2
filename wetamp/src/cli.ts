@@ -432,7 +432,7 @@ function adoptionPackages(l: Ledger, run: RunView): Record<string, PackageHistor
     elapsed = Number.isFinite(measured) ? Math.max(0, measured) : 0;
   return Object.fromEntries(planOf(l).packages.map(p => {
     const failed = (run.nodes ?? []).filter(n => n.state === 'failed' &&
-      authoredNodeId(n.nodeId).replace(/^(?:soldier|code|verify|repair|settle)-/, '') === p.id),
+      authoredNodeId(n.nodeId).replace(/^(?:code|verify|repair|settle)-/, '') === p.id),
       first = failed.at(0), previous = prior[p.id], first_failure = previous?.first_failure ?? (first ? {
         node: first.nodeId, reason: errorExcerpt(redact(first.error ?? 'unknown'), 200),
         at: first.startedAt ?? run.completed_at ?? '', evidence: join(artifactsOf(run), `${authoredNodeId(first.nodeId)}.json`),
@@ -805,7 +805,6 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     state: c.state,
     exit: c.exit,
     ...projection,
-    ...soldierOutcomes(nodes),
     nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
       nodes.length
     )} completed`,
@@ -841,32 +840,6 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
-  };
-}
-
-function soldierOutcomes(nodes: NonNullable<RunView['nodes']>): Record<string, unknown> {
-  const prefix = 'soldier-reset-';
-  const resets = nodes.filter(node => node.nodeId.startsWith(prefix));
-  if (!resets.length) return {};
-  return {
-    soldier: Object.fromEntries(
-      resets.map(reset => {
-        const pkg = reset.nodeId.slice(prefix.length);
-        if (reset.state !== 'completed') return [pkg, { outcome: 'pending' }];
-        if ('outputPreview' in reset && reset.outputPreview === 'used')
-          return [pkg, { outcome: 'used' }];
-        const base = `soldier-${pkg}`;
-        const failed = nodes.find(
-          node =>
-            (node.nodeId === base ||
-              (node.nodeId.startsWith(`${base}__`) && node.nodeId.endsWith('__draft'))) &&
-            node.error
-        );
-        if (!failed?.error) return [pkg, { outcome: 'reset' }];
-        const error = errorExcerpt(redact(failed.error).split(/\r?\n/, 1)[0], 200);
-        return [pkg, { outcome: 'failed', error }];
-      })
-    ),
   };
 }
 
