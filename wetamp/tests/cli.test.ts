@@ -2855,8 +2855,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
   // prettier-ignore
   test('approval occurrences and owner-loss snapshots create stable ask episodes', () => {
     const approval = stub([run('paused', { metadata: { approval: { nodeId: 'review', pauseId: 'p1' } } })]); approval.due.mockReturnValue([]); const approvalTick = cliMod.superviseTick();
-    expect('actions' in approvalTick ? approvalTick.actions[0] : approvalTick).toMatchObject({ action: 'ask', ok: true });
-    const lost = stub([run('running', { metadata: { execution_owner: LOST } })]);
+    expect('actions' in approvalTick ? approvalTick.actions[0] : approvalTick).toMatchObject({ action: 'ask', ok: true }); const lost = stub([run('running', { metadata: { execution_owner: LOST } })]);
     lost.due.mockReturnValue([]); runsDb(LOST); writeFileSync(ledgerPath('sa1'), JSON.stringify({ ...lost.ledger, auto_recover_paused: 'effects_unknown' }));
     const recoveryTick = cliMod.superviseTick();
     expect('actions' in recoveryTick ? recoveryTick.actions[0] : recoveryTick).toMatchObject({ action: 'ask', ok: true });

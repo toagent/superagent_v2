@@ -359,22 +359,10 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
     structured = parts.indexOf('需你决定');
   const project = structured >= 0 ? parts[structured + 1] : 'superagent';
   const problem = structured >= 0 ? parts[structured + 2] : parts.at(-1);
-  state.alerts.push(
-    structured >= 0
-      ? {
-          id,
-          ...receiptPresentation({
-            outcome: processing ? 'processing' : executed ? 'executed' : 'not_executed',
-            project,
-            headline: problem ?? '决策回执',
-            selection: parts[0]?.split('：').at(-1) ?? '未知',
-            result: message,
-            next: processing || executed ? '引擎继续执行' : '操作员重读最新决策',
-            source: id,
-          }),
-        }
-      : { id, title, message, priority: 2, tags: [executed ? 'green_circle' : 'white_circle'] }
-  );
+  // prettier-ignore
+  state.alerts.push(structured >= 0
+    ? { id, ...receiptPresentation({ outcome: processing ? 'processing' : executed ? 'executed' : 'not_executed', project, headline: problem ?? '决策回执', selection: parts[0]?.split('：').at(-1) ?? '未知', result: message, next: processing || executed ? '引擎继续执行' : '操作员重读最新决策', source: id }) }
+    : { id, title, message, priority: 2, tags: [executed ? 'green_circle' : 'white_circle'] });
   state.alert_ids.push(id);
 }
 

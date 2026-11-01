@@ -2649,7 +2649,6 @@ interface AnswerReceipt {
   effect?: DecisionEffect;
   terminal_before?: string;
   error?: string;
-  answer?: 'yes' | 'no';
 }
 interface AnswerIntent {
   answer: 'yes' | 'no';
@@ -2798,7 +2797,6 @@ function beginAnswer(l: Ledger, node: string, a: Ask, answer: 'yes' | 'no', asks
   a.receipt = {
     key: `${a.id ?? 'unknown'}:${answer}:received`,
     stage: 'received',
-    answer,
     body: `run=${l.run_id}；答复=${answer}；任务已收到，执行结果尚未确认`,
     delivery: 'pending',
     at: new Date().toISOString(),
@@ -2879,7 +2877,6 @@ function consumeAnswer(
     key: new Bun.CryptoHasher('sha256').update(`${a.id ?? key}:${answer}`).digest('hex'),
     body: decisionReceipt(l.run_id, node, answer, effect),
     stage: 'succeeded',
-    answer,
     effect,
     delivery: 'pending',
     terminal_before: a.decision?.terminal_before,
@@ -2926,6 +2923,7 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
     const project = a.context?.project ?? 'superagent',
       headline = a.context?.headline ?? '决策回执',
       succeeded = r.stage === 'succeeded',
+      answer = a.decision?.answer ?? (a.status === 'approved' ? 'yes' : 'no'),
       next = succeeded
         ? r.effect?.action === 'reject'
           ? '无需操作；run 已终止'
@@ -2937,7 +2935,7 @@ function deliverReceipt(l: Ledger | undefined, key: string, a: Ask, asks: Asks):
         outcome: succeeded ? 'executed' : 'not_executed',
         project,
         headline,
-        selection: r.answer === 'yes' ? '是' : '否',
+        selection: answer === 'yes' ? '是' : '否',
         result: r.body,
         next,
         source: l?.run_id ?? key,
@@ -3777,10 +3775,8 @@ function holdEpisode(_l: Ledger, run: RunView, c: Classified, hold?: Hold): stri
   }
   if (hold === 'auto_recover') return `auto_recover@${recoverySnapshot(run)}`;
   const node = c.node ?? run.metadata?.wait?.nodeId ?? run.metadata?.approval?.nodeId ?? '';
-  const since =
-    run.metadata?.wait?.waitingSince ??
-    run.nodes?.find(n => n.nodeId === node)?.startedAt ??
-    run.metadata?.approval?.pauseId;
+  // prettier-ignore
+  const since = run.metadata?.wait?.waitingSince ?? run.nodes?.find(n => n.nodeId === node)?.startedAt ?? run.metadata?.approval?.pauseId;
   if (!node || !since) throw new Error(`gate episode missing node_started: ${node || 'unknown'}`);
   return `${node}@${since}`;
 }
