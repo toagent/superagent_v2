@@ -28,7 +28,8 @@ appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ engine: ${JSON.string
 if (args[0] === 'engine' && args[1] === 'continuation') {
   if (args[2] === 'unsupported') process.exit(2);
   console.log(JSON.stringify({ current: args[2] === 'stale' }));
-} else if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
+} else if (args[0] === 'status') console.log(JSON.stringify({ state: args[1] === 'archived' || args[1]?.startsWith('done-') ? 'completed' : 'running' }));
+else if (args.includes('--schedule')) console.log(JSON.stringify(${JSON.stringify(schedule ?? {})}));
 else console.log(JSON.stringify({ ok: true }));
 if (${String(failExecutor)} && args.includes('--no-global')) process.exit(1);
 `
@@ -89,6 +90,7 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
   expect(invoke('status', 'run-1').exitCode).toBe(0);
   expect(invoke('status', 'legacy').exitCode).toBe(0);
   expect(invoke('status', 'archived').exitCode).toBe(0);
+  expect(invoke('wait', 'archived').exitCode).toBe(0);
   expect(invoke('resume', 'archived').exitCode).toBe(1);
   expect(invoke('resume', 'stale').exitCode).toBe(0);
   expect(invoke('resume', 'run-1').exitCode).toBe(0);
@@ -104,6 +106,8 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
     { engine: 'pinned', args: ['status', 'run-1'], served: 'run-1' },
     { engine: 'bootstrap', args: ['status', 'legacy'], served: 'legacy' },
     { engine: 'current', args: ['status', 'archived'], historical: 'archived' },
+    { engine: 'current', args: ['status', 'archived'], historical: 'archived' },
+    { engine: 'current', args: ['wait', 'archived'], historical: 'archived' },
     { engine: 'current', args: ['engine', 'continuation', 'archived'] },
     { engine: 'current', args: ['engine', 'continuation', 'stale'] },
     { engine: 'current', args: ['resume', 'stale'] },
@@ -124,6 +128,52 @@ test('shim dispatches current, pinned run, and grouped tick without scheduler lo
       served: 'run-1',
     },
   ]);
+});
+
+test('wait routes same-snapshot runs together and rejects active cross-snapshot runs', () => {
+  const root = tmp(),
+    home = join(root, 'home'),
+    marker = join(root, 'calls.jsonl');
+  mkdirSync(join(home, 'engine', 'receipts'), { recursive: true });
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  const current = fakeEngine(root, 'current', marker),
+    first = fakeEngine(root, 'first', marker),
+    second = fakeEngine(root, 'second', marker);
+  symlinkSync(current, join(home, 'engine', 'current'));
+  for (const [run, snapshot] of [
+    ['run-a', first],
+    ['run-b', first],
+    ['run-c', second],
+    ['done-a', first],
+    ['done-c', second],
+  ])
+    writeFileSync(join(home, 'runs', `${run}.json`), JSON.stringify({ engine_snapshot: snapshot }));
+  const invoke = (...args: string[]) =>
+    Bun.spawnSync([SHIM, ...args], {
+      env: { ...process.env, SUPERAGENT_HOME: home },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+  expect(invoke('wait', 'run-a', 'run-b', '--timeout', '1').exitCode).toBe(0);
+  const conflict = invoke('wait', 'run-a', 'run-c', '--timeout', '1');
+  expect(conflict.exitCode).toBe(1);
+  expect(conflict.stderr.toString()).toContain(`${first}\trun-a`);
+  expect(conflict.stderr.toString()).toContain(`${second}\trun-c`);
+  expect(invoke('wait', 'done-a', 'done-c', '--timeout', '1').exitCode).toBe(0);
+  const calls = readFileSync(marker, 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line));
+  expect(calls[0]).toMatchObject({
+    engine: 'first',
+    args: ['wait', 'run-a', 'run-b', '--timeout', '1'],
+    served: 'run-a',
+  });
+  expect(calls.at(-1)).toMatchObject({
+    engine: 'current',
+    args: ['wait', 'done-a', 'done-c', '--timeout', '1'],
+    historical: 'done-a',
+  });
 });
 
 test('real continuation CLI emits the JSON contract consumed by the shim', () => {
