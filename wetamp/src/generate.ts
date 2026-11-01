@@ -1125,6 +1125,9 @@ export function buildWorkflow(
           depends_on: [verify],
           when: `$${verify}.output.reason == 'budget_exceeded'`,
         });
+      const repairWhen =
+        `$${verify}.output.disposition == 'repair'` +
+        (budgetGate ? ` || $${budgetGate}.output.decision == 'reject'` : '');
       const repairContext = `repair-context-${p.id}`;
       const repairHandle = conditionalOutput<CoderOutput>(`repair-${p.id}`);
       if (!fake)
@@ -1133,7 +1136,7 @@ export function buildWorkflow(
           ...attemptInputs(attemptPath(gen, `pkg/${p.id}`)),
           with: { counter: attemptPath(gen, `pkg/${p.id}`), gen, context_node: `repair-${p.id}` },
           depends_on: [verify, pkgAttempt],
-          when: `$${verify}.output.disposition == 'repair'`,
+          when: repairWhen,
           output_format: contextOutputFormat,
         });
       nodes.push({
@@ -1159,7 +1162,7 @@ export function buildWorkflow(
               },
             }),
         depends_on: [verify, pkgAttempt, ...(!fake ? [repairContext] : [])],
-        when: `$${verify}.output.disposition == 'repair'`,
+        when: repairWhen,
         output_format: coderOutputFormat,
       });
       nodes.push(

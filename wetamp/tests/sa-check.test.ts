@@ -30,6 +30,7 @@ import {
   readAuthorEvidence,
   ledgerOf,
   scopeRisk,
+  approvableScopeTests,
   deliveryDecision as rawDeliveryDecision,
   readAttempt,
   CHECK_AUX_TIMEOUT_MS,
@@ -1887,6 +1888,15 @@ describe('F-13 delivery scope', () => {
       'G2'
     );
     expect(scopeRisk([ch(['src/l'], ['100644', '120000'])], ['src'], pol, 'G0').risk).toBe('G2');
+  });
+  test('only corresponding test files are eligible for a scope decision', () => {
+    const root = tmp();
+    mkdirSync(join(root, 'tests'));
+    writeFileSync(join(root, 'tests/direct.test.ts'), "import '../src/owned';\n");
+    expect(approvableScopeTests(['tests/owned.test.ts'], ['src/owned.ts'], root)).toBeTrue();
+    expect(approvableScopeTests(['tests/direct.test.ts'], ['src/owned.ts'], root)).toBeTrue();
+    expect(approvableScopeTests(['tests/unrelated.test.ts'], ['src/owned.ts'], root)).toBeFalse();
+    expect(approvableScopeTests(['src/unowned.ts'], ['src/owned.ts'], root)).toBeFalse();
   });
   test.each([
     ['ci/Jenkinsfile', 'G2'],
@@ -4742,7 +4752,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         risk,
         policy: pol,
         ...extra,
-      }).out as { patch: string; delta: string; risk: string; out_of_scope: string[] };
+      }).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[] };
     const r = go('G0');
     expect(readFileSync(r.delta, 'utf8')).toContain('src/b.md');
     expect(readFileSync(r.delta, 'utf8')).not.toContain('src/a.ts');
@@ -4863,7 +4873,13 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     write(['src/']);
     commit('src/auth/x.md');
     expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });
-  }, testTimeout(15_000)); // Six real accept invocations exercise patch and scope integration.
+    commit('tests/a.test.ts');
+    const held = go('G1');
+    expect(held).toMatchObject({ disposition: 'fail', reason: 'scope_approval', out_of_scope: ['tests/a.test.ts'] });
+    mkdirSync(join(root, 'approvals'));
+    writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ diff_hash: held.diff_hash, files: ['tests/a.test.ts'] }));
+    expect(go('G1')).toMatchObject({ disposition: 'advance', out_of_scope: ['tests/a.test.ts'] });
+  }, testTimeout(15_000));
   test('unknown kind fails loudly', () => {
     const root = tmp();
     expect(runScript(gitRepo(root), { kind: 'bogus' }).code).not.toBe(0);

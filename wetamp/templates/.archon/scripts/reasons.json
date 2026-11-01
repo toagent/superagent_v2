@@ -182,6 +182,13 @@
     "description": "交付包含 scope.write 之外的路径"
   },
   {
+    "code": "scope_approval",
+    "hold": "approval",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "测试文件超出 scope.write，等待批准当前diff"
+  },
+  {
     "code": "acceptance_failed",
     "hold": "gate",
     "determinism": "deterministic",
@@ -425,6 +432,13 @@
     "determinism": "deterministic",
     "owner": "coder",
     "description": "交付包含 scope.write 之外的路径"
+  },
+  {
+    "code": "scope_approval+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "测试文件超出 scope.write，等待批准当前diff"
   },
   {
     "code": "acceptance_failed+review_limit",

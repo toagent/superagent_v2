@@ -511,6 +511,8 @@ export function classify(run: RunView): Classified {
       const approval = run.metadata?.approval;
       const bodyGateId = (approval as (typeof approval & { bodyGateId?: string }) | undefined)
         ?.bodyGateId;
+      if (approval?.nodeId.startsWith('human-scope-'))
+        return { state: 'held:scope', exit: EXIT.held, node: approval.nodeId };
       if (
         approval?.nodeId.startsWith('human-') &&
         (approval as typeof approval & { resolved?: string }).resolved === 'rejected'
@@ -874,6 +876,8 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     });
     if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
     const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
+    if (c.node.startsWith('verify-') && decision?.reason === 'scope_approval')
+      return { ...c, state: 'held:scope', exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
       (!decision || decision.kind === 'advance' || decision.kind === 'debt')
@@ -2325,6 +2329,20 @@ function approveAdjudication(l: Ledger, run: RunView, c: Classified,
   return retry(l, c, undefined, onEffect, run);
 }
 
+// prettier-ignore
+function recordDiffApproval(l: Ledger, run: RunView, node: string): () => void {
+  const match = /^human-(scope|budget)-(.+)$/.exec(node);
+  if (!match) return () => undefined;
+  const out = evidenceJson(l, artifactsOf(run), `verify-${match[2]}.json`) as { diff_hash?: unknown; out_of_scope?: unknown } | undefined;
+  if (typeof out?.diff_hash !== 'string' || !out.diff_hash) throw new Error(`${match[1]} approval evidence missing diff_hash`);
+  const files = match[1] === 'scope' && Array.isArray(out.out_of_scope) ? out.out_of_scope.filter((path): path is string => typeof path === 'string').sort() : undefined;
+  if (match[1] === 'scope' && !files?.length) throw new Error('scope approval files missing');
+  mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
+  const path = join(l.gen_dir, 'approvals', `${node}.json`), prior = existsSync(path) ? readFileSync(path) : undefined;
+  writeFileSync(path, JSON.stringify({ diff_hash: out.diff_hash, ...(files ? { files } : {}) }) + '\n');
+  return () => { if (prior) writeFileSync(path, prior); else rmSync(path, { force: true }); };
+}
+
 /** decide --all-held retry：对所有 held（签收门除外）的 run 逐个 retry，单个失败不影响其余。 */
 function retryAllHeld(): number {
   const out = ledgers().flatMap((l): Record<string, unknown>[] => {
@@ -2377,21 +2395,50 @@ function decide(l: Ledger, a: Args): number {
       print({ run_id: l.run_id, decision: 'approve', ...res });
       return res.ok ? 0 : res.held ? EXIT.held : 1;
     }
-    if (c.state !== 'held:human' && c.state !== 'held:target_dirty') {
+    if (c.state === 'held:scope' && c.node) {
+      const pkg = c.node.replace(/^verify-/, ''),
+        rollback = recordDiffApproval(l, run, `human-scope-${pkg}`);
+      const res = retry(l, c);
+      if (!res.ok) rollback();
+      print({ run_id: l.run_id, decision: 'approve', ...res });
+      return res.ok ? 0 : res.held ? EXIT.held : 1;
+    }
+    if (!['held:human', 'held:scope', 'held:target_dirty'].includes(c.state)) {
       print({ run_id: l.run_id, ok: false, reason: 'run is not waiting for a human signoff' });
       return 1;
     }
     const log = join(l.gen_dir, `signal-${c.node ?? 'none'}.log`);
     return intervention(l, 'decide', () => {
+      const rollback =
+        run.metadata?.approval && c.node ? recordDiffApproval(l, run, c.node) : () => undefined;
       const r = run.metadata?.approval
         ? approveRun(l)
         : signalHuman(run, { decision: 'approve' }, log, l.repo, l.engine_snapshot);
+      if (!r.ok) rollback();
       print({ run_id: l.run_id, ...r });
       return r.ok ? 0 : 1;
     });
   }
   if (action === 'reject') {
     const { hint, pkg } = a.flags;
+    const budgetPkg = /^human-budget-(.+)$/.exec(c.node ?? '')?.[1];
+    if (budgetPkg) {
+      if (hint === undefined) throw new Error('budget rejection needs --hint <text>');
+      if (pkg !== undefined && pkg !== budgetPkg)
+        throw new Error(`budget rejection package is ${budgetPkg}`);
+      writeFileSync(join(l.gen_dir, 'hints', `${budgetPkg}.md`), hint + '\n');
+      const rollback = advanceAttempts([attemptPath(l.gen_dir, `pkg/${budgetPkg}`)]);
+      try {
+        const rejected = rejectRun(l, hint);
+        if (!rejected.ok) throw new Error(rejected.reason ?? 'native reject failed');
+      } catch (error) {
+        rollback();
+        throw error;
+      }
+      const res = recoverRun(l);
+      print({ run_id: l.run_id, decision: 'reject', package: budgetPkg, ...res });
+      return res.ok ? 0 : res.held ? EXIT.held : 1;
+    }
     if (pkg !== undefined) {
       if (hint === undefined) throw new Error('decide reject --pkg needs --hint <text>');
       if (c.state !== 'held:human' || !run.metadata?.approval)
@@ -3631,7 +3678,7 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
       ? reasonHold(nodeReason(l, run, c))
       : c.state === 'held:environment'
         ? 'environment'
-        : c.state === 'held:paused' || c.state === 'held:target_dirty'
+        : c.state === 'held:paused' || c.state === 'held:scope' || c.state === 'held:target_dirty'
           ? run.metadata?.approval
             ? 'approval'
             : 'paused'

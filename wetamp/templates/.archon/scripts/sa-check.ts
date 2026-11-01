@@ -1097,6 +1097,34 @@ export function scopeRisk(
   return { risk: maxRisk(declared, ...inferred), out_of_scope };
 }
 
+const moduleKey = (path: string): string =>
+  path.replace(/\.(?:cjs|js|jsx|ts|tsx)$/, '').replace(/\/index$/, '');
+/** Test-only scope growth is approvable only when it names or directly imports an owned module. */
+// prettier-ignore
+export function approvableScopeTests(paths: string[], write: string[], root = process.cwd()): boolean {
+  const modules = write.filter(path => !/[*?[\]]/.test(path)).map(moduleKey);
+  const owned = (path: string): boolean => write.some(w => path === moduleKey(w) || path.startsWith(w.replace(/\/*$/, '/')) || glob(w, path));
+  return paths.length > 0 && paths.every(path => {
+    if (!/(?:^|\/)tests?\/|\.test\.[^/]+$/.test(path)) return false;
+    const name = basename(moduleKey(path.replace(/\.test(?=\.)/, '')));
+    if (modules.some(source => basename(source) === name) || write.some(w => w.endsWith("/") && ['ts', 'tsx', 'js', 'jsx', 'cjs'].some(ext => existsSync(resolve(root, w, `${name}.${ext}`))))) return true;
+    try {
+      const imports = [...readFileSync(resolve(root, path), 'utf8').matchAll(/(?:\bfrom\s+|\bimport\s+(?:[^'"]+\s+from\s+)?|(?:import|require)\s*\(\s*)['"]([^'"]+)['"]/g)]
+        .map(match => match[1]).filter(specifier => specifier.startsWith('.'))
+        .map(specifier => moduleKey(relative(root, resolve(root, dirname(path), specifier))));
+      return imports.some(owned);
+    } catch { return false; }
+  });
+}
+
+// prettier-ignore
+function approvedDiff(kind: 'scope' | 'budget', pkg: string, hash: string, paths: string[] = []): boolean {
+  try {
+    const value = JSON.parse(readFileSync(join(dirname(env('PLAN')), 'approvals', `human-${kind}-${pkg}.json`), 'utf8')) as { diff_hash?: unknown; files?: unknown };
+    return value.diff_hash === hash && (kind !== 'scope' || JSON.stringify(value.files) === JSON.stringify([...paths].sort()));
+  } catch { return false; }
+}
+
 // prettier-ignore
 export function acceptanceContractHash(): string {
   return sha(cacheJson([plan(), env('PKGS').split(',').filter(Boolean), (env('SCOPE_PKGS') || env('PKGS')).split(','), env('BASE'), env('TARGET_TIP'), env('RISK'), environmentIdentity(projectEnvironment(process.env)), env('POLICY') ? readFileSync(env('POLICY'), 'utf8') : null]));
@@ -1379,7 +1407,12 @@ async function acceptOnce(
   if (resourceWaitTimedOut)
     Object.assign(result, { disposition: 'fail', reason: 'resource_wait_timeout', decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' } });
   const lines = lineBudget(pkgs, tag);
-  if (lines && budgetExceeded(lines.limit, lines.used) && result.disposition === 'advance')
+  if (
+    lines &&
+    budgetExceeded(lines.limit, lines.used) &&
+    result.disposition === 'advance' &&
+    !approvedDiff('budget', pkgs[0].id, hash)
+  )
     Object.assign(result, {
       reason: 'budget_exceeded',
       decision: { ...result.decision, reason: 'budget_exceeded' },
@@ -1390,24 +1423,35 @@ async function acceptOnce(
       reason: 'acceptance_failed+review_limit',
       decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
     });
+  const scopeApproval =
+    scope.out_of_scope.length > 0 &&
+    approvableScopeTests(
+      scope.out_of_scope,
+      covered.flatMap(k => k.scope.write)
+    );
+  const scopeReason =
+    scopeApproval && result.disposition === 'advance' ? 'scope_approval' : 'scope_violation';
   if (
     scope.out_of_scope.length &&
-    (result.disposition === 'advance' || result.disposition === 'repair')
-  )
-    Object.assign(result, {
-      disposition: 'repair',
-      reason: 'scope_violation',
-      decision: {
-        ...result.decision,
-        kind: 'repair',
-        reason: 'scope_violation',
-        evidence: [
-          ...result.decision.evidence,
-          ...scope.out_of_scope,
-          'Revert out-of-scope changes or report a blocker requesting expanded scope.',
-        ],
-      },
-    });
+    (result.disposition === 'advance' || result.disposition === 'repair') &&
+    !approvedDiff('scope', pkgs[0].id, hash, scope.out_of_scope)
+  ) {
+    const approval = scopeApproval && result.disposition === 'advance';
+    result.disposition = approval ? 'fail' : 'repair';
+    result.reason = scopeReason;
+    result.decision = {
+      ...result.decision,
+      kind: approval ? 'block' : 'repair',
+      reason: scopeReason,
+      evidence: [
+        ...result.decision.evidence,
+        ...scope.out_of_scope,
+        approval
+          ? 'Approve this test-only scope expansion or reject it.'
+          : 'Revert out-of-scope changes or report a blocker requesting expanded scope.',
+      ],
+    };
+  }
   saveCoder(tag, coder, result.error_class_ignored);
   const fingerprint = join(artifacts, `${tag}.fingerprint.json`);
   writeFileSync(

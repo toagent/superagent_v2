@@ -163,6 +163,8 @@ const base: Reason[] = [
   deterministic('coder_partial', 'coder', 'coder', '编码未完成且无改动或验收失败'),
   deterministic('false_handback', 'coder', 'coder', '编码节点零工具调用且短时交回未完成'),
   deterministic('scope_violation', 'coder', 'coder', '交付包含 scope.write 之外的路径'),
+  // prettier-ignore
+  deterministic('scope_approval', 'approval', 'human', '测试文件超出 scope.write，等待批准当前diff'),
   deterministic('acceptance_failed', 'gate', 'coder', '验收失败'),
   deterministic('ruler_invalid', 'gate', 'human', '基线尺子缺失目标断言失败或无法执行'),
   deterministic('vacuous_test', 'gate', 'human', '基线尺子的目标测试已通过'),
@@ -229,7 +231,7 @@ export const reasonOf = (code: string): Reason | undefined => REASONS.find(r => 
 /** Return the CLI action accepted by the current hold, including reason codes projected as holds. */
 export function holdAction(run: string, code: string): string {
   const hold = reasonOf(code)?.hold ?? code;
-  return hold === 'acceptance_adjudication'
+  return hold === 'acceptance_adjudication' || code === 'scope_approval'
     ? `superagent decide ${run} approve`
     : `superagent decide ${run} retry`;
 }

@@ -2433,6 +2433,26 @@ describe('decide (archon stub)', () => {
     for (const scope of ['.packages/core', '.packages/api', 'm1'])
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts', scope), 'utf8')).toBe('1');
   });
+  // prettier-ignore
+  test('scope approval is diff-bound and budget rejection resumes package repair with a hint', () => {
+    const scope = stub([run('failed', { nodes: [{ nodeId: 'verify-core', state: 'failed' }] })]);
+    packageRework(scope);
+    const art = join(scope.root, 'out/artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'verify-core.json'), JSON.stringify({ diff_hash: 'diff-a', out_of_scope: ['tests/core.test.ts'], decision: { kind: 'block', reason: 'scope_approval', evidence: [], debt: [] } }));
+    const view = JSON.parse(readFileSync(join(scope.dir, 'get-000.json'), 'utf8'));
+    view.output_root = join(scope.root, 'out');
+    writeFileSync(join(scope.dir, 'get-000.json'), JSON.stringify(view));
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
+    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ diff_hash: 'diff-a', files: ['tests/core.test.ts'] });
+
+    const budget = stub([run('paused', { metadata: { approval: { nodeId: 'human-budget-core' } } })]);
+    packageRework(budget);
+    expect(captured(() => main(['decide', 'sa1', 'reject', '--hint', 'remove wrapper'])).code).toBe(0);
+    expect(readFileSync(join(budget.ledger.gen_dir, 'hints/core.md'), 'utf8')).toBe('remove wrapper\n');
+    expect(budget.calls()).toContain('workflow reject r remove wrapper --json');
+    expect(budget.calls()).toContain('workflow resume r --detach --json');
+  });
   test('reject --pkg rolls counters back when native reject fails', () => {
     const s = stub([run('paused', { metadata: { approval: { nodeId: 'human-m1' } } })]);
     packageRework(s);
