@@ -118,6 +118,19 @@ test('标题与状态栏按巡检时间显示新鲜度，tick 缺失时回退心
   expect(frame(old, 100, 20, undefined, undefined, null)).toContain('巡检 360s 前');
 });
 
+test('tick 停摆超过五分钟置顶提示，恢复后消失', () => {
+  const command =
+    'launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.wetamp.superagent.supervise-tick.plist';
+  const stale = frame(heartbeat([]), 100, 20, undefined, undefined, {
+    at: new Date(now - 6 * 60_000).toISOString(),
+  });
+  expect(Bun.stripANSI(stale).replaceAll('\n', '')).toContain(
+    `supervise-tick 已停 6 分钟：${command}`
+  );
+  expect(Bun.stripANSI(stale).split('\n')[0]).toStartWith('supervise-tick 已停');
+  expect(frame(heartbeat([]), 100, 20)).not.toContain('supervise-tick 已停');
+});
+
 test('状态图标完整且宽屏双列、普通宽度单列', () => {
   const states = heartbeat(['working', 'idle', 'stalled', 'handed_back', 'unknown']);
   const icons = frame(states, 100, 80);
