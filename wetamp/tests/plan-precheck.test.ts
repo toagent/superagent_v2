@@ -14,6 +14,14 @@ const fixture = (): string => {
     "export const GENERATED_OUTPUT_PATHS = ['wetamp/src/plan-types.generated.ts'];\nconst input = '../schemas/plan.schema.json';\nconst output = '../src/plan-types.generated.ts';\n"
   );
   writeFileSync(join(root, 'wetamp/schemas/plan.schema.json'), '{}');
+  writeFileSync(join(root, 'wetamp/src/foo.ts'), 'export const foo = 1;\n');
+  writeFileSync(
+    join(root, 'wetamp/tests/foo.test.ts'),
+    "import { foo } from '../src/foo';\nvoid foo;\n"
+  );
+  writeFileSync(join(root, 'wetamp/src/cli.ts'), 'export const cli = 1;\n');
+  for (let i = 0; i < 16; i++)
+    writeFileSync(join(root, `wetamp/tests/hub-${String(i)}.test.ts`), "import '../src/cli';\n");
   sh('git add . && git -c user.name=t -c user.email=t@l commit -qm fixture', root);
   return root;
 };
@@ -61,6 +69,23 @@ test('missing acceptance test paths block unless the new test is in scope', () =
   );
   subject.packages[0].scope.write.push('packages/paths/src/plugin-process.test.ts');
   expect(planPrecheck(subject, root).blocking).toEqual([]);
+});
+
+test('direct unit test consumers require scope or an explicit read hint', () => {
+  const root = fixture(),
+    subject = plan(root, ['wetamp/src/foo.ts'], []);
+  expect(planPrecheck(subject, root, 'unrelated override').blocking.join('\n')).toContain(
+    'wetamp/tests/foo.test.ts'
+  );
+  subject.packages[0].scope.read_hint = ['wetamp/tests/foo.test.ts'];
+  expect(planPrecheck(subject, root).blocking).toEqual([]);
+});
+
+test('hub modules with more than fifteen unit test consumers only add info', () => {
+  const root = fixture(),
+    result = planPrecheck(plan(root, ['wetamp/src/cli.ts'], []), root);
+  expect(result.blocking).toEqual([]);
+  expect(result.info.join('\n')).toMatch(/wetamp\/src\/cli\.ts.*16.*仅提示/);
 });
 
 test('shell syntax errors are reported with their package and command number in any repo', () => {
