@@ -461,12 +461,16 @@ test('verify executor uses heavy slot and kills a timed-out test process', () =>
 // prettier-ignore
 test('auto verify preserves unknown ownership, detects loss, advances base, and reports once', () => {
   const f = sourceFixture(), first = f.sha(); promote(first, f.evidence); const second = commit(f.source, 'verify-second'); promote(second, undefined, { probe: successfulProbe });
-  const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); let spawned = 0, detached = 0, handoffs = 0, alerts = 0, state: 'online' | 'offline' | 'unknown' = 'online', start = 'start';
-  const dependencies = { spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start } as const) : ({ state } as const), handoff: () => handoffs++, alert: () => alerts++ };
+  const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); let spawned = 0, detached = 0, handoffs = 0, state: 'online' | 'offline' | 'unknown' = 'online', start = 'start';
+  const dependencies = { spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start } as const) : ({ state } as const), handoff: () => handoffs++ };
   expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, base: first, started: true }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, started: false });
   const secondRecord = join(promotions, `${second}.verify.json`); writeFileSync(secondRecord, JSON.stringify({ ...JSON.parse(readFileSync(secondRecord, 'utf8')), status: 'passed' }));
-  const third = commit(f.source, 'verify-third'); promote(third, undefined, { probe: successfulProbe }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true });
+  const thirdName = 'verify-third-title-is-longer-than-thirty', third = commit(f.source, thirdName); promote(third, undefined, { probe: successfulProbe }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true });
   state = 'unknown'; autoVerify(currentEngineSnapshot(), dependencies); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8')).status).toBe('running');
-  state = 'online'; start = 'reused'; autoVerify(currentEngineSnapshot(), dependencies); autoVerify(currentEngineSnapshot(), dependencies); autoVerify(currentEngineSnapshot(), dependencies);
-  expect({ spawned, detached, handoffs, alerts }).toEqual({ spawned: 2, detached: 2, handoffs: 1, alerts: 1 }); expect(engineStatus()).toMatchObject({ verify: { sha: third, status: 'failed', reported: true, error: 'verify_process_lost' } });
+  state = 'online'; start = 'reused'; autoVerify(currentEngineSnapshot(), dependencies);
+  const thirdRecord = join(promotions, `${third}.verify.json`), failed = JSON.parse(readFileSync(thirdRecord, 'utf8')); writeFileSync(thirdRecord, JSON.stringify({ ...failed, failed_files: ['a.test.ts', 'b.test.ts', 'c.test.ts', 'd.test.ts'] }));
+  const fourth = commit(f.source, 'verify-fourth'); promote(fourth, undefined, { probe: successfulProbe }); autoVerify(currentEngineSnapshot(), dependencies); autoVerify(currentEngineSnapshot(), dependencies);
+  const ntfy = JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'), 'utf8')), alert = ntfy.alerts[0];
+  expect(alert.id).toBe(`engine-verify-${third}`); expect(alert.title).toBe(`引擎上线后复验发现回归｜${third.slice(0, 10)}（${thirdName.slice(0, 30)}）｜线上版本 ${fourth.slice(0, 10)} 仍在服务`); expect(alert.message).toContain('失败测试文件：a.test.ts、b.test.ts、c.test.ts 等 4 个'); expect(alert.message).toContain('无需你操作'); expect(ntfy.alerts).toHaveLength(1);
+  expect({ spawned, detached, handoffs }).toEqual({ spawned: 3, detached: 3, handoffs: 1 }); expect(engineStatus()).toMatchObject({ verify: { sha: fourth, status: 'running' } }); expect(JSON.parse(readFileSync(thirdRecord, 'utf8'))).toMatchObject({ status: 'failed', reported: true, error: 'verify_process_lost' });
 }, testTimeout(120_000));
