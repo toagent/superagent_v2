@@ -14,13 +14,13 @@ export function claimInterruptedExecution(
   if (process.env.DATABASE_URL)
     throw new Error('interrupted execution: SQLite adapter cannot mutate a PostgreSQL run');
   const o = run.metadata?.execution_owner;
-  if (!o) return false;
+  if (!o || (run.status !== 'running' && run.status !== 'cancelled')) return false;
   const db = new Database(join(root, 'archon.db'), { create: false, readwrite: true });
   try {
     const r = db.run(
       `update remote_agent_workflow_runs set status='failed',
              metadata=json_set(metadata,'$.execution_admission',json(?))
-             where id=? and status='running'
+             where id=? and status=?
              and json_extract(metadata,'$.execution_owner.pid')=?
              and json_extract(metadata,'$.execution_owner.host')=?
              and json_extract(metadata,'$.execution_owner.uid') is ?
@@ -29,6 +29,7 @@ export function claimInterruptedExecution(
       [
         JSON.stringify(claim),
         run.id,
+        run.status,
         o.pid,
         o.host,
         o.uid ?? null,

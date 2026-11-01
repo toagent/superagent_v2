@@ -1271,7 +1271,17 @@ function recoverRun(
       },
     },
     reconciled,
-    admit
+    run => {
+      if (run.status === 'cancelled') {
+        const cancelled = [...(l.intervention_events ?? [])]
+          .reverse()
+          .find(event => event.action === 'cancel' && event.ok);
+        if (!cancelled || cancelled.reason === 'rejected')
+          return 'cancelled recovery requires a successful engine/operator cancellation';
+        if (publishProjection(l, run)) return 'cancelled recovery refuses published delivery';
+      }
+      return admit?.(run);
+    }
   );
   return invalidWorkingPath && !result.ok
     ? { ...result, working_path: invalidWorkingPath }

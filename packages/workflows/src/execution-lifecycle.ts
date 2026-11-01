@@ -278,6 +278,19 @@ export function resumeExecution(
         snapshot: recoverySnapshot(run),
         action: `Reconcile external effects and stop surviving node processes before explicitly continuing ${strategy?.operatorId ?? id} with snapshot ${recoverySnapshot(run)}`,
       };
+    if (run.status === 'cancelled') {
+      if (reconciled !== recoverySnapshot(run))
+        return {
+          ok: false,
+          held: true,
+          reason: 'cancelled_reconciliation_required',
+          snapshot: recoverySnapshot(run),
+          action: `Reconcile the cancelled execution before explicitly continuing ${strategy?.operatorId ?? id} with snapshot ${recoverySnapshot(run)}`,
+        };
+      const ownership = executionOwnership(run, host.inspectProcess).state;
+      if (ownership !== 'offline')
+        return held(ownership === 'online' ? 'cancelled_owner_alive' : 'cancelled_owner_unknown');
+    }
     if (run.status === 'running') {
       const live = host.liveOwnerAnswering(run.id);
       if (live !== false) return held(live ? 'live_owner_answering' : 'owner_probe_unknown');
@@ -311,7 +324,7 @@ export function resumeExecution(
       started_at: run.started_at ?? null,
       ...(effects.length ? { reconciled_snapshot: reconciled, reconciled_nodes: effects } : {}),
     };
-    if (run.status === 'running') {
+    if (run.status === 'running' || run.status === 'cancelled') {
       if (executionOwnership(run, host.inspectProcess).state !== 'offline')
         return { ok: false, reason: 'owner alive or on another host' };
       if (!host.claimInterrupted(run, claim)) return { ok: false, reason: 'owner_changed' };
