@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, normalize } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
 import { GENERATED_OUTPUT_PATHS, type Plan } from './plan';
 import { reasonOf } from './reasons';
 
@@ -36,6 +36,28 @@ const commandTests = (cmd: string): string[] =>
       dirs = [...before.matchAll(/(?:^|&&)\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*&&/g)];
     return [slash(normalize(join(dirs.at(-1)?.slice(1).find(Boolean) ?? '', match[1])))];
   });
+const moduleKey = (path: string): string =>
+  path.replace(/\.(?:cjs|js|ts)$/, '').replace(/\/index$/, '');
+const importedModules = (test: string, text: string): string[] => {
+  const aliases = [
+    ...text.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*createRequire\s*\(/g),
+  ].map(match => match[1]);
+  const calls = ['import', 'require', ...aliases]
+    .map(name => name.replaceAll('$', '\\$'))
+    .join('|');
+  const literals = [
+    ...text.matchAll(/\b(?:import|export)\s+(?:type\s+)?(?:[^;'"`]+?\s+from\s+)?['"]([^'"]+)['"]/g),
+    ...text.matchAll(new RegExp(`\\b(?:${calls})\\s*\\(\\s*['"]([^'"]+)['"]`, 'g')),
+  ];
+  return [
+    ...new Set(
+      literals
+        .map(match => match[1])
+        .filter(path => path.startsWith('.'))
+        .map(path => moduleKey(slash(normalize(join(dirname(test), path)))))
+    ),
+  ];
+};
 
 export interface PlanPrecheck {
   blocking: string[];
@@ -98,6 +120,10 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
   const scriptsDir = join(repo, 'wetamp/scripts');
   const engineRepo = existsSync(join(scriptsDir, 'generate-plan-schema.ts'));
   const blocking: string[] = [], info: string[] = [], tree = new Set((git(repo, 'ls-tree', '-r', '--name-only', plan.base_ref) ?? '').split(/\r?\n/).filter(Boolean));
+  const tests = [...tree].filter(path => /^wetamp\/(?:scripts|tests)\/[^/]+\.test\.ts$/.test(path) && existsSync(join(repo, path)));
+  const consumers = new Map<string, string[]>();
+  for (const test of tests) for (const imported of importedModules(test, readFileSync(join(repo, test), 'utf8')))
+    consumers.set(imported, [...(consumers.get(imported) ?? []), test]);
   const generators = engineRepo ? readdirSync(scriptsDir).filter(name => /^generate-.*\.ts$/.test(name)).flatMap(name => {
     const script = `wetamp/scripts/${name}`, text = readFileSync(join(repo, script), 'utf8');
     const body = text.replace(/GENERATED_OUTPUT_PATHS\s*=\s*\[[\s\S]*?\]/, '');
@@ -118,6 +144,15 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
     const prefix = `[${pkg.id}] `;
     for (const cmd of commands) for (const test of commandTests(cmd))
       if (!tree.has(test) && !covered(test, write)) blocking.push(`${prefix}修正验收命令 ${cmd}（base_ref 不存在 ${test}）或把 ${test} 加入 scope.write`);
+    const sources = [...tree].filter(path => (/^wetamp\/src\/.+\.ts$/.test(path) || /^wetamp\/hooks\/[^/]+\.cjs$/.test(path)) && covered(path, write));
+    for (const source of sources) {
+      const callers = consumers.get(moduleKey(source)) ?? [];
+      const missing = callers.filter(test => !covered(test, write) && !covered(test, pkg.scope.read_hint ?? []));
+      if (!missing.length) continue;
+      const message = `${prefix}${source} 的直接单元测试调用方：${missing.join(', ')}；加入 scope.write，或写入 scope.read_hint 说明无需修改`;
+      if (callers.length > 15) info.push(`${message}（枢纽模块，共 ${String(callers.length)} 个测试，仅提示）`);
+      else blocking.push(message);
+    }
     for (const generator of generators) {
       const touched = generator.inputs.some(input => covered(input, write) ||
         (input.endsWith('/') && write.some(path => path.startsWith(input))));

@@ -107,7 +107,7 @@ test('G1: caller uses app-server PID and only lifetime-verified unambiguous hear
   beat('current', Date.now());
   beat('previous', Date.now() - 120001);
   beat('smoke', Date.now() - 120001, 'old-lifetime');
-  const readCaller = () => {
+  const readCaller = (session = '') => {
     const p = Bun.spawnSync(
       [
         process.execPath,
@@ -120,6 +120,7 @@ test('G1: caller uses app-server PID and only lifetime-verified unambiguous hear
           SUPERAGENT_HOME: home,
           ARCHON_HOME: join(home, 'archon'),
           PATH: `${bin}:${process.env.PATH}`,
+          CODEX_SESSION_ID: session,
         },
         stdout: 'pipe',
         stderr: 'pipe',
@@ -136,6 +137,8 @@ test('G1: caller uses app-server PID and only lifetime-verified unambiguous hear
   });
   beat('smoke', Date.now());
   expect(readCaller().session_id).toBeUndefined();
+  expect(readCaller('current').session_id).toBe('current');
+  expect(readCaller('missing').session_id).toBeUndefined();
   beat('current', Date.now() - 120001);
   beat('smoke', Date.now() - 120001);
   expect(readCaller().session_id).toBeUndefined();

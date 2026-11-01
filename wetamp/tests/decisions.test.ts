@@ -1,12 +1,13 @@
 import { expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
-import { tmp } from './helpers';
-import { describeDecision } from '../src/decisions';
+import { gitRepo, tmp } from './helpers';
+import { coordinationDecisions, describeDecision } from '../src/decisions';
 import type { Ledger } from '../src/cli';
 import type { RunView } from '../src/archon';
 import type { Coordination } from '../src/coord';
+import { Coordination as CoordinationRegistry, repoScope } from '../src/coord';
 
 function fixture() {
   const dir = tmp();
@@ -58,6 +59,33 @@ test('native authored n-choice owner preserves identifiers, labels, context and 
   expect(describeDecision(f.ledger, f.run, f.ownership)!.id).not.toBe(d.id);
   f.ownership.generation++;
   expect(describeDecision(f.ledger, f.run, f.ownership)!.id).not.toBe(d.id);
+});
+test('COORD decision consequences name repository, finder, and ownership effects', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    sa = join(root, 'sa');
+  mkdirSync(sa);
+  const c = new CoordinationRegistry({
+      sa,
+      runs: () => [],
+      presence: () => ({ state: 'offline' }),
+    }),
+    scope = repoScope(repo),
+    owner = { client: 'codex', host: hostname(), pid: 1, pid_start: 'owner' },
+    finder = { ...owner, client: 'claude', pid: 2, pid_start: 'finder' };
+  c.claim(scope, owner);
+  c.handoff(scope, finder, {
+    kind: 'task',
+    title: 'private handoff text',
+    body: 'private body',
+    evidence: [],
+    severity: 'urgent',
+  });
+  c.tick(() => ({ status: 'pending' }));
+  expect(coordinationDecisions(c)[0]!.options.map(option => option.consequence)).toEqual([
+    'claude 成为 repo 负责人，可直接修改该仓库代码',
+    '继续等待当前负责人，不转移 repo 归属',
+  ]);
 });
 test('automatic, terminal, resolved and stale lifecycle never become actionable human work', () => {
   const f = fixture();

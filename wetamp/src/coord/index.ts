@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { lock, runStatuses } from '../archon';
 import { home, writeAtomic, WETAMP } from '../config';
@@ -115,6 +115,10 @@ export const presence = identity.presence,
   same = identity.same,
   identityKey = identity.key;
 export const archonMutation = shared.archonMutation;
+export const scopeRepoName = (scope: Scope): string => {
+  const path = scope.kind === 'repo' ? scope.id : scope.repo;
+  return basename(basename(path) === '.git' ? dirname(path) : path);
+};
 export const ownerLabel = (who: Identity | null): string =>
   who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';
 export const ACK_TIMEOUT_MS = 15 * 60_000;
@@ -946,7 +950,12 @@ export class Coordination {
               !same(m.ask.owner, this.owner(m.scope).owner)
             )
               throw new Error('coord: stale takeover answer');
-            this.claim(m.scope, m.sender, true, '用户通过 supervisor 同意接管');
+            this.claim(
+              m.scope,
+              m.sender,
+              true,
+              `${scopeRepoName(m.scope)} 已于 ${new Date(this.d.now()).toISOString()} 经用户批准转给 ${m.sender.client}`
+            );
           }
           if (['no', 'expired'].includes(a.status)) {
             // Only an unanswered (expired) ask comes back after the interval; 'no' is fenced above.
@@ -970,7 +979,8 @@ export class Coordination {
 }
 // No free-form title/body/path reaches the reminder transport (HF9 boundary).
 export function escalationTitle(m: Message, state: Presence['state']): string {
-  return `superagent 交接 ${m.id.slice(0, 12)} ${m.kind}：负责人${state === 'offline' ? '离线' : state === 'unknown' ? '状态未知' : '在线未答复'}；是=交给发现者处理 否=继续等`;
+  const repo = scopeRepoName(m.scope);
+  return `superagent ${repo} ${m.kind} 交接 ${m.id.slice(0, 12)}：负责人${state === 'offline' ? '离线' : state === 'unknown' ? '状态未知' : '在线未答复'}；是=${m.sender.client} 成为 ${repo} 负责人，可直接修改该仓库代码；否=继续等待当前负责人，不转移 ${repo} 归属`;
 }
 let singleton: Coordination | undefined;
 export function coord(): Coordination {
