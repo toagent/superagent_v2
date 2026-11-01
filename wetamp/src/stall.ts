@@ -69,7 +69,8 @@ export function assessGeneral(prev: StallRecord | undefined, o: GeneralObservati
   const same = prev?.node === o.node && prev.startedAt === o.startedAt;
   // Archon node times are SQLite UTC without a zone suffix; Date.parse would read them as local time.
   const start = clock(o.startedAt), cpu = o.cpu ?? 0, entries = o.entries ?? '', mtime = o.mtime ?? 0;
-  const base = { node: o.node, startedAt: o.startedAt, entries, mtime, progressAt: same ? prev.progressAt : now, idle_s: 0, waiting_command: false, cpu, ...(o.root ? { root: o.root } : {}) };
+  const waiting_command = cpu >= 5 || !!o.root;
+  const base = { node: o.node, startedAt: o.startedAt, entries, mtime, progressAt: same ? prev.progressAt : now, idle_s: 0, waiting_command, cpu, ...(o.root ? { root: o.root } : {}) };
   if (!o.coder) return { ...base, state: 'handed_back' };
   const activity = clock(o.lastActivityAt ?? '');
   if (o.error || !Number.isFinite(start) || !Number.isFinite(activity)) return { ...base, state: 'unknown', reason: o.error ?? 'invalid observation time', ...(same && prev.episode ? { episode: prev.episode } : {}) };
@@ -77,10 +78,10 @@ export function assessGeneral(prev: StallRecord | undefined, o: GeneralObservati
   const progressed = same && (prev.entries !== entries || mtime > prev.mtime);
   const progressAt = same ? (progressed ? now : prev.progressAt) : Math.max(start, mtime);
   const idle_s = Math.max(0, Math.floor((now - Math.max(start, progressAt)) / 1000));
-  const state: GeneralState = progressed ? 'working' : now - Math.max(activity, start) >= LIMIT_MS && cpu < 5 ? 'stalled' : idle_s * 1000 >= LIMIT_MS ? 'idle' : 'working';
+  const state: GeneralState = progressed || waiting_command ? 'working' : now - Math.max(activity, start) >= LIMIT_MS ? 'stalled' : idle_s * 1000 >= LIMIT_MS ? 'idle' : 'working';
   if (state === 'working') return { ...base, progressAt, idle_s, state };
   const since = same && prev.episode ? prev.episode.since : new Date(now).toISOString();
-  return { ...base, progressAt, idle_s, state, waiting_command: state === 'idle' && cpu >= 5, episode: { since, id: digest([o.run, o.node, o.startedAt, since].join('\0')) } };
+  return { ...base, progressAt, idle_s, state, episode: { since, id: digest([o.run, o.node, o.startedAt, since].join('\0')) } };
 }
 
 // prettier-ignore
