@@ -96,14 +96,13 @@ describe('ntfy decision channel', () => {
     expect(persisted).toContain('alert-2'); expect(persisted).not.toContain('publisher-secret');
     expect(JSON.stringify(f.posts) + JSON.stringify(output)).not.toContain('publisher-secret');
   });
-  test('limits each tick to five oldest decisions without limiting alerts', async () => {
-    const f = fixture();
-    for (let i = 0; i < 7; i++)
-      askNtfy({ ...f.request(`decision-${i}`), title: `Decision ${i}` }, f.config);
-    queueNtfyAlert('alert', 'unlimited', f.config); await publishPendingNtfy(f.config, 5);
+  test('limits each tick to five new decisions without starving later decisions or limiting alerts', async () => {
+    const f = fixture(Date.now()), decisions = [...Array(7)].map((_, i) => ({ id: `decision-${i}`, run: `run-${i}`, engine: '', node: '', pause: '', question: `Decision ${i}`, reason: 'reason', context: 'context', options: f.request('x').options.map(option => ({ ...option, consequence: option.consequence ?? option.label })) }));
+    const inbox = async () => ({ decisions, unknown: [] });
+    queueNtfyAlert('alert', 'unlimited', f.config); await syncDecisionChannel(f.config, inbox, undefined, 5); await publishPendingNtfy(f.config);
     expect(f.posts.map(post => post.body.topic)).toEqual([...Array(5).fill('sa-decisions'), 'sa-alerts']);
     expect(f.posts.slice(0, 5).map(post => post.body.title)).toEqual([...Array(5)].map((_, i) => `Decision ${i}`));
-    await publishPendingNtfy(f.config, 5);
+    await syncDecisionChannel(f.config, inbox, undefined, 5); await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(7);
   });
   test('keeps secrets out of state and routes answers through the durable decision store', async () => {

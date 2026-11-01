@@ -3226,11 +3226,26 @@ const rotateTickLog = (sa: string): void => {
 export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
-  answer: typeof answerNtfyDecision = answerNtfyDecision
+  answer: typeof answerNtfyDecision = answerNtfyDecision,
+  newDecisionLimit = 5
 ) {
   const inbox = await loadInbox();
-  for (const decision of inbox.decisions) {
-    if (decision.disabled) continue;
+  const enabled = inbox.decisions.filter(decision => !decision.disabled);
+  const cursorPath = join(home().sa, 'ntfy-decision-cursor');
+  let start = 0;
+  if (Number.isFinite(newDecisionLimit) && enabled.length) {
+    try {
+      const cursor = readFileSync(cursorPath, 'utf8').trim();
+      const index = enabled.findIndex(decision => decision.id === cursor);
+      if (index >= 0) start = (index + 1) % enabled.length;
+    } catch {
+      // Missing cursor starts at the oldest decision.
+    }
+  }
+  const selected = Number.isFinite(newDecisionLimit)
+    ? [...enabled.slice(start), ...enabled.slice(0, start)].slice(0, newDecisionLimit)
+    : enabled;
+  for (const decision of selected) {
     askNtfy(
       {
         source: 'superagent',
@@ -3245,6 +3260,9 @@ export async function syncDecisionChannel(
       supplied
     );
   }
+  const lastSelected = selected.at(-1);
+  if (Number.isFinite(newDecisionLimit) && lastSelected)
+    writeAtomic(cursorPath, lastSelected.id + '\n');
   return syncNtfy(
     async (decision, option) => {
       if (decision.callback.kind === 'decision') {
@@ -4220,7 +4238,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
     return synced;
   });
   const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
-  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishDecisions({}, 5));
+  await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishDecisions());
   if (exit)
     stages.actions = {
       ok: false,
