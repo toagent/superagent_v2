@@ -1,6 +1,7 @@
 import { Box, Text, type TextProps } from 'ink';
 import type { ReactElement } from 'react';
 import {
+  attentionWait,
   panelDuration,
   shortRunId,
   type PanelAttention,
@@ -32,11 +33,11 @@ const generalLabel = (run: PanelRun, drift: number): string => {
 const attentionLabel = (item: PanelAttention, drift: number): string =>
   item.run
     ? `${shortRunId(item.id)} · ${item.project} · ${item.text} · ${generalLabel(item.run, drift)}`
-    : `${shortRunId(item.id)} · ${item.project} · ${item.text} · 已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? ` · 下一步：${item.next}` : ''}`;
+    : `${shortRunId(item.id)} · ${item.project} · ${item.text} · ${attentionWait(item, drift, ' · ')}${item.next ? ` · 下一步：${item.next}` : ''}`;
 const attentionReason = (item: PanelAttention, drift: number): string =>
   item.run
     ? `${item.text} · ${generalLabel(item.run, drift)}`
-    : `${item.text} · 已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? ` · 下一步：${item.next}` : ''}`;
+    : `${item.text} · ${attentionWait(item, drift, ' · ')}${item.next ? ` · 下一步：${item.next}` : ''}`;
 
 type PipelineKind = 'code' | 'verify' | 'repair' | 'review' | 'land' | 'other';
 const pipelineKind = (run: PanelRun): PipelineKind => {

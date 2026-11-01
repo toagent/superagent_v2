@@ -79,6 +79,10 @@ export interface PanelAttention {
   next?: string;
   run?: PanelRun;
 }
+export const attentionWait = (item: PanelAttention, drift: number, separator = '｜'): string => {
+  const seconds = (item.waited_s ?? 0) + drift;
+  return `${seconds >= 30 * 60 ? `超时${separator}` : ''}已等 ${panelDuration(seconds)}`;
+};
 export interface PanelModel {
   heartbeatAt: string;
   checkedAt: string;
@@ -188,7 +192,7 @@ export function renderPanel(
       ? model.attention.map(item =>
           item.run
             ? `! ${shortRunId(item.id)}｜${item.project}｜${item.text}｜${generalState(item.run, drift)}`
-            : `! ${shortRunId(item.id)}｜${item.project}｜${item.text}｜已等 ${panelDuration((item.waited_s ?? 0) + drift)}${item.next ? `｜下一步：${item.next}` : ''}`
+            : `! ${shortRunId(item.id)}｜${item.project}｜${item.text}｜${attentionWait(item, drift)}${item.next ? `｜下一步：${item.next}` : ''}`
         )
       : ['无']),
     '',

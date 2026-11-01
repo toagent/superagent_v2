@@ -43,7 +43,7 @@ const heartbeat = (at = now): Heartbeat => ({
           what: '评审',
           code: 'review_limit',
           waiting_for: '评审轮次用尽',
-          waited_s: 120,
+          waited_s: 30 * 60,
           next: '重新确认 blocker',
         },
       ],
@@ -56,7 +56,7 @@ test('问题置顶并显示空转、挂起处置和运行详情', () => {
   expect(output.indexOf('需要处理')).toBeLessThan(output.indexOf('进行中'));
   expect(output).toContain('空转 5m（在等命令）');
   expect(output).toContain('114127-582a｜demo｜实现心跳面板｜空转 5m（在等命令）');
-  expect(output).toContain('run-2｜demo｜评审轮次用尽｜已等 2m｜下一步：重新确认 blocker');
+  expect(output).toContain('run-2｜demo｜评审轮次用尽｜超时｜已等 30m｜下一步：重新确认 blocker');
   expect(output).toContain('阶段 编码｜执行者 将军·gpt');
   const withoutNext = heartbeat();
   delete withoutNext.marshals[0]!.waiting[0]!.next;

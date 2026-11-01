@@ -49,6 +49,7 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
       row('a', a),
       row('b', b),
       row('dead', dead, 'failed'),
+      row('orphan', dead, 'held:gate'),
       ...Array.from({ length: 100 }, (_, i) => row(`unowned-${String(i)}`, null)),
       ...Array.from({ length: 100 }, (_, i) => row(`unreadable-${String(i)}`, a, 'unreadable')),
     ],
@@ -59,12 +60,17 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
   expect(result.marshals.map(m => m.owner_key)).toEqual([
     ['codex', null, 'host', 1, 'start-1'],
     ['codex', null, 'host', 2, 'start-2'],
+    'unknown',
   ]);
-  expect(result).toMatchObject({ unowned: 100, unreadable: 100, reclaim_pending: 0, legacy: 1 });
+  expect(result).toMatchObject({ unowned: 101, unreadable: 100, reclaim_pending: 0, legacy: 1 });
   expect(JSON.stringify(result).length).toBeLessThan(3000);
   expect(result.marshals[0]?.running.map(item => item.role)).toEqual(['将军·gpt', '军师·opus']);
   expect(result.reclaim_pending).toBe(0);
   expect(JSON.stringify(result)).not.toContain('dead');
+  expect(result.marshals.find(item => item.owner === 'unknown')?.waiting[0]).toMatchObject({
+    id: 'orphan',
+    waiting_for: '无人负责',
+  });
   const selected = heartbeatSummary(result, b, now + 19 * 60_000);
   expect(selected).toMatchObject({
     available: true,
@@ -75,6 +81,44 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
     available: false,
     reason: 'caller heartbeat unavailable',
   });
+});
+
+test('heartbeat omits cleaned lost jobs from responsibilities', () => {
+  const launcher = { ...owner(1), tty: null, cwd: '/missing/project', client: 'codex' as const },
+    job = {
+      id: 'lost',
+      title: 'lost',
+      card: null,
+      log: null,
+      cwd: launcher.cwd,
+      kind: 'codex' as const,
+      model: null,
+      launcher,
+      wrapper_pid: 0,
+      pid: 0,
+      started_at: new Date(now - 59 * 60_000).toISOString(),
+      state: 'lost' as const,
+      tier: 'general' as const,
+      guess: false,
+      owner: null,
+    };
+  const snap: Snapshot = {
+    at: new Date(now).toISOString(),
+    summary: {},
+    rows: [],
+    activity: {
+      jobs: [job, { ...job, id: 'cleaned', ended_at: new Date(now).toISOString() }],
+      terms: [],
+      procs: [],
+      remote: [],
+      notes: [],
+    },
+  };
+  const result = heartbeat(snap, cockpit(snap, now), now, () => ({
+    state: 'online',
+    activity: 'active',
+  }));
+  expect(result.marshals[0]?.waiting.map(item => item.id)).toEqual(['lost']);
 });
 
 test('heartbeat separates active runs from typed waits and reports coordination once', () => {

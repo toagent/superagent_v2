@@ -76,6 +76,15 @@ test('reclaim leaves historically offline owners untouched and batch statuses pr
       ['cancelled', 'cancelled'],
     ] as const),
     c = reclaimCoord(statuses, s.c);
+  c.d.runs = () => [{ ...s.run, archon_run_id: 'failed' }];
+  let probes = 0;
+  expect(
+    new Reclaimer(c, Date.now, () => {
+      probes++;
+      throw new Error('provider probe');
+    }).observe()
+  ).toHaveLength(1);
+  expect(probes).toBe(0);
   c.d.runs = () => [
     { ...s.run, rejected: 'engine', intervention_events: [{ action: 'abandon', ok: true }] },
   ];
@@ -111,4 +120,28 @@ test('reclaim observation isolates deleted repositories in saved and current evi
     result = r.reclaim([observation(stale.run_id, stale.repo), observation(s.run.run_id, s.run.repo)]);
   // prettier-ignore
   expect(result).toMatchObject({ transferred: ['r1'], skipped: ['missing', 'stale'], skip_reasons: { missing: 'repository_unavailable', stale: 'repository_unavailable' } });
+});
+
+// prettier-ignore
+test('accepted rollover rehabilitates legacy evidence while aged terminal ownership is abandoned', () => {
+  const successor = { ...a, session_id: 'successor' }, s = setup(who => same(who, b) ? { state: 'online', activity: 'idle' } : { state: 'offline' }), scope = runScope(s.run);
+  s.c.rolloverTransfer(scope, a, successor, 'first'); s.c.rolloverTransfer(scope, successor, a, 'accepted');
+  mkdirSync(join(s.sa, 'coord/rollovers'), { recursive: true }); writeFileSync(join(s.sa, 'coord/rollovers/accepted.json'), JSON.stringify({ token: 'wrong', state: 'accepted', to: a, accepted_at: new Date(1).toISOString() }));
+  const generation = s.c.owner(scope).generation, legacy = { run: 'r1', repo: s.run.repo, owner: a, generation, first_offline_at: 2, last_offline_at: 120_002, count: 2 };
+  expect(new Reclaimer(s.c, () => 120_002).reclaim([legacy]).historical).toEqual(['r1']); writeFileSync(join(s.sa, 'coord/rollovers/accepted.json'), JSON.stringify({ token: 'accepted', state: 'accepted', to: a, accepted_at: new Date(1).toISOString() }));
+  expect(new Reclaimer(s.c, () => 120_002, () => ({ id: 'engine', status: 'running' })).reclaim([legacy]).transferred).toEqual(['r1']);
+  let target: Presence['state'] = 'online', heir: Presence['state'] = 'online'; const next = { ...b, session_id: 'heir' }, probe = (who: Identity): Presence => { const state = same(who, a) ? 'offline' : same(who, next) ? heir : target; return state === 'online' ? { state, activity: 'idle' } : { state }; }, old = setup(probe), oldScope = runScope(old.run), observation = { ...legacy, generation: old.c.owner(oldScope).generation, first_offline_at: 0, last_offline_at: 86_400_000 }; old.c.d.status = () => 'failed';
+  const reject = () => JSON.parse(readFileSync(join(old.sa, 'runs/r1.json'), 'utf8')).rejected; new Reclaimer(old.c, () => 86_400_000).reclaim([observation]); expect(reject()).toBeUndefined(); target = 'offline'; mkdirSync(join(old.sa, 'coord/rollovers'), { recursive: true }); writeFileSync(join(old.sa, 'coord/rollovers/heir.json'), JSON.stringify({ state: 'accepted', from: a, to: next, accepted_at: new Date(1).toISOString() })); new Reclaimer(old.c, () => 86_400_000).reclaim([observation]); expect(reject()).toBeUndefined(); heir = 'offline';
+  new Reclaimer(old.c, () => 86_399_999).reclaim([observation]); expect(reject()).toBeUndefined(); new Reclaimer(old.c, () => 86_400_000).reclaim([observation]);
+  expect(JSON.parse(readFileSync(join(old.sa, 'runs/r1.json'), 'utf8'))).toMatchObject({ rejected: 'engine', intervention_events: [{ action: 'abandon', origin: 'engine', ok: true }] });
+});
+
+// prettier-ignore
+test('tick retires lost jobs after one hour without sending responsibility alerts', () => {
+  let now = 0; const notifier = { ...b, session_id: 'notify-session' }, s = setup(who => same(who, notifier) ? { state: 'online', activity: 'idle' } : { state: 'offline' }); mkdirSync(join(s.sa, 'jobs')); writeFileSync(join(s.sa, 'jobs/lost.json'), JSON.stringify({ id: 'lost', title: 'lost', kind: 'codex', tier: 'general', cwd: s.run.repo, launcher: a, wrapper_pid: 99999999, pid: 99999999, started_at: new Date(0).toISOString(), state: 'running' }));
+  const waiting = (id: string) => ({ id, ...(id === 'lost' ? { kind: 'job' } : {}), since: new Date(0).toISOString(), waited_s: 0, waiting_for: `处理${id}`, next: `next-${id}` }), heartbeat = (ids: string[]) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: notifier, project: 'BestIFA', waiting: ids.map(waiting) }] }));
+  const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' })), ended = () => JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at;
+  heartbeat(['late-a', 'late-b', 'lost']); r.tick(); expect(ended()).toBeUndefined(); now = 59 * 60_000; r.tick(); expect(ended()).toBeUndefined();
+  expect(existsSync(join(s.sa, 'ntfy/state.json'))).toBe(false); heartbeat(['late-a', 'late-b', 'late-c', 'lost']); now = 61 * 60_000; r.tick();
+  expect(ended()).toBeDefined(); expect(existsSync(join(s.sa, 'ntfy/state.json'))).toBe(false);
 });

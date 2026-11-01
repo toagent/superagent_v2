@@ -12,6 +12,8 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
+import { caller, coord, repoScope } from '../src/coord';
+import { WETAMP } from '../src/config';
 import { isWithinWriteRoots } from '../src/plan';
 import {
   autoPromote,
@@ -446,6 +448,18 @@ test('verify uses an independent local clone without registering a worktree', ()
   expect(result.status).toBe('passed'); expect(common).not.toBe(realpathSync(join(f.source, '.git'))); expect(resolvedBase).toBe(base);
   expect(during).toBe(before); expect(sh('git worktree list --porcelain', f.source)).toBe(before); expect(existsSync(checkout)).toBe(false);
 }, testTimeout(60_000));
+
+// prettier-ignore
+test('verify failure dedupes equal file sets but reports a changed set', () => {
+  const f = sourceFixture(), promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); mkdirSync(promotions, { recursive: true });
+  const record = (sha: string, at: string, failed_files: string[]) => ({ sha, base: 'base', status: 'failed', files: failed_files, failed_files, log: `/${sha}.log`, at });
+  for (const item of [record('one', '1', ['a.test.ts', 'b.test.ts']), record('two', '2', ['b.test.ts', 'a.test.ts']), record('three', '3', ['a.test.ts', 'c.test.ts'])]) writeFileSync(join(promotions, `${item.sha}.verify.json`), JSON.stringify(item));
+  coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: 'legacy verify handoff', body: '', evidence: ['/one.log'], severity: 'normal' }, 0, false);
+  const alerts: string[] = [], handoffs: string[] = [];
+  autoVerify(join(f.root, 'current'), { alert: item => alerts.push(item.sha), handoff: item => handoffs.push(item.sha) });
+  expect(alerts).toEqual(['three']); expect(handoffs).toHaveLength(3); expect(handoffs).toEqual(expect.arrayContaining(['one', 'two', 'three']));
+  for (const sha of ['one', 'two', 'three']) expect(JSON.parse(readFileSync(join(promotions, `${sha}.verify.json`), 'utf8')).reported).toBe(true);
+});
 
 // prettier-ignore
 test('verify executor uses heavy slot and kills a timed-out test process', () => {
