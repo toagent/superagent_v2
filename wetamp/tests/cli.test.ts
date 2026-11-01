@@ -1136,7 +1136,8 @@ describe('HF3 latest-engine recovery', () => {
     // prettier-ignore
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed', { output_root: s.root,
       started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:00:10Z',
-      nodes: [{ nodeId: 'verify-core', state: 'failed', startedAt: '2026-01-01T00:00:05Z', error: 'boom' }] })));
+      nodes: [{ nodeId: 'verify-api-core', state: 'failed', error: 'other package' },
+        { nodeId: 'verify-core', state: 'failed', startedAt: '2026-01-01T00:00:05Z', error: 'boom' }] })));
     const engine = gitRepo(tmp());
     engineBoundary!.mockImplementation(() => cleanEngine(engine));
     const commit = gitHead(engine);

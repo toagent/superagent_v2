@@ -430,7 +430,8 @@ function adoptionPackages(l: Ledger, run: RunView): Record<string, PackageHistor
     measured = Date.parse(run.completed_at ?? '') - Date.parse(run.started_at ?? ''),
     elapsed = Number.isFinite(measured) ? Math.max(0, measured) : 0;
   return Object.fromEntries(planOf(l).packages.map(p => {
-    const failed = (run.nodes ?? []).filter(n => n.state === 'failed' && n.nodeId.endsWith(`-${p.id}`)),
+    const failed = (run.nodes ?? []).filter(n => n.state === 'failed' &&
+      authoredNodeId(n.nodeId).replace(/^(?:soldier|code|verify|repair|settle)-/, '') === p.id),
       first = failed.at(0), previous = prior[p.id], first_failure = previous?.first_failure ?? (first ? {
         node: first.nodeId, reason: errorExcerpt(redact(first.error ?? 'unknown'), 200),
         at: first.startedAt ?? run.completed_at ?? '', evidence: join(artifactsOf(run), `${authoredNodeId(first.nodeId)}.json`),
