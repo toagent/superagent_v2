@@ -54,11 +54,11 @@ describe('ntfy decision channel', () => {
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => post.body.title)).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜未知决策']);
     const bad = askNtfy(f.request('bad'), f.config), stale = askNtfy(f.request('stale'), f.config), live = askNtfy(f.request('live'), f.config);
     await publishPendingNtfy(f.config); const badAction = f.action(f.posts.at(-3)), staleAction = f.action(f.posts.at(-2), 1); f.push(badAction); f.push(staleAction); f.push(f.action());
-    expect(await syncNtfy(d => { if (d.id === bad) throw new Error('secret body'); if (d.id === stale) throw new DecisionError('决定已变化，请重读', 'decision_changed'); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 2 });
+    expect(await syncNtfy(d => { if (d.id === bad) throw new Error('secret body'); if (d.id === stale) throw new DecisionError('决定已变化，请重读', 'decision_changed', { status: 'accepted', at: '2033-05-18T03:33:19.000Z' }); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 2 });
     expect(f.state().decisions).toMatchObject({ [first]: { status: 'answered' }, [bad]: { status: 'failed', error: { code: 'callback_failed', message: '回调处理失败' } }, [stale]: { status: 'superseded', error: { code: 'decision_changed' } }, [live]: { status: 'answered' } });
-    expect(f.posts.find(post => String(post.body.message).includes('你点的选项：No'))?.body.message).toContain('你的选择未改变任何状态');
+    expect(f.posts.find(post => String(post.body.message).includes('你点的选项：No'))?.body).toMatchObject({ title: '未执行｜No｜Decision', message: expect.stringContaining('在 2033-05-18T03:33:19.000Z 已 accepted') });
     expect(readFileSync(f.config.statePath, 'utf8')).not.toContain('secret body');
-    f.push(staleAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜No', message: expect.stringContaining('已按 superseded 处理，本次未执行') });
+    f.push(staleAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜No｜Decision', message: expect.stringContaining('你的选择未改变任何状态') });
     queueNtfyAlert('receipt', 'done', f.config); await publishPendingNtfy(f.config);
     expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
   });
@@ -112,6 +112,16 @@ describe('ntfy decision channel', () => {
     expect(f.posts.slice(0, 5).map(post => post.body.title)).toEqual([...Array(5)].map((_, i) => `Decision ${i}`));
     await syncDecisionChannel(f.config, inbox, undefined, 5); now += 3_600_001; await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(7);
+  });
+  test('withdraws stale decision callbacks before publishing while preserving live work', async () => {
+    const f = fixture(Date.now()), decision = (id: string) => ({ id, run: id, engine: '', node: '', pause: '', question: `${id}：detail`, reason: 'reason', context: 'context', options: f.request('x').options.map(option => ({ ...option, consequence: option.consequence ?? option.label })) });
+    const sent = askNtfy({ ...f.request('sent'), title: 'sent：detail', callback: { kind: 'decision' as const, id: 'sent' } }, f.config); await publishPendingNtfy(f.config); const staleAction = f.action(undefined, 1);
+    const pending = askNtfy({ ...f.request('pending'), callback: { kind: 'decision' as const, id: 'pending' } }, f.config);
+    await syncDecisionChannel(f.config, async () => ({ decisions: [decision('live')], unknown: [] }));
+    expect(f.state().decisions).toMatchObject({ [sent]: { status: 'superseded' }, [pending]: { status: 'superseded' } });
+    expect(f.posts.filter(post => post.body.topic === 'sa-decisions').map(post => post.body.title)).toEqual(['sent：detail', 'live：detail']);
+    f.push(staleAction); await syncNtfy(() => undefined, f.config);
+    expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜No｜sent', message: expect.stringContaining('由引擎在') });
   });
   test('persists dedupe and rolling limits, emits one summary, and drains after the window', async () => {
     let now = 2_000_000_000_000; const f = fixture(now); f.config.now = () => now;

@@ -27,15 +27,15 @@ import { home, writeAtomic } from './config';
 export class DecisionError extends Error {
   constructor(
     message: string,
-    readonly code = 'decision_error'
+    readonly code = 'decision_error',
+    readonly source?: { status: string; at?: string }
   ) {
     super(message);
     this.name = 'DecisionError';
   }
 }
-function requireDecision(ok: unknown, message: string, code?: string): asserts ok {
-  if (!ok) throw new DecisionError(message, code);
-}
+// prettier-ignore
+function requireDecision(ok: unknown, message: string, code?: string, source?: { status: string; at?: string }): asserts ok { if (!ok) throw new DecisionError(message, code, source); }
 export const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 export interface DecisionReceipt {
   id: string;
@@ -288,6 +288,17 @@ export function coordinationDecisions(c = coord()): Decision[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// prettier-ignore
+export function decisionChangeSource(id: string, c = coord()): { status: string; at?: string } | undefined {
+  const message = c.messages().find(m => m.ask && digest(JSON.stringify(['coord', m.id, m.ask.generation, m.ask.question])) === id);
+  if (!message) return;
+  try {
+    return { status: message.state, at: statSync(join(c.d.sa, 'coord', 'inbox', `${message.id}.json`)).mtime.toISOString() };
+  } catch {
+    return { status: message.state, at: message.at };
+  }
+}
+
 export const FAILOVER_PREFIX = 'coord:claude-failover:';
 export const latestFailover = <T extends { status?: string }>(
   asks: Partial<Record<string, T>>,
@@ -429,7 +440,7 @@ export async function answerDecision(
     decision => decision.id === id
   );
   const candidate = deferredCandidate ?? (await loadInbox()).decisions.find(d => d.id === id);
-  requireDecision(candidate, '决定已变化，请重读', 'decision_changed');
+  requireDecision(candidate, '决定已变化，请重读', 'decision_changed', decisionChangeSource(id));
   if (candidate.coordination ?? candidate.engine === 'failover') {
     requireDecision(['yes', 'no'].includes(choice), '不支持此选项');
     const decisionGuard = store.decisionLock(id);
@@ -475,7 +486,8 @@ export async function answerDecision(
         requireDecision(
           d && !d.disabled && d.id === id && d.controller,
           '决定已变化，请重读',
-          'decision_changed'
+          'decision_changed',
+          { status: run.status, at: run.completed_at ?? run.last_activity_at ?? undefined }
         );
         requireDecision(
           d.options.some(o => o.id === choice),

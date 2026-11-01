@@ -50,8 +50,13 @@ interface StoredDecision extends NtfyAsk {
   actions: SignedAnswer[];
   answer?: string;
   handled_at?: string;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; source?: DecisionSourceState };
   red_phase?: 'request' | 'confirm';
+}
+
+export interface DecisionSourceState {
+  status: string;
+  at?: string;
 }
 
 interface NtfyState {
@@ -291,20 +296,70 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
   state.alert_ids.push(id);
 }
 
-function callbackError(error: unknown): { code: string; message: string } {
+// prettier-ignore
+function callbackError(error: unknown): { code: string; message: string; source?: DecisionSourceState } {
   const raw =
     error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
       ? error.code
       : '';
   const code = /^[a-z][a-z0-9_]{0,63}$/.test(raw) ? raw : 'callback_failed';
+  const source = error && typeof error === 'object' && 'source' in error ? error.source : undefined;
   return {
     code,
     message: code === 'decision_changed' ? '决定已变化，请重读' : '回调处理失败',
+    ...(source &&
+    typeof source === 'object' &&
+    'status' in source &&
+    typeof source.status === 'string'
+      ? { source: source as DecisionSourceState }
+      : {}),
   };
 }
 
 const optionLabel = (decision: StoredDecision, option: string): string =>
   decision.options.find(candidate => candidate.id === option)?.label ?? option;
+
+const shortTopic = (title: string): string =>
+  Array.from(title.split('：', 1)[0] ?? title)
+    .slice(0, 40)
+    .join('');
+
+const supersededReceipt = (decision: StoredDecision, option: string): [string, string] => {
+  const label = optionLabel(decision, option);
+  const source = decision.error?.source;
+  const sourceText = source
+    ? `这条${source.at ? `在 ${source.at} ` : ''}已 ${source.status}`
+    : '这条已失效';
+  return [
+    `未执行｜${label}｜${shortTopic(decision.title)}`,
+    `你点的选项：${label}；${sourceText}（由引擎在 ${decision.handled_at ?? '未知时间'} 标记失效）；你的选择未改变任何状态`,
+  ];
+};
+
+// prettier-ignore
+export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Partial<NtfyConfig> = {}, sourceOf: (id: string) => DecisionSourceState | undefined = () => undefined): void {
+  const config = { ...defaultConfig(), ...supplied };
+  const active = new Set(activeIds);
+  const guard = stateLock(config.statePath);
+  if (!guard.ok) throw new Error('ntfy state busy');
+  try {
+    const state = readState(config.statePath);
+    for (const decision of Object.values(state.decisions)) {
+      if (decision.status !== 'pending' || decision.callback.kind !== 'decision' || active.has(decision.callback.id)) continue;
+      const source = sourceOf(decision.callback.id);
+      decision.status = 'superseded';
+      decision.handled_at = new Date(config.now()).toISOString();
+      decision.error = {
+        code: 'decision_changed',
+        message: '决定已变化，请重读',
+        ...(source ? { source } : {}),
+      };
+    }
+    saveState(config.statePath, state);
+  } finally {
+    guard.release();
+  }
+}
 
 async function publish(
   config: NtfyConfig,
@@ -492,8 +547,10 @@ export async function syncNtfy(
         let rejection: string | undefined;
         if (!decision) rejection = '该决策未找到或已过期，未执行';
         else if (decision.status === 'expired') rejection = '该决策已过期，未执行';
-        else if (['failed', 'superseded'].includes(decision.status))
-          rejection = `这条在 ${decision.handled_at ?? '未知时间'} 已按 ${decision.status} 处理，本次未执行`;
+        else if (decision.status === 'superseded')
+          rejection = supersededReceipt(decision, answer.option)[1];
+        else if (decision.status === 'failed')
+          rejection = `这条在 ${decision.handled_at ?? '未知时间'} 处理失败，本次未执行`;
         else if (decision.status === 'answered' || answer.nonce in state.used_nonces)
           rejection = '该决策已处理，本次点按忽略';
         else if (answer.exp < Math.floor(config.now() / 1000)) rejection = '该决策已过期，未执行';
@@ -504,9 +561,11 @@ export async function syncNtfy(
           receipt(
             state,
             `receipt:${answer.id}:rejected`,
-            decision && ['failed', 'superseded'].includes(decision.status)
-              ? `未执行｜${optionLabel(decision, answer.option)}`
-              : `未执行｜${decision?.title ?? '未知决策'}`,
+            decision?.status === 'superseded'
+              ? supersededReceipt(decision, answer.option)[0]
+              : decision?.status === 'failed'
+                ? `未执行｜${optionLabel(decision, answer.option)}｜${shortTopic(decision.title)}`
+                : `未执行｜${decision?.title ?? '未知决策'}`,
             rejection,
             config.now()
           );
@@ -556,12 +615,15 @@ export async function syncNtfy(
           decision.error = callbackError(error);
           decision.status = decision.error.code === 'decision_changed' ? 'superseded' : 'failed';
           const label = optionLabel(decision, answer.option);
+          const staleReceipt = supersededReceipt(decision, answer.option);
           receipt(
             state,
             `receipt:${decision.id}:failed`,
-            `未执行｜${label}`,
             decision.status === 'superseded'
-              ? `你点的选项：${label}；这条决策当前已失效（${decision.handled_at}，superseded）；你的选择未改变任何状态`
+              ? staleReceipt[0]
+              : `未执行｜${label}｜${shortTopic(decision.title)}`,
+            decision.status === 'superseded'
+              ? staleReceipt[1]
               : `处理失败（${decision.error.code}）；你的选择未改变任何状态`,
             config.now()
           );

@@ -1,6 +1,7 @@
 import {
   answerNtfyDecision,
   applyCoordIntents,
+  decisionChangeSource,
   describeDecision,
   loadCurrentDecisions,
   type DecisionInbox,
@@ -13,6 +14,7 @@ import {
   ntfyDeliveryStatus,
   publishPendingNtfy,
   queueNtfyAlert,
+  supersedeNtfyDecisions,
   syncNtfy,
   type NtfyConfig,
   type NtfyOption,
@@ -3245,6 +3247,8 @@ export async function syncDecisionChannel(
 ) {
   const inbox = await loadInbox();
   const enabled = inbox.decisions.filter(decision => !decision.disabled);
+  // prettier-ignore
+  if (!inbox.unknown.length) supersedeNtfyDecisions(enabled.map(decision => decision.id), supplied, decisionChangeSource);
   const cursorPath = join(home().sa, 'ntfy-decision-cursor');
   let start = 0;
   if (Number.isFinite(newDecisionLimit) && enabled.length) {

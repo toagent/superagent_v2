@@ -213,7 +213,9 @@ describe('P3 engine lifecycle contracts', () => {
     if (!first.ok) throw new Error('admission refused');
     first.launch(['workflow', 'run']);
     first.release();
-    expect(admitExecution(host)).toMatchObject({ ok: false, reason: 'launch_reserved' });
+    const published = admitExecution(host);
+    expect(published).toMatchObject({ ok: true, active: 1 });
+    if (published.ok) published.release();
     expect(launches).toBe(1);
   });
   test('delivery defaults: live or unknown execution owners never reach claim or dispatch', () => {
@@ -299,7 +301,7 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   // prettier-ignore
   for (let i = 0; i < 3; i++)
     writeFileSync(join(episodes, `repeat-${i}.json`), JSON.stringify({ id: `repeat-${i}`,
-      project: repo, reasons: ['ruler_invalid'], signature: 'acceptance', at: new Date().toISOString() }));
+      project: repo, reasons: ['ruler_invalid'], signature: 'acceptance', status: 'failed', at: new Date().toISOString() }));
   expect(invoke().stderr.toString()).toContain('机制签名 acceptance 3 次');
   mkdirSync(join(repo, '.superagent'));
   writeFileSync(
