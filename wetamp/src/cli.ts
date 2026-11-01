@@ -853,7 +853,8 @@ function soldierOutcomes(nodes: NonNullable<RunView['nodes']>): Record<string, u
       resets.map(reset => {
         const pkg = reset.nodeId.slice(prefix.length);
         if (reset.state !== 'completed') return [pkg, { outcome: 'pending' }];
-        if (reset.outputPreview === 'used') return [pkg, { outcome: 'used' }];
+        if ('outputPreview' in reset && reset.outputPreview === 'used')
+          return [pkg, { outcome: 'used' }];
         const base = `soldier-${pkg}`;
         const failed = nodes.find(
           node =>

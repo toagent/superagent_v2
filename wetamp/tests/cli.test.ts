@@ -1889,9 +1889,9 @@ describe('verbs (archon stub)', () => {
     stub([
       run('completed', {
         nodes: [
-          { nodeId: 'soldier-reset-used', state: 'completed', outputPreview: 'used' },
-          { nodeId: 'soldier-reset-reset', state: 'completed', outputPreview: 'reset' },
-          { nodeId: 'soldier-reset-bad', state: 'completed', outputPreview: 'reset' },
+          { nodeId: 'soldier-reset-used', state: 'completed', ...{ outputPreview: 'used' } },
+          { nodeId: 'soldier-reset-reset', state: 'completed', ...{ outputPreview: 'reset' } },
+          { nodeId: 'soldier-reset-bad', state: 'completed', ...{ outputPreview: 'reset' } },
           { nodeId: 'soldier-bad__a__draft', state: 'failed', error: 'token=secret\nsecond line' },
         ],
       }),
