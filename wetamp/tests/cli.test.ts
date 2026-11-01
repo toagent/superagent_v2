@@ -188,8 +188,10 @@ describe('P3 engine lifecycle contracts', () => {
       ok: false,
       reason: 'admission_timeout',
     });
-    const reserved = { ok: false, reason: 'launch_reserved', waited_ms: 2_000 } as const;
-    expect(waitForRunAdmission(() => reserved)).toEqual(reserved);
+    expect(waitForRunAdmission(() => ({ ok: false, reason: 'launch_reserved' }))).toEqual({
+      ok: false,
+      reason: 'launch_reserved',
+    });
   });
   test('delivery defaults: concurrent admission launches exactly once and pending work retains capacity', () => {
     const root = tmp();

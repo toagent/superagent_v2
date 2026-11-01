@@ -383,12 +383,12 @@ export type Admission =
       release: () => void;
     }
   | { ok: false; reason: 'admission_busy' }
-  | { ok: false; reason: 'launch_reserved'; waited_ms: number };
+  | { ok: false; reason: 'launch_reserved'; waited_ms?: number };
 
 // Detach should publish promptly; bound ambiguity without operator tuning.
 const LAUNCH_RESERVATION_WAIT_MS = 2_000,
   MAX_RETRY_MS = 200;
-const launchReservationWait: ExecutionAdmissionWait = {
+export const executionAdmissionWait: ExecutionAdmissionWait = {
   now: Date.now,
   sleep: Bun.sleepSync,
 };
@@ -396,7 +396,7 @@ const launchReservationWait: ExecutionAdmissionWait = {
 /** Lock through pending-row publication; durable reservations retain ambiguous launch ownership. */
 export function admitExecution(
   host: ExecutionAdmissionHost,
-  wait: ExecutionAdmissionWait = launchReservationWait
+  wait: ExecutionAdmissionWait = executionAdmissionWait
 ): Admission {
   const root = host.root;
   mkdirSync(root, { recursive: true });
