@@ -31,6 +31,14 @@ const mutations: Mutation[] = [
     expectedError: 'human-budget-core',
   },
   {
+    file: 'src/generate.ts',
+    from: "...(budgetGate ? { trigger_rule: 'none_failed_min_one_success' } : {}),",
+    to: '...(budgetGate ? {} : {}),',
+    test: 'tests/generate.test.ts',
+    name: 'budgeted non-fake repairs close output references',
+    expectedError: 'skippable dependency human-budget-core needs trigger_rule',
+  },
+  {
     file: 'src/land.ts',
     from: 'const who = authorization.run;',
     to: 'const who = caller();',

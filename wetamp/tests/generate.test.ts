@@ -40,6 +40,7 @@ import { executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
+  checkTriggerRule,
   inputEnvVars,
   resolveNodeBindings,
   substituteNodeOutputRefs,
@@ -50,7 +51,7 @@ import {
   parseWorkflow,
   validateDagStructure,
 } from '../../packages/workflows/src/loader';
-import { dagNodeSchema, type DagNode } from '../../packages/workflows/src/schemas';
+import { dagNodeSchema, type DagNode, type NodeOutput } from '../../packages/workflows/src/schemas';
 import { isInlineScript } from '../../packages/workflows/src/executor-shared';
 import type { CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
@@ -1648,8 +1649,24 @@ describe('buildWorkflow', () => {
     const workflow = build(false, plan),
       nodes = nodesOf(workflow);
     expect(() => assertGeneratedWorkflow(workflow as Record<string, unknown>, false)).not.toThrow();
-    for (const id of ['repair-context-core', 'repair-core'])
-      expect(nodes.find(node => node.id === id)?.depends_on).toContain('human-budget-core');
+    const output = (state: 'completed' | 'skipped'): NodeOutput =>
+      state === 'skipped'
+        ? { state, output: '', cause: { kind: 'condition', expr: 'false' } }
+        : { state, output: '{}' };
+    const outputs = new Map([
+      ['verify-core', output('completed')],
+      ['package-attempt-core', output('completed')],
+      ['human-budget-core', output('skipped')],
+    ]);
+    for (const id of ['repair-context-core', 'repair-core']) {
+      const parsed = dagNodeSchema.parse(nodes.find(value => value.id === id));
+      if (parsed.kind === 'include') throw new Error(`${id}: unexpected include`);
+      const node: DagNode = parsed;
+      expect(node.depends_on).toContain('human-budget-core');
+      expect(node.trigger_rule).toBe('none_failed_min_one_success');
+      expect(checkTriggerRule(node, outputs)).toEqual({ decision: 'run' });
+      outputs.set(id, output('completed'));
+    }
     expect(
       evaluateCondition(
         nodes.find(node => node.id === 'repair-core')!.when!,
