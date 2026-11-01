@@ -248,15 +248,14 @@ describe('EFFICIENCY_CONSTITUTION', () => {
     () => {}
   );
 
-  test('④ every generated AI node retries transient failures and failover includes another vendor', () => {
+  test('④ every generated AI node retries transient failures and coder failover stays on Codex', () => {
     const nodes = workflow('G2').filter(n => n.command);
     expect(nodes.length).toBeGreaterThan(0);
     for (const node of nodes) expect(node.retry).toEqual({ on_error: 'transient' });
     for (const role of ['code', 'repair'] as const) {
       const descriptor = describeExecution(tiers, role, 'G1');
-      const initial = executionRoute(tiers, 'codex', 'auto', descriptor).candidates[0];
-      const failover = executionRoute(tiers, 'codex', 'auto', descriptor, [], true).candidates;
-      expect(failover.some(candidate => candidate.provider !== initial.provider)).toBe(true);
+      const failover = executionRoute(tiers, 'codex', 'auto', descriptor).candidates;
+      expect(failover.every(candidate => candidate.provider === 'codex')).toBe(true);
     }
   });
 

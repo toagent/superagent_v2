@@ -530,7 +530,7 @@ export async function jobCli(
     if (role === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
       throw new Error('job: independent review requires --author-model');
     const descriptor = describeExecution(tiers, ROUTE_ROLE[role], risk, Number(a.flags.round ?? 1));
-    const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, false, state).candidates;
+    const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, state).candidates;
     const provider = automatic ? candidates[0].provider : kindOf(cmd[0]) as 'codex' | 'claude';
     if (!automatic && provider === 'claude' && health.state !== 'up')
       throw new Error(`claude_unavailable: ${routeNotice(state)}; remove -- <cmd> and use --prompt-file for automatic routing`);

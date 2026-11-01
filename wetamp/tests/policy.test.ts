@@ -30,7 +30,7 @@ describe('B1-POLICY frozen routing', () => {
   test('budget cache only downgrades auto: all roles, unknown observations and explicit modes', () => {
     const previous = process.env.SUPERAGENT_HOME, quota = process.env.SUPERAGENT_RELAY_QUOTA, dir = tmp(), tiers = fixtureTiers(), now = Date.now();
     const unavailable = routeState(tiers, 'strict', now, { state: 'down', observed_at: new Date(now).toISOString(), changed_at: new Date(now).toISOString(), cause: { source: 'dispatch', class: 'overloaded', retries: 10 }, next_probe_at: new Date(now + 300_000).toISOString(), probe_failures: 0 });
-    for (const mode of ['auto', 'strict']) for (const role of ['command', 'code', 'review'] as const) expect(resolveRoute(tiers, 'claude', mode, role, 'G1', 1, [], false, unavailable).candidates.every(a => a.provider === 'codex')).toBeTrue();
+    for (const mode of ['auto', 'strict']) for (const role of ['command', 'code', 'review'] as const) expect(resolveRoute(tiers, 'claude', mode, role, 'G1', 1, [], unavailable).candidates.every(a => a.provider === 'codex')).toBeTrue();
     process.env.SUPERAGENT_HOME = dir;
     process.env.SUPERAGENT_RELAY_QUOTA = 'off';
     const cache = (value: unknown) => writeFileSync(join(dir, 'relay-quota.json'), typeof value === 'string' ? value : JSON.stringify(value));
@@ -46,7 +46,7 @@ describe('B1-POLICY frozen routing', () => {
       cache({ at: now, claude_daily_usd: 300 }); expect(models().budget.notice).toBe('已降级到 Codex');
       for (const c of ['claude', 'codex'] as const) for (const role of ['command', 'code', 'repair', 'review'] as const) {
         const authors = role === 'review' ? [tiers.routing.coder.models[0]] : [];
-        const candidates = resolveRoute(tiers, c, 'auto', role, 'G1', 1, authors, false, routeState(tiers, 'auto', now)).candidates;
+        const candidates = resolveRoute(tiers, c, 'auto', role, 'G1', 1, authors, routeState(tiers, 'auto', now)).candidates;
         expect(candidates.every(a => a.provider === 'codex' && !authors.includes(a.model))).toBe(true);
         if (role === 'command') expect(candidates.map(a => a.model)).toEqual(tiers.routing.commander.by_console.codex);
       }
@@ -81,6 +81,15 @@ describe('B1-POLICY frozen routing', () => {
         expect(() => resolveRoute(tiers, 'codex', mode, role)).toThrow(`no eligible ${role}`);
   });
   test('single modes keep coder ownership while review follows the permitted pool', () => {
+    const configured = loadTiers();
+    expect(
+      resolveRoute(configured, 'claude', 'auto', 'review', 'G2', 1, ['gpt-5.6-sol']).candidates[0]
+        .model
+    ).toBe('claude-opus-5-5');
+    expect(
+      resolveRoute(configured, 'claude', 'single:chatgpt', 'review', 'G2', 1, ['gpt-5.6-sol'])
+        .candidates[0].model
+    ).toBe('gpt-6-astra');
     const tiers = fixtureTiers();
     tiers.routing.reviewer.by_console.claude = ['gpt-6-astra', 'claude-opus-5', 'claude-opus-5-5'];
     const claudeReview = resolveRoute(tiers, 'claude', 'single:claude', 'review', 'G1', 1, [

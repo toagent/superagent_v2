@@ -112,7 +112,7 @@ export const claudeOutcomeTrips = (o: ClaudeOutcome): boolean =>
     (o.retries ?? 0) >= TRIP_RETRIES &&
     !['auth', 'misconfigured', 'budget_exceeded'].includes(o.class ?? ''));
 export const claudeProbeModel = (tiers: Tiers): string | undefined =>
-  resolveRoute(tiers, 'claude', 'auto', 'review', 'G1', 1, [], false, {
+  resolveRoute(tiers, 'claude', 'auto', 'review', 'G1', 1, [], {
     budget: { degraded: false, notice: '' },
     claude: { state: 'up', probe_failures: 0 },
   }).candidates.find(candidate => candidate.provider === 'claude')?.model;

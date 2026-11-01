@@ -161,7 +161,6 @@ export function executionRoute(
   mode: string | undefined,
   descriptor: ExecutionDescriptor,
   authors: string[] = [],
-  vendorFailover = false,
   state?: RouteState
 ) {
   return resolveRoute(
@@ -172,7 +171,6 @@ export function executionRoute(
     descriptor.risk,
     descriptor.round,
     authors,
-    vendorFailover,
     state
   );
 }
