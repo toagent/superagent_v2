@@ -421,8 +421,17 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
 }
 // prettier-ignore
 export interface AutoVerifyDependencies { spawn?: (command: string[], env: Record<string, string | undefined>) => { pid: number; unref(): void }; inspect?: typeof inspectProcess; handoff?: (record: EngineVerifyRecord) => void; alert?: (record: EngineVerifyRecord) => void; }
+const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): string => {
+  let subject = '';
+  try {
+    subject = git(['show', '-s', '--format=%s', record.sha]).slice(0, 30);
+  } catch {
+    subject = '';
+  }
+  return `引擎上线后复验发现回归｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
+};
 // prettier-ignore
-const reportVerifyFailure = (record: EngineVerifyRecord, dependencies: AutoVerifyDependencies): void => { (dependencies.alert ?? (item => { queueNtfyAlert(`engine-verify-${item.sha}`, `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, {}, `post-promotion regression: ${item.sha}`); }))(record); (dependencies.handoff ?? (item => { coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: `post-promotion regression: ${item.sha}`, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.log], severity: 'normal' }, 0, false); }))(record); writeVerify({ ...record, reported: true }); };
+const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const title = verifyFailureTitle(record, currentSha), files = record.failed_files.slice(0, 3).join('、') || '未知', more = record.failed_files.length > 3 ? ` 等 ${String(record.failed_files.length)} 个` : ''; (dependencies.alert ?? (item => { queueNtfyAlert(`engine-verify-${item.sha}`, `失败测试文件：${files}${more}\n已自动转交引擎负责人修复，无需你操作\n日志路径：${item.log}`, {}, title); }))(record); (dependencies.handoff ?? (item => { coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.log], severity: 'normal' }, 0, false); }))(record); writeVerify({ ...record, reported: true }); };
 // prettier-ignore
 export function autoVerify(current: string | undefined, dependencies: AutoVerifyDependencies = {}): { sha: string; base?: string; started: boolean; error?: string } | undefined {
   if (!current) return;
@@ -431,7 +440,7 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
   try {
     let records = verifyRecords();
     for (const record of records.filter(r => r.status === 'failed' && !r.reported))
-      reportVerifyFailure(record, dependencies);
+      reportVerifyFailure(record, currentSha, dependencies);
     records = verifyRecords();
     for (const record of records.filter(r => r.status === 'running')) {
       if (!record.pid || !record.pid_start || !record.host || record.host !== hostname())
