@@ -137,10 +137,12 @@ test('accepted rollover rehabilitates legacy evidence while aged terminal owners
 });
 
 // prettier-ignore
-test('tick retires aged lost jobs and queues deduplicated unowned and overdue alerts', () => {
-  let owner: Presence['state'] = 'offline', repo: Presence['state'] = 'online', now = 0; const notifier = { ...b, session_id: 'notify' }, s = setup(who => { const state = same(who, a) ? owner : same(who, notifier) ? 'online' : repo; return state === 'online' ? { state, activity: 'idle' } : { state }; }); mkdirSync(join(s.sa, 'jobs')); writeFileSync(join(s.sa, 'jobs/lost.json'), JSON.stringify({ id: 'lost', title: 'lost', kind: 'codex', tier: 'general', cwd: s.run.repo, launcher: a, wrapper_pid: 99999999, pid: 99999999, started_at: new Date(0).toISOString(), state: 'running' }));
-  writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: notifier, waiting: [{ id: 'late', since: new Date(0).toISOString(), waited_s: 0, waiting_for: '处理', next: 'next' }] }, { owner: 'unknown', waiting: [{ id: 'orphan', waited_s: 0, waiting_for: '无人负责' }] }] }));
-  const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' })), ended = () => JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at; r.tick(); expect(ended()).toBeUndefined(); repo = 'offline'; now = 1; r.tick(); now = 86_400_000; r.tick(); expect(ended()).toBeUndefined(); owner = 'online'; r.tick(); owner = 'offline'; now++; r.tick(); now += 86_400_000; r.tick();
-  expect(JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at).toBeDefined();
-  expect(JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')).alert_ids).toEqual(['unowned:orphan', 'responsibility:late']);
+test('tick retires lost jobs after one hour and batches responsibility alerts by owner and project', () => {
+  let now = 0; const notifier = { ...b, session_id: 'notify-session' }, s = setup(who => same(who, notifier) ? { state: 'online', activity: 'idle' } : { state: 'offline' }); mkdirSync(join(s.sa, 'jobs')); writeFileSync(join(s.sa, 'jobs/lost.json'), JSON.stringify({ id: 'lost', title: 'lost', kind: 'codex', tier: 'general', cwd: s.run.repo, launcher: a, wrapper_pid: 99999999, pid: 99999999, started_at: new Date(0).toISOString(), state: 'running' }));
+  const waiting = (id: string) => ({ id, ...(id === 'lost' ? { kind: 'job' } : {}), since: new Date(0).toISOString(), waited_s: 0, waiting_for: `处理${id}`, next: `next-${id}` }), heartbeat = (ids: string[]) => writeFileSync(join(s.sa, 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: notifier, project: 'BestIFA', waiting: ids.map(waiting) }] }));
+  const r = new Reclaimer(s.c, () => now, () => ({ id: 'engine', status: 'running' })), state = () => JSON.parse(readFileSync(join(s.sa, 'ntfy/state.json'), 'utf8')), ended = () => JSON.parse(readFileSync(join(s.sa, 'jobs/lost.json'), 'utf8')).ended_at;
+  heartbeat(['late-a', 'late-b', 'lost']); r.tick(); expect(ended()).toBeUndefined(); now = 59 * 60_000; r.tick(); expect(ended()).toBeUndefined();
+  expect(state().alerts).toHaveLength(1); expect(state().alerts[0]).toMatchObject({ title: 'BestIFA 元帅（claude notify-s）有 3 项超 30 分钟未处理', message: 'late-a 处理late-a → next-late-a\nlate-b 处理late-b → next-late-b\nlost 处理lost → next-lost' });
+  r.tick(); expect(state().alerts).toHaveLength(1); heartbeat(['late-a', 'late-b', 'late-c', 'lost']); now = 61 * 60_000; r.tick();
+  expect(ended()).toBeDefined(); expect(state().alerts).toHaveLength(2); expect(state().alerts[1].message).not.toContain('lost');
 });

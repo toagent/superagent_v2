@@ -83,6 +83,44 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
   });
 });
 
+test('heartbeat omits cleaned lost jobs from responsibilities', () => {
+  const launcher = { ...owner(1), tty: null, cwd: '/missing/project', client: 'codex' as const },
+    job = {
+      id: 'lost',
+      title: 'lost',
+      card: null,
+      log: null,
+      cwd: launcher.cwd,
+      kind: 'codex' as const,
+      model: null,
+      launcher,
+      wrapper_pid: 0,
+      pid: 0,
+      started_at: new Date(now - 59 * 60_000).toISOString(),
+      state: 'lost' as const,
+      tier: 'general' as const,
+      guess: false,
+      owner: null,
+    };
+  const snap: Snapshot = {
+    at: new Date(now).toISOString(),
+    summary: {},
+    rows: [],
+    activity: {
+      jobs: [job, { ...job, id: 'cleaned', ended_at: new Date(now).toISOString() }],
+      terms: [],
+      procs: [],
+      remote: [],
+      notes: [],
+    },
+  };
+  const result = heartbeat(snap, cockpit(snap, now), now, () => ({
+    state: 'online',
+    activity: 'active',
+  }));
+  expect(result.marshals[0]?.waiting.map(item => item.id)).toEqual(['lost']);
+});
+
 test('heartbeat separates active runs from typed waits and reports coordination once', () => {
   const who = owner(1),
     failed = row('failed', who, 'failed'),

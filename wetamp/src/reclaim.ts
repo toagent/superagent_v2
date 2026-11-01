@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 // prettier-ignore
-import { Coordination, coord, identityKey, repoScope, runScope, same, type Identity, type RunRef } from './coord';
+import { Coordination, coord, identityKey, runScope, same, type Identity, type RunRef } from './coord';
 import { getRun, runStatuses } from './archon';
 import { writeAtomic } from './config';
 import { loadLedger, mutateLedger } from './ledger';
@@ -9,6 +10,7 @@ import { cleanJob, readJobs } from './jobs';
 import { queueNtfyAlert } from './ntfy';
 
 const OFFLINE_CLEANUP_MS = 24 * 60 * 60_000; // Cross one night before terminal cleanup.
+const LOST_JOB_CLEANUP_MS = 60 * 60_000;
 const RESPONSIBILITY_ESCALATION_MS = 30 * 60_000; // PagerDuty-style second escalation.
 const abandoned = (run: RunRef): boolean =>
   run.rejected === run.archon_run_id &&
@@ -68,16 +70,26 @@ export class Reclaimer {
   private maintain(observations: Observation[]): void {
     const now = this.now();
     const offlineJobs = new Map(observations.filter(o => o.kind === 'job').map(o => [o.run, o]));
+    const cleanedJobs = new Set<string>();
     for (const job of readJobs().jobs) if (job.state === 'lost' && job.launcher) {
       const observed = offlineJobs.get(job.id);
-      let repositoryOnline = false; try { repositoryOnline = this.c.owner(repoScope(job.cwd)).presence.state === 'online'; } catch { /* Missing historical repositories have no online owner. */ }
-      if (observed?.first_offline_at !== undefined && now - observed.first_offline_at >= OFFLINE_CLEANUP_MS && this.c.d.presence(job.launcher).state === 'offline' && !repositoryOnline && !this.successorOnline(job.launcher, 0)) try { cleanJob(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
+      if (observed?.first_offline_at !== undefined && now - observed.first_offline_at >= LOST_JOB_CLEANUP_MS) try { cleanJob(job.id); cleanedJobs.add(job.id); } catch { /* A dirty or unintegrated worktree remains recoverable. */ }
     }
-    const heartbeat = json(join(this.c.d.sa, 'heartbeat.json')) as { marshals?: { owner: Identity | 'unknown'; waiting: { id: string; since?: string; waited_s: number; waiting_for: string; next?: string }[] }[] } | undefined;
+    interface Waiting { id: string; kind?: string; since?: string; waited_s: number; waiting_for: string; next?: string }
+    const heartbeat = json(join(this.c.d.sa, 'heartbeat.json')) as { marshals?: { owner: Identity | 'unknown'; project: string; waiting: Waiting[] }[] } | undefined;
+    const groups = new Map<string, { owner: Identity | 'unknown'; project: string; waiting: Waiting[] }>();
     for (const marshal of heartbeat?.marshals ?? []) for (const item of marshal.waiting) {
+      if (item.kind === 'job' && cleanedJobs.has(item.id)) continue;
       const since = Date.parse(item.since ?? ''), waited = Number.isFinite(since) ? now - since : item.waited_s * 1000;
-      if (marshal.owner === 'unknown') queueNtfyAlert(`unowned:${item.id}`, `${item.id} 无人负责 → ${item.next ?? '需要明确负责人'}`, {}, '责任清单无人负责');
-      else if (waited >= RESPONSIBILITY_ESCALATION_MS && this.c.d.presence(marshal.owner).state === 'online') queueNtfyAlert(`responsibility:${item.id}`, `${item.id} ${item.waiting_for} → ${item.next ?? '需要处理'}`, {}, '责任清单超时');
+      if (marshal.owner !== 'unknown' && (waited < RESPONSIBILITY_ESCALATION_MS || this.c.d.presence(marshal.owner).state !== 'online')) continue;
+      const key = JSON.stringify([marshal.owner === 'unknown' ? 'unknown' : identityKey(marshal.owner), marshal.project]), group = groups.get(key) ?? { owner: marshal.owner, project: marshal.project, waiting: [] };
+      group.waiting.push(item); groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const ids = group.waiting.map(item => item.id).sort(), digest = createHash('sha256').update(JSON.stringify(ids)).digest('hex').slice(0, 16), shown = group.waiting.slice(0, 5);
+      const message = [...shown.map(item => `${item.id.slice(0, 15)} ${item.waiting_for} → ${item.next ?? '需要处理'}`), ...(group.waiting.length > 5 ? [`等 ${String(group.waiting.length - 5)} 项`] : [])].join('\n');
+      const title = group.owner === 'unknown' ? `${group.project} 无人负责有 ${String(group.waiting.length)} 项未处理` : `${group.project} 元帅（${group.owner.client} ${group.owner.session_id?.slice(0, 8) ?? `pid:${String(group.owner.pid)}`}）有 ${String(group.waiting.length)} 项超 30 分钟未处理`;
+      queueNtfyAlert(`responsibility:${createHash('sha256').update(JSON.stringify([group.owner === 'unknown' ? 'unknown' : identityKey(group.owner), group.project])).digest('hex').slice(0, 12)}:${digest}`, message, {}, title);
     }
   }
   observe(): Observation[] {
@@ -99,9 +111,8 @@ export class Reclaimer {
       if (view.presence.state === 'online') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: at, count: 0 });
       else if (view.presence.state === 'offline') next.push({ run: run.run_id, repo: run.repo, owner: view.owner, generation: view.generation, last_online_at: old?.last_online_at, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 });
     }
-    for (const job of readJobs().jobs) if (job.state === 'lost' && job.launcher && this.c.d.presence(job.launcher).state === 'offline') {
-      let repositoryOnline = false; try { repositoryOnline = this.c.owner(repoScope(job.cwd)).presence.state === 'online'; } catch { /* Historical repository may be gone. */ }
-      if (!repositoryOnline && !this.successorOnline(job.launcher, 0)) { const key = this.jobKey(job.id, job.launcher), old = prior.get(key); next.push({ kind: 'job', run: job.id, repo: job.cwd, owner: job.launcher, generation: 0, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 }); }
+    for (const job of readJobs().jobs) if (job.state === 'lost' && job.launcher && !job.ended_at) {
+      const key = this.jobKey(job.id, job.launcher), old = prior.get(key); next.push({ kind: 'job', run: job.id, repo: job.cwd, owner: job.launcher, generation: 0, first_offline_at: old?.first_offline_at ?? at, last_offline_at: at, count: (old?.count ?? 0) + 1 });
     }
     this.write(this.observations, next); return next;
   }
