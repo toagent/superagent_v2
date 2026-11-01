@@ -371,6 +371,10 @@ export interface ExecutionAdmissionHost {
   countActive(): number;
   launch(args: string[], cwd: string | undefined, intent: { path: string; token: string }): Json;
 }
+export interface ExecutionAdmissionWait {
+  now(): number;
+  sleep(ms: number): void;
+}
 export type Admission =
   | {
       ok: true;
@@ -378,51 +382,88 @@ export type Admission =
       launch: (args: string[], cwd?: string) => Json;
       release: () => void;
     }
-  | { ok: false; reason: 'admission_busy' | 'launch_reserved' };
+  | { ok: false; reason: 'admission_busy' }
+  | { ok: false; reason: 'launch_reserved'; waited_ms: number };
+
+// Detach should publish promptly; bound ambiguity without operator tuning.
+const LAUNCH_RESERVATION_WAIT_MS = 2_000,
+  MAX_RETRY_MS = 200;
+const launchReservationWait: ExecutionAdmissionWait = {
+  now: Date.now,
+  sleep: Bun.sleepSync,
+};
 
 /** Lock through pending-row publication; durable reservations retain ambiguous launch ownership. */
-export function admitExecution(host: ExecutionAdmissionHost): Admission {
+export function admitExecution(
+  host: ExecutionAdmissionHost,
+  wait: ExecutionAdmissionWait = launchReservationWait
+): Admission {
   const root = host.root;
   mkdirSync(root, { recursive: true });
-  const lease = executionLock(join(root, 'run-admission.lock'));
-  if (!lease.ok) return { ok: false, reason: 'admission_busy' };
-  try {
-    const reservation = join(root, 'run-admission.json');
-    if (existsSync(reservation)) {
-      const old = JSON.parse(readFileSync(reservation, 'utf8')) as {
-        host?: unknown;
-        pid?: unknown;
-        pid_start?: unknown;
-      };
-      // Only confirmed death clears a launch reservation. Missing identity, remote host and PID reuse stay conservative.
-      if (
-        old.host !== hostname() ||
-        typeof old.pid !== 'number' ||
-        !Number.isSafeInteger(old.pid) ||
-        old.pid < 1 ||
-        typeof old.pid_start !== 'string' ||
-        !old.pid_start ||
-        host.inspectProcess(old.pid).state !== 'offline'
-      ) {
+  const started = wait.now();
+  let retryMs = 25;
+  for (;;) {
+    const lease = executionLock(join(root, 'run-admission.lock'));
+    if (!lease.ok) return { ok: false, reason: 'admission_busy' };
+    let held = true;
+    const release = (): void => {
+      if (held) {
+        held = false;
         lease.release();
-        return { ok: false, reason: 'launch_reserved' };
       }
-      unlinkSync(reservation);
-    }
-    const active = host.countActive();
-    return {
-      ok: true,
-      active,
-      release: lease.release,
-      launch: (args, cwd): Json => {
-        const token = randomUUID();
-        writeAdmission(reservation, JSON.stringify({ token, host: hostname() }) + '\n');
-        return host.launch(args, cwd, { path: reservation, token });
-      },
     };
-  } catch (e) {
-    lease.release();
-    throw e;
+    try {
+      const reservation = join(root, 'run-admission.json');
+      if (existsSync(reservation)) {
+        const old = JSON.parse(readFileSync(reservation, 'utf8')) as {
+          host?: unknown;
+          pid?: unknown;
+          pid_start?: unknown;
+          active?: unknown;
+        };
+        const probe =
+          old.host === hostname() &&
+          typeof old.pid === 'number' &&
+          Number.isSafeInteger(old.pid) &&
+          old.pid >= 1 &&
+          typeof old.pid_start === 'string' &&
+          old.pid_start
+            ? host.inspectProcess(old.pid)
+            : undefined;
+        const published =
+          typeof old.active === 'number' &&
+          Number.isSafeInteger(old.active) &&
+          host.countActive() > old.active;
+        if (
+          !published &&
+          probe?.state !== 'offline' &&
+          !(probe?.state === 'online' && probe.start !== old.pid_start)
+        ) {
+          const waitedMs = Math.max(0, wait.now() - started);
+          release();
+          if (waitedMs >= LAUNCH_RESERVATION_WAIT_MS)
+            return { ok: false, reason: 'launch_reserved', waited_ms: waitedMs };
+          wait.sleep(Math.min(retryMs, LAUNCH_RESERVATION_WAIT_MS - waitedMs));
+          retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
+          continue;
+        }
+        unlinkSync(reservation);
+      }
+      const active = host.countActive();
+      return {
+        ok: true,
+        active,
+        release,
+        launch: (args, cwd): Json => {
+          const token = randomUUID();
+          writeAdmission(reservation, JSON.stringify({ token, host: hostname(), active }) + '\n');
+          return host.launch(args, cwd, { path: reservation, token });
+        },
+      };
+    } catch (e) {
+      release();
+      throw e;
+    }
   }
 }
 

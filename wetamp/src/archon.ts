@@ -455,34 +455,38 @@ import {
   resumeExecution,
   admitExecution,
   type Admission,
+  type ExecutionAdmissionWait,
   executionLock as lock,
 } from '@archon/workflows/execution-lifecycle';
 import { claimInterruptedExecution } from '../../packages/core/src/workflows/execution-lifecycle';
 export { lock };
 /** The engine owns launch reservations; the adapter supplies a read-only registry count. */
-export function admitRun(): Admission {
-  return admitExecution({
-    root: home().archon,
-    inspectProcess,
-    countActive: () => {
-      const path = join(home().archon, 'archon.db');
-      if (!existsSync(path)) return 0;
-      const db = new Database(path, { readonly: true });
-      try {
-        return (
-          db
-            .query<
-              { n: number },
-              []
-            >("select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled','paused')")
-            .get()?.n ?? 0
-        );
-      } finally {
-        db.close();
-      }
+export function admitRun(wait?: ExecutionAdmissionWait): Admission {
+  return admitExecution(
+    {
+      root: home().archon,
+      inspectProcess,
+      countActive: () => {
+        const path = join(home().archon, 'archon.db');
+        if (!existsSync(path)) return 0;
+        const db = new Database(path, { readonly: true });
+        try {
+          return (
+            db
+              .query<
+                { n: number },
+                []
+              >("select count(*) as n from remote_agent_workflow_runs where status not in ('completed','failed','cancelled','paused')")
+              .get()?.n ?? 0
+          );
+        } finally {
+          db.close();
+        }
+      },
+      launch: archonJson,
     },
-    launch: archonJson,
-  });
+    wait
+  );
 }
 
 /** Transport adapter only; Archon owns continuation fences and interrupted-run transitions. */
