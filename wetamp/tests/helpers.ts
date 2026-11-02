@@ -1,5 +1,6 @@
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   symlinkSync,
@@ -15,6 +16,12 @@ import { loadTiers } from '../src/config';
 import { trackTestRoot } from './preload';
 
 export { trackTestChild } from './preload';
+
+export const alreadySandboxed =
+  process.platform === 'darwin' &&
+  existsSync('/usr/bin/sandbox-exec') &&
+  Bun.spawnSync(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true'])
+    .exitCode !== 0;
 
 /** Fresh policy values, independent of the operator's routing and budget choices. */
 export const fixtureTiers = () => loadTiers(join(import.meta.dir, 'fixtures/tiers.json'));

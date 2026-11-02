@@ -13,9 +13,14 @@ import {
 } from '../../packages/workflows/src/exec-environment';
 import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/src/node-execution';
 import { NODE_CONTRACT_ENV } from '../templates/.archon/scripts/sa-check';
-import { gitRepo, fixtureEnv, sh, tmp } from './helpers';
+import { alreadySandboxed, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 
-test('CONTEXT_PACK blocks outside/private symlink targets and preserves byte/range boundaries', () => {
+const contextPackTest = test.skipIf(alreadySandboxed);
+const contextPackTitle = alreadySandboxed
+  ? 'CONTEXT_PACK skipped: 已在沙箱内，需在普通终端运行'
+  : 'CONTEXT_PACK blocks outside/private symlink targets and preserves byte/range boundaries';
+
+contextPackTest(contextPackTitle, () => {
   const gen = tmp(),
     repo = gitRepo(tmp()),
     outside = tmp();
