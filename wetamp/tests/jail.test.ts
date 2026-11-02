@@ -79,7 +79,9 @@ describe('ai-jail', () => {
     const probe = run('/bin/cat', join(jail, '.probe'));
     expect(probe.exitCode).not.toBe(0);
     expect(probe.stderr.toString()).toMatch(/Operation not permitted/);
-    expect(run('/usr/bin/sudo', '-n', 'true').exitCode).not.toBe(0);
+    const sudo = run('/usr/bin/sudo', '-n', 'true');
+    expect(sudo.exitCode).not.toBe(0);
+    expect(sudo.stderr.toString()).toMatch(/Operation not permitted/);
     expect(run('/bin/cat', safe).stdout.toString()).toBe('before');
     const nested = run(join(jail, 'ai-jail'), '/bin/echo', 'nested');
     expect(nested.exitCode).toBe(0);
