@@ -11,7 +11,14 @@ const panel = createRequire(import.meta.url)(modulePath) as {
 };
 
 function fixture(
-  mode: 'restored' | 'latePinned' | 'connecting' | 'live' | 'empty' | 'codeFail' = 'empty'
+  mode:
+    | 'restored'
+    | 'lateConnect'
+    | 'latePinned'
+    | 'connecting'
+    | 'live'
+    | 'empty'
+    | 'codeFail' = 'empty'
 ) {
   const root = tmp(),
     repo = join(root, 'repo'),
@@ -28,13 +35,13 @@ function fixture(
     `#!/usr/bin/env node
 const fs=require('node:fs'),a=process.argv.slice(2),mode=process.env.FAKE_MODE;
 fs.appendFileSync(process.env.FAKE_CALLS,JSON.stringify(a)+'\\n');
-if(a[1]==='close'&&((mode==='restored'&&a[3]==='restored')||(mode==='latePinned'&&a[3]==='late'))){console.log(JSON.stringify({ok:false,error:{code:'terminal_tab_pinned'}}));process.exit(1)}
+if(a[1]==='close'&&(((mode==='restored'||mode==='lateConnect')&&a[3]==='restored')||(mode==='latePinned'&&a[3]==='late'))){console.log(JSON.stringify({ok:false,error:{code:'terminal_tab_pinned'}}));process.exit(1)}
 if(a[1]==='close'&&mode==='codeFail'){console.log(JSON.stringify({ok:false,error:{code:'terminal_close_failed'}}));process.exit(2)}
 if(a[1]==='list'){
  const calls=fs.readFileSync(process.env.FAKE_CALLS,'utf8').trim().split('\\n').map(JSON.parse),n=calls.filter(x=>x[1]==='list').length;
- const handles=mode==='live'?['saved','duplicate','other']:mode==='restored'?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
+ const handles=mode==='live'?['saved','duplicate','other']:(mode==='restored'||mode==='lateConnect')?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
  const incarnationId=h=>h==='saved'?'current':h==='restored'?'old':h+'-incarnation';
- const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:mode!=='connecting'||handle!=='created',orphaned:false}));
+ const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:(mode!=='connecting'||handle!=='created')&&(mode!=='lateConnect'||n>1),orphaned:false}));
  const visualLayouts=[{root:{groups:[{tabs:handles.map(handle=>({title:handle==='other'?'心跳·other':'心跳·superagent_v2',panes:[{handle}]}))}]}}];
  console.log(JSON.stringify({result:{terminals,visualLayouts}}));
 }else console.log(JSON.stringify({result:{terminal:{handle:'created'}}}));
@@ -87,6 +94,16 @@ test('pinned restored panel is re-armed in place', () => {
     handle: 'restored',
     incarnationId: 'old',
   });
+});
+
+test('pinned panel that connects late is re-armed after waiting', () => {
+  const restored = fixture('lateConnect');
+  expect(run(restored).exitCode).toBe(0);
+  const calls = invocations(restored.calls);
+  expect(calls.map(call => call[1])).toEqual(['list', 'close', 'list', 'close', 'send']);
+  expect(calls.some(call => call[1] === 'create')).toBe(false);
+  const saved = JSON.parse(readFileSync(record(restored.home, restored.repo), 'utf8'));
+  expect(saved).toEqual({ handle: 'restored', incarnationId: 'old' });
 });
 
 test('late pinned panel replaces the created one on rescan', () => {

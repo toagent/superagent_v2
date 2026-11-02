@@ -179,10 +179,7 @@ function tidyPanels(orca, state, title, keep, shellCommand, record, env, replace
   }
   if (pinned.length === 0 || (keep && !replaceKeep)) return false;
   const terminal = state.terminals.find(item => pinned.includes(item.handle) && live(item));
-  if (!terminal) {
-    logFailure(new Error('pinned heartbeat terminal is not live; waiting for next rescan'), env);
-    return true;
-  }
+  if (!terminal) return 'waiting';
   command(
     orca,
     [
@@ -229,8 +226,15 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
         .join(' '),
       shellCommand = `while true; do ${watch}; case $? in 75) continue;; esac; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`;
     const current = recordedTerminal(prior, state.terminals);
-    if (tidyPanels(orca, state, title, current?.handle, shellCommand, record, env) || current)
+    const tidied = tidyPanels(orca, state, title, current?.handle, shellCommand, record, env);
+    if (tidied === 'waiting') {
+      if (rescanDelayMs > 0)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
+      if (tidyPanels(orca, listState(orca, selector, env), title, null, shellCommand, record, env) === 'waiting')
+        logFailure(new Error('pinned heartbeat terminal is not live after rescan'), env);
       return;
+    }
+    if (tidied || current) return;
     const created = command(
         orca,
         [
@@ -257,7 +261,8 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
     if (rescanDelayMs > 0)
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
     const rescanned = listState(orca, selector, env);
-    tidyPanels(orca, rescanned, title, handle, shellCommand, record, env, true);
+    if (tidyPanels(orca, rescanned, title, handle, shellCommand, record, env, true) === 'waiting')
+      logFailure(new Error('pinned heartbeat terminal is not live after rescan'), env);
   } finally {
     fs.closeSync(fd);
     try {
