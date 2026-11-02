@@ -539,12 +539,40 @@ export class Coordination {
       })
     );
   }
+  private identityCompletion(owner: Identity | null, who: Identity): boolean {
+    if (
+      !owner ||
+      owner.session_id ||
+      !who.session_id ||
+      owner.client !== who.client ||
+      owner.host !== who.host ||
+      owner.pid !== who.pid ||
+      owner.pid_start !== who.pid_start
+    )
+      return false;
+    try {
+      const matching = readdirSync(join(this.d.sa, 'live'))
+        .filter(name => name.endsWith('.json'))
+        .map(name => JSON.parse(readFileSync(join(this.d.sa, 'live', name), 'utf8')) as Identity)
+        .filter(record => record.pid === who.pid && record.pid_start === who.pid_start);
+      return matching.length === 1 && matching[0]?.session_id === who.session_id;
+    } catch {
+      return false;
+    }
+  }
   private claimState(scope: Scope, who: Identity, takeover: boolean) {
-    const view = this.owner(scope);
+    const view = this.owner(scope),
+      completion = !takeover && this.identityCompletion(view.owner, who);
     if (view.conflicts.length && !takeover) throw new Error(view.next);
-    if (view.owner && !same(view.owner, who) && view.presence.state !== 'offline' && !takeover)
+    if (
+      view.owner &&
+      !same(view.owner, who) &&
+      !completion &&
+      view.presence.state !== 'offline' &&
+      !takeover
+    )
       throw new Error(shared.refusal('普通认领', view.owner, view.presence.state, scope));
-    return { view, existing: this.claimOf(scope) };
+    return { view, existing: this.claimOf(scope), completion };
   }
   private applyClaim(
     scope: Scope,
@@ -555,7 +583,15 @@ export class Coordination {
     const claim =
       same(state.view.owner, who) && state.existing
         ? state.existing
-        : this.transfer(scope, who, reason);
+        : this.transfer(
+            scope,
+            who,
+            state.completion
+              ? `身份补全：唯一 live 会话以相同 client/host/pid/pid_start 关联 ${String(who.session_id)}`
+              : reason,
+            false,
+            !state.completion
+          );
     this.save('leases', this.leaseKey(scope, who), { generation: claim.generation });
     return { ...who, generation: claim.generation };
   }
