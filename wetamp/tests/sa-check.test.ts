@@ -2918,8 +2918,9 @@ describe('sa-check script', () => {
     });
   });
   // prettier-ignore
-  test('accept: JUnit failure reruns only its exact Bun case and records flaky without cache', () => {
-    const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts');
+  test('accept: JUnit merge does not need uv and records exact flaky rerun without cache', () => {
+    const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts'), bin = join(root, 'bin'), uvCalls = join(root, 'uv-calls');
+    mkdirSync(bin); writeFileSync(join(bin, 'uv'), `#!/bin/sh\necho called >> '${uvCalls}'\nexit 99\n`, { mode: 0o755 });
     writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml\nfixture.test.ts\n');
     writeFileSync(join(repo, 'fixture.test.ts'), `import { describe, expect, test } from 'bun:test'; import { appendFileSync, readFileSync } from 'node:fs';
 describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify(counts)}, 'stable\\n'); }); test('target', () => { appendFileSync(${JSON.stringify(counts)}, 'target\\n'); const n = readFileSync(${JSON.stringify(counts)}, 'utf8').split('target').length - 1; expect(n).toBeGreaterThan(1); }); });`
@@ -2929,7 +2930,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     p.packages[0].accept[0].report = { junit: 'junit.xml', collect: `printf 'suite::stable\nsuite::target\n'` };
     writeFileSync(plan, JSON.stringify(p));
     const result = runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' }, SCRIPT,
-      { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon') });
+      { SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon'), PATH: `${bin}:${process.env.PATH}` });
     expect(result.out, readFileSync(join(result.art, 'verify-a.log'), 'utf8')).toMatchObject({ ok: true,
       command_results: [{ pass: true, flaky: true, structured: { complete: true, failures: [] },
         summary: { pass: 1, fail: 0, skip: 0, retry: 1 } }] });
@@ -2941,8 +2942,29 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       join(result.art, 'verify-a.attempt-1.junit.xml'), join(result.art, 'verify-a.attempt-2.junit.xml')]);
     expect(attempts.every(attempt => existsSync(attempt.junit!))).toBeTrue();
     expect(readFileSync(counts, 'utf8')).toBe('stable\ntarget\ntarget\n');
+    expect(existsSync(uvCalls)).toBeFalse();
     expect(readdirSync(join(result.art, 'accept-cache'))).toEqual(['.key']);
     expect(JSON.parse(readFileSync(join(home, 'flaky-acceptance.jsonl'), 'utf8'))).toMatchObject({ test_ids: ['suite::target'], attempts: 2 });
+  });
+  // prettier-ignore
+  test('JUnit merge validates reports, nested suites, and statistics before atomic replacement', () => {
+    const root = tmp(), script = join(import.meta.dir, '../templates/.archon/scripts/junit_merge.py'), base = join(root, 'base.xml'), rerun = join(root, 'rerun.xml');
+    const run = (id = 'pkg/test_a.py::TestA::target') => Bun.spawnSync(['python3', script, base, rerun, id], { stdout: 'pipe', stderr: 'pipe' });
+    writeFileSync(base, '<testsuites tests="9"><testsuite name="outer"><testsuite name="inner"><testcase file="pkg/test_a.py" classname="pkg.test_a.TestA" name="target"><failure/></testcase><testcase classname="legacy" name="stable"><skipped/></testcase></testsuite></testsuite></testsuites>');
+    writeFileSync(rerun, '<testsuite><testcase file="pkg/test_a.py" classname="pkg.test_a.TestA" name="target"/></testsuite>');
+    expect(run().exitCode).toBe(0);
+    const merged = readFileSync(base, 'utf8');
+    expect(merged).toContain('<testsuites tests="2" failures="0" errors="0" skipped="1">');
+    expect(merged).toContain('<testsuite name="inner" tests="2" failures="0" errors="0" skipped="1">');
+    writeFileSync(base, '<testsuite tests="1"><testcase classname="legacy" name="stable"><failure/></testcase></testsuite>');
+    writeFileSync(rerun, '<testsuite><testcase classname="legacy" name="stable"/></testsuite>');
+    expect(run('legacy::stable').exitCode).toBe(0); expect(readFileSync(base, 'utf8')).toContain('tests="1" failures="0"');
+    for (const invalid of ['<testsuite><testcase classname="x" name="y"/><testcase classname="x" name="y"/></testsuite>', '<testsuite>']) {
+      writeFileSync(base, '<testsuite tests="1"><testcase classname="legacy" name="stable"/></testsuite>'); const before = readFileSync(base, 'utf8'); writeFileSync(rerun, invalid);
+      expect(run('legacy::stable').exitCode).not.toBe(0); expect(readFileSync(base, 'utf8')).toBe(before);
+    }
+    writeFileSync(rerun, '<testsuite><testcase classname="legacy" name="stable"/></testsuite>');
+    expect(run('missing::id').exitCode).not.toBe(0);
   });
   // prettier-ignore
   test.each(['still-fails', 'first-pass', 'missing-rerun-id'])(
