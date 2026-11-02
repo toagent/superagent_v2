@@ -51,6 +51,7 @@ describe('resume card', () => {
         status,
         title: `title-${id}`,
         expires_at,
+        created_at: '2026-11-02T04:45:00Z',
         originator: { identity: { session_id } },
       });
     writeFileSync(
@@ -65,7 +66,7 @@ describe('resume card', () => {
       })
     );
     expect(waitingAsks('s', Date.parse('2026-11-02T05:00:00Z'), state)).toEqual([
-      { id: 'live', title: 'title-live' },
+      { id: 'live', title: 'title-live', waited_ms: 900_000 },
     ]);
   });
   test('Claude facts preserve quotes, replies, compression count, and owned unfinished runs', async () => {
@@ -75,6 +76,10 @@ describe('resume card', () => {
       file = join(dir, `${id}.jsonl`);
     mkdirSync(dir, { recursive: true });
     process.env.CLAUDE_CONFIG_DIR = home;
+    process.env.SUPERAGENT_HOME = home;
+    mkdirSync(join(home, 'ntfy'), { recursive: true });
+    // prettier-ignore
+    writeFileSync(join(home, 'ntfy/state.json'), JSON.stringify({ decisions: { ask: { id: 'ask-1', status: 'pending', title: '是否继续', created_at: '2026-10-21T00:52:00Z', expires_at: '2026-10-21T02:00:00Z', originator: { identity: { session_id: id } } } } }));
     lines(file, [
       { type: 'system', subtype: 'compact_boundary', timestamp: '2026-10-21T01:01:30Z' },
       { type: 'user', timestamp: '2026-10-21T01:02:00Z', message: { content: 'first request' } },
@@ -99,7 +104,7 @@ describe('resume card', () => {
       {}
     );
     expect(card).toMatch(
-      /【复位卡·第 1 次压缩】[\s\S]*tasks\.sh list[\s\S]*adopt[\s\S]*mine running[\s\S]*↳ 回应：previous proposal/
+      /【复位卡·第 1 次压缩】[\s\S]*tasks\.sh list[\s\S]*adopt[\s\S]*mine running[\s\S]*ask-1 是否继续（已等 10 分钟）[\s\S]*inbox --wait --timeout 7000[\s\S]*↳ 回应：previous proposal/
     );
     for (const text of ['done completed', 'other', 'system-reminder'])
       expect(card).not.toContain(text);

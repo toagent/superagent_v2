@@ -13,25 +13,27 @@ type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
 export const waitingRuns = (sessionId: string, runs = coord().unfinishedRuns(sessionId)): Run[] =>
   runs.filter(run => run.status === 'running' || run.status === 'pending');
+// prettier-ignore
 export function waitingAsks(
   sessionId: string,
   now = Date.now(),
   statePath = join(process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'), 'ntfy/state.json')
-): { id: string; title: string }[] {
+): { id: string; title: string; waited_ms: number | null }[] {
   try {
     const state = JSON.parse(readFileSync(statePath, 'utf8')) as {
       decisions?: Record<string, Record<string, unknown>>;
     };
     return Object.values(state.decisions ?? {}).flatMap(decision => {
       const originator = objectOf(objectOf(decision.originator).identity),
-        title = decision.headline ?? decision.title;
+        title = decision.headline ?? decision.title,
+        started = timestampOf(decision.created_at ?? objectOf(decision.source).queued_at);
       return decision.status === 'pending' &&
         typeof decision.expires_at === 'string' &&
         Date.parse(decision.expires_at) > now &&
         originator.session_id === sessionId &&
         typeof decision.id === 'string' &&
         typeof title === 'string'
-        ? [{ id: decision.id, title }]
+        ? [{ id: decision.id, title, waited_ms: started === null ? null : Math.max(0, now - started) }]
         : [];
     });
   } catch {
@@ -227,9 +229,13 @@ export async function resumeCard(
         : '建议换会话：在任务栈写好断点并把状态改为「被中断」（没有任务栈先 tasks.sh new <slug>），然后新开会话执行 tasks.sh list，再 tasks.sh adopt <列表中的会话目录名> 接手。'
     );
   const active = runs ?? coord().unfinishedRuns(p.session_id);
+  const asks = waitingAsks(p.session_id, now);
+  // prettier-ignore
   lines.push(
     '未结束 run：',
     ...(active.length ? active.map(r => `${r.run_id} ${r.status}`) : ['（无）']),
+    '待答复问询：',
+    ...(asks.length ? [...asks.map(ask => `${ask.id} ${ask.title}（已等 ${ask.waited_ms === null ? '时长未知' : `${String(Math.floor(ask.waited_ms / 60_000))} 分钟`}）`), '继续等待：superagent inbox --wait --timeout 7000'] : ['（无）']),
     '用户原话：',
     ...quoteLines(quotes, path)
   );

@@ -8,12 +8,20 @@ import {
   DecisionStore,
   type DecisionReceipt,
 } from '../src/decisions';
-import { askCli, notifyCli, ntfyCli, ntfyTickHealth, syncDecisionChannel } from '../src/cli';
+import {
+  askCli,
+  askWaitHealth,
+  notifyCli,
+  ntfyCli,
+  ntfyTickHealth,
+  syncDecisionChannel,
+} from '../src/cli';
 import { caller, coord } from '../src/coord';
 import {
   askNtfy,
   publishPendingNtfy,
   queueNtfyAlert,
+  supersedeNtfyDecisions,
   syncNtfy,
   type NtfyConfig,
 } from '../src/ntfy';
@@ -92,6 +100,25 @@ describe('ntfy decision channel', () => {
     const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
     expect(ntfyTickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
+  });
+  test('local answer uses the signed path once and inbox wait returns ask health events', async () => {
+    const f = fixture(), who = { ...caller(), session_id: 'local-session' }, scope = coord().scope(), output: unknown[] = [];
+    f.config.actor = () => who;
+    const id = askNtfy({ ...f.request('local'), originator: { identity: who, scope } }, f.config);
+    await publishPendingNtfy(f.config); const phone = f.action();
+    const online = f.config.fetch; f.config.fetch = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    await askCli(['ask', 'answer', id, 'yes'], f.config, value => output.push(value));
+    f.config.fetch = online;
+    expect(output[0]).toMatchObject({ id, option: 'yes', source: 'local', accepted: 1 });
+    expect(coord().inbox(who, true).find(message => message.source === id)?.body).toContain('本地答复');
+    f.push(phone); expect((await syncNtfy(() => { throw new Error('replayed'); }, f.config)).ignored).toBe(1);
+    const pending = askNtfy({ ...f.request('health'), originator: { identity: who, scope } }, f.config), now = f.config.now();
+    expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, now)).toMatchObject({ event: 'delivery_failed', id: pending });
+    expect(askWaitHealth([pending], f.config, { at: new Date(now - 181_000).toISOString() }, now)).toMatchObject({ event: 'tick_stale' });
+    ntfyCli(['ntfy', 'pause'], f.config, () => undefined); expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now)).toMatchObject({ event: 'paused', id: pending }); ntfyCli(['ntfy', 'resume'], f.config, () => undefined);
+    const withdrawn = askNtfy({ ...f.request('withdrawn'), callback: { kind: 'decision', id: 'gone' }, originator: { identity: who, scope } }, f.config); supersedeNtfyDecisions([], f.config); expect(askWaitHealth([withdrawn], f.config, { at: new Date(now).toISOString() }, now)).toMatchObject({ event: 'withdrawn', id: withdrawn });
+    expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now + 3_600_001)).toMatchObject({ event: 'expired', id: pending });
+    const forbidden = askNtfy({ ...f.request('forbidden'), originator: { identity: who, scope } }, f.config); f.config.actor = () => ({ client: 'codex', session_id: 'other', pid: 999_999, pid_start: 'other' }); await expect(askCli(['ask', 'answer', forbidden, 'yes'], f.config)).rejects.toThrow('not authorized');
   });
   test('accepts validated ask specs and omits missing presentation fields', async () => {
     const f = fixture(), path = join(f.root, 'ask.json'), base = { source: 'marshal', source_ref: { ref: 'run-27', initiator: 'marshal' }, title: '是否放行？', body: '正文不应重复', options: [{ id: 'yes', label: '是', effect: '继续 run' }, { id: 'no', label: '否' }], recommend: { option: '是', reason: '验收通过' }, risk: 'normal', expires_at: f.request('x').expires_at, callback: { kind: 'external', ref: 'external:27' } };

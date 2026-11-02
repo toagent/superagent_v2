@@ -8,6 +8,7 @@ import {
 } from './decisions';
 import { FAILOVER_PREFIX, latestFailover } from './decisions';
 import {
+  answerNtfyLocally,
   askNtfy,
   ntfyControl,
   ntfyPauseInfo,
@@ -83,7 +84,7 @@ import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { answerHeldOwnerAsk, reclaimOnce, reclaimTick } from './reclaim';
-import { responsibilityList } from './resume-card';
+import { responsibilityList, waitingAsks } from './resume-card';
 import {
   askQuestion,
   askName,
@@ -3446,58 +3447,65 @@ export async function syncDecisionChannel(
   const lastSelected = selected.at(-1);
   if (Number.isFinite(newDecisionLimit) && lastSelected)
     writeAtomic(cursorPath, lastSelected.id + '\n');
-  return syncNtfy(
-    async (decision, option) => {
-      if (decision.callback.kind === 'decision') {
-        await answer(decision.callback.id, option);
-        return;
-      }
-      if (decision.callback.kind === 'external') {
-        if (decision.originator)
-          coord().receipt(
-            decision.originator.scope,
-            caller(true),
-            decision.originator.identity,
-            decision.id,
-            `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}`
-          );
-        return;
-      }
-      if (decision.callback.kind === 'held') {
-        const results = answerHeld(decision.callback.ref, decision.id, option),
-          result = results.length ? results.join('；') : '无匹配 run',
-          executed = results.some(item => item.includes(':ok:'));
-        if (decision.originator)
-          coord().receipt(
-            decision.originator.scope,
-            caller(true),
-            decision.originator.identity,
-            decision.id,
-            `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}；${result}`
-          );
-        return { result, executed };
-      }
-      const callbackKey = decision.callback.key,
-        asks = loadAsks(),
-        entry = liveCallbackAsk(asks, callbackKey, decision.id);
-      if (!entry) throw new Error('ntfy decision changed');
-      const [currentKey, current] = entry;
-      current.status = option;
-      saveAsk(asks, currentKey);
-      return undefined;
-    },
-    supplied,
-    decision => {
-      if (decision.callback.kind !== 'ask') return;
-      const asks = loadAsks(),
-        entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
-      if (!entry) return;
-      const [currentKey, current] = entry;
-      current.status = 'expired';
-      saveAsk(asks, currentKey);
-    }
-  );
+  return syncNtfy(ntfyAnswerCallback(answer, answerHeld), supplied, decision => {
+    if (decision.callback.kind !== 'ask') return;
+    const asks = loadAsks(),
+      entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
+    if (!entry) return;
+    const [currentKey, current] = entry;
+    current.status = 'expired';
+    saveAsk(asks, currentKey);
+  });
 }
+
+const ntfyAnswerCallback =
+  (
+    answer: typeof answerNtfyDecision = answerNtfyDecision,
+    answerHeld: typeof answerHeldOwnerAsk = answerHeldOwnerAsk
+  ) =>
+  async (
+    decision: Parameters<Parameters<typeof syncNtfy>[0]>[0],
+    option: string,
+    source?: 'ntfy' | 'local'
+  ) => {
+    if (decision.callback.kind === 'decision') {
+      await answer(decision.callback.id, option);
+      return;
+    }
+    if (decision.callback.kind === 'external') {
+      if (decision.originator)
+        coord().receipt(
+          decision.originator.scope,
+          caller(true),
+          decision.originator.identity,
+          decision.id,
+          `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}${source === 'local' ? '（本地答复）' : ''}`
+        );
+      return;
+    }
+    if (decision.callback.kind === 'held') {
+      const results = answerHeld(decision.callback.ref, decision.id, option),
+        result = results.length ? results.join('；') : '无匹配 run',
+        executed = results.some(item => item.includes(':ok:'));
+      if (decision.originator)
+        coord().receipt(
+          decision.originator.scope,
+          caller(true),
+          decision.originator.identity,
+          decision.id,
+          `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}${source === 'local' ? '（本地答复）' : ''}；${result}`
+        );
+      return { result, executed };
+    }
+    const callbackKey = decision.callback.key,
+      asks = loadAsks(),
+      entry = liveCallbackAsk(asks, callbackKey, decision.id);
+    if (!entry) throw new Error('ntfy decision changed');
+    const [currentKey, current] = entry;
+    current.status = option;
+    saveAsk(asks, currentKey);
+    return undefined;
+  };
 
 /** Activated engines separate the global scheduler from snapshot-scoped executors. */
 export function superviseTick(mode: TickMode = {}):
@@ -4361,7 +4369,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
   { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
-  { command: 'ask', positionals: '[status <id>]', flags: ['source', 'spec', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
+  { command: 'ask', positionals: '[status <id>|answer <id> <option>]', flags: ['source', 'spec', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
   { command: 'notify', flags: ['id', 'title', 'body', 'priority'] },
   { command: 'ntfy', positionals: 'pause|resume|status', flags: [] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
@@ -4781,18 +4789,39 @@ export function main(argv: string[]): number {
           const timeout = Number(a.flags.timeout ?? 7000);
           if (!Number.isFinite(timeout) || timeout <= 0)
             throw new Error('inbox --timeout must be a positive number');
-          const messages = coord().waitInbox(caller(), timeout * 1000);
-          if (!messages) {
-            print({ timed_out: true });
-            return 2;
+          const who = caller(),
+            seen = new Set(
+              coord()
+                .inbox(who)
+                .map(message => message.id)
+            ),
+            asks = waitingAsks(who.session_id ?? ''),
+            deadline = Date.now() + timeout * 1000;
+          for (;;) {
+            const messages = coord()
+              .inbox(who)
+              .filter(message => !seen.has(message.id));
+            if (messages.length) {
+              if (a.flags.json) print({ messages });
+              else
+                for (const message of messages.slice(0, 20))
+                  console.log(
+                    `${message.type ?? message.kind} ${message.source ?? message.id} ${message.body}；下一步：根据答复继续`
+                  );
+              return 0;
+            }
+            const health = askWaitHealth(asks.map(ask => ask.id));
+            if (health) {
+              print(health);
+              return 0;
+            }
+            const left = deadline - Date.now();
+            if (left <= 0) {
+              print({ timed_out: true });
+              return 2;
+            }
+            Bun.sleepSync(Math.min(3000, left));
           }
-          if (a.flags.json) print({ messages });
-          else
-            for (const message of messages.slice(0, 20))
-              console.log(
-                `${message.type ?? message.kind} ${message.source ?? message.id} ${message.body}；下一步：根据答复继续`
-              );
-          return 0;
         }
         const previousSession =
           verb === 'claim' && a.flags.takeover
@@ -5149,6 +5178,12 @@ export async function askCli(
   emit: (value: unknown) => void = print
 ): Promise<number> {
   const a = parseArgs(argv);
+  if (a._[1] === 'answer') {
+    if (a._.length !== 4) throw new Error('usage: superagent ask answer <id> <option>');
+    const result = await answerNtfyLocally(a._[2], a._[3], ntfyAnswerCallback(), supplied);
+    emit({ id: a._[2], option: a._[3], source: 'local', ...result });
+    return 0;
+  }
   if (a._[1] === 'status') {
     if (a._.length !== 3) throw new Error('usage: superagent ask status <id>');
     const status = ntfyDecisionStatus(a._[2], supplied);
@@ -5222,6 +5257,30 @@ export async function askCli(
     supplied
   );
   return publishAsk(id, supplied, emit);
+}
+
+// prettier-ignore
+export function askWaitHealth(
+  ids: string[],
+  supplied: Partial<NtfyConfig> = {},
+  tick = readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
+  now = Date.now()
+): { event: string; id?: string; reason: string; next: string } | undefined {
+  for (const id of ids) {
+    const decision = ntfyDecisionStatus(id, supplied);
+    if (!decision || decision.status === 'superseded')
+      return { event: 'withdrawn', id, reason: '问询已撤回', next: `在当前对话确认选择后运行 superagent ask answer ${id} <option>` };
+    if (decision.status === 'expired' || Date.parse(decision.expires_at) <= now)
+      return { event: 'expired', id, reason: '问询已过期', next: '重发问询或按到期默认值继续' };
+  }
+  if (ntfyPauseInfo(supplied))
+    return { event: 'paused', id: ids[0], reason: 'ntfy 已暂停', next: '在当前对话确认选择后运行 superagent ask answer <id> <option>' };
+  if (tick?.ntfy_publish && !tick.ntfy_publish.ok && ids.some(id => ntfyDecisionStatus(id, supplied)?.delivery === 'pending'))
+    return { event: 'delivery_failed', id: ids[0], reason: `问询推送失败：${tick.ntfy_publish.error ?? 'unknown'}`, next: '在当前对话确认选择后运行 superagent ask answer <id> <option>' };
+  const tickAt = Date.parse(tick?.at ?? '');
+  if (!Number.isFinite(tickAt) || now - tickAt > 180_000)
+    return { event: 'tick_stale', reason: 'supervise-tick 超过 3 分钟未更新', next: '改走本地答复，并恢复 supervise-tick' };
+  return undefined;
 }
 
 async function publishAsk(

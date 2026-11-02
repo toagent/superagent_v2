@@ -13,7 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { lock } from './archon';
 import { home, writeAtomic } from './config';
-import { caller, type Identity, type Scope } from './coord';
+import { caller, coord, same, type Identity, type Scope } from './coord';
 
 export interface NtfyOption {
   id: string;
@@ -103,6 +103,7 @@ interface SignedAnswer {
 
 interface StoredDecision extends NtfyAsk {
   id: string;
+  created_at: string;
   status: 'pending' | 'answered' | 'expired' | 'failed' | 'superseded';
   delivery: 'pending' | 'sent';
   actions: SignedAnswer[];
@@ -328,6 +329,7 @@ export function askNtfy(request: NtfyAsk, supplied: Partial<NtfyConfig> = {}): s
     state.decisions[id] = {
       ...request,
       id,
+      created_at: new Date(config.now()).toISOString(),
       status: 'pending',
       delivery: 'pending',
       actions:
@@ -642,9 +644,14 @@ function parseAnswer(message: unknown): SignedAnswer | undefined {
 }
 
 export async function syncNtfy(
-  onAnswer: (decision: NtfyAsk & { id: string }, option: string) => unknown,
+  onAnswer: (
+    decision: NtfyAsk & { id: string },
+    option: string,
+    source?: 'ntfy' | 'local'
+  ) => unknown,
   supplied: Partial<NtfyConfig> = {},
-  onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined
+  onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined,
+  source: 'ntfy' | 'local' = 'ntfy'
 ): Promise<{ accepted: number; ignored: number; failed: number }> {
   if (!ntfyEnabled(supplied)) return { accepted: 0, ignored: 0, failed: 0 };
   const config = { ...defaultConfig(), ...supplied };
@@ -752,7 +759,7 @@ export async function syncNtfy(
         state.used_nonces[answer.nonce] = config.now();
         state.cursor = event.id;
         try {
-          const outcome = answerOutcome(await onAnswer(decision, answer.option));
+          const outcome = answerOutcome(await onAnswer(decision, answer.option, source));
           decision.status = 'answered';
           decision.answer = answer.option;
           const label = optionLabel(decision, answer.option),
@@ -763,7 +770,7 @@ export async function syncNtfy(
             `${gate ? '已收到' : executed ? '已记录' : '未执行'}：${label}｜${decisionPresentation(decision).title}`,
             gate
               ? `已收到你的『${label}』，正在执行（门禁 ${gate}）`
-              : (outcome?.result ?? '本次点按已执行'),
+              : `${outcome?.result ?? '本次答复已执行'}${source === 'local' ? '（本地答复）' : ''}`,
             config.now()
           );
           accepted++;
@@ -903,10 +910,8 @@ export function ntfyControl(
   };
 }
 
-export function ntfyDecisionStatus(
-  id: string,
-  supplied: Partial<NtfyConfig> = {}
-): { id: string; status: StoredDecision['status']; answer?: string } | undefined {
+// prettier-ignore
+export function ntfyDecisionStatus(id: string, supplied: Partial<NtfyConfig> = {}): { id: string; status: StoredDecision['status']; delivery: StoredDecision['delivery']; expires_at: string; title: string; answer?: string } | undefined {
   const config = { ...defaultConfig(), ...supplied };
   const decision = Reflect.get(readState(config.statePath).decisions, id) as
     | StoredDecision
@@ -915,9 +920,52 @@ export function ntfyDecisionStatus(
     decision && {
       id,
       status: decision.status,
+      delivery: decision.delivery,
+      expires_at: decision.expires_at,
+      title: decision.headline ?? decision.title,
       ...(decision.answer ? { answer: decision.answer } : {}),
     }
   );
+}
+
+// prettier-ignore
+export async function answerNtfyLocally(id: string, option: string, onAnswer: Parameters<typeof syncNtfy>[0], supplied: Partial<NtfyConfig> = {}): Promise<{ accepted: number; ignored: number; failed: number }> {
+  const config = { ...defaultConfig(), ...supplied },
+    decision = Reflect.get(readState(config.statePath).decisions, id) as StoredDecision | undefined,
+    actor = config.actor?.() ?? caller();
+  if (!decision) throw new Error('ask: unknown decision');
+  const originator = decision.originator;
+  if (!originator || !((actor.session_id && actor.session_id === originator.identity.session_id) || same(coord().owner(originator.scope).owner, actor))) throw new Error('ask: local answer is not authorized');
+  const selected = decision.risk === 'red' && decision.red_phase === 'request' ? decision.actions[0] : decision.actions.find(action => action.option === option);
+  if (!decision.options.some(candidate => candidate.id === option) || !selected)
+    throw new Error('ask: invalid option');
+  let delivered = false;
+  try {
+    return await syncNtfy(
+      onAnswer,
+      {
+        ...config,
+        fetch: (async (input, init) => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (new URL(url).pathname === '/sa-answers/json' && !delivered) {
+            delivered = true;
+            return new Response(JSON.stringify({ id: randomUUID(), event: 'message', message: JSON.stringify(selected) }));
+          }
+          return config.fetch(input, init);
+        }) as typeof fetch,
+      },
+      () => undefined,
+      'local'
+    );
+  } catch (error) {
+    const settled = ntfyDecisionStatus(id, config);
+    if (settled?.status === 'answered') return { accepted: 1, ignored: 0, failed: 0 };
+    if (settled?.status === 'failed' || settled?.status === 'superseded')
+      return { accepted: 0, ignored: 0, failed: 1 };
+    if (decision.risk === 'red' && settled?.status === 'pending')
+      return { accepted: 0, ignored: 0, failed: 0 };
+    throw error;
+  }
 }
 
 export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {
