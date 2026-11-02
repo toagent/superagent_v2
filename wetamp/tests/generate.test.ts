@@ -2112,16 +2112,16 @@ test('browser wrapper shares engine slots, propagates exit and terminates its co
   const pidFile = join(root, 'pid');
   const running = Bun.spawn([script, 'sh', '-c', 'echo $$ > "$1"; sleep 30', 'sh', pidFile]);
   while (!existsSync(pidFile)) await Bun.sleep(10);
-  const commandPid = Number(readFileSync(pidFile, 'utf8'));
   running.kill('SIGTERM');
   expect(await running.exited).toBe(143);
-  expect(() => process.kill(commandPid, 0)).toThrow();
-  const broken = join(root, 'broken.sh');
+  expect(() => process.kill(Number(readFileSync(pidFile, 'utf8')), 0)).toThrow();
   fs.writeFileSync(
-    broken,
+    join(root, 'broken.sh'),
     source.replace(RESOURCE_SLOTS.browser.join(' '), `${root}/missing/0 ${root}/missing/1`)
   );
-  expect(Bun.spawnSync(['sh', broken, 'true'], { timeout: 1000 }).exitCode).not.toBe(0);
+  const broken = Bun.spawnSync(['sh', join(root, 'broken.sh'), 'true'], { timeout: 1000 });
+  expect(broken.exitCode).toBe(73);
+  expect(broken.stderr.toString()).toContain('lock failed');
 });
 
 function withCleanEngine(check: () => void): () => void {
