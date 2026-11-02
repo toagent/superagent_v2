@@ -25,7 +25,7 @@ import { reasonOf } from './reasons';
 import { redact } from './redact';
 import { caller, coord, repoScope } from './coord';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
-import type { Plan, Pkg } from './plan';
+import { milestones, type Plan, type Pkg } from './plan';
 import { recallLearning, selectLearning, type Learning, type LearningEntry } from './learning';
 // Reuse the workflows package's existing schema dependency, as plan.ts does for Ajv.
 export const z: typeof import('../../packages/workflows/node_modules/zod').z = (
@@ -562,9 +562,9 @@ const publishRejectionSchema = z
 const publishReasons = (l: Ledger, run: RunView, plan: Plan): string[] => {
   const art = confined(l, artifactsOf(run));
   if (!art) return [];
-  return plan.packages.flatMap(p => {
+  return milestones(plan).flatMap(m => {
     const parsed = publishRejectionSchema.safeParse(
-      memoryJson<unknown>(join(art, `publish-${p.id}.json`), null, l)
+      memoryJson<unknown>(join(art, `publish-${m.id}.json`), null, l)
     );
     return parsed.success ? [parsed.data.reason] : [];
   });

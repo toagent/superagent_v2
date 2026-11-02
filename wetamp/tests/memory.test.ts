@@ -1605,12 +1605,19 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       });
   });
   test('publish rejection explains a green terminal failure', () => {
-    raw.nodes = [{ nodeId: 'publish-core', state: 'failed' }];
+    raw.nodes = [{ nodeId: 'publish-m1', state: 'failed' }];
     writeFileSync(
       join(artifactsOf(raw), 'publish-core.json'),
       JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
     );
     writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+    expect(foldEpisode(ledger, plan, raw, [], {}, NOW).reasons).not.toContain(
+      'target_checkout_changed'
+    );
+    writeFileSync(
+      join(artifactsOf(raw), 'publish-m1.json'),
+      JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
+    );
     const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
     expect(folded.reasons).toContain('target_checkout_changed');
     expect(folded.category).toBe('transient');
