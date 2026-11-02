@@ -226,6 +226,28 @@ describe('两条底线', () => {
     expect(denied).toContain('ai-jail 禁止访问该路径');
     expect(denied).toContain('不要访问该路径，也不要修改 jail 或检查器');
     expect(denied).not.toContain('修复检查器');
+    const fs = createRequire(import.meta.url)('node:fs') as {
+      realpathSync: (path: string) => string;
+    };
+    const realpathSync = fs.realpathSync;
+    writeFileSync(join(repo, 'file'), 'fixture');
+    fs.realpathSync = () => {
+      throw Object.assign(new Error('synthetic jail denial'), { code: 'EPERM' });
+    };
+    try {
+      category = '';
+      const shellDenied = redline.reason({
+        shell: 'cat ./file',
+        cwd: repo,
+        env,
+        onCategory: value => (category = value),
+      });
+      expect(category).toBe('privacy');
+      expect(shellDenied).toContain('ai-jail 禁止访问该路径');
+      expect(shellDenied).not.toContain('修复检查器');
+    } finally {
+      fs.realpathSync = realpathSync;
+    }
     const input = {
       get path(): string {
         throw new Error('synthetic path failure');

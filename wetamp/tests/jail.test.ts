@@ -181,6 +181,9 @@ describe('ai-jail', () => {
     writeFileSync(join(realBin, 'opencode'), '#!/bin/sh\n', { mode: 0o755 });
     writeFileSync(zshrc, original);
     install(home);
+    expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).toContain(
+      '(allow process-exec (literal "/bin/launchctl") (with no-sandbox))'
+    );
     const first = readFileSync(zshrc, 'utf8');
     expect(first.match(/# >>> superagent ai-jail >>>/g)).toHaveLength(1);
     expect(first.startsWith(original)).toBe(true);

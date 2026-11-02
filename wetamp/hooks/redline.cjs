@@ -196,18 +196,31 @@ function reason({
 }) {
   const failed = () =>
     message('工具调用', 'redline_internal_error：无法完成隐私路径检查', '修复检查器后重试');
+  const jailDenied = () => {
+    onCategory('privacy');
+    return message(
+      '读写隐私文件',
+      'ai-jail 禁止访问该路径',
+      '不要访问该路径，也不要修改 jail 或检查器'
+    );
+  };
   const privacy = (values, dir, context) => {
-    for (const value of values) {
-      const kind = wordKind(value, dir, context);
-      if (kind) {
-        onCategory('privacy');
-        return message(
-          '读写隐私文件',
-          '会让凭据或隐私内容进入模型上下文',
-          '使用不含凭据或隐私的文件',
-          { kind }
-        );
+    try {
+      for (const value of values) {
+        const kind = wordKind(value, dir, context);
+        if (kind) {
+          onCategory('privacy');
+          return message(
+            '读写隐私文件',
+            '会让凭据或隐私内容进入模型上下文',
+            '使用不含凭据或隐私的文件',
+            { kind }
+          );
+        }
       }
+    } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'EPERM') return jailDenied();
+      throw error;
     }
     return null;
   };
@@ -285,14 +298,7 @@ function reason({
     );
     return analysisFailed ? failed() : result;
   } catch (error) {
-    if (error && typeof error === 'object' && error.code === 'EPERM') {
-      onCategory('privacy');
-      return message(
-        '读写隐私文件',
-        'ai-jail 禁止访问该路径',
-        '不要访问该路径，也不要修改 jail 或检查器'
-      );
-    }
+    if (error && typeof error === 'object' && error.code === 'EPERM') return jailDenied();
     return failed();
   }
 }
