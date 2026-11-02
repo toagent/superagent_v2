@@ -6,3 +6,5 @@
   (regex #"(^|/)_private(/|$)"))
 (deny file-read* (literal "__HOME_LITERAL__/.wetamp/jail/.probe"))
 (deny file-write* (subpath "__HOME_LITERAL__/.wetamp/jail"))
+; setuid executables cannot start sandboxed; coord and hooks use ps for process identity.
+(allow process-exec (literal "/bin/ps") (with no-sandbox))
