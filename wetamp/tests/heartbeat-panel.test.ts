@@ -10,7 +10,7 @@ const panel = createRequire(import.meta.url)(modulePath) as {
   ensurePanel: (payload: object, env: Record<string, string>) => boolean;
 };
 
-function fixture(mode: 'record' | 'nested' | 'empty' | 'fail' = 'empty') {
+function fixture(mode: 'restored' | 'live' | 'empty' | 'fail' = 'empty') {
   const root = tmp(),
     repo = join(root, 'repo'),
     home = join(root, 'home'),
@@ -28,10 +28,12 @@ const fs=require('node:fs'),a=process.argv.slice(2),mode=process.env.FAKE_MODE;
 fs.appendFileSync(process.env.FAKE_CALLS,JSON.stringify(a)+'\\n');
 if(mode==='fail'){process.stderr.write('orca failed');process.exit(2)}
 if(a[1]==='list'){
- const handle=mode==='record'?'saved':mode==='nested'?'adopted':null;
- const terminal=handle?[{handle,connected:true,orphaned:false}]:[];
- const visualLayouts=mode==='nested'?[{root:{groups:[{tabs:[{title:'心跳·repo',panes:[{handle:'adopted'}]}]}]}}]:[];
- console.log(JSON.stringify({result:{terminals:terminal,visualLayouts}}));
+ const calls=fs.readFileSync(process.env.FAKE_CALLS,'utf8').trim().split('\\n').map(JSON.parse),n=calls.filter(x=>x[1]==='list').length;
+ const handles=mode==='live'?['saved','duplicate','other']:mode==='restored'?(n===1?['restored']:n===2?['created']:['created','late']):(n===1?[]:['created']);
+ const incarnationId=h=>h==='saved'?'current':h==='restored'?'old':h+'-incarnation';
+ const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:true,orphaned:false}));
+ const visualLayouts=[{root:{groups:[{tabs:handles.map(handle=>({title:handle==='other'?'心跳·other':'心跳·superagent_v2',panes:[{handle}]}))}]}}];
+ console.log(JSON.stringify({result:{terminals,visualLayouts}}));
 }else console.log(JSON.stringify({result:{terminal:{handle:'created'}}}));
 `,
     { mode: 0o755 }
@@ -47,7 +49,7 @@ if(a[1]==='list'){
 }
 
 const run = (f: ReturnType<typeof fixture>) =>
-  Bun.spawnSync([process.execPath, modulePath, 'ensure', f.repo], {
+  Bun.spawnSync([process.execPath, modulePath, 'ensure', f.repo, '0'], {
     env: f.env,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -67,23 +69,41 @@ test('ensurePanel only detaches inside Orca and a git worktree', () => {
   expect(panel.ensurePanel({ cwd: root }, { ORCA_AGENT_SESSION_ID: 's' })).toBe(false);
 });
 
-test('recorded live handles are reused and nested heartbeat tabs are adopted', () => {
-  const saved = fixture('record');
-  mkdirSync(join(saved.home, 'panels'), { recursive: true });
-  writeFileSync(record(saved.home, saved.repo), JSON.stringify({ handle: 'saved' }));
-  expect(run(saved).exitCode).toBe(0);
-  expect(invocations(saved.calls).map(call => call[1])).toEqual(['list']);
+test('restored heartbeat shell is closed and replaced', () => {
+  const restored = fixture('restored');
+  mkdirSync(join(restored.home, 'panels'), { recursive: true });
+  writeFileSync(record(restored.home, restored.repo), JSON.stringify({ handle: 'restored' }));
+  expect(run(restored).exitCode).toBe(0);
+  const calls = invocations(restored.calls);
+  expect(calls.map(call => call[1])).toEqual(['list', 'close', 'create', 'list', 'list', 'close']);
+  expect(calls.filter(call => call[1] === 'close').map(call => call[3])).toEqual([
+    'restored',
+    'late',
+  ]);
+  expect(JSON.parse(readFileSync(record(restored.home, restored.repo), 'utf8'))).toEqual({
+    handle: 'created',
+    incarnationId: 'created-incarnation',
+  });
+});
 
-  const nested = fixture('nested');
-  expect(run(nested).exitCode).toBe(0);
-  expect(invocations(nested.calls).map(call => call[1])).toEqual(['list']);
-  expect(JSON.parse(readFileSync(record(nested.home, nested.repo), 'utf8')).handle).toBe('adopted');
+test('live recorded panel closes duplicates without creating', () => {
+  const current = fixture('live');
+  mkdirSync(join(current.home, 'panels'), { recursive: true });
+  writeFileSync(
+    record(current.home, current.repo),
+    JSON.stringify({ handle: 'saved', incarnationId: 'current' })
+  );
+  expect(run(current).exitCode).toBe(0);
+  const calls = invocations(current.calls);
+  expect(calls.map(call => call[1])).toEqual(['list', 'close']);
+  expect(calls[1]).toContain('duplicate');
+  expect(calls[1]).toContain('--tab');
 });
 
 test('concurrent ensures create once with the right command and failures stay contained', async () => {
   const fresh = fixture();
   const children = [0, 1].map(() =>
-    Bun.spawn([process.execPath, modulePath, 'ensure', fresh.repo], {
+    Bun.spawn([process.execPath, modulePath, 'ensure', fresh.repo, '0'], {
       env: fresh.env,
       stdout: 'pipe',
       stderr: 'pipe',

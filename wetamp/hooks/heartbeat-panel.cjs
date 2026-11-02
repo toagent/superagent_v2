@@ -8,6 +8,7 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const WETAMP = path.join(__dirname, '..');
 const LOCK_STALE_MS = 60_000;
+const RESCAN_DELAY_MS = 2_000;
 
 function gitRoot(cwd) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return null;
@@ -54,20 +55,29 @@ function ensurePanel(payload, env = process.env) {
 }
 
 const live = terminal =>
-  terminal && typeof terminal.handle === 'string' && terminal.connected === true && !terminal.orphaned;
+  terminal &&
+  typeof terminal.handle === 'string' &&
+  terminal.connected === true &&
+  !terminal.orphaned;
 
-function heartbeatHandles(value, found = []) {
+function firstHandle(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (typeof value.handle === 'string') return value.handle;
+  for (const child of Object.values(value)) {
+    const handle = firstHandle(child);
+    if (handle) return handle;
+  }
+  return null;
+}
+
+function panelHandles(value, title, found = []) {
   if (!value || typeof value !== 'object') return found;
-  if (typeof value.title === 'string' && value.title.startsWith('心跳')) {
-    const visit = node => {
-      if (!node || typeof node !== 'object') return;
-      if (typeof node.handle === 'string') found.push(node.handle);
-      for (const child of Object.values(node)) visit(child);
-    };
-    visit(value.panes);
+  if (value.title === title) {
+    const handle = firstHandle(value.panes);
+    if (handle) found.push(handle);
   }
   for (const [key, child] of Object.entries(value)) {
-    if (key !== 'panes') heartbeatHandles(child, found);
+    if (key !== 'panes') panelHandles(child, title, found);
   }
   return found;
 }
@@ -80,7 +90,9 @@ function command(file, args, env) {
     maxBuffer: 4 * 1024 * 1024,
   });
   if (result.error || result.status !== 0)
-    throw new Error(result.stderr?.trim() || result.error?.message || `${file} exit ${result.status}`);
+    throw new Error(
+      result.stderr?.trim() || result.error?.message || `${file} exit ${result.status}`
+    );
   return JSON.parse(result.stdout);
 }
 
@@ -124,7 +136,37 @@ function createdHandle(output) {
       : null;
 }
 
-function ensure(root, env = process.env) {
+function listState(orca, selector, env) {
+  const listed = command(
+      orca,
+      ['terminal', 'list', '--worktree', selector, '--include-visual-layouts', '--json'],
+      env
+    ),
+    result = listed?.result || listed;
+  return {
+    terminals: Array.isArray(result?.terminals) ? result.terminals : [],
+    visualLayouts: result?.visualLayouts,
+  };
+}
+
+function recordedTerminal(record, terminals) {
+  if (typeof record?.handle !== 'string' || typeof record?.incarnationId !== 'string') return null;
+  return terminals.find(
+    terminal =>
+      terminal.handle === record.handle &&
+      terminal.incarnationId === record.incarnationId &&
+      live(terminal)
+  );
+}
+
+function closeOtherPanels(orca, state, title, keep, env) {
+  for (const handle of panelHandles(state.visualLayouts, title)) {
+    if (handle !== keep)
+      command(orca, ['terminal', 'close', '--terminal', handle, '--tab', '--json'], env);
+  }
+}
+
+function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
   const home = env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent'),
     panels = path.join(home, 'panels'),
     record = path.join(panels, `${crypto.createHash('sha256').update(root).digest('hex')}.json`),
@@ -135,25 +177,15 @@ function ensure(root, env = process.env) {
   try {
     const orca = env.ORCA_CLI_BIN_DIR ? path.join(env.ORCA_CLI_BIN_DIR, 'orca') : 'orca',
       selector = `path:${root}`,
-      listed = command(
-        orca,
-        ['terminal', 'list', '--worktree', selector, '--include-visual-layouts', '--json'],
-        env
-      ),
-      result = listed?.result || listed,
-      terminals = Array.isArray(result?.terminals) ? result.terminals : [];
+      title = `心跳·${projectName(root)}`,
+      state = listState(orca, selector, env);
     let prior = null;
     try {
       prior = JSON.parse(fs.readFileSync(record, 'utf8'));
     } catch {}
-    if (live(terminals.find(terminal => terminal.handle === prior?.handle))) return;
-    const adopted = heartbeatHandles(result?.visualLayouts).find(handle =>
-      live(terminals.find(terminal => terminal.handle === handle))
-    );
-    if (adopted) {
-      atomicWrite(record, { handle: adopted });
-      return;
-    }
+    const current = recordedTerminal(prior, state.terminals);
+    closeOtherPanels(orca, state, title, current?.handle, env);
+    if (current) return;
     // The shim routes to the promoted engine; bin/superagent in this checkout is a candidate
     // and refuses production state. The loop keeps the tab useful while the engine lacks the
     // verb (before promotion) or after a crash, instead of leaving a dead terminal.
@@ -171,7 +203,7 @@ function ensure(root, env = process.env) {
           '--worktree',
           selector,
           '--title',
-          `心跳·${projectName(root)}`,
+          title,
           '--command',
           shellCommand,
           '--json',
@@ -180,7 +212,22 @@ function ensure(root, env = process.env) {
       ),
       handle = createdHandle(created);
     if (!handle) throw new Error('orca terminal create returned no handle');
-    atomicWrite(record, { handle });
+    const createdTerminal = listState(orca, selector, env).terminals.find(
+      terminal => terminal.handle === handle && typeof terminal.incarnationId === 'string'
+    );
+    if (!createdTerminal) throw new Error('created heartbeat terminal has no incarnationId');
+    const next = { handle, incarnationId: createdTerminal.incarnationId };
+    atomicWrite(record, next);
+    if (rescanDelayMs > 0)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
+    const rescanned = listState(orca, selector, env);
+    closeOtherPanels(
+      orca,
+      rescanned,
+      title,
+      recordedTerminal(next, rescanned.terminals)?.handle,
+      env
+    );
   } finally {
     fs.closeSync(fd);
     try {
@@ -202,7 +249,8 @@ function logFailure(error, env) {
 
 if (require.main === module && process.argv[2] === 'ensure') {
   try {
-    ensure(process.argv[3], process.env);
+    const delay = process.argv[4] === undefined ? RESCAN_DELAY_MS : Number(process.argv[4]);
+    ensure(process.argv[3], process.env, delay);
   } catch (error) {
     logFailure(error, process.env);
   }
