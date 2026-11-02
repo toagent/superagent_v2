@@ -6,7 +6,6 @@ import { runStatuses } from './archon';
 import { coord } from './coord';
 import { responsibilities, type Heartbeat, type Responsibility } from './heartbeat';
 import { loadLedger } from './ledger';
-import { pendingNtfyAsks } from './ntfy';
 type Client = 'claude' | 'codex';
 type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
@@ -14,8 +13,31 @@ type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
 export const waitingRuns = (sessionId: string, runs = coord().unfinishedRuns(sessionId)): Run[] =>
   runs.filter(run => run.status === 'running' || run.status === 'pending');
-export const waitingAsks = (sessionId: string): { id: string; title: string }[] =>
-  pendingNtfyAsks(sessionId);
+export function waitingAsks(
+  sessionId: string,
+  now = Date.now(),
+  statePath = join(process.env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'), 'ntfy/state.json')
+): { id: string; title: string }[] {
+  try {
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as {
+      decisions?: Record<string, Record<string, unknown>>;
+    };
+    return Object.values(state.decisions ?? {}).flatMap(decision => {
+      const originator = objectOf(objectOf(decision.originator).identity),
+        title = decision.headline ?? decision.title;
+      return decision.status === 'pending' &&
+        typeof decision.expires_at === 'string' &&
+        Date.parse(decision.expires_at) > now &&
+        originator.session_id === sessionId &&
+        typeof decision.id === 'string' &&
+        typeof title === 'string'
+        ? [{ id: decision.id, title }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
 type LiveStates = (items: Responsibility[]) => Map<string, string | Error>;
 const liveStates: LiveStates = items => {
   const statuses = runStatuses();

@@ -253,6 +253,7 @@ export function intakeEvidence(repo: string, query: typeof getRun = getRun): Evi
 
 export const OPTIONS = {
   ...COORD_OPTIONS,
+  wait: { type: 'boolean' },
   timeout: { type: 'string' },
   user: { type: 'string' },
   pkg: { type: 'string' },

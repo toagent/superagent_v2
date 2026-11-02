@@ -10,7 +10,6 @@ export const COORD_OPTIONS = {
   reason: { type: 'string' },
   ack: { type: 'string' },
   note: { type: 'string' },
-  wait: { type: 'boolean' },
 } as const;
 interface Args {
   _: string[];
@@ -24,7 +23,6 @@ interface Args {
     reason?: string;
     ack?: string;
     note?: string;
-    wait?: boolean;
     title?: string;
     all?: boolean;
   };

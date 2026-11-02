@@ -920,20 +920,6 @@ export function ntfyDecisionStatus(
   );
 }
 
-export function pendingNtfyAsks(
-  sessionId: string,
-  supplied: Partial<NtfyConfig> = {}
-): { id: string; title: string }[] {
-  const config = { ...defaultConfig(), ...supplied };
-  return Object.values(readState(config.statePath).decisions).flatMap(decision =>
-    decision.status === 'pending' &&
-    Date.parse(decision.expires_at) > config.now() &&
-    decision.originator?.identity.session_id === sessionId
-      ? [{ id: decision.id, title: decision.headline ?? decision.title }]
-      : []
-  );
-}
-
 export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {
   if (!ntfyEnabled(supplied)) return;
   const config = { ...defaultConfig(), ...supplied };

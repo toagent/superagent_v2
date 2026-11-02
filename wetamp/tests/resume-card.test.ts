@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { Coordination, type RunRef } from '../src/coord';
-import { responsibilityList, resumeCard, waitingRuns } from '../src/resume-card';
+import { responsibilityList, resumeCard, waitingAsks, waitingRuns } from '../src/resume-card';
 process.env.TZ = 'Asia/Taipei';
 const trackTempRoot = trackTempRoots();
 const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'resume-card-')));
@@ -43,6 +43,30 @@ describe('resume card', () => {
         ['running', 'pending', 'held', 'completed'].map(status => ({ run_id: status, status }))
       ).map(run => run.status)
     ).toEqual(['running', 'pending']);
+  });
+  test('waiting asks returns only live pending asks for the originating session', () => {
+    const state = join(tmp(), 'state.json'),
+      decision = (id: string, status: string, session_id: string, expires_at: string) => ({
+        id,
+        status,
+        title: `title-${id}`,
+        expires_at,
+        originator: { identity: { session_id } },
+      });
+    writeFileSync(
+      state,
+      JSON.stringify({
+        decisions: {
+          live: decision('live', 'pending', 's', '2026-11-02T06:00:00Z'),
+          answered: decision('answered', 'answered', 's', '2026-11-02T06:00:00Z'),
+          expired: decision('expired', 'pending', 's', '2026-11-02T04:00:00Z'),
+          other: decision('other', 'pending', 'other', '2026-11-02T06:00:00Z'),
+        },
+      })
+    );
+    expect(waitingAsks('s', Date.parse('2026-11-02T05:00:00Z'), state)).toEqual([
+      { id: 'live', title: 'title-live' },
+    ]);
   });
   test('Claude facts preserve quotes, replies, compression count, and owned unfinished runs', async () => {
     const home = tmp(),
