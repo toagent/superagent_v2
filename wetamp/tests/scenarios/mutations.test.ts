@@ -79,7 +79,7 @@ const mutations: Mutation[] = [
     from: "scopeDecisionRequest ? '' : coder",
     to: 'coder',
     test: 'tests/sa-check.test.ts',
-    name: 'scope decision request holds for approval',
+    name: 'scope request survives false handback',
     expectedError: 'scope_approval',
   },
   {

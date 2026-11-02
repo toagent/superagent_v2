@@ -402,11 +402,11 @@ function mergeJunit(base: string, rerun: string, ids: string[], deadline: number
   if (remaining <= 0) return false;
   const script = join(import.meta.dir, 'junit_merge.py');
   const merged = Bun.spawnSync(
-    ['uv', 'run', '--with', 'junitparser==5.0.3', 'python', script, base, rerun, ...ids],
+    ['python3', script, base, rerun, ...ids],
     { stdout: 'pipe', stderr: 'pipe', timeout: remaining }
   );
   if (merged.exitCode !== 0 || merged.signalCode)
-    appendFileSync(log, `# junit merge failed\n${merged.stdout.toString()}${merged.stderr.toString()}\n`);
+    appendFileSync(log, `# junit merge failed exitCode=${String(merged.exitCode)} signalCode=${String(merged.signalCode)} remaining=${String(remaining)}\n${merged.stdout.toString()}${merged.stderr.toString()}\n`);
   return merged.exitCode === 0 && !merged.signalCode;
 }
 
