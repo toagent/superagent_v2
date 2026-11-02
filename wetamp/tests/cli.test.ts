@@ -2631,6 +2631,28 @@ describe('decide (archon stub)', () => {
     packageRework(all);
     expect(captured(() => main(['decide', 'retry', '--all-held'])).code).toBe(0);
     expect(existsSync(join(all.root, 'gen/attempts/.packages/core'))).toBe(false);
+    const scopeView = run('failed', {
+      output_root: '',
+      nodes: [{ nodeId: 'settle-core', state: 'failed' }],
+    });
+    const scope = stub([scopeView]);
+    packageRework(scope);
+    scopeView.output_root = join(scope.root, 'out');
+    const art = join(scope.root, 'out/artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(art, 'settle-core.json'),
+      JSON.stringify({
+        out_of_scope: ['outside'],
+        scope_package: 'core',
+        scope_blobs: { outside: 'b'.repeat(40) },
+        decision: fixtureDecision('block', 'scope_approval'),
+      })
+    );
+    writeFileSync(join(scope.dir, 'get-000.json'), JSON.stringify(scopeView));
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
+    expect(existsSync(join(scope.root, 'gen/attempts/.packages/core'))).toBe(false);
+    expect(existsSync(join(scope.root, 'gen/approvals/human-scope-core.json'))).toBe(true);
   });
   test('retry --hint rejects a package outside the plan (no path from user text)', () => {
     stub([run('failed', { nodes: [{ nodeId: 'code-core', state: 'failed' }] })]);

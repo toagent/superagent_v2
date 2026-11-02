@@ -12,8 +12,10 @@ import { Database } from 'bun:sqlite';
 import { hostname } from 'node:os';
 import { gitRepo, sh, tmp, trackTestChild } from '../helpers';
 import { resetDatabase } from '../../../packages/core/src/db/connection';
-import { superviseTick, loadLedger, ledgerPath } from '../../src/cli';
+import { failWorkflowRun } from '../../../packages/core/src/db/workflows';
+import { superviseTick, loadLedger, ledgerPath, main } from '../../src/cli';
 import * as archonModule from '../../src/archon';
+import * as coordModule from '../../src/coord';
 import { integrationLockPath } from '../../src/integration';
 import {
   expectOutcome,
@@ -23,7 +25,6 @@ import {
   resumeInProcess,
   runInProcess,
   scenario,
-  type ScenarioEvidence,
   type ScenarioId,
   type ScenarioFixture,
 } from './framework';
@@ -141,16 +142,23 @@ const interruptedScenario = async (
     archonHome: string;
     target: string;
     worker: string;
+    initial: string;
     runId: string;
   };
-  return { ...state, child };
+  return { ...state, child, marker };
 };
 
 const withInterruptedHome = async <T>(
   state: Awaited<ReturnType<typeof interruptedScenario>>,
   body: () => T | Promise<T>
 ): Promise<T> => {
-  const keys = ['HOME', 'SUPERAGENT_HOME', 'ARCHON_HOME', 'SA_SUPERVISOR'] as const;
+  const keys = [
+    'HOME',
+    'SUPERAGENT_HOME',
+    'ARCHON_HOME',
+    'SA_SUPERVISOR',
+    'SCENARIO_BLOCK_MARKER',
+  ] as const;
   const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   const supervisor = join(state.home, 'supervisor.py');
   writeFileSync(
@@ -162,6 +170,7 @@ const withInterruptedHome = async <T>(
     SUPERAGENT_HOME: state.home,
     ARCHON_HOME: state.archonHome,
     SA_SUPERVISOR: supervisor,
+    SCENARIO_BLOCK_MARKER: state.marker,
   });
   resetDatabase();
   try {
@@ -216,8 +225,8 @@ test('scope request approve completes', async () => {
     id: 'S3',
     risk: 'G1',
     passRound: 1,
-    plan: { goal: 'approve scope', accept: 'grep -qx p scenario.txt' },
-    agents: { code: { path: 'scenario.txt', content: 'unused\n' } },
+    plan: { goal: 'approve scope', accept: 'grep -qx p scope-request.ts' },
+    agents: { code: { path: 'scope-request.ts', content: 'unused\n' } },
     expected: { terminal: 'completed', publishCount: 1 },
   });
   const old = process.env.FAKE_CODER_SCENARIO;
@@ -228,9 +237,16 @@ test('scope request approve completes', async () => {
     expect(first.terminal.failed).toEqual([first.runId]);
     expect(retryScenario(f, first, { approve: true })).toBe('held:scope');
     expect(existsSync(join(f.home, 'gen', first.runId, 'approvals/human-scope-p.json'))).toBeTrue();
+    const resumed = await resumeInProcess(f);
+    expect(resumed.terminal.completed).toEqual([first.runId]);
     expect(
-      first.events.filter(e => e.event_type === 'node_completed' && e.step_name === 'code-p')
+      resumed.events.filter(e => e.event_type === 'node_completed' && e.step_name === 'code-p')
     ).toHaveLength(1);
+    expect(
+      resumed.events.some(
+        e => e.event_type === 'node_skipped_prior_success' && e.step_name === 'code-p'
+      )
+    ).toBeTrue();
   } finally {
     if (old === undefined) delete process.env.FAKE_CODER_SCENARIO;
     else process.env.FAKE_CODER_SCENARIO = old;
@@ -527,37 +543,86 @@ test('S8: changing diff evidence between review and gate fails closed', async ()
   }
 }, 90_000);
 
-const retryInterruptedCheck = async (hint = false) => {
+const retryInterruptedCheck = async (hint?: string) => {
   const accept =
-    'if test ! -e "$SCENARIO_BLOCK_MARKER"; then touch "$SCENARIO_BLOCK_MARKER"; sleep 60; fi; test "$(cat scenario.txt)" = S14a';
+    'if test ! -e "$SCENARIO_BLOCK_MARKER"; then touch "$SCENARIO_BLOCK_MARKER"; sleep 60; fi; grep -qx S14a scenario.txt';
   const state = await interruptedScenario('S14a', { node: undefined, accept, signal: 'SIGTERM' });
   return withInterruptedHome(state, async () => {
-    const result = {
-      runId: state.runId,
-      events: [
-        { event_type: 'node_completed', step_name: 'code-p' },
-        { event_type: 'node_failed', step_name: 'verify-p' },
+    await failWorkflowRun(state.runId, 'interrupted', {
+      exitReason: 'process_terminated',
+      signal: 'SIGTERM',
+    });
+    const ledger = loadLedger(state.runId),
+      original = archonModule.archon;
+    const view = {
+      id: state.runId,
+      status: 'failed' as const,
+      working_path: state.worker,
+      output_root: state.archonHome,
+      nodes: [
+        { nodeId: 'code-p', state: 'completed' as const },
+        { nodeId: 'verify-p', state: 'failed' as const },
       ],
-    } as ScenarioEvidence;
-    expect(retryScenario(state as unknown as ScenarioFixture, result, { package: hint })).toBe(
-      'held:engine_suspect'
+    };
+    const identity = spyOn(coordModule, 'caller').mockReturnValue(ledger.controller!);
+    const resume = spyOn(archonModule, 'archon').mockImplementation((args, cwd, input, timeout) =>
+      args[0] === 'workflow' && args[1] === 'get'
+        ? { code: 0, out: JSON.stringify(view), err: '' }
+        : args[0] === 'workflow' && args[1] === 'resume'
+          ? { code: 0, out: JSON.stringify({ ok: true, runId: state.runId }), err: '' }
+          : original(args, cwd, input, timeout)
     );
+    try {
+      expect(
+        main(['decide', state.runId, 'retry', ...(hint ? ['--pkg', 'p', '--hint', hint] : [])])
+      ).toBe(0);
+    } finally {
+      resume.mockRestore();
+      identity.mockRestore();
+    }
     const attempt = join(state.home, 'gen', state.runId, 'attempts/.packages/p');
-    return { state, attempt: existsSync(attempt) ? readFileSync(attempt, 'utf8') : '0' };
+    const f: ScenarioFixture = {
+      ...state,
+      saved: { ...process.env },
+      roles: [],
+      spec: {
+        id: 'S14a',
+        risk: 'G2',
+        passRound: 1,
+        plan: { goal: 'retry interrupted verify', accept },
+        agents: { code: { path: 'scenario.txt', content: `S14a\n${hint ?? ''}` } },
+        expected: { terminal: 'completed', publishCount: 1 },
+      },
+    };
+    const result = await resumeInProcess(f);
+    return { f, result, attempt: existsSync(attempt) ? readFileSync(attempt, 'utf8') : '0' };
   });
 };
 
 test('interrupted check retry keeps coder cache', async () => {
-  const { attempt } = await retryInterruptedCheck();
+  const { f, result, attempt } = await retryInterruptedCheck();
   expect(attempt).toBe('0');
+  expect(f.agentCalls?.['code-p']).toBeUndefined();
+  expect(result.terminal.completed).toEqual([result.runId]);
+  expect(
+    result.events.some(
+      e => e.event_type === 'node_skipped_prior_success' && e.step_name === 'code-p'
+    )
+  ).toBeTrue();
+  expect(
+    result.events.some(e => e.event_type === 'node_completed' && e.step_name === 'verify-p')
+  ).toBeTrue();
 }, 120_000);
 
 test('interrupted check retry with hint reruns coder', async () => {
-  const { state, attempt } = await retryInterruptedCheck(true);
+  const hint = 'unique-retry-hint',
+    { f, result, attempt } = await retryInterruptedCheck(hint);
   expect(attempt).toBe('1');
-  expect(readFileSync(join(state.home, 'gen', state.runId, 'hints/p.md'), 'utf8')).toBe(
-    'close findings\n'
-  );
+  expect(f.agentCalls?.['code-p']).toBe(1);
+  expect(
+    result.events.filter(e => e.event_type === 'node_completed' && e.step_name === 'code-p')
+  ).toHaveLength(2);
+  expect(readFileSync(join(f.home, 'gen', result.runId, 'hints/p.md'), 'utf8')).toBe(`${hint}\n`);
 }, 120_000);
 
 test('S14a: kill after durable fix completion, tick recovery, and publish without replay', async () => {

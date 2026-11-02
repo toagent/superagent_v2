@@ -1496,11 +1496,11 @@ const fakeEdit = (p: Pkg, line: string): string => {
   const scenario = process.env.FAKE_CODER_SCENARIO ?? "";
   const classes: Record<string, string> = { done_with_error_class: "task", partial_green: "env", blocked_needs: "env", scope_request: "scope_violation" };
   if (scenario && ![...Object.keys(classes), "invalid_json"].includes(scenario)) throw new Error(`unknown FAKE_CODER_SCENARIO: ${scenario}`);
-  const outside = "scope-request.txt", scope = scenario === "scope_request", writeOutside = scope && line === p.id;
+  const outside = "scope-request.test.ts", scope = scenario === "scope_request" && line === p.id;
   const output = { status: scenario === "partial_green" ? "partial" : scenario === "blocked_needs" || scope ? "blocked" : "done", changed_files: [safePath(p), ...(scope ? [outside] : [])], quick_checks: [], notes: "fake", blockers: [], error_class: scope ? "scope_violation" : scenario === "scope_request" ? null : classes[scenario] ?? null, deviations: [], needs: scope ? [{ cap: "scope_decision", why: "fixture", minimal_ask: outside }] : scenario === "blocked_needs" ? [{ cap: "network", why: "fixture", minimal_ask: "fixture" }] : [] };
   return [
     `mkdir -p "$(dirname '${safePath(p)}')" && echo '${line}' >> '${safePath(p)}'`,
-    ...(writeOutside ? [`echo '${line}' >> '${outside}'`] : []),
+    ...(scope ? [`echo '${line}' >> '${outside}'`] : []),
     `git add '${safePath(p)}'${scope ? ` '${outside}'` : ""} && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${line}'`,
     `echo '${scenario === "invalid_json" ? "{invalid" : JSON.stringify(output)}'`,
   ].join('\n');
@@ -1516,12 +1516,15 @@ const FAKE_HIGH = {
 };
 /** 桩评审：第 1 轮 open 一条 high；之后按原 id 关闭并附证据（gate 只认这种关闭）。 */
 const fakeReview = (r: number): string => {
-  const findings = [
-    r === 1
-      ? { ...FAKE_HIGH, status: 'open', evidence: 'fake', carry_over: false }
-      : { ...FAKE_HIGH, status: 'closed', evidence: 'fake fix verified', carry_over: true },
-  ];
-  const status = r === 1 ? 'FAIL' : 'PASS';
+  const findings =
+    process.env.FAKE_CODER_SCENARIO === 'scope_request'
+      ? []
+      : [
+          r === 1
+            ? { ...FAKE_HIGH, status: 'open', evidence: 'fake', carry_over: false }
+            : { ...FAKE_HIGH, status: 'closed', evidence: 'fake fix verified', carry_over: true },
+        ];
+  const status = findings.length && r === 1 ? 'FAIL' : 'PASS';
   const out = { status, notes: 'fake', findings, fixture_confirmations: [], debt: [] };
   return `echo '${JSON.stringify(out)}'`;
 };
