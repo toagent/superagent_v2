@@ -81,6 +81,8 @@ export interface Job {
 
 const USAGE =
   'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
+export const SIMPLIFIED_CHINESE_REQUIREMENT =
+  '所有自然语言输出一律简体中文：交回结果的 notes/blockers/needs、评审发现与理由、git 提交说明、给元帅或用户的消息；代码、命令、路径、标识符、错误原文、JSON 键名与枚举值保持原样。';
 export const RECENT_MS = 3_600_000;
 export interface MemoryReading {
   pressure: number | null;
@@ -314,7 +316,9 @@ async function exec(
     if (job.card && !statSync(job.card).isFile()) throw new Error('job: card must be a file');
     if (f.input && !statSync(f.input).isFile()) throw new Error('job: prompt-file must be a file');
     // Snapshot registered input before checkout/admission; never depend on native shell env visibility.
-    const input = f.input ? new Blob([readFileSync(f.input)]) : f.execution && job.card ? new Blob([
+    const input = f.input ? new Blob([
+      `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\n`, readFileSync(f.input),
+    ]) : f.execution && job.card ? new Blob([
       `Registered job input: ${JSON.stringify({ id: job.id, card: job.card, request_ref: job.request_ref ?? null })}\n\n`,
       readFileSync(job.card),
     ]) : undefined;

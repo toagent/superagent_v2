@@ -19,6 +19,7 @@ import {
   recent,
   RECENT_MS,
   roleOf,
+  SIMPLIFIED_CHINESE_REQUIREMENT,
   type Job,
 } from '../src/jobs';
 import { loadTiers } from '../src/config';
@@ -937,7 +938,10 @@ const input = await Bun.stdin.text(); console.log(JSON.stringify({ args: process
       ]);
       expect(exit, stderr).toBe(0);
       const received = JSON.parse(stdout);
-      expect(received.input).toBe(contents);
+      expect(received.input).toBe(`${SIMPLIFIED_CHINESE_REQUIREMENT}\n\n${contents}`);
+      expect(readFileSync(join(WETAMP, 'templates/.archon/principles.md'), 'utf8')).toContain(
+        `6. ${SIMPLIFIED_CHINESE_REQUIREMENT}`
+      );
       expect(received.args).toContain('-');
       expect(received.args).toContain('--skip-git-repo-check');
       expect(received.args).toContain(output);
@@ -984,7 +988,7 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true,
     const failedError = await new Response(failed.stderr as ReadableStream).text();
     expect(await failed.exited, failedError).toBe(1);
     const captured = JSON.parse(readFileSync(capture, 'utf8'));
-    expect(captured.input).toBe('claude prompt');
+    expect(captured.input).toBe(`${SIMPLIFIED_CHINESE_REQUIREMENT}\n\nclaude prompt`);
     expect(JSON.stringify(captured.args)).not.toContain('claude prompt');
     expect(readFileSync(output, 'utf8')).toBe('overloaded\n');
     const healthPath = join(process.env.SUPERAGENT_HOME!, 'claude-health.json'),
