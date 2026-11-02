@@ -2827,22 +2827,40 @@ describe('brief / land (archon stub)', () => {
       evidence_path: join(art, 'publish-m1.json'),
       action: 'superagent land --apply sa1',
     });
-    s.ledger.delivery = {
-      checkout: join(s.root, 'target'),
-      branch: 'wetamp',
-      head: 'a'.repeat(40),
-    };
-    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const target = gitRepo(tmp()),
+      occupied = join(tmp(), 'occupied');
+    sh('git branch available && git branch wetamp', target);
     writeFileSync(
       join(art, 'publish-m1.json'),
       JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
     );
+    s.ledger.delivery = { checkout: target, branch: 'available', head: 'a'.repeat(40) };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    expect(
+      JSON.parse(captured(() => main(['wait', 'sa1', '--json', '--timeout', '1'])).out).receipt
+        .action
+    ).toBe(`把 ${target} 切回 available 后执行 superagent land --apply sa1`);
+    sh(`git worktree add -q ${JSON.stringify(occupied)} wetamp`, target);
+    s.ledger.delivery = {
+      checkout: target,
+      branch: 'wetamp',
+      head: 'a'.repeat(40),
+    };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
     expect(classifyRun(s.ledger, dirty).state).toBe('target_checkout_changed');
     const switched = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
     expect(JSON.parse(switched.out).receipt).toMatchObject({
       reason: 'target_checkout_changed',
       evidence_path: join(art, 'publish-m1.json'),
-      action: `把 ${join(s.root, 'target')} 切回 wetamp 后执行 superagent land --apply sa1`,
+      action: `先在 ${occupied} 切走 wetamp，再把 ${target} 切回 wetamp 后执行 superagent land --apply sa1`,
+    });
+    delete s.ledger.delivery;
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const missingDelivery = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
+    expect(classifyRun(s.ledger, dirty).state).toBe('target_checkout_changed');
+    expect(JSON.parse(missingDelivery.out).receipt).toMatchObject({
+      reason: 'target_checkout_changed',
+      action: '读 evidence_path',
     });
     writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'target_advanced' }));
     const advanced = run('failed', {
@@ -2877,6 +2895,17 @@ describe('brief / land (archon stub)', () => {
     );
     expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');
+  });
+  // prettier-ignore
+  test('land --apply retries target_dirty explicitly', () => {
+    const s = stub([run('failed')]), output = join(s.root, 'home'), failed = run('failed', {
+      output_root: output, nodes: [{ nodeId: 'integrate-m1.publish-m1', state: 'failed' }],
+    }), art = join(output, 'artifacts/runs/r');
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(failed)); mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] }));
+    expect(classifyRun(s.ledger, failed).state).toBe('target_dirty');
+    expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
+    expect(s.calls().find(call => call.startsWith('workflow run sa-sa1 '))).toContain('--supersedes r');
   });
   test('LAND CLI prints a missing-target reason and returns failure without merge commands', () => {
     withArtifacts('failed', {

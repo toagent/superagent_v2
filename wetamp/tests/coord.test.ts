@@ -313,6 +313,23 @@ test('identity completion rejects quartet mismatches and two complete session id
     expect(s.c.owner(s.scope).owner).toEqual(owner);
   }
 });
+test('identity completion rejects missing or unreadable heartbeats and admits one verified session', () => {
+  const s = setup(),
+    legacy = { ...a, session_id: undefined };
+  s.c.claim(s.scope, legacy);
+  mkdirSync(join(s.sa, 'live'));
+  expect(() => s.c.claim(s.scope, a)).toThrow('普通认领');
+  rmdirSync(join(s.sa, 'live'));
+  writeFileSync(join(s.sa, 'live'), 'not a directory');
+  const diagnostic = spyOn(console, 'error').mockImplementation(() => {});
+  expect(() => s.c.claim(s.scope, a)).toThrow('普通认领');
+  expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('heartbeat read failed'));
+  diagnostic.mockRestore();
+  rmSync(join(s.sa, 'live'));
+  heartbeat(s.sa, a);
+  const completed = s.c.claim(s.scope, a).controller;
+  expect(s.c.mutate(s.scope, completed, () => 'allowed')).toBe('allowed');
+});
 test('4: cross-host unknown never auto-transfers; timeout escalates through injected supervisor', () => {
   const s = setup(who => presence(who, ''));
   const remote = { ...a, host: 'remote-host' };

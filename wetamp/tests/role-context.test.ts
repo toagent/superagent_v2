@@ -15,8 +15,8 @@ import { newNodeInvocation, startNodeExecution } from '../../packages/workflows/
 import { NODE_CONTRACT_ENV } from '../templates/.archon/scripts/sa-check';
 import { alreadySandboxed, gitRepo, fixtureEnv, sh, tmp } from './helpers';
 
-const contextPackTest = test.skipIf(alreadySandboxed);
-const contextPackTitle = alreadySandboxed
+const contextPackTest = test.skipIf(alreadySandboxed());
+const contextPackTitle = alreadySandboxed()
   ? 'CONTEXT_PACK skipped: 已在沙箱内，需在普通终端运行'
   : 'CONTEXT_PACK blocks outside/private symlink targets and preserves byte/range boundaries';
 
