@@ -2795,6 +2795,23 @@ describe('brief / land (archon stub)', () => {
       evidence_path: join(art, 'publish-m1.json'),
       action: 'superagent land --apply sa1',
     });
+    s.ledger.delivery = {
+      checkout: join(s.root, 'target'),
+      branch: 'wetamp',
+      head: 'a'.repeat(40),
+    };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    writeFileSync(
+      join(art, 'publish-m1.json'),
+      JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
+    );
+    expect(classifyRun(s.ledger, dirty).state).toBe('target_checkout_changed');
+    const switched = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
+    expect(JSON.parse(switched.out).receipt).toMatchObject({
+      reason: 'target_checkout_changed',
+      evidence_path: join(art, 'publish-m1.json'),
+      action: `把 ${join(s.root, 'target')} 切回 wetamp 后执行 superagent land --apply sa1`,
+    });
     writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'target_advanced' }));
     const advanced = run('failed', {
       output_root: output,
@@ -2830,7 +2847,7 @@ describe('brief / land (archon stub)', () => {
     });
     writeFileSync(
       join(art, 'publish-m1.json'),
-      JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] })
+      JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
     );
     expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');

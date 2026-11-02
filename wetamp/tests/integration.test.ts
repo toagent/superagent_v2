@@ -409,13 +409,27 @@ test('publish accepts matching review evidence and rejects drift or a stale owne
 
 test('publish rejects a target checkout switched to another branch', () => {
   const switched = fixture();
-  commit(switched.worktree, 'feature.txt', 'feature\n');
+  const integrated = commit(switched.worktree, 'feature.txt', 'feature\n');
   const switchedBefore = switched.expected().target_tip;
   sh('git switch -qc operator', switched.target);
+  const operatorHead = sh('git rev-parse HEAD', switched.target).trim();
+  const operatorIndex = sh('git write-tree', switched.target).trim();
+  const operatorStatus = sh('git status --porcelain=v1', switched.target);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    expect(publish(switched.run(), { target_tip: switchedBefore })).toMatchObject({
+      status: 'rejected',
+      reason: 'target_checkout_changed',
+    });
+    expect(sh('git rev-parse wetamp', switched.target).trim()).toBe(switchedBefore);
+    expect(sh('git rev-parse HEAD', switched.target).trim()).toBe(operatorHead);
+    expect(sh('git write-tree', switched.target).trim()).toBe(operatorIndex);
+    expect(sh('git status --porcelain=v1', switched.target)).toBe(operatorStatus);
+    expect(existsSync(switched.run().receipt)).toBe(false);
+  }
+  sh('git switch -q wetamp', switched.target);
   expect(publish(switched.run(), { target_tip: switchedBefore })).toMatchObject({
-    status: 'rejected',
-    reason: 'target_checkout_changed',
+    status: 'published',
+    receipt: { integrated },
   });
-  expect(sh('git rev-parse wetamp', switched.target).trim()).toBe(switchedBefore);
-  expect(existsSync(switched.run().receipt)).toBe(false);
+  expect(sh('git rev-parse wetamp', switched.target).trim()).toBe(integrated);
 });

@@ -742,12 +742,12 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       : landError?.startsWith('land_') ? reasonToken(landError.slice(5)) : undefined,
     registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
     integrationReason = ['held:target_dirty', 'target_dirty'].includes(c.state) ? 'target_dirty'
-      : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? c.state : undefined,
+      : ['sync_conflict', 'target_checkout_changed', 'target_advanced', 'review_stale'].includes(c.state) ? c.state : undefined,
     reason = landReason ?? integrationReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
       holdOf(l, run, c) ?? reasonToken(run.metadata?.stop_reason?.reason) ?? 'unclassified',
     evidence = [
       landReason && join(art, 'delivery.json'),
-      reason === 'target_dirty' && c.node && join(art, `${authoredNodeId(c.node)}.json`),
+      ['target_dirty', 'target_checkout_changed'].includes(reason) && c.node && join(art, `${authoredNodeId(c.node)}.json`),
       c.node && join(art, `${c.node}.json`),
       run.transcript_path, l.log, l.transcript, art, ledgerPath(l.run_id),
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
@@ -758,6 +758,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     reauthorize = reauthorizationHint(l, run, c),
     action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
+      : reason === 'target_checkout_changed' && l.delivery ? `把 ${l.delivery.checkout} 切回 ${l.delivery.branch} 后执行 superagent land --apply ${l.run_id}`
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
@@ -888,6 +889,8 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
       if (publish?.reason === 'reclaim_pending')
         return { ...c, state: 'held:reclaim_pending', exit: EXIT.held };
       if (publish?.reason === 'target_dirty') return { ...c, state: 'target_dirty' };
+      if (publish?.reason === 'target_checkout_changed')
+        return { ...c, state: 'target_checkout_changed' };
       if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
       if (publish?.reason === 'review_stale') return { ...c, state: 'review_stale' };
       const sync = authored
