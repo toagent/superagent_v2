@@ -5051,6 +5051,12 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     writeFileSync(join(repo, 'tests/a.test.ts'), 'changed\n');
     sh('git add tests/a.test.ts && git -c user.name=t -c user.email=t@l commit -qm changed-test', repo);
     expect(go('G1')).toMatchObject({ disposition: 'fail', reason: 'scope_approval' });
+    sh('git rm -q README.md && git -c user.name=t -c user.email=t@l commit -qm deleted-outside', repo);
+    expect(go('G1')).toMatchObject({
+      disposition: 'repair',
+      reason: 'scope_violation',
+      out_of_scope: expect.arrayContaining(['README.md']),
+    });
   }, testTimeout(15_000));
   test('scope request survives false handback; scope approval does not grant budget', () => {
     // prettier-ignore
@@ -5081,7 +5087,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     );
     const scopeNeed = { cap: 'scope_decision', why: 'required files', minimal_ask: 'approve' };
     // prettier-ignore
-    const go = (needs: object[]) => runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a', base, run_base: base, scope_base: base, generated_paths: '[]', risk: 'G1', policy, archon: 'fixture', events_file: events, coder: JSON.stringify({ status: 'blocked', error_class: 'scope_violation', needs }) }, SCRIPT, { WORKFLOW_ID: 'fixture' }).out;
+    const go = (needs: object[], tag = 'verify-a') => runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag, base, run_base: base, scope_base: base, generated_paths: '[]', risk: 'G1', policy, archon: 'fixture', events_file: events, coder: JSON.stringify(needs.length ? { status: 'blocked', error_class: 'scope_violation', needs } : { status: 'done', error_class: null }) }, SCRIPT, { WORKFLOW_ID: 'fixture' }).out;
     const held = go([scopeNeed]) as { diff_hash: string; scope_blobs: Record<string, string> };
     expect(held).toMatchObject({
       disposition: 'fail',
@@ -5091,7 +5097,16 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     mkdirSync(join(root, 'approvals'));
     // prettier-ignore
     writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ files: Object.keys(held.scope_blobs).sort(), blobs: held.scope_blobs }));
-    expect(go([scopeNeed])).toMatchObject({ disposition: 'advance', reason: 'budget_exceeded' });
+    expect(go([], 'diff-m1-r1')).toMatchObject({
+      disposition: 'advance',
+      out_of_scope: ['generated.ts', 'heartbeat.ts', 'schema.json'],
+    });
+    writeFileSync(join(repo, 'generated.ts'), 'changed\n');
+    sh('git add generated.ts && git -c user.name=t -c user.email=t@l commit -qm changed', repo);
+    expect(go([], 'diff-m1-r2')).toMatchObject({
+      disposition: 'repair',
+      reason: 'scope_violation',
+    });
     expect(go([scopeNeed, { cap: 'environment' }])).toMatchObject({ reason: 'false_handback' });
     writePlan('false');
     expect(go([scopeNeed])).toMatchObject({ reason: 'false_handback' });

@@ -1541,11 +1541,15 @@ async function acceptOnce(
         scope.out_of_scope,
         covered.flatMap(k => k.scope.write)
       ));
-  const scopeBlobs = scopeApproval
-    ? Object.fromEntries(
-        [...scope.out_of_scope].sort().map(path => [path, git('rev-parse', `HEAD:${path}`).trim()])
-      )
-    : {};
+  const scopeBlobs = Object.fromEntries(
+    [...scope.out_of_scope].sort().flatMap(path => {
+      try {
+        return [[path, git('rev-parse', `HEAD:${path}`).trim()]];
+      } catch {
+        return [];
+      }
+    })
+  );
   const scopeReason =
     scopeApproval && result.disposition === 'advance' ? 'scope_approval' : 'scope_violation';
   if (
