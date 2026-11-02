@@ -148,6 +148,25 @@ test('shim dispatches wait, current commands, and grouped tick without scheduler
   ]);
 });
 
+test('installed jail re-enters before the superagent CLI', () => {
+  const root = tmp(),
+    jail = join(root, '.wetamp', 'jail'),
+    marker = join(root, 'jail-args.json');
+  mkdirSync(jail, { recursive: true });
+  writeFileSync(join(jail, 'installed'), '');
+  writeFileSync(join(jail, '.probe'), '');
+  writeFileSync(
+    join(jail, 'ai-jail'),
+    `#!/bin/sh\nprintf '%s' "$*" > ${JSON.stringify(marker)}\n`,
+    { mode: 0o755 }
+  );
+  const result = Bun.spawnSync([SHIM, 'models'], {
+    env: { ...process.env, HOME: root },
+  });
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(marker, 'utf8')).toBe(`${SHIM} models`);
+});
+
 test('real continuation CLI emits the JSON contract consumed by the shim', () => {
   const root = tmp(),
     result = Bun.spawnSync(

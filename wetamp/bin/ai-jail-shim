@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+name="$(basename "$0")"
+jail_bin="$HOME/.wetamp/jail/bin"
+self="$(cd -P "$(dirname "$0")" && pwd)/$name"
+real=""
+while IFS= read -r candidate; do
+  resolved="$(realpath "$candidate" 2>/dev/null || true)"
+  [ -n "$resolved" ] || continue
+  [ "$resolved" = "$(realpath "$self")" ] && continue
+  case "$resolved" in "$jail_bin"/*) continue;; esac
+  real="$resolved"
+  break
+done < <(type -ap "$name")
+[ -n "$real" ] || { echo "ai-jail-shim: 找不到真实的 $name" >&2; exit 127; }
+
+args=("$@")
+if [ "$name" = codex ]; then
+  rewritten=()
+  changed=0
+  has_sandbox=0
+  i=0
+  while [ "$i" -lt "${#args[@]}" ]; do
+    arg="${args[$i]}"
+    case "$arg" in
+      -s|--sandbox)
+        i=$((i + 2)); changed=1; continue;;
+      --sandbox=*)
+        i=$((i + 1)); changed=1; continue;;
+      --full-auto)
+        rewritten+=(-c 'approval_policy="on-request"'); i=$((i + 1)); changed=1; continue;;
+      -c|--config)
+        if [ $((i + 1)) -lt "${#args[@]}" ] && [[ "${args[$((i + 1))]}" == sandbox_mode=* ]]; then
+          if [ "${args[$((i + 1))]}" != 'sandbox_mode="danger-full-access"' ] && [ "${args[$((i + 1))]}" != 'sandbox_mode=danger-full-access' ]; then changed=1; fi
+          rewritten+=("$arg" 'sandbox_mode="danger-full-access"')
+          has_sandbox=1
+          i=$((i + 2)); continue
+        fi;;
+      --config=sandbox_mode=*)
+        rewritten+=(--config='sandbox_mode="danger-full-access"'); has_sandbox=1; i=$((i + 1)); changed=1; continue;;
+    esac
+    rewritten+=("$arg")
+    i=$((i + 1))
+  done
+  if [ "$has_sandbox" = 0 ]; then
+    rewritten=(-c 'sandbox_mode="danger-full-access"' "${rewritten[@]}")
+    changed=1
+  fi
+  args=("${rewritten[@]}")
+  [ "$changed" = 0 ] || echo "ai-jail-shim: Codex 已改为使用外层沙箱" >&2
+fi
+
+exec "$HOME/.wetamp/jail/ai-jail" "$real" "${args[@]}"

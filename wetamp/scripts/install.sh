@@ -14,12 +14,75 @@ WETAMP="$(cd -P "$(dirname "$0")/.." && pwd)"
 mode="" dry=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --hooks|--purge-v1|--remote-hooks) [ -z "$mode" ] || { echo "install.sh: $mode and $1 are exclusive" >&2; exit 64; }; mode="$1";;
+    --hooks|--purge-v1|--remote-hooks|--jail-off) [ -z "$mode" ] || { echo "install.sh: $mode and $1 are exclusive" >&2; exit 64; }; mode="$1";;
     --dry-run) dry=--dry-run;;
     *) echo "install.sh: unknown arg $1" >&2; exit 64;;
   esac
   shift
 done
+
+jail="$HOME/.wetamp/jail"
+jail_probe_listed() {
+  command ls -A "$jail" 2>/dev/null | command grep -Fxq .probe
+}
+update_jail_rc() {
+  local action="$1" file
+  for file in "$HOME/.zshenv" "$HOME/.zshrc"; do
+    node -e '
+const fs = require("node:fs"), [file, action] = process.argv.slice(1);
+const start = "# >>> superagent ai-jail >>>", end = "# <<< superagent ai-jail <<<";
+let raw = "";
+try { raw = fs.readFileSync(file, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+const lines = raw.split("\n"), kept = [];
+let managed = false;
+for (const line of lines) {
+  if (line === start) { managed = true; continue; }
+  if (managed && line === end) { managed = false; continue; }
+  if (!managed) kept.push(line);
+}
+let next = kept.join("\n").replace(/\n+$/, "");
+if (action === "add") next += (next ? "\n" : "") + start + "\n" +
+  "case :$PATH: in *:$HOME/.wetamp/jail/bin:*) ;; *) export PATH=\"$HOME/.wetamp/jail/bin:$PATH\" ;; esac\n" + end;
+next += "\n";
+if (next === raw || (!raw && action === "remove")) process.exit(0);
+if (raw) fs.copyFileSync(file, file + ".bak-" + new Date().toISOString().replace(/[-:.TZ]/g, ""));
+fs.writeFileSync(file, next);
+' "$file" "$action"
+  done
+}
+install_jail() {
+  if [ -f "$jail/installed" ] && jail_probe_listed && [ ! -r "$jail/.probe" ]; then
+    echo "install.sh: 当前已在 ai-jail 内，跳过 jail 资产更新" >&2
+    return
+  fi
+  local resolved
+  resolved="$(realpath "$HOME")"
+  mkdir -p "$jail/bin"
+  HOME_REAL="$resolved" node -e '
+const fs = require("node:fs");
+const home = process.env.HOME_REAL;
+const literal = home.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
+const regex = home.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
+let text = fs.readFileSync(process.argv[1], "utf8");
+text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex);
+fs.writeFileSync(process.argv[2], text);
+' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb"
+  cp "$WETAMP/bin/ai-jail" "$jail/ai-jail"
+  cp "$WETAMP/bin/ai-jail-shim" "$jail/ai-jail-shim"
+  chmod 755 "$jail/ai-jail" "$jail/ai-jail-shim"
+  : >"$jail/.probe"
+  for client in claude codex opencode; do ln -sfn ../ai-jail-shim "$jail/bin/$client"; done
+  update_jail_rc add
+  : >"$jail/installed"
+}
+disable_jail() {
+  if [ -f "$jail/installed" ] && jail_probe_listed && [ ! -r "$jail/.probe" ]; then
+    echo "install.sh --jail-off: 当前在 ai-jail 内，拒绝关闭" >&2
+    exit 126
+  fi
+  [ ! -e "$jail" ] || rm -rf -- "$jail"
+  update_jail_rc remove
+}
 # Both installation paths publish the same role fact; lock the full RMW and keep
 # user-owned fields. The unchanged ledger is left byte-for-byte intact.
 publish_mode() {
@@ -44,6 +107,7 @@ console.log("install: mode=" + role);
 }
 case "$mode" in
   ""|--remote-hooks) [ -z "$dry" ] || { echo "install.sh: --dry-run only applies to --hooks/--purge-v1" >&2; exit 64; };;
+  --jail-off) [ -z "$dry" ] || { echo "install.sh: --dry-run does not apply to --jail-off" >&2; exit 64; }; disable_jail; exit 0;;
   # --hooks 之后为本 wetamp/hooks/ 的 Codex 条目写信任（scripts/codex-trust.cjs；--dry-run 按当前 hooks.json 估计条目数）
   --hooks) bun "$WETAMP/src/install-hooks.ts" "$mode" ${dry:+"$dry"}; bun "$WETAMP/scripts/codex-trust.cjs" write ${dry:+"$dry"};
     [ -n "$dry" ] || publish_mode controller; exit 0;;
@@ -74,6 +138,7 @@ try {
 ' "$WETAMP"
   # 远端 hooks.json 由 agentcfg 维度下推；这里为其中指向本 wetamp/hooks/ 的条目写 Codex 信任
   node "$WETAMP/scripts/codex-trust.cjs" write
+  install_jail
   publish_mode worker
   entry="$HOME/.local/bin/superagent"; mkdir -p "$HOME/.local/bin"
   if [ -e "$entry" ] && [ ! -L "$entry" ]; then mv "$entry" "$entry.bak-$(date +%Y%m%d%H%M%S)"; fi
@@ -84,6 +149,7 @@ export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
 # 安装时显式给出的 ARCHON_HOME 才写进 plist；未给出则省略，tick 与这里取同一默认值
 SA_ARCHON="${ARCHON_HOME:-}"
 export ARCHON_HOME="${ARCHON_HOME:-$SUPERAGENT_HOME/archon}"
+install_jail
 bun -e "import { install } from '$WETAMP/src/config.ts'; for (const f of install()) console.log('updated ' + f.replace(process.env.HOME, '~'))"
 # hooks 解析器与 board 使用 wetamp 自有依赖；主安装失败明确提示派生 Bash 会拒绝。
 (cd "$WETAMP" && bun install --frozen-lockfile >/dev/null 2>&1) || echo "install.sh: wetamp bun install --frozen-lockfile failed; 派生会话 Bash 将全部被 redline 拒绝；board 不可用" >&2

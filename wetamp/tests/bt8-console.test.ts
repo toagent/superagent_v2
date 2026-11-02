@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   createDemandSnapshot,
   consoleEnv,
+  consoleProgramArguments,
   consoleStatus,
   handler,
   ensureWebDist,
@@ -143,6 +144,15 @@ test('whitelisted child environment rejects unsupported DSN, keeps native home a
   expect(env.PATH).toBe(firstPath);
   for (const key of ['DATABASE_URL', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'NODE_OPTIONS'])
     expect(key in env).toBe(false);
+});
+test('console launch arguments acquire the jail only after installation', () => {
+  const root = tmp(),
+    jail = join(root, '.wetamp', 'jail');
+  process.env.HOME = root;
+  expect(consoleProgramArguments()[0]).toBe(process.execPath);
+  mkdirSync(jail, { recursive: true });
+  writeFileSync(join(jail, 'installed'), '');
+  expect(consoleProgramArguments().slice(0, 2)).toEqual([join(jail, 'ai-jail'), process.execPath]);
 });
 test('observer loader blocks native dotenv reload, including override:true in ARCHON_HOME', async () => {
   const root = tmp();

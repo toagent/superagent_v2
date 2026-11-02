@@ -143,9 +143,11 @@ function render(raw: string, client: Client, purge: boolean): string {
     // Official file rules use ~/ for HOME and ** for recursive matching.
     // Edit covers Write too; Write(path) is not consulted by Claude Code.
     const rules = ['Read', 'Edit'].flatMap(tool =>
-      ['~/Library/Mobile Documents', '~/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]*'].flatMap(
-        path => [path, `${path}/**`].map(pattern => `${tool}(${pattern})`)
-      )
+      [
+        '~/Library/Mobile Documents',
+        '~/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]*',
+        '~/**/_private',
+      ].flatMap(path => [path, `${path}/**`].map(pattern => `${tool}(${pattern})`))
     );
     permissions.deny = [...new Set([...(permissions.deny ?? []), ...rules])];
   }

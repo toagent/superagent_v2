@@ -162,6 +162,19 @@ export function consoleEnv(): Record<string, string> {
     DO_NOT_TRACK: '1',
   };
 }
+export function consoleProgramArguments(): string[] {
+  const args = [
+    process.execPath,
+    '--no-env-file',
+    '--preload',
+    join(WETAMP, 'src/web/archon.ts'),
+    join(WETAMP, 'src/cli.ts'),
+    'console',
+    'serve',
+  ];
+  const jail = join(process.env.HOME ?? '', '.wetamp/jail');
+  return existsSync(join(jail, 'installed')) ? [join(jail, 'ai-jail'), ...args] : args;
+}
 /** Panel data is a projection of cockpit, never a separate collector. */
 export function overview(s: Snapshot) {
   const now = Date.parse(s.at),
@@ -474,7 +487,7 @@ export async function startWeb(): Promise<WebState> {
     const file = consoleLaunchdPlist(),
       dir = dirname(file);
     mkdirSync(dir, { recursive: true });
-    const text = `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${xml(label())}</string><key>ProgramArguments</key><array>${[process.execPath, '--no-env-file', '--preload', join(WETAMP, 'src/web/archon.ts'), join(WETAMP, 'src/cli.ts'), 'console', 'serve'].map(x => `<string>${xml(x)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict>${Object.entries(
+    const text = `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${xml(label())}</string><key>ProgramArguments</key><array>${consoleProgramArguments().map(x => `<string>${xml(x)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict>${Object.entries(
       consoleEnv()
     )
       .map(([k, v]) => `<key>${xml(k)}</key><string>${xml(v)}</string>`)

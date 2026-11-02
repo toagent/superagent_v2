@@ -857,7 +857,7 @@ test('engine gc removes read-only failed candidates and preserves protected or l
   process.env.SA_LAUNCHD_DIR = join(f.root, 'LaunchAgents');
   mkdirSync(process.env.SA_LAUNCHD_DIR);
   const plist = consoleLaunchdPlist(); // preload isolates the console label per test process
-  const consolePlist = `<plist><dict><key>ProgramArguments</key><array><string>${join(root, shas.console, 'wetamp/src/cli.ts')}</string></array></dict></plist>`;
+  const consolePlist = `<plist><dict><key>ProgramArguments</key><array><string>${join(f.root, '.wetamp/jail/ai-jail')}</string><string>${join(root, shas.console, 'wetamp/src/cli.ts')}</string></array></dict></plist>`;
   writeFileSync(plist, consolePlist);
   expect(collectEngineSnapshots(true).find(e => e.path === join(root, shas.console))).toMatchObject(
     { action: 'skipped', reason: 'console snapshot retained' }

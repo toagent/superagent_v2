@@ -3,6 +3,14 @@ set -euo pipefail
 
 sa_home=${SUPERAGENT_HOME:-$HOME/.superagent}
 archon_home=${ARCHON_HOME:-$sa_home/archon}
+jail="$HOME/.wetamp/jail"
+if [[ -f "$jail/installed" ]]; then
+  if [[ -r "$jail/.probe" ]]; then
+    exec "$jail/ai-jail" "$0" "$@"
+  elif ! command ls -A "$jail" 2>/dev/null | command grep -Fxq .probe; then
+    exec "$jail/ai-jail" "$0" "$@"
+  fi
+fi
 export SUPERAGENT_HOME=$sa_home
 export ARCHON_HOME=$archon_home
 engine_home="$sa_home/engine"

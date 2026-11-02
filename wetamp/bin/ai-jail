@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[ "$#" -gt 0 ] || { echo "ai-jail: 缺少要执行的命令" >&2; exit 64; }
+jail="$HOME/.wetamp/jail"
+marker="$jail/installed"
+profile="$jail/ai-deny.sb"
+probe="$jail/.probe"
+
+# The wrapper is inert until install.sh publishes the marker.
+[ -f "$marker" ] || exec "$@"
+[ -f "$profile" ] || { echo "ai-jail: 已安装但沙箱配置缺失，拒绝启动" >&2; exit 126; }
+[ -x /usr/bin/sandbox-exec ] || { echo "ai-jail: 已安装但 sandbox-exec 不可用，拒绝启动" >&2; exit 126; }
+if ! command ls -A "$jail" 2>/dev/null | command grep -Fxq .probe; then
+  echo "ai-jail: 已安装但探针缺失，拒绝启动" >&2
+  exit 126
+fi
+
+# The profile denies reading this real file. This avoids nesting seatbelt.
+if [ ! -r "$probe" ]; then
+  exec "$@"
+fi
+
+# gstack uses CONTAINER only to disable Chromium's nested sandbox.
+export CONTAINER=1
+exec /usr/bin/sandbox-exec -f "$profile" "$@"

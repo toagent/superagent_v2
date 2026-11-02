@@ -243,10 +243,11 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       for (const path of [
         '~/Library/Mobile Documents',
         '~/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]*',
+        '~/**/_private',
       ])
         for (const suffix of ['', '/**'])
           expect(permissions.deny).toContain(`${tool}(${path}${suffix})`);
-    expect(permissions.deny).toHaveLength(9);
+    expect(permissions.deny).toHaveLength(13);
     expect(sh('--hooks').code).toBe(0);
     expect(readFileSync(file, 'utf8')).toBe(first);
   });
@@ -606,7 +607,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const root = tmp(),
       toolkit = join(root, 'wetamp');
     mkdirSync(toolkit);
-    for (const dir of ['hooks', 'scripts', 'bin'])
+    for (const dir of ['hooks', 'scripts', 'bin', 'jail'])
       cpSync(join(WETAMP, dir), join(toolkit, dir), { recursive: true });
     writeFileSync(join(toolkit, 'tiers.json'), readFileSync(join(WETAMP, 'tiers.json')));
     mkdirSync(join(root, '.git'));
