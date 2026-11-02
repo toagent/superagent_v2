@@ -574,6 +574,23 @@ describe('guard.cjs', () => {
     expect(guard('claude', { hook_event_name: 'Stop', session_id: 'idle' })).toBeNull();
   });
 
+  test('元帅 Stop 重开面板且保留 gate 结果，派生 Stop 不触发', () => {
+    const hooks = hooksWith({ stop_gate: 'advisory' }),
+      calls = join(hooks, 'panel-calls'),
+      payload = { hook_event_name: 'Stop', session_id: 's', cwd: gitRepo(tmp()) };
+    writeFileSync(
+      join(hooks, 'heartbeat-panel.cjs'),
+      `'use strict';const fs=require('node:fs');module.exports={ensurePanel(p,e){fs.appendFileSync(e.PANEL_CALLS,JSON.stringify(p)+'\\n');return true}};\n`
+    );
+    const commander = run('guard.cjs', 'codex', payload, { PANEL_CALLS: calls }, hooks);
+    expect(commander?.systemMessage).toContain('G-3 advisory');
+    expect(readFileSync(calls, 'utf8').trim()).toBe(JSON.stringify(payload));
+    expect(
+      run('guard.cjs', 'codex', payload, { PANEL_CALLS: calls, SUPERAGENT_ROLE: 'general' }, hooks)
+    ).toBeNull();
+    expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
   test('multi-run wait and waiting asks: commander Stop recognizes active waiters', () => {
     const gate = (createRequire(import.meta.url)('../hooks/stop-gate.cjs') as any).waiterGate;
     const payload = { hook_event_name: 'Stop', session_id: 's' };
