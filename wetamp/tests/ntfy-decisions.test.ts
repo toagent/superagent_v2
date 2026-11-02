@@ -17,14 +17,8 @@ import {
   syncDecisionChannel,
 } from '../src/cli';
 import { caller, coord } from '../src/coord';
-import {
-  askNtfy,
-  publishPendingNtfy,
-  queueNtfyAlert,
-  supersedeNtfyDecisions,
-  syncNtfy,
-  type NtfyConfig,
-} from '../src/ntfy';
+// prettier-ignore
+import { answerNtfyLocally, askNtfy, claimNtfyHealthEvent, publishPendingNtfy, queueNtfyAlert, supersedeNtfyDecisions, syncNtfy, type NtfyConfig } from '../src/ntfy';
 
 const roots: string[] = [],
   servers: Bun.Server<unknown>[] = [];
@@ -38,7 +32,7 @@ function fixture(now = 2_000_000_000_000) {
   const publisherToken = join(root, 'publisher'), answerToken = join(root, 'answer');
   writeFileSync(publisherToken, 'publisher-secret\n', { mode: 0o600 });
   writeFileSync(answerToken, 'answer-secret\n', { mode: 0o600 });
-  const posts: { url: string; body: Record<string, unknown> }[] = [], events: string[] = [];
+  const posts: { url: string; body: Record<string, unknown> }[] = [], events: string[] = []; let eventId = 0;
   const server = Bun.serve({ port: 0, async fetch(request) {
     if (new URL(request.url).pathname === '/sa-answers/json') return new Response(events.splice(0).join('\n'));
     posts.push({ url: request.url, body: await request.json() as Record<string, unknown> }); return new Response('{}');
@@ -46,8 +40,8 @@ function fixture(now = 2_000_000_000_000) {
   const config: NtfyConfig = { baseUrl: server.url.origin, publisherToken, answerToken, answerKey: join(root, 'answer.key'), statePath: join(root, 'state.json'), fetch, now: () => now };
   const request = (ref: string, risk: 'normal' | 'red' = 'normal') => ({ source: 'test', title: 'Decision', body: 'Choose', risk, options: [{ id: 'yes', label: 'Yes', consequence: 'changes state' }, { id: 'no', label: 'No' }], expires_at: new Date(now + 3_600_000).toISOString(), callback: { kind: 'external' as const, ref }, dedupe_key: ref });
   const action = (post = posts.at(-1)!, index = 0) => JSON.parse(String((post.body.actions as { body: string }[])[index].body));
-  const push = (value: unknown) => events.push(JSON.stringify({ id: crypto.randomUUID(), event: 'message', message: JSON.stringify(value) }));
-  const state = () => JSON.parse(readFileSync(config.statePath, 'utf8')) as { decisions: Record<string, { status: string; error?: { code: string; message: string } }> };
+  const push = (value: unknown) => events.push(JSON.stringify({ id: String(++eventId).padStart(12, '0'), event: 'message', message: JSON.stringify(value) }));
+  const state = () => JSON.parse(readFileSync(config.statePath, 'utf8')) as { cursor?: string; decisions: Record<string, { status: string; error?: { code: string; message: string } }> };
   return { root, config, posts, request, action, push, state };
 }
 
@@ -110,14 +104,17 @@ describe('ntfy decision channel', () => {
     await askCli(['ask', 'answer', id, 'yes'], f.config, value => output.push(value));
     f.config.fetch = online;
     expect(output[0]).toMatchObject({ id, option: 'yes', source: 'local', accepted: 1 });
+    expect(f.state()).not.toHaveProperty('cursor');
     expect(coord().inbox(who, true).find(message => message.source === id)?.body).toContain('本地答复');
-    f.push(phone); expect((await syncNtfy(() => { throw new Error('replayed'); }, f.config)).ignored).toBe(1);
+    f.push(phone); expect((await syncNtfy(() => { throw new Error('replayed'); }, f.config)).ignored).toBe(1); expect(f.state().cursor).toBe('000000000001');
     const pending = askNtfy({ ...f.request('health'), originator: { identity: who, scope } }, f.config), now = f.config.now();
     expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, now)).toMatchObject({ event: 'delivery_failed', id: pending });
     expect(askWaitHealth([pending], f.config, { at: new Date(now - 181_000).toISOString() }, now)).toMatchObject({ event: 'tick_stale' });
-    ntfyCli(['ntfy', 'pause'], f.config, () => undefined); expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now)).toMatchObject({ event: 'paused', id: pending }); ntfyCli(['ntfy', 'resume'], f.config, () => undefined);
+    ntfyCli(['ntfy', 'pause'], f.config, () => undefined); const paused = askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now)!; expect(paused).toMatchObject({ event: 'paused', id: pending }); expect(claimNtfyHealthEvent(paused.id!, paused.event, f.config)).toBeTrue(); expect(claimNtfyHealthEvent(paused.id!, paused.event, f.config)).toBeFalse(); expect(askWaitHealth([], f.config, { at: new Date(now).toISOString() }, now)).toBeUndefined(); ntfyCli(['ntfy', 'resume'], f.config, () => undefined);
     const withdrawn = askNtfy({ ...f.request('withdrawn'), callback: { kind: 'decision', id: 'gone' }, originator: { identity: who, scope } }, f.config); supersedeNtfyDecisions([], f.config); expect(askWaitHealth([withdrawn], f.config, { at: new Date(now).toISOString() }, now)).toMatchObject({ event: 'withdrawn', id: withdrawn });
     expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now + 3_600_001)).toMatchObject({ event: 'expired', id: pending });
+    const red = askNtfy({ ...f.request('red-local', 'red'), originator: { identity: who, scope } }, f.config); await expect(askCli(['ask', 'answer', red, 'yes'], f.config)).rejects.toThrow('red decisions require ntfy');
+    const expiring = askNtfy({ ...f.request('expiring'), expires_at: new Date(now + 1000).toISOString(), originator: { identity: who, scope } }, f.config), target = askNtfy({ ...f.request('expiry-target'), expires_at: new Date(now + 10_000).toISOString(), originator: { identity: who, scope } }, f.config); let expired = ''; f.config.now = () => now + 2000; await answerNtfyLocally(target, 'yes', () => undefined, f.config, decision => { expired = decision.id; }); expect(expired).toBe(expiring); expect(f.state().cursor).toBe('000000000001');
     const forbidden = askNtfy({ ...f.request('forbidden'), originator: { identity: who, scope } }, f.config); f.config.actor = () => ({ client: 'codex', session_id: 'other', pid: 999_999, pid_start: 'other' }); await expect(askCli(['ask', 'answer', forbidden, 'yes'], f.config)).rejects.toThrow('not authorized');
   });
   test('accepts validated ask specs and omits missing presentation fields', async () => {

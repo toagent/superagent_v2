@@ -145,6 +145,7 @@ interface NtfyState {
   summary_at?: number;
   ignored: number;
   callback_failures: number;
+  health_events?: Record<string, number>;
 }
 
 export interface NtfyConfig {
@@ -643,15 +644,14 @@ function parseAnswer(message: unknown): SignedAnswer | undefined {
   }
 }
 
+// prettier-ignore
+export type NtfyAnswerHandler = (decision: NtfyAsk & { id: string }, option: string, source?: 'ntfy' | 'local') => unknown;
 export async function syncNtfy(
-  onAnswer: (
-    decision: NtfyAsk & { id: string },
-    option: string,
-    source?: 'ntfy' | 'local'
-  ) => unknown,
+  onAnswer: NtfyAnswerHandler,
   supplied: Partial<NtfyConfig> = {},
   onExpire: (decision: NtfyAsk & { id: string }) => void | Promise<void> = () => undefined,
-  source: 'ntfy' | 'local' = 'ntfy'
+  source: 'ntfy' | 'local' = 'ntfy',
+  advanceCursor = true
 ): Promise<{ accepted: number; ignored: number; failed: number }> {
   if (!ntfyEnabled(supplied)) return { accepted: 0, ignored: 0, failed: 0 };
   const config = { ...defaultConfig(), ...supplied };
@@ -661,7 +661,10 @@ export async function syncNtfy(
   let ignored = 0;
   let failed = 0;
   try {
-    const state = readState(config.statePath);
+    const state = readState(config.statePath),
+      setCursor = (id: string): void => {
+        if (advanceCursor) state.cursor = id;
+      };
     try {
       const publisher = secureSecret(config.publisherToken, 'publisher token');
       const url = new URL(`${config.baseUrl}/sa-answers/json`);
@@ -693,7 +696,7 @@ export async function syncNtfy(
         const answer = event.event === 'message' ? parseAnswer(event.message) : undefined;
         if (!answer) {
           ignored++;
-          state.cursor = event.id;
+          setCursor(event.id);
           continue;
         }
         const decision = Reflect.get(state.decisions, answer.id) as StoredDecision | undefined;
@@ -719,7 +722,7 @@ export async function syncNtfy(
         else if (!expected || !validSignature(answer, key)) rejection = '回答签名无效，未执行';
         if (rejection) {
           ignored++;
-          state.cursor = event.id;
+          setCursor(event.id);
           receipt(
             state,
             `receipt:${answer.id}:rejected`,
@@ -746,7 +749,7 @@ export async function syncNtfy(
               key
             ),
           ];
-          state.cursor = event.id;
+          setCursor(event.id);
           receipt(
             state,
             `receipt:${decision.id}:request`,
@@ -757,7 +760,7 @@ export async function syncNtfy(
           continue;
         }
         state.used_nonces[answer.nonce] = config.now();
-        state.cursor = event.id;
+        setCursor(event.id);
         try {
           const outcome = answerOutcome(await onAnswer(decision, answer.option, source));
           decision.status = 'answered';
@@ -929,14 +932,26 @@ export function ntfyDecisionStatus(id: string, supplied: Partial<NtfyConfig> = {
 }
 
 // prettier-ignore
-export async function answerNtfyLocally(id: string, option: string, onAnswer: Parameters<typeof syncNtfy>[0], supplied: Partial<NtfyConfig> = {}): Promise<{ accepted: number; ignored: number; failed: number }> {
+export function claimNtfyHealthEvent(id: string, event: string, supplied: Partial<NtfyConfig> = {}): boolean {
+  const config = { ...defaultConfig(), ...supplied }, guard = stateLock(config.statePath);
+  if (!guard.ok) return false;
+  try {
+    const state = readState(config.statePath), key = `${id}:${event}`, seen = state.health_events ?? {};
+    if (Object.hasOwn(seen, key)) return false;
+    state.health_events = { ...seen, [key]: config.now() }; saveState(config.statePath, state); return true;
+  } finally { guard.release(); }
+}
+
+// prettier-ignore
+export async function answerNtfyLocally(id: string, option: string, onAnswer: Parameters<typeof syncNtfy>[0], supplied: Partial<NtfyConfig> = {}, onExpire: Parameters<typeof syncNtfy>[2] = () => undefined): Promise<{ accepted: number; ignored: number; failed: number }> {
   const config = { ...defaultConfig(), ...supplied },
     decision = Reflect.get(readState(config.statePath).decisions, id) as StoredDecision | undefined,
     actor = config.actor?.() ?? caller();
   if (!decision) throw new Error('ask: unknown decision');
   const originator = decision.originator;
   if (!originator || !((actor.session_id && actor.session_id === originator.identity.session_id) || same(coord().owner(originator.scope).owner, actor))) throw new Error('ask: local answer is not authorized');
-  const selected = decision.risk === 'red' && decision.red_phase === 'request' ? decision.actions[0] : decision.actions.find(action => action.option === option);
+  if (decision.risk === 'red') throw new Error('ask: red decisions require ntfy confirmation');
+  const selected = decision.actions.find(action => action.option === option);
   if (!decision.options.some(candidate => candidate.id === option) || !selected)
     throw new Error('ask: invalid option');
   let delivered = false;
@@ -954,16 +969,15 @@ export async function answerNtfyLocally(id: string, option: string, onAnswer: Pa
           return config.fetch(input, init);
         }) as typeof fetch,
       },
-      () => undefined,
-      'local'
+      onExpire,
+      'local',
+      false
     );
   } catch (error) {
     const settled = ntfyDecisionStatus(id, config);
     if (settled?.status === 'answered') return { accepted: 1, ignored: 0, failed: 0 };
     if (settled?.status === 'failed' || settled?.status === 'superseded')
       return { accepted: 0, ignored: 0, failed: 1 };
-    if (decision.risk === 'red' && settled?.status === 'pending')
-      return { accepted: 0, ignored: 0, failed: 0 };
     throw error;
   }
 }

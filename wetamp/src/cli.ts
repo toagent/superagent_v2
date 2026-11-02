@@ -10,6 +10,7 @@ import { FAILOVER_PREFIX, latestFailover } from './decisions';
 import {
   answerNtfyLocally,
   askNtfy,
+  claimNtfyHealthEvent,
   ntfyControl,
   ntfyPauseInfo,
   ntfyDecisionStatus,
@@ -3399,6 +3400,14 @@ const rotateTickLog = (sa: string): void => {
 // prettier-ignore
 const liveCallbackAsk = (asks: Asks, key: string, id: string): [string, Ask] | undefined => Object.entries(asks).find((entry): entry is [string, Ask] => !!entry[1] && entry[1].id === id && ['pending', 'unknown'].includes(entry[1].status) && (entry[0] === key || entry[1].legacy_key === key));
 
+// prettier-ignore
+const ntfyExpiryCallback = (decision: Parameters<NonNullable<Parameters<typeof syncNtfy>[2]>>[0]): void => {
+  if (decision.callback.kind !== 'ask') return;
+  const asks = loadAsks(), entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
+  if (!entry) return;
+  const [currentKey, current] = entry; current.status = 'expired'; saveAsk(asks, currentKey);
+};
+
 export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
@@ -3447,15 +3456,7 @@ export async function syncDecisionChannel(
   const lastSelected = selected.at(-1);
   if (Number.isFinite(newDecisionLimit) && lastSelected)
     writeAtomic(cursorPath, lastSelected.id + '\n');
-  return syncNtfy(ntfyAnswerCallback(answer, answerHeld), supplied, decision => {
-    if (decision.callback.kind !== 'ask') return;
-    const asks = loadAsks(),
-      entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
-    if (!entry) return;
-    const [currentKey, current] = entry;
-    current.status = 'expired';
-    saveAsk(asks, currentKey);
-  });
+  return syncNtfy(ntfyAnswerCallback(answer, answerHeld), supplied, ntfyExpiryCallback);
 }
 
 const ntfyAnswerCallback =
@@ -4811,7 +4812,7 @@ export function main(argv: string[]): number {
               return 0;
             }
             const health = askWaitHealth(asks.map(ask => ask.id));
-            if (health) {
+            if (health && claimNtfyHealthEvent(health.id, health.event)) {
               print(health);
               return 0;
             }
@@ -5180,7 +5181,8 @@ export async function askCli(
   const a = parseArgs(argv);
   if (a._[1] === 'answer') {
     if (a._.length !== 4) throw new Error('usage: superagent ask answer <id> <option>');
-    const result = await answerNtfyLocally(a._[2], a._[3], ntfyAnswerCallback(), supplied);
+    // prettier-ignore
+    const result = await answerNtfyLocally(a._[2], a._[3], ntfyAnswerCallback(), supplied, ntfyExpiryCallback);
     emit({ id: a._[2], option: a._[3], source: 'local', ...result });
     return 0;
   }
@@ -5265,8 +5267,8 @@ export function askWaitHealth(
   supplied: Partial<NtfyConfig> = {},
   tick = readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
   now = Date.now()
-): { event: string; id?: string; reason: string; next: string } | undefined {
-  for (const id of ids) {
+): { event: string; id: string; reason: string; next: string } | undefined {
+  if (!ids.length) return undefined; for (const id of ids) {
     const decision = ntfyDecisionStatus(id, supplied);
     if (!decision || decision.status === 'superseded')
       return { event: 'withdrawn', id, reason: '问询已撤回', next: `在当前对话确认选择后运行 superagent ask answer ${id} <option>` };
@@ -5279,7 +5281,7 @@ export function askWaitHealth(
     return { event: 'delivery_failed', id: ids[0], reason: `问询推送失败：${tick.ntfy_publish.error ?? 'unknown'}`, next: '在当前对话确认选择后运行 superagent ask answer <id> <option>' };
   const tickAt = Date.parse(tick?.at ?? '');
   if (!Number.isFinite(tickAt) || now - tickAt > 180_000)
-    return { event: 'tick_stale', reason: 'supervise-tick 超过 3 分钟未更新', next: '改走本地答复，并恢复 supervise-tick' };
+    return { event: 'tick_stale', id: ids[0], reason: 'supervise-tick 超过 3 分钟未更新', next: '改走本地答复，并恢复 supervise-tick' };
   return undefined;
 }
 
