@@ -68,6 +68,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'start_new_session=True',
+    to: 'start_new_session=False',
+    test: 'tests/sa-check.test.ts',
+    name: 'non-resource check timeout reaps process tree',
+    expectedError: 'Expected: true',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: "scopeDecisionRequest ? '' : coder",
     to: 'coder',
     test: 'tests/sa-check.test.ts',

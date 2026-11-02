@@ -2116,8 +2116,9 @@ process.env.WORKFLOW_ID = 'fixture';
 const rawSpawnSync = Bun.spawnSync;
 let hangs = 0;
 Bun.spawnSync = (actual, opts) => {
-  const wrapped = actual[0] === 'python3' && actual[1] === '-c';
-  const cmd = wrapped ? actual.slice(4) : actual;
+  const check = actual.at(-1) === '__SA_SIGNAL_TIMEOUT__';
+  const wrapped = actual[0] === 'python3' && actual[1] === '-c' && !check;
+  const cmd = check ? actual.slice(4, -1) : wrapped ? actual.slice(4) : actual;
   appendFileSync(${JSON.stringify(
     trace
   )}, JSON.stringify({cmd, timeout: opts?.timeout, watchdog: wrapped}) + '\\n');
@@ -3579,6 +3580,24 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       runScript(repo, { kind: 'accept', plan: planFile(root, 'true'), pkgs: 'a', tag: 'verify-a' })
         .out
     ).toMatchObject({ ok: false });
+  });
+  test('non-resource check timeout reaps process tree', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      child = join(root, 'child.pid'),
+      plan = planFile(root, `sh -c "sleep 60 & echo \\$! > '${child}'; wait"`, [], false, 0.2);
+    const result = runScript(
+      repo,
+      { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a' },
+      SCRIPT,
+      {},
+      false
+    );
+    expect(result.out, result.err).toMatchObject({
+      ok: false,
+      command_results: [{ exit: null, pass: null }],
+    });
+    expectAuxiliaryDead(child);
   });
   test('accept: timeout kills the command and fails it', () => {
     const root = tmp();

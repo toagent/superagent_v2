@@ -151,8 +151,10 @@ const AUX_WATCHDOG = `
 import os, signal, subprocess, sys, time
 ms = int(sys.argv[1])
 grace = min(0.2, ms / 4000)
-p = subprocess.Popen(sys.argv[2:], start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+signal_timeout = sys.argv[-1] == '__SA_SIGNAL_TIMEOUT__'
+p = subprocess.Popen(sys.argv[2:-1] if signal_timeout else sys.argv[2:], start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 errors = []
+timed_out = False
 def terminate(sig):
     try: os.killpg(p.pid, sig)
     except ProcessLookupError: pass
@@ -161,6 +163,7 @@ try:
     out, err = p.communicate(timeout=max(0.001, ms / 2000 - grace))
     code = p.returncode if p.returncode >= 0 else 128 - p.returncode
 except subprocess.TimeoutExpired:
+    timed_out = True
     terminate(signal.SIGTERM)
     try:
         out, err = p.communicate(timeout=grace)
@@ -175,7 +178,8 @@ except subprocess.TimeoutExpired:
     err += ('\\nauxiliary timed out: ' + termination + '; output pipes reclaimed').encode()
     if errors: err += ('; termination errors: ' + '; '.join(errors)).encode()
     code = 124
-sys.stdout.buffer.write(out); sys.stderr.buffer.write(err)
+sys.stdout.buffer.write(out); sys.stderr.buffer.write(err); sys.stdout.flush(); sys.stderr.flush()
+if timed_out and signal_timeout: os.kill(os.getpid(), signal.SIGTERM)
 sys.exit(code)
 `;
 function auxiliary(cmd: string[], limit = CHECK_AUX_TIMEOUT_MS) {
@@ -801,8 +805,8 @@ async function run(
           stdout: readFileSync(stdoutPath), stderr: readFileSync(stderrPath),
         };
       } else {
-        const result = Bun.spawnSync(['bash', '-c', command], {
-          cwd, env: commandEnvironment, stdout: 'pipe', stderr: 'pipe', timeout: remaining,
+        const result = Bun.spawnSync(['python3', '-c', AUX_WATCHDOG, String(remaining * 2), 'bash', '-c', command, '__SA_SIGNAL_TIMEOUT__'], {
+          cwd, env: commandEnvironment, stdout: 'pipe', stderr: 'pipe', timeout: remaining + 500, killSignal: 'SIGKILL',
         });
         p = {
           exitCode: result.exitCode, signalCode: result.signalCode ?? null,
