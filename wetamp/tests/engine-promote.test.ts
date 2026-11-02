@@ -467,7 +467,7 @@ test('P19 invariant: verify failures dedupe handoffs by cause without queueing n
 test('verify executor uses heavy slot and kills a timed-out test process', () => {
   const root = tmp(), wetamp = join(root, 'wetamp'), scripts = join(wetamp, 'scripts'), report = join(root, 'junit.xml'), log = join(root, 'verify.log');
   mkdirSync(scripts, { recursive: true }); writeFileSync(join(scripts, 'heavy-slot.sh'), readFileSync(join(import.meta.dir, '../scripts/heavy-slot.sh')));
-  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock'); process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
+  process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock'); process.env.SA_HEAVY_LOCK_HELD = ''; process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
   writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test, expect } from 'bun:test'; test('ok', () => { expect(process.env.SA_HEAVY_CLASS).toBeUndefined(); expect(process.env.SA_HEAVY_READY_FILE).toBeUndefined(); expect(process.env.SA_ENGINE_TIMED_READY_FILE).toBeUndefined(); });`);
   expect(executeVerifyTests(root, ['fixture.test.ts'], report, log, 10_000).exit).toBe(0); expect(existsSync(report)).toBe(true);
   writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test } from 'bun:test'; test('hang', async () => Bun.sleep(30_000));`);

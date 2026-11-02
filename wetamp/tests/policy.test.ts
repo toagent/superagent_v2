@@ -11,7 +11,7 @@ import {
   snapshotPolicy,
   WETAMP,
 } from '../src/config';
-import { buildWorkflow, engineHash } from '../src/generate';
+import { buildWorkflow, engineHash, GENERATED_ENGINE_SCRIPTS } from '../src/generate';
 import { milestones, type Plan } from '../src/plan';
 import { decide as rawDecide, reviewRoundLimit } from '../templates/.archon/scripts/sa-check';
 import { fixturePlan, fixtureTiers, fixtureTiersEnv, gitRepo, tmp } from './helpers';
@@ -160,6 +160,9 @@ describe('B1-POLICY frozen routing', () => {
     expect(() => loadPolicy(path)).toThrow('hash mismatch');
     for (const dir of ['src', 'templates', 'schemas'])
       cpSync(join(WETAMP, dir), join(root, dir), { recursive: true });
+    mkdirSync(join(root, 'scripts'));
+    for (const script of GENERATED_ENGINE_SCRIPTS)
+      copyFileSync(join(WETAMP, 'scripts', script), join(root, 'scripts', script));
     writeFileSync(join(root, 'tiers.json'), JSON.stringify(fixtureTiers()));
     mkdirSync(join(root, '../packages/workflows/src'), { recursive: true });
     copyFileSync(

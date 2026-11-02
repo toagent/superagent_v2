@@ -33,6 +33,7 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
         PATH: `${bin}:${process.env.PATH}`,
         TRACE: trace,
         SA_HEAVY_LOCK_FILE: join(root, 'heavy.lock'),
+        SA_HEAVY_LOCK_HELD: '',
       },
     });
     expect(result.exitCode).toBe(0);

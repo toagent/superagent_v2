@@ -83,6 +83,8 @@ const YAML = createRequire(join(WETAMP, '..', 'packages', 'server', 'package.jso
 };
 type Node = Record<string, unknown>;
 
+export const GENERATED_ENGINE_SCRIPTS = ['browser-slot.sh', 'heavy-slot.sh'] as const;
+
 /** One traversal owns hashing; callers own workflow and resident input scopes. */
 function hashInputs(root: string, paths: string[], seed = ''): string {
   const hash = new Bun.CryptoHasher('sha256').update(seed);
@@ -110,7 +112,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/claude-health.ts', 'src/plan.ts',
-  'scripts/browser-slot.sh', 'scripts/heavy-slot.sh',
+  ...GENERATED_ENGINE_SCRIPTS.map(script => `scripts/${script}`),
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   'schemas/nodes', 'src/contract',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
@@ -1705,7 +1707,7 @@ export function generate(
       true
     );
   }
-  for (const script of ['browser-slot.sh', 'heavy-slot.sh'])
+  for (const script of GENERATED_ENGINE_SCRIPTS)
     copyOwnerWritable(join(engineWetamp, 'scripts', script), join(dir, '.archon/scripts', script));
   // Freeze the engine-owned receipt reader into portable generated workflows.
   copyOwnerWritable(
