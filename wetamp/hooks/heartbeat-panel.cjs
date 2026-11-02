@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const WETAMP = path.join(__dirname, '..');
 const LOCK_STALE_MS = 60_000;
-const RESCAN_DELAY_MS = 2_000;
+const RESCAN_DELAY_MS = 10_000;
 
 function gitRoot(cwd) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return null;
@@ -225,7 +225,7 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
       orca,
       rescanned,
       title,
-      recordedTerminal(next, rescanned.terminals)?.handle,
+      handle,
       env
     );
   } finally {

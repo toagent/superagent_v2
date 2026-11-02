@@ -10,7 +10,7 @@ const panel = createRequire(import.meta.url)(modulePath) as {
   ensurePanel: (payload: object, env: Record<string, string>) => boolean;
 };
 
-function fixture(mode: 'restored' | 'live' | 'empty' | 'fail' = 'empty') {
+function fixture(mode: 'restored' | 'connecting' | 'live' | 'empty' | 'fail' = 'empty') {
   const root = tmp(),
     repo = join(root, 'repo'),
     home = join(root, 'home'),
@@ -29,9 +29,9 @@ fs.appendFileSync(process.env.FAKE_CALLS,JSON.stringify(a)+'\\n');
 if(mode==='fail'){process.stderr.write('orca failed');process.exit(2)}
 if(a[1]==='list'){
  const calls=fs.readFileSync(process.env.FAKE_CALLS,'utf8').trim().split('\\n').map(JSON.parse),n=calls.filter(x=>x[1]==='list').length;
- const handles=mode==='live'?['saved','duplicate','other']:mode==='restored'?(n===1?['restored']:n===2?['created']:['created','late']):(n===1?[]:['created']);
+ const handles=mode==='live'?['saved','duplicate','other']:mode==='restored'?(n===1?['restored']:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):(n===1?[]:['created']);
  const incarnationId=h=>h==='saved'?'current':h==='restored'?'old':h+'-incarnation';
- const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:true,orphaned:false}));
+ const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:mode!=='connecting'||handle!=='created',orphaned:false}));
  const visualLayouts=[{root:{groups:[{tabs:handles.map(handle=>({title:handle==='other'?'心跳·other':'心跳·superagent_v2',panes:[{handle}]}))}]}}];
  console.log(JSON.stringify({result:{terminals,visualLayouts}}));
 }else console.log(JSON.stringify({result:{terminal:{handle:'created'}}}));
@@ -98,6 +98,13 @@ test('live recorded panel closes duplicates without creating', () => {
   expect(calls.map(call => call[1])).toEqual(['list', 'close']);
   expect(calls[1]).toContain('duplicate');
   expect(calls[1]).toContain('--tab');
+});
+
+test('rescan keeps the created panel even before it connects', () => {
+  const connecting = fixture('connecting');
+  expect(run(connecting).exitCode).toBe(0);
+  const closes = invocations(connecting.calls).filter(call => call[1] === 'close');
+  expect(closes.map(call => call[3])).toEqual(['late']);
 });
 
 test('concurrent ensures create once with the right command and failures stay contained', async () => {
