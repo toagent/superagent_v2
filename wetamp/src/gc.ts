@@ -79,12 +79,72 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
 
 export interface GcAction {
   run_id: string;
-  object: 'run' | 'worktree' | 'branch' | 'gen' | 'engine';
+  object: 'run' | 'worktree' | 'branch' | 'gen' | 'engine' | 'live';
   action: 'removed' | 'skipped' | 'would_remove';
   reason: string;
   path?: string;
   at?: string;
   record_error?: string;
+}
+
+export const LIVE_RETENTION_MS = 7 * 24 * 60 * 60_000;
+function collectLive(dryRun: boolean, now = Date.now()): GcAction[] {
+  const dir = join(home().sa, 'live'),
+    processes = new Map<number, ReturnType<typeof inspectProcess>>();
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter(name => name.endsWith('.json'));
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
+    return [{ run_id: '*', object: 'live', action: 'skipped', reason: String(error), path: dir }];
+  }
+  return names.flatMap(name => {
+    const path = join(dir, name);
+    try {
+      const before = lstatSync(path);
+      if (!before.isFile()) return [];
+      const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      const at = typeof record.at === 'string' ? Date.parse(record.at) : NaN;
+      if (!Number.isFinite(at) || now - at <= LIVE_RETENTION_MS) return [];
+      if (
+        record.host !== hostname() ||
+        typeof record.pid !== 'number' ||
+        typeof record.pid_start !== 'string'
+      )
+        return [];
+      let process = processes.get(record.pid);
+      if (!process) {
+        process = inspectProcess(record.pid);
+        processes.set(record.pid, process);
+      }
+      if (
+        process.state !== 'offline' &&
+        (process.state !== 'online' || process.start === record.pid_start)
+      )
+        return [];
+      const action: GcAction = {
+        run_id: name,
+        object: 'live',
+        action: dryRun ? 'would_remove' : 'removed',
+        reason: 'dead process heartbeat older than 7 days',
+        path,
+        at: new Date(at).toISOString(),
+      };
+      if (!dryRun) {
+        const current = lstatSync(path);
+        if (
+          current.ino !== before.ino ||
+          current.mtimeMs !== before.mtimeMs ||
+          current.size !== before.size
+        )
+          return [];
+        rmSync(path);
+      }
+      return [action];
+    } catch {
+      return [];
+    }
+  });
 }
 
 class GcSkip extends Error {}
@@ -715,5 +775,6 @@ export function gc(
   } catch (e) {
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
-  return [...out, ...collectGen(dryRun), ...collectEngineSnapshots(dryRun, statuses)];
+  // prettier-ignore
+  return [...out, ...collectLive(dryRun), ...collectGen(dryRun), ...collectEngineSnapshots(dryRun, statuses)];
 }
