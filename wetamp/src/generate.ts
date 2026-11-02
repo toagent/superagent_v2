@@ -110,7 +110,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/claude-health.ts', 'src/plan.ts',
-  'scripts/browser-slot.sh',
+  'scripts/browser-slot.sh', 'scripts/heavy-slot.sh',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   'schemas/nodes', 'src/contract',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
@@ -1705,10 +1705,8 @@ export function generate(
       true
     );
   }
-  copyOwnerWritable(
-    join(engineWetamp, 'scripts/browser-slot.sh'),
-    join(dir, '.archon/scripts/browser-slot.sh')
-  );
+  for (const script of ['browser-slot.sh', 'heavy-slot.sh'])
+    copyOwnerWritable(join(engineWetamp, 'scripts', script), join(dir, '.archon/scripts', script));
   // Freeze the engine-owned receipt reader into portable generated workflows.
   copyOwnerWritable(
     join(engineWetamp, '../packages/workflows/src/provider-attempts.ts'),

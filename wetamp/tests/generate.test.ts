@@ -35,6 +35,7 @@ import {
   PROCESS_TREE_RECOVERY_MS,
   RESOURCE_SLOTS,
   RESOURCE_WAIT_BUDGET_S,
+  acquireResource,
   reviewRoundLimit,
 } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
@@ -1952,6 +1953,7 @@ test(
       [join(source, 'templates/.archon/commands/fixture.md'), 'command'],
       [join(source, 'templates/.archon/scripts/fixture.ts'), 'script'],
       [join(source, 'scripts/browser-slot.sh'), '#!/bin/sh'],
+      [join(source, 'scripts/heavy-slot.sh'), '#!/bin/sh'],
       [join(snapshot, 'packages/workflows/src/provider-attempts.ts'), 'export {};'],
       [join(source, 'capabilities.json'), '[]'],
     ] as const;
@@ -2087,10 +2089,39 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
   }
 }, 30_000);
 
-test('browser shell wrapper uses the engine RESOURCE_SLOTS lock files', () => {
-  const script = readFileSync(join(WETAMP, 'scripts/browser-slot.sh'), 'utf8');
-  const locks = [...script.matchAll(/\/tmp\/superagent-browser-\d+\.lock/g)].map(match => match[0]);
-  expect(locks).toEqual([...RESOURCE_SLOTS.browser]);
+test('browser wrapper shares engine slots, propagates exit and terminates its command', async () => {
+  const root = tmp(),
+    source = readFileSync(join(WETAMP, 'scripts/browser-slot.sh'), 'utf8');
+  const locks = [join(root, 'browser-0.lock'), join(root, 'browser-1.lock')] as const;
+  expect([...source.matchAll(/\/tmp\/superagent-browser-\d+\.lock/g)].map(m => m[0])).toEqual([
+    ...RESOURCE_SLOTS.browser,
+  ]);
+  const script = join(root, 'browser-slot.sh'),
+    trace = join(root, 'trace');
+  fs.writeFileSync(script, source.replace(RESOURCE_SLOTS.browser.join(' '), locks.join(' ')));
+  fs.chmodSync(script, 0o755);
+  const lease = () => acquireResource('browser', 1000, locks);
+  const leases = [await lease(), await lease()];
+  const waiting = Bun.spawn([script, 'sh', '-c', `echo run > '${trace}'`], { stderr: 'pipe' });
+  await Bun.sleep(100);
+  expect(existsSync(trace)).toBe(false);
+  await leases[0]!.release();
+  expect(await waiting.exited).toBe(0);
+  await leases[1]!.release();
+  expect(Bun.spawnSync([script, 'sh', '-c', 'exit 7']).exitCode).toBe(7);
+  const pidFile = join(root, 'pid');
+  const running = Bun.spawn([script, 'sh', '-c', 'echo $$ > "$1"; sleep 30', 'sh', pidFile]);
+  while (!existsSync(pidFile)) await Bun.sleep(10);
+  const commandPid = Number(readFileSync(pidFile, 'utf8'));
+  running.kill('SIGTERM');
+  expect(await running.exited).toBe(143);
+  expect(() => process.kill(commandPid, 0)).toThrow();
+  const broken = join(root, 'broken.sh');
+  fs.writeFileSync(
+    broken,
+    source.replace(RESOURCE_SLOTS.browser.join(' '), `${root}/missing/0 ${root}/missing/1`)
+  );
+  expect(Bun.spawnSync(['sh', broken, 'true'], { timeout: 1000 }).exitCode).not.toBe(0);
 });
 
 function withCleanEngine(check: () => void): () => void {
@@ -2118,9 +2149,11 @@ function checkGeneratedRepo(): void {
     JSON.parse(readFileSync(join(g.dir, 'plan.json'), 'utf8')).packages[0].requirements
   ).toEqual(plan.packages[0].requirements);
   expect(readFileSync(join(g.dir, 'briefs/core.md'), 'utf8')).toContain('"verified_by"');
-  expect(readFileSync(join(g.dir, '.archon/scripts/browser-slot.sh'), 'utf8')).toBe(
-    readFileSync(join(WETAMP, 'scripts/browser-slot.sh'), 'utf8')
-  );
+  for (const script of ['browser-slot.sh', 'heavy-slot.sh'])
+    expect(readFileSync(join(g.dir, '.archon/scripts', script), 'utf8')).toBe(
+      readFileSync(join(WETAMP, 'scripts', script), 'utf8')
+    );
+  expect(fs.statSync(join(g.dir, '.archon/scripts/browser-slot.sh')).mode & 0o111).not.toBe(0);
 
   const principles = readFileSync(join(WETAMP, 'templates', '.archon', 'principles.md'), 'utf8');
   const generated = Bun.YAML.parse(
