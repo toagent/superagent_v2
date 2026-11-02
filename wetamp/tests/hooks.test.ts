@@ -146,6 +146,7 @@ type Redline = {
     root?: string;
     shell?: string;
     env?: Record<string, string>;
+    onCategory?: (category: string) => void;
   }) => string | null;
 };
 const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as Redline;
@@ -207,8 +208,24 @@ describe('两条底线', () => {
       ).toContain('iCloud');
     }
   });
-  test('redline internal path inspection errors fail closed', () => {
+  test('redline path inspection errors distinguish ai-jail denial from internal failure', () => {
     const { repo, env } = boundary();
+    let category = '';
+    const denied = redline.reason({
+      name: 'Read',
+      input: {
+        get path(): string {
+          throw Object.assign(new Error('synthetic jail denial'), { code: 'EPERM' });
+        },
+      },
+      cwd: repo,
+      env,
+      onCategory: value => (category = value),
+    });
+    expect(category).toBe('privacy');
+    expect(denied).toContain('ai-jail 禁止访问该路径');
+    expect(denied).toContain('不要访问该路径，也不要修改 jail 或检查器');
+    expect(denied).not.toContain('修复检查器');
     const input = {
       get path(): string {
         throw new Error('synthetic path failure');

@@ -284,7 +284,15 @@ function reason({
       }
     );
     return analysisFailed ? failed() : result;
-  } catch {
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'EPERM') {
+      onCategory('privacy');
+      return message(
+        '读写隐私文件',
+        'ai-jail 禁止访问该路径',
+        '不要访问该路径，也不要修改 jail 或检查器'
+      );
+    }
     return failed();
   }
 }

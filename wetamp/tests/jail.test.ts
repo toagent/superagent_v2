@@ -30,8 +30,18 @@ function install(home: string, ...args: string[]) {
   return result;
 }
 
+const alreadySandboxed =
+  process.platform === 'darwin' &&
+  existsSync('/usr/bin/sandbox-exec') &&
+  Bun.spawnSync(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true'])
+    .exitCode !== 0;
+const seatbeltTest = test.skipIf(alreadySandboxed);
+const seatbeltTitle = alreadySandboxed
+  ? 'real seatbelt skipped: 已在沙箱内，需在普通终端运行'
+  : 'real seatbelt denies iCloud and deep _private while allowing ordinary files and nested entry';
+
 describe('ai-jail', () => {
-  test('real seatbelt denies iCloud and deep _private while allowing ordinary files and nested entry', () => {
+  seatbeltTest(seatbeltTitle, () => {
     if (process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec')) return;
     const home = tmp(),
       jail = join(home, '.wetamp/jail'),
@@ -66,6 +76,8 @@ describe('ai-jail', () => {
     const ps = run('/bin/sh', '-c', 'exec /bin/ps -o lstart= -p $$');
     expect(ps.exitCode, ps.stderr.toString()).toBe(0);
     expect(ps.stdout.toString().trim()).not.toBe('');
+    const launchctl = run('/bin/launchctl', 'print', `gui/${String(process.getuid?.())}`);
+    expect(launchctl.exitCode, launchctl.stderr.toString()).toBe(0);
     const identity = run(
       process.execPath,
       '-e',

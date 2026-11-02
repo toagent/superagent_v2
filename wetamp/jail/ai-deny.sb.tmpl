@@ -8,3 +8,6 @@
 (deny file-write* (subpath "__HOME_LITERAL__/.wetamp/jail"))
 ; setuid executables cannot start sandboxed; coord and hooks use ps for process identity.
 (allow process-exec (literal "/bin/ps") (with no-sandbox))
+; Sandboxed launchd rejects registration; console and supervise-tick require launchctl.
+; Jobs it starts still use the ai-jail prefix. This only reduces accidental or indirect access.
+(allow process-exec (literal "/bin/launchctl") (with no-sandbox))

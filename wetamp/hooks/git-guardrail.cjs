@@ -73,9 +73,17 @@ const redline = require('./redline.cjs'),
     process.stdout.write(
       JSON.stringify({ systemMessage: `SUPERAGENT advisory: ${[...advisory].join(', ')}` }) + '\n'
     );
-})().catch(() => {
+})().catch(error => {
   if (process.argv.includes('--privacy')) {
-    process.stderr.write('已拦截：redline_internal_error：隐私检查不可用\n');
+    process.stderr.write(
+      (error && typeof error === 'object' && error.code === 'EPERM'
+        ? redline.message(
+            '读写隐私文件',
+            'ai-jail 禁止访问该路径',
+            '不要访问该路径，也不要修改 jail 或检查器'
+          )
+        : '已拦截：redline_internal_error：隐私检查不可用') + '\n'
+    );
     process.exitCode = 2;
     return;
   }
