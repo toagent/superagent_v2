@@ -22,6 +22,7 @@ import {
   engineStatus,
   executeVerifyTests,
   followCurrentConsole,
+  POST_PROMOTION_VERIFY_SHARD_COUNT,
   promote,
   rollback,
   runAcceptance,
@@ -433,7 +434,7 @@ test('post-promotion verify handles retries, no affected tests, persistent failu
   };
   const transient = run('transient', 'transient');
   expect(transient.result).toMatchObject({ status: 'passed', files: ['tests/caller.test.ts'], failed_files: [] });
-  expect(transient.commands).toEqual([...Array.from({ length: 8 }, (_, i) => [`--changed=${base}`, `--shard=${String(i + 1)}/8`]), ['tests/caller.test.ts']]);
+  expect(transient.commands).toEqual([...Array.from({ length: POST_PROMOTION_VERIFY_SHARD_COUNT }, (_, i) => [`--changed=${base}`, `--shard=${String(i + 1)}/${String(POST_PROMOTION_VERIFY_SHARD_COUNT)}`]), ['tests/caller.test.ts']]);
   expect(transient.timeouts.slice(0, 3)).toEqual([60 * 60_000, 60 * 60_000 - 100, 60 * 60_000 - 200]);
   expect(run('persistent', 'persistent').result).toMatchObject({ status: 'failed', failed_files: ['tests/caller.test.ts'] });
   expect(run('no-tests', 'empty').result).toMatchObject({ status: 'passed', files: [], failed_files: [] });

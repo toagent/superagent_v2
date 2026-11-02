@@ -26,6 +26,7 @@ import { printLaunchd, type LaunchctlRunner } from '../launchd';
 import { caller, coord, repoScope } from '../coord';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
+export const POST_PROMOTION_VERIFY_SHARD_COUNT = 24;
 
 export interface EngineReceipt {
   sha: string;
@@ -393,10 +394,13 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
     }
     const files: string[] = [], initialFailed: string[] = [], failed: string[] = [];
     let unclassifiedFailure = false;
-    for (let shard = 1; shard <= 8; shard++) {
+    for (let shard = 1; shard <= POST_PROMOTION_VERIFY_SHARD_COUNT; shard++) {
       const report = join(promotionDir(), `${sha}.verify.shard-${String(shard)}.xml`);
       rmSync(report, { force: true });
-      const exit = run([`--changed=${base}`, `--shard=${String(shard)}/8`], report);
+      const exit = run(
+        [`--changed=${base}`, `--shard=${String(shard)}/${String(POST_PROMOTION_VERIFY_SHARD_COUNT)}`],
+        report
+      );
       try {
         if (!existsSync(report)) { if (exit !== 0) unclassifiedFailure = true; continue; }
         const parsed = junit(report); files.push(...parsed.files); initialFailed.push(...parsed.failed);
