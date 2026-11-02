@@ -105,6 +105,10 @@ test('rescan keeps the created panel even before it connects', () => {
   expect(run(connecting).exitCode).toBe(0);
   const closes = invocations(connecting.calls).filter(call => call[1] === 'close');
   expect(closes.map(call => call[3])).toEqual(['late']);
+  expect(JSON.parse(readFileSync(record(connecting.home, connecting.repo), 'utf8'))).toEqual({
+    handle: 'created',
+    incarnationId: 'created-incarnation',
+  });
 });
 
 test('concurrent ensures create once with the right command and failures stay contained', async () => {

@@ -221,13 +221,7 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
     if (rescanDelayMs > 0)
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
     const rescanned = listState(orca, selector, env);
-    closeOtherPanels(
-      orca,
-      rescanned,
-      title,
-      handle,
-      env
-    );
+    closeOtherPanels(orca, rescanned, title, handle, env);
   } finally {
     fs.closeSync(fd);
     try {
