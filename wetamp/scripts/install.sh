@@ -42,7 +42,7 @@ for (const line of lines) {
 }
 let next = kept.join("\n").replace(/\n+$/, "");
 if (action === "add") next += (next ? "\n" : "") + start + "\n" +
-  "case :$PATH: in *:$HOME/.wetamp/jail/bin:*) ;; *) export PATH=\"$HOME/.wetamp/jail/bin:$PATH\" ;; esac\n" + end;
+  "typeset -gU path PATH\npath=(\"$HOME/.wetamp/jail/bin\" $path)\nexport PATH\n" + end;
 next += "\n";
 if (next === raw || (!raw && action === "remove")) process.exit(0);
 if (raw) fs.copyFileSync(file, file + ".bak-" + new Date().toISOString().replace(/[-:.TZ]/g, ""));

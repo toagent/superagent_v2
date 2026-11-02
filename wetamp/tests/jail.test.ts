@@ -144,12 +144,25 @@ describe('ai-jail', () => {
   test('install manages rc blocks idempotently and jail-off removes only managed state', () => {
     const home = tmp(),
       zshrc = join(home, '.zshrc'),
-      original = 'export KEEP=1\n';
+      realBin = join(home, '.opencode/bin'),
+      original = 'export KEEP=1\nexport PATH="$HOME/.opencode/bin:$PATH"\n';
+    mkdirSync(realBin, { recursive: true });
+    writeFileSync(join(realBin, 'opencode'), '#!/bin/sh\n', { mode: 0o755 });
     writeFileSync(zshrc, original);
     install(home);
     const first = readFileSync(zshrc, 'utf8');
     expect(first.match(/# >>> superagent ai-jail >>>/g)).toHaveLength(1);
     expect(first.startsWith(original)).toBe(true);
+    const shell = Bun.spawnSync(['/bin/zsh', '-ic', 'print -r -- $path[1]; whence -p opencode'], {
+      env: { HOME: home, ZDOTDIR: home, PATH: '/usr/bin:/bin' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(shell.exitCode, shell.stderr.toString()).toBe(0);
+    expect(shell.stdout.toString().trim().split('\n')).toEqual([
+      join(home, '.wetamp/jail/bin'),
+      join(home, '.wetamp/jail/bin/opencode'),
+    ]);
     install(home);
     expect(readFileSync(zshrc, 'utf8')).toBe(first);
     install(home, '--jail-off');
