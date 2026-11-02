@@ -74,6 +74,7 @@ heavy_run_held='
   } > "$temporary"
   mv "$temporary" "$holder"
   [ -z "${SA_HEAVY_READY_FILE:-}" ] || : > "$SA_HEAVY_READY_FILE"
+  unset SA_HEAVY_CLASS SA_HEAVY_READY_FILE SA_ENGINE_TIMED_READY_FILE
   "$@"
   status=$?
   cleanup

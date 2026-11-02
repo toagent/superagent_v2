@@ -10,6 +10,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
 } from 'node:fs';
 import { homedir, hostname, tmpdir } from 'node:os';
@@ -353,9 +354,11 @@ const objects = (value: unknown): Record<string, unknown>[] => Array.isArray(val
 // prettier-ignore
 const junit = (path: string): { files: string[]; failed: string[]; tests: number } => { const xml = (Bun as unknown as { XML: { parse(value: string): unknown } }).XML.parse(readFileSync(path, 'utf8')) as Record<string, unknown>, root = xml.testsuites as Record<string, unknown> | undefined; if (!root) throw new Error('verify junit: missing testsuites'); const suites = objects(root.testsuite), files = suites.flatMap(s => typeof s['@file'] === 'string' ? [s['@file']] : []), failed = suites.flatMap(s => { const file = typeof s['@file'] === 'string' ? s['@file'] : undefined, cases = objects(s.testcase); return file && (Number(s['@failures'] ?? 0) > 0 || Number(s['@errors'] ?? 0) > 0 || cases.some(c => c.failure !== undefined || c.error !== undefined)) ? [file] : []; }); return { files: [...new Set(files)], failed: [...new Set(failed)], tests: suites.reduce((n, s) => n + Number(s['@tests'] ?? objects(s.testcase).length), 0) }; };
 // prettier-ignore
-export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): number { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'), ready = `${report}.ready`; rmSync(ready, { force: true }); try { return runTimed(['bash', '-c', '. "$1"; shift; heavy_exec "$@"', 'verify', heavy, process.execPath, 'test', '--isolate', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs, { ...process.env, SA_ENGINE_VERIFY_TOKEN: '', SA_ENGINE_PROMOTER_TOKEN: '', SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '', SA_HEAVY_CLASS: 'background', SA_HEAVY_READY_FILE: ready, SA_ENGINE_TIMED_READY_FILE: ready }); } finally { closeSync(output); rmSync(ready, { force: true }); } }
+export interface VerifyExecution { exit: number; duration_ms: number; }
 // prettier-ignore
-export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; now?: () => number; }
+export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): VerifyExecution { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'), ready = `${report}.ready`, started = Date.now(); rmSync(ready, { force: true }); try { const exit = runTimed(['bash', '-c', '. "$1"; shift; heavy_exec "$@"', 'verify', heavy, process.execPath, 'test', '--isolate', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs, { ...process.env, SA_ENGINE_VERIFY_TOKEN: '', SA_ENGINE_PROMOTER_TOKEN: '', SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '', SA_HEAVY_CLASS: 'background', SA_HEAVY_READY_FILE: ready, SA_ENGINE_TIMED_READY_FILE: ready }), acquired = existsSync(ready) ? statSync(ready).mtimeMs : started; return { exit, duration_ms: Math.max(0, Date.now() - Math.max(started, acquired)) }; } finally { closeSync(output); rmSync(ready, { force: true }); } }
+// prettier-ignore
+export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; }
 // prettier-ignore
 const beginVerify = (sha: string, base: string, log: string): EngineVerifyRecord => { const expected = process.env.SA_ENGINE_VERIFY_TOKEN; if (expected) { for (let i = 0; i < 500; i++) { const record = verifyRecord(sha), identity = inspectProcess(process.pid); if (record?.status === 'running' && record.base === base && record.token === expected && record.pid === process.pid && identity.state === 'online' && identity.start === record.pid_start) return record; Bun.sleepSync(10); } throw new Error('engine verify: process identity mismatch'); } const identity = inspectProcess(process.pid); if (identity.state !== 'online') throw new Error('engine verify: process identity unavailable'); const record: EngineVerifyRecord = { sha, base, status: 'running', files: [], failed_files: [], log, at: new Date().toISOString(), pid: process.pid, pid_start: identity.start, host: hostname() }; writeVerify(record); return record; };
 // prettier-ignore
@@ -369,10 +372,12 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
     log = join(promotionDir(), `${sha}.verify.log`),
     timeoutMs = 60 * 60_000,
     running = beginVerify(sha, base, log),
-    remaining = (): number => timeoutMs,
     execute = dependencies.execute ?? executeVerifyTests;
   let result = running,
-    prepared = false;
+    prepared = false,
+    remainingMs = timeoutMs;
+  const remaining = (): number => Math.max(1, remainingMs),
+    run = (args: string[], report: string): number => { const execution = execute(worktree, args, report, log, remaining()); remainingMs = Math.max(0, remainingMs - execution.duration_ms); return execution.exit; };
   try {
     mkdirSync(verifyRoot(), { recursive: true });
     if (dependencies.prepare) {
@@ -391,9 +396,9 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
     for (let shard = 1; shard <= 8; shard++) {
       const report = join(promotionDir(), `${sha}.verify.shard-${String(shard)}.xml`);
       rmSync(report, { force: true });
-      const exit = execute(worktree, [`--changed=${base}`, `--shard=${String(shard)}/8`], report, log, remaining());
+      const exit = run([`--changed=${base}`, `--shard=${String(shard)}/8`], report);
       try {
-        if (!existsSync(report)) { unclassifiedFailure = true; continue; }
+        if (!existsSync(report)) { if (exit !== 0) unclassifiedFailure = true; continue; }
         const parsed = junit(report); files.push(...parsed.files); initialFailed.push(...parsed.failed);
         if (exit !== 0 && parsed.tests > 0 && !parsed.failed.length) failed.push(...parsed.files);
       } catch { unclassifiedFailure = true; }
@@ -401,7 +406,7 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
     for (const [i, file] of [...new Set(initialFailed)].entries()) {
         const rerun = join(promotionDir(), `${sha}.verify.rerun-${String(i)}.xml`);
         rmSync(rerun, { force: true });
-        const exit = execute(worktree, [file], rerun, log, remaining());
+        const exit = run([file], rerun);
         try {
           if (exit !== 0 || !existsSync(rerun) || junit(rerun).failed.length) failed.push(file);
         } catch {
