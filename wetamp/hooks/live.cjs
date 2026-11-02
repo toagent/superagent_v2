@@ -17,17 +17,20 @@ const AGENTS = ['claude', 'codex', 'opencode'];
 const ROLES = ['commander', 'general', 'strategist'];
 const str = v => (typeof v === 'string' && v ? v : null);
 
+// Claude Code 原生二进制名为 claude.exe；经 ai-jail shim 按真实路径启动时进程名不再是软链名 claude，
+// 比较前去掉 .exe，否则元帅会被误判为临时命令行窗口而离线。
+const programOf = arg => path.basename(arg || '').replace(/\.exe$/, '');
 // `claude`, a native `codex` or `node …/bin/codex`: the agent CLI an argv runs, else null.
 function agentOf(command) {
   const argv = command.trim().split(/\s+/);
-  const a = ['node', 'bun'].includes(path.basename(argv[0])) ? argv.slice(1) : argv;
-  const name = a.length ? path.basename(a[0]) : '';
+  const a = ['node', 'bun'].includes(programOf(argv[0])) ? argv.slice(1) : argv;
+  const name = a.length ? programOf(a[0]) : '';
   return AGENTS.includes(name) ? name : null;
 }
 // Shared with the board and launcher recording; headless/service processes are not terminals.
 function cliOf(argv, controller = false) {
-  const a = ['node', 'bun'].includes(path.basename(argv[0] || '')) ? argv.slice(1) : argv;
-  const [k, sub] = [a.length ? path.basename(a[0]) : '', a[1] || ''];
+  const a = ['node', 'bun'].includes(programOf(argv[0])) ? argv.slice(1) : argv;
+  const [k, sub] = [a.length ? programOf(a[0]) : '', a[1] || ''];
   if (k === 'claude' && sub !== 'mcp')
     return { kind: k, headless: a.some(t => t === '-p' || t === '--print') };
   // The API app-server owns tool subprocesses, but is not a board terminal.

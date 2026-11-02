@@ -491,3 +491,16 @@ describe('heartbeat files', () => {
     expect(readLive(join(dir, 'nope'), NOW)).toEqual([]);
   });
 });
+
+test('识别 AI 进程时忽略原生二进制的 .exe 后缀', () => {
+  const ids = createRequire(import.meta.url)(join(HOOKS, 'live.cjs')) as {
+    agentOf: (command: string) => string | null;
+    cliOf: (argv: string[], controller?: boolean) => { kind: string; headless: boolean } | null;
+  };
+  const exe = '/x/node_modules/@anthropic-ai/claude-code/bin/claude.exe';
+  expect(ids.agentOf(`${exe} --output-format stream-json`)).toBe('claude');
+  expect(ids.cliOf([exe, '--verbose'], true)).toEqual({ kind: 'claude', headless: false });
+  expect(ids.cliOf([exe, '-p'], true)).toEqual({ kind: 'claude', headless: true });
+  expect(ids.agentOf('/x/bin/claudex --help')).toBeNull();
+  expect(ids.agentOf('/x/bin/claude.exe.bak')).toBeNull();
+});
