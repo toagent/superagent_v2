@@ -39,6 +39,7 @@ import {
   landEvidence,
   publishProjection,
   authoredNodeId,
+  targetCheckout,
   type DeliveryTarget,
 } from './land';
 import { type DeliveryOutcome, type DeliveryReceipt } from './land';
@@ -729,6 +730,20 @@ export function lastActivity(l: Pick<Ledger, 'archon_run_id' | 'adoptions' | 're
 const reasonToken = (v: unknown): string | undefined =>
   typeof v === 'string' && /^[A-Za-z_][A-Za-z0-9_:+-]{0,79}$/.test(v) ? v : undefined;
 
+function targetCheckoutAction(l: Ledger, delivery: DeliveryTarget): string {
+  const listed = Bun.spawnSync(
+    ['git', '-C', delivery.checkout, 'worktree', 'list', '--porcelain', '-z'],
+    { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
+  );
+  const occupied =
+    listed.exitCode === 0 ? targetCheckout(listed.stdout.toString(), delivery.branch) : undefined;
+  const prefix =
+    occupied && resolve(occupied) !== resolve(delivery.checkout)
+      ? `先在 ${occupied} 切走 ${delivery.branch}，再`
+      : '';
+  return `${prefix}把 ${delivery.checkout} 切回 ${delivery.branch} 后执行 superagent land --apply ${l.run_id}`;
+}
+
 // prettier-ignore
 function terminalProjection(l: Ledger, run: RunView, c: Classified) {
   if (c.exit === EXIT.running) return { delivery_state: 'pending' as const };
@@ -758,7 +773,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     reauthorize = reauthorizationHint(l, run, c),
     action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
-      : reason === 'target_checkout_changed' && l.delivery ? `把 ${l.delivery.checkout} 切回 ${l.delivery.branch} 后执行 superagent land --apply ${l.run_id}`
+      : reason === 'target_checkout_changed' && l.delivery ? targetCheckoutAction(l, l.delivery)
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`

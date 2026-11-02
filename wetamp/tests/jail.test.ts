@@ -30,8 +30,8 @@ function install(home: string, ...args: string[]) {
   return result;
 }
 
-const seatbeltTest = test.skipIf(alreadySandboxed);
-const seatbeltTitle = alreadySandboxed
+const seatbeltTest = test.skipIf(alreadySandboxed());
+const seatbeltTitle = alreadySandboxed()
   ? 'real seatbelt skipped: 已在沙箱内，需在普通终端运行'
   : 'real seatbelt denies iCloud and deep _private while allowing ordinary files and nested entry';
 
