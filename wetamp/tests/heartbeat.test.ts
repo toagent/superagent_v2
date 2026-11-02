@@ -5,10 +5,10 @@ import { cockpit } from '../src/board/cockpit';
 import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
 import { adoptedRuns, heartbeat, heartbeatSummary, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
-import type { Identity, Presence } from '../src/coord';
+import { coord, repoScope, same, type Identity, type Presence } from '../src/coord';
 import { EXIT } from '../src/cli';
 import { generalKey } from '../src/stall';
-import { tmp } from './helpers';
+import { gitRepo, tmp } from './helpers';
 const now = Date.parse('2026-10-29T10:00:00Z');
 // prettier-ignore
 const owner = (pid: number): Identity => ({ client: 'codex', host: 'host', pid, pid_start: `start-${String(pid)}` });
@@ -124,6 +124,28 @@ test('heartbeat omits cleaned lost jobs from responsibilities', () => {
     activity: 'active',
   }));
   expect(result.marshals[0]?.waiting.map(item => item.id)).toEqual(['lost']);
+});
+
+// prettier-ignore
+test('heartbeat keeps online job launchers and falls back to the repository owner', () => {
+  const root = tmp(), repo = gitRepo(root), sa = join(root, 'sa'), previous = process.env.SUPERAGENT_HOME;
+  mkdirSync(sa); process.env.SUPERAGENT_HOME = sa;
+  const launcher = { ...owner(1), client: 'codex' as const, cwd: repo, tty: null }, repositoryOwner = owner(2);
+  try {
+    coord().claim(repoScope(repo), repositoryOwner);
+    for (const [launcherOnline, repositoryOwnerOnline, state, expected] of [
+      [true, false, 'running', launcher],
+      [false, true, 'lost', repositoryOwner],
+      [true, true, 'running', launcher],
+    ] as const) {
+      const job = { id: `job-${state}`, title: 'job', card: null, log: null, cwd: repo, kind: 'codex' as const, model: null, launcher, wrapper_pid: 0, pid: 0, started_at: new Date(now).toISOString(), state, tier: 'general' as const, guess: false, owner: null, pidAlive: true, heartbeatAt: new Date(now).toISOString() };
+      const snap: Snapshot = { at: new Date(now).toISOString(), summary: {}, rows: [], activity: { jobs: [job], terms: [], procs: [], remote: [], notes: [] } };
+      const presence = (who: Identity): Presence => (same(who, launcher) ? launcherOnline : repositoryOwnerOnline) ? { state: 'online', activity: 'active' } : { state: 'offline' };
+      const result = heartbeat(snap, cockpit(snap, now), now, presence), marshal = result.marshals.find(m => m.owner !== 'unknown' && same(m.owner, expected));
+      expect((state === 'lost' ? marshal?.waiting : marshal?.running)?.map(item => item.id)).toEqual([job.id]);
+      expect(result.marshals.some(m => m.owner === 'unknown')).toBe(false);
+    }
+  } finally { if (previous === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = previous; }
 });
 
 test('heartbeat separates active runs from typed waits and reports coordination once', () => {

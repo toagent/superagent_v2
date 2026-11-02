@@ -152,7 +152,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
   for (const job of snapshot.activity?.jobs.filter(j => ['queued', 'running', 'lost'].includes(j.state)) ?? []) {
     if (!job.launcher) { unowned++; continue; }
     let owner: Identity = job.launcher;
-    try { owner = coord().owner(repoScope(job.cwd)).owner ?? owner; } catch { /* Historical cwd may no longer resolve. */ }
+    if (presenceOf(owner).state !== 'online') try { owner = coord().owner(repoScope(job.cwd)).owner ?? owner; } catch { /* Historical cwd may no longer resolve. */ }
     const marshal = group(owner, job.cwd), run = cockpit.active.find(item => item.id === job.id);
     if (!marshal) { if (job.state === 'lost') reclaim++; else orphan(job.cwd, { id: job.id, kind: 'job', since: job.started_at, what: job.state, code: 'unowned', waiting_for: '无人负责', waited_s: age(job.started_at, now) ?? 0, next: `superagent job clean ${job.id}` }); continue; }
     if (job.state === 'running' && active.has(job.id)) marshal.running.push({ id: job.id, kind: 'job', title: job.title, stage: run?.stage ?? job.state, role: roleTag(job.tier, job.model), model: job.model, state: job.state, elapsed_s: age(job.started_at, now), last_activity_s: null, estimate: run?.progress ?? unknownProgress() });
