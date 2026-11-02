@@ -8,6 +8,10 @@ import { lock, runStatuses } from '../archon';
 import { home, writeAtomic, WETAMP } from '../config';
 import { launcher, inspectProcess, type Launcher } from '../launcher';
 
+const { readProcessHeartbeats } = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
+  readProcessHeartbeats: (identity: Identity, home: string) => Identity[];
+};
+
 export interface Identity {
   client: string;
   session_id?: string;
@@ -551,12 +555,12 @@ export class Coordination {
     )
       return false;
     try {
-      const matching = readdirSync(join(this.d.sa, 'live'))
-        .filter(name => name.endsWith('.json'))
-        .map(name => JSON.parse(readFileSync(join(this.d.sa, 'live', name), 'utf8')) as Identity)
-        .filter(record => record.pid === who.pid && record.pid_start === who.pid_start);
+      const matching = readProcessHeartbeats(who, this.d.sa);
       return matching.length === 1 && matching[0]?.session_id === who.session_id;
-    } catch {
+    } catch (error) {
+      console.error(
+        `coord identity completion heartbeat read failed: ${error instanceof Error ? error.message : String(error)}`
+      );
       return false;
     }
   }
