@@ -423,6 +423,23 @@ test('5/7: heartbeat delivers only once per recipient; no spawned hook transport
   expect(live.beat('codex', p, () => 'commander', { SUPERAGENT_HOME: s.sa })).toHaveLength(0);
   expect(readFileSync(beatFile, 'utf8')).not.toContain(input.body);
 });
+test('heartbeat retries owner discovery after a cached null pid', () => {
+  const s = setup(),
+    live = join(import.meta.dir, '../hooks/live.cjs'),
+    session = 'recover-owner',
+    name = req('node:crypto').createHash('sha256').update(session).digest('hex').slice(0, 16),
+    file = join(s.sa, 'live', `claude-${name}.json`),
+    claude = join(s.root, 'claude');
+  mkdirSync(join(s.sa, 'live'));
+  writeFileSync(file, JSON.stringify({ client: 'claude', session_id: session, pid: null }));
+  symlinkSync(process.execPath, claude);
+  const child = `require(${JSON.stringify(live)}).beat('claude',{session_id:${JSON.stringify(session)},hook_event_name:'UserPromptSubmit'},{},{SUPERAGENT_HOME:${JSON.stringify(s.sa)}})`;
+  const parent = `const p=Bun.spawnSync([process.execPath,'-e',${JSON.stringify(child)}]);if(p.exitCode)process.exit(p.exitCode)`;
+  const result = Bun.spawnSync([claude, '-e', parent], { stderr: 'pipe' });
+  expect(result.stderr.toString()).toBe('');
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(file, 'utf8')).pid).toBeGreaterThan(0);
+});
 test('8: dirty and uncommitted engine rejected; committed clean snapshot has exact commit SHA', () => {
   const root = tmp(),
     repo = gitRepo(root);
