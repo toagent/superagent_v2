@@ -40,7 +40,7 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
   };
   expect(invoke()).toEqual([
     ':run type-check',
-    ':test --timeout 900000 tests/scenarios/scenario-core.test.ts',
+    ':test --isolate --timeout 900000 tests/scenarios/scenario-core.test.ts',
   ]);
   const scenarios = readdirSync(join(wetamp, 'tests/scenarios'))
     .filter(name => name.endsWith('.test.ts'))
@@ -52,6 +52,6 @@ test('engine acceptance defaults to scenario-core and --full covers every scenar
     .map(name => `tests/${name}`);
   expect(invoke('--full')).toEqual([
     ':run type-check',
-    ...[...scenarios, ...engines].map(path => `1:test --timeout 900000 ${path}`),
+    ...[...scenarios, ...engines].map(path => `1:test --isolate --timeout 900000 ${path}`),
   ]);
 });
