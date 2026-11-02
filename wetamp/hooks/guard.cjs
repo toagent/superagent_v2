@@ -203,6 +203,7 @@ function decide(payload, client, env = process.env) {
       require('./heartbeat-panel.cjs').ensurePanel(payload, env);
       return result;
     }
+    if (event === 'Stop') require('./heartbeat-panel.cjs').ensurePanel(payload, env);
     return stopGate.gate(payload, client);
   }
   const text = shellText(name, input);
