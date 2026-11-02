@@ -2659,8 +2659,20 @@ describe('decide (archon stub)', () => {
     expect(() => main(['decide', 'sa1', 'retry', '--pkg', '../x', '--hint', 'h'])).toThrow(/--pkg/);
   });
   test('retry on an escalated gate fails clearly instead of re-running the same verdict', () => {
-    stub([run('failed', { nodes: [{ nodeId: 'gate-m1-r3', state: 'failed' }] })]);
-    expect(captured(() => main(['decide', 'sa1', 'retry'])).code).toBe(0);
+    const view = run('failed', {
+      output_root: '',
+      nodes: [{ nodeId: 'gate-m1-r3', state: 'failed' }],
+    });
+    const s = stub([view]);
+    view.output_root = join(s.root, 'out');
+    const art = join(s.root, 'out/artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(art, 'gate-m1-r3.json'),
+      JSON.stringify({ decision: fixtureDecision('block', 'coder_needs') })
+    );
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
+    expect(() => main(['decide', 'sa1', 'retry'])).toThrow(/gate-m1-r3 escalated/);
   });
 });
 

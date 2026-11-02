@@ -76,6 +76,7 @@ export interface ScenarioFixture {
   fake?: boolean;
   reviewCalls?: Record<string, number>;
   agentCalls?: Record<string, number>;
+  agentPrompts?: Record<string, string[]>;
 }
 
 export interface GeneratedContinuation {
@@ -167,6 +168,7 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
     async *sendQuery(prompt: string, cwd: string, _resume?: string, options?: SendQueryOptions) {
       const id = options?.nodeConfig?.nodeId ?? '';
       const agentCall = ((f.agentCalls ??= {})[id] = (f.agentCalls?.[id] ?? 0) + 1);
+      ((f.agentPrompts ??= {})[id] ??= []).push(prompt);
       f.roles.push(options?.env?.SUPERAGENT_ROLE ?? '');
       if (id.startsWith('code-')) {
         const edit =

@@ -622,6 +622,9 @@ test('interrupted check retry with hint reruns coder', async () => {
   expect(
     result.events.filter(e => e.event_type === 'node_completed' && e.step_name === 'code-p')
   ).toHaveLength(2);
+  const prompt = f.agentPrompts?.['code-p']?.at(-1) ?? '',
+    context = /^上下文文件：(.+)$/m.exec(prompt)?.[1] ?? '';
+  expect(readFileSync(context, 'utf8')).toContain(`## hint p\n${hint}`);
   expect(readFileSync(join(f.home, 'gen', result.runId, 'hints/p.md'), 'utf8')).toBe(`${hint}\n`);
 }, 120_000);
 
