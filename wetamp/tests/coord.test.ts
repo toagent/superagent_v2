@@ -107,6 +107,10 @@ function setup(probe: (who: Identity) => Presence = () => online) {
   const c = new Coordination({ sa, runs: () => [], status: () => 'running', presence: probe });
   return { root, repo, sa, c, scope: repoScope(repo) };
 }
+function heartbeat(sa: string, who: Identity, name = who.session_id!, at = new Date()) {
+  mkdirSync(join(sa, 'live'), { recursive: true });
+  writeFileSync(join(sa, 'live', `${name}.json`), JSON.stringify({ ...who, at }));
+}
 // Virtual time exercises real flock contention without sleeping for minutes.
 // prettier-ignore
 test.each(['release', 'truncated', 'timeout', 'default'])('delivery scope wait: %s', kind => {
@@ -261,6 +265,53 @@ test('3: online ordinary claim refused; explicit takeover requires a reason and 
     body: '用户原话：交给B',
     generation: 2,
   });
+});
+test('online legacy owner completes from one process-lifetime session for run and repository', () => {
+  const s = setup(),
+    legacy = { ...a, session_id: undefined },
+    target = runScope({ run_id: 'completion', repo: s.repo }),
+    oldRepo = s.c.claim(s.scope, legacy).controller,
+    oldRun = s.c.claim(target, legacy).controller;
+  heartbeat(s.sa, a);
+  expect(s.c.claimRun(target, a)).toMatchObject({
+    controller: { ...a, generation: oldRun.generation + 1 },
+    repository: { ...a, generation: oldRepo.generation + 1 },
+  });
+  expect(s.c.owner(target).owner).toEqual(a);
+  expect(s.c.owner(s.scope).owner).toEqual(a);
+  const claim = JSON.parse(
+    readFileSync(join(s.sa, 'coord/claims', hooks.hash(target) + '.json'), 'utf8')
+  );
+  expect(claim.reason).toContain('身份补全');
+  expect(claim.reason).toContain('client/host/pid/pid_start');
+  expect(() => s.c.mutate(target, oldRun, () => true, oldRun.generation)).toThrow('fencing');
+});
+test('all sessions sharing one process lifetime block legacy identity completion', () => {
+  const s = setup(),
+    legacy = { ...a, session_id: undefined },
+    other = { ...a, session_id: 'B' };
+  s.c.claim(s.scope, legacy);
+  heartbeat(s.sa, a);
+  heartbeat(s.sa, other, other.session_id!, new Date(0));
+  expect(() => s.c.claim(s.scope, a)).toThrow('普通认领');
+  expect(() => s.c.claim(s.scope, other)).toThrow('普通认领');
+  expect(s.c.owner(s.scope).owner).toEqual(legacy);
+});
+test('identity completion rejects quartet mismatches and two complete session identities', () => {
+  const cases: [string, Identity, Identity][] = [
+    ['client', { ...a, session_id: undefined }, { ...a, client: 'claude' }],
+    ['host', { ...a, session_id: undefined }, { ...a, host: 'other-host' }],
+    ['pid', { ...a, session_id: undefined }, { ...a, pid: a.pid + 1 }],
+    ['pid-start', { ...a, session_id: undefined }, { ...a, pid_start: 'other-start' }],
+    ['session', { ...a, session_id: 'old' }, a],
+  ];
+  for (const [name, owner, caller] of cases) {
+    const s = setup();
+    s.c.claim(s.scope, owner);
+    heartbeat(s.sa, caller, name);
+    expect(() => s.c.claim(s.scope, caller)).toThrow('普通认领');
+    expect(s.c.owner(s.scope).owner).toEqual(owner);
+  }
 });
 test('4: cross-host unknown never auto-transfers; timeout escalates through injected supervisor', () => {
   const s = setup(who => presence(who, ''));
