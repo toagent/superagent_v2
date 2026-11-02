@@ -63,6 +63,25 @@ describe('ai-jail', () => {
       expect(write.exitCode).not.toBe(0);
       expect(readFileSync(file, 'utf8')).toBe('before');
     }
+    const ps = run('/bin/sh', '-c', 'exec /bin/ps -o lstart= -p $$');
+    expect(ps.exitCode, ps.stderr.toString()).toBe(0);
+    expect(ps.stdout.toString().trim()).not.toBe('');
+    const identity = run(
+      process.execPath,
+      '-e',
+      `console.log(JSON.stringify(require(${JSON.stringify(join(WETAMP, 'hooks/identity.cjs'))}).inspect(process.ppid)))`
+    );
+    expect(identity.exitCode, identity.stderr.toString()).toBe(0);
+    expect(JSON.parse(identity.stdout.toString())).toEqual({
+      state: 'online',
+      start: expect.any(String),
+    });
+    const probe = run('/bin/cat', join(jail, '.probe'));
+    expect(probe.exitCode).not.toBe(0);
+    expect(probe.stderr.toString()).toMatch(/Operation not permitted/);
+    const sudo = run('/usr/bin/sudo', '-n', 'true');
+    expect(sudo.exitCode).not.toBe(0);
+    expect(sudo.stderr.toString()).toMatch(/Operation not permitted/);
     expect(run('/bin/cat', safe).stdout.toString()).toBe('before');
     const nested = run(join(jail, 'ai-jail'), '/bin/echo', 'nested');
     expect(nested.exitCode).toBe(0);
