@@ -266,6 +266,8 @@ export function diagnosis(
   // An operator cancellation is a recorded terminal cause; earlier coder errors don't explain it.
   if (e.status === 'cancelled' && e.reasons.includes('cancelled_source'))
     return result('transient', 'cancelled_source');
+  if (e.reasons.includes('target_checkout_changed'))
+    return result('transient', 'target_checkout_changed');
   if (
     contradiction ||
     (e.status &&
@@ -554,6 +556,19 @@ function evidenceRows(
       return [{ file, data: evidenceSchema.parse(raw) }];
     });
 }
+const publishRejectionSchema = z
+  .object({ status: z.literal('rejected'), reason: z.string() })
+  .loose();
+const publishReasons = (l: Ledger, run: RunView, plan: Plan): string[] => {
+  const art = confined(l, artifactsOf(run));
+  if (!art) return [];
+  return plan.packages.flatMap(p => {
+    const parsed = publishRejectionSchema.safeParse(
+      memoryJson<unknown>(join(art, `publish-${p.id}.json`), null, l)
+    );
+    return parsed.success ? [parsed.data.reason] : [];
+  });
+};
 // Closed mapping is diagnostic only: unknown vendor prose is never a retry decision.
 export const failureReason = (text: string): string => reasonOf(text)?.code ?? 'unclassified';
 const holdCodes: Partial<Record<string, string>> = {
@@ -620,6 +635,7 @@ export function foldEpisode(
     reasons = [
       ...new Set([
         ...rowReasons(rows),
+        ...publishReasons(l, run, plan),
         ...(l.reason ? [l.reason] : []),
         ...(l.dispositions ?? []).flatMap(d =>
           ['recover', 'adopt', 'owner_lost'].includes(d.reason) ? [] : [holdReason(d.reason)]

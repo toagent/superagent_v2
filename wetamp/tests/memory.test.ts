@@ -1604,6 +1604,18 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
         signature: 'evidence_conflict',
       });
   });
+  test('publish rejection explains a green terminal failure', () => {
+    raw.nodes = [{ nodeId: 'publish-core', state: 'failed' }];
+    writeFileSync(
+      join(artifactsOf(raw), 'publish-core.json'),
+      JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
+    );
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+    const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
+    expect(folded.reasons).toContain('target_checkout_changed');
+    expect(folded.category).toBe('transient');
+    expect(folded.signature).toBe('target_checkout_changed');
+  });
   test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
     mkdirSync(join(sa, 'jobs'));
     for (const j of realData.jobs)
