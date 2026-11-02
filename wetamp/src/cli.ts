@@ -2353,11 +2353,18 @@ const retry = (
   c: Classified,
   prepare?: () => void,
   onEffect?: (effect: DecisionEffect) => void,
-  run?: RunView
-): RecoverResult =>
-  scopedRetry(l, c, c.node ?? '')
+  run?: RunView,
+  newInput = false
+): RecoverResult => {
+  const node = c.node ?? '';
+  const interruptedCheck =
+    run &&
+    /^(verify|settle|gate)-/.test(node) &&
+    !decisionOf(evidenceJson(l, artifactsOf(run), `${node}.json`));
+  return scopedRetry(l, c, node) && (!interruptedCheck || newInput)
     ? retryGate(l, c.node ?? '', prepare, onEffect, run)
     : recoverRun(l, prepare, onEffect);
+};
 
 function advanceAttempts(paths: string[]): () => void {
   const snapshots = paths.map(path => ({
@@ -2484,7 +2491,7 @@ function decide(l: Ledger, a: Args): number {
     }
     if (c.state === 'held:scope' && c.node) {
       const rollback = recordScopeApproval(l, run, c.node);
-      const res = retry(l, c);
+      const res = recoverRun(l);
       if (!res.ok) rollback();
       print({ run_id: l.run_id, decision: 'approve', ...res });
       return res.ok ? 0 : res.held ? EXIT.held : 1;
@@ -2563,7 +2570,7 @@ function decide(l: Ledger, a: Args): number {
   const res = intervention(
     l,
     'decide',
-    () => retry(l, c, () => (started = true), undefined, run),
+    () => retry(l, c, () => (started = true), undefined, run, hint !== undefined),
     undefined,
     () => started
   );

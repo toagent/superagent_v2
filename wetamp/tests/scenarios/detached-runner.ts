@@ -40,7 +40,7 @@ const f = resumeState
         passRound: process.env.SCENARIO_PASS_ROUND === '2' || id.startsWith('S14') ? 2 : 1,
         plan: {
           goal: `${id} detached generated delivery`,
-          accept: `test "$(cat scenario.txt)" = ${id}`,
+          accept: process.env.SCENARIO_ACCEPT ?? `test "$(cat scenario.txt)" = ${id}`,
         },
         agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
         expected: { terminal: 'completed', publishCount: 1 },
@@ -61,7 +61,10 @@ f.spec = {
   id,
   risk: process.env.SCENARIO_RISK === 'G2' || id.startsWith('S14') ? 'G2' : 'G1',
   passRound: process.env.SCENARIO_PASS_ROUND === '2' || id.startsWith('S14') ? 2 : 1,
-  plan: { goal: `${id} detached generated delivery`, accept: `test "$(cat scenario.txt)" = ${id}` },
+  plan: {
+    goal: `${id} detached generated delivery`,
+    accept: process.env.SCENARIO_ACCEPT ?? `test "$(cat scenario.txt)" = ${id}`,
+  },
   agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
   expected: { terminal: 'completed', publishCount: 1 },
 };

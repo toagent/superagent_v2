@@ -2590,12 +2590,66 @@ describe('decide (archon stub)', () => {
     expect(readFileSync(join(s.root, 'gen', 'hints', 'core.md'), 'utf8')).toBe('use X\n');
     expect(s.calls()).toContain('workflow resume r --detach --json');
   });
+  test('retry without new input keeps attempt', () => {
+    const retry = (node: string, decision?: ReturnType<typeof fixtureDecision>, hint = false) => {
+      const view = run('failed', {
+        output_root: '',
+        nodes: [{ nodeId: node, state: 'failed' }],
+      });
+      const s = stub([view, view]);
+      packageRework(s);
+      view.output_root = join(s.root, 'out');
+      writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
+      if (decision) {
+        const art = join(s.root, 'out/artifacts/runs/r');
+        mkdirSync(art, { recursive: true });
+        writeFileSync(join(art, `${node}.json`), JSON.stringify({ decision }));
+      }
+      const args = ['decide', 'sa1', 'retry', ...(hint ? ['--pkg', 'core', '--hint', 'new'] : [])];
+      expect(captured(() => main(args)).code).toBe(0);
+      return s;
+    };
+    for (const node of ['verify-core', 'settle-core', 'gate-m1-r1']) {
+      const s = retry(node);
+      expect(existsSync(join(s.root, 'gen/attempts/.packages/core'))).toBe(false);
+      expect(existsSync(join(s.root, 'gen/attempts/m1'))).toBe(false);
+    }
+    expect(
+      readFileSync(
+        join(retry('verify-core', undefined, true).root, 'gen/attempts/.packages/core'),
+        'utf8'
+      )
+    ).toBe('1');
+    expect(
+      readFileSync(
+        join(retry('gate-m1-r1', fixtureDecision('block', 'coder_needs')).root, 'gen/attempts/m1'),
+        'utf8'
+      )
+    ).toBe('1');
+    const allView = run('failed', { nodes: [{ nodeId: 'verify-core', state: 'failed' }] });
+    const all = stub([allView]);
+    packageRework(all);
+    expect(captured(() => main(['decide', 'retry', '--all-held'])).code).toBe(0);
+    expect(existsSync(join(all.root, 'gen/attempts/.packages/core'))).toBe(false);
+  });
   test('retry --hint rejects a package outside the plan (no path from user text)', () => {
     stub([run('failed', { nodes: [{ nodeId: 'code-core', state: 'failed' }] })]);
     expect(() => main(['decide', 'sa1', 'retry', '--pkg', '../x', '--hint', 'h'])).toThrow(/--pkg/);
   });
   test('retry on an escalated gate fails clearly instead of re-running the same verdict', () => {
-    stub([run('failed', { nodes: [{ nodeId: 'gate-m1-r3', state: 'failed' }] })]);
+    const view = run('failed', {
+      output_root: '',
+      nodes: [{ nodeId: 'gate-m1-r3', state: 'failed' }],
+    });
+    const s = stub([view]);
+    view.output_root = join(s.root, 'out');
+    const art = join(s.root, 'out/artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(
+      join(art, 'gate-m1-r3.json'),
+      JSON.stringify({ decision: fixtureDecision('block', 'coder_needs') })
+    );
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(view));
     expect(() => main(['decide', 'sa1', 'retry'])).toThrow(/gate-m1-r3 escalated/);
   });
 });

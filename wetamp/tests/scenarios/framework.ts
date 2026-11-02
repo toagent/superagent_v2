@@ -73,6 +73,7 @@ export interface ScenarioFixture {
   carried?: Carried;
   engineSnapshot?: string;
   omitNewFindingOnRetry?: boolean;
+  fake?: boolean;
   reviewCalls?: Record<string, number>;
   agentCalls?: Record<string, number>;
 }
@@ -555,7 +556,7 @@ export async function runInProcess(
   let generated: ReturnType<typeof generate> | GeneratedContinuation;
   try {
     // prettier-ignore
-    generated = continuation ?? generate(plan, id, false, undefined, f.carried, { checkout: f.target, branch: 'scenario-target', head: f.initial }, f.engineSnapshot);
+    generated = continuation ?? generate(plan, id, f.fake ?? false, undefined, f.carried, { checkout: f.target, branch: 'scenario-target', head: f.initial }, f.engineSnapshot);
   } finally {
     identity.mockRestore();
     engine.mockRestore();
@@ -976,7 +977,7 @@ export async function resumeInProcess(f: ScenarioFixture): Promise<ScenarioEvide
 export function retryScenario(
   f: ScenarioFixture,
   result: ScenarioEvidence,
-  options: { package?: boolean } = {}
+  options: { package?: boolean; approve?: boolean } = {}
 ): string {
   const ledger = loadLedger(result.runId);
   const states = new Map<string, 'completed' | 'failed'>();
@@ -1004,8 +1005,9 @@ export function retryScenario(
   );
   try {
     const state = classifyRun(ledger, view).state;
-    const args =
-      options.package === false
+    const args = options.approve
+      ? ['decide', result.runId, 'approve']
+      : options.package === false
         ? ['decide', result.runId, 'retry']
         : ['decide', result.runId, 'retry', '--pkg', 'p', '--hint', 'close findings'];
     expect(main(args)).toBe(0);

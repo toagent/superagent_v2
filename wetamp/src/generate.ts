@@ -1494,12 +1494,14 @@ const safePath = (p: Pkg): string => p.scope.write[0].replace(/[^\w./-]/g, '_');
 // prettier-ignore
 const fakeEdit = (p: Pkg, line: string): string => {
   const scenario = process.env.FAKE_CODER_SCENARIO ?? "";
-  const classes: Record<string, string> = { done_with_error_class: "task", partial_green: "env", blocked_needs: "env" };
+  const classes: Record<string, string> = { done_with_error_class: "task", partial_green: "env", blocked_needs: "env", scope_request: "scope_violation" };
   if (scenario && ![...Object.keys(classes), "invalid_json"].includes(scenario)) throw new Error(`unknown FAKE_CODER_SCENARIO: ${scenario}`);
-  const output = { status: scenario === "partial_green" ? "partial" : scenario === "blocked_needs" ? "blocked" : "done", changed_files: [safePath(p)], quick_checks: [], notes: "fake", blockers: [], error_class: classes[scenario] ?? null, deviations: [], needs: scenario === "blocked_needs" ? [{ cap: "network", why: "fixture", minimal_ask: "fixture" }] : [] };
+  const outside = "scope-request.txt", scope = scenario === "scope_request", writeOutside = scope && line === p.id;
+  const output = { status: scenario === "partial_green" ? "partial" : scenario === "blocked_needs" || scope ? "blocked" : "done", changed_files: [safePath(p), ...(scope ? [outside] : [])], quick_checks: [], notes: "fake", blockers: [], error_class: scope ? "scope_violation" : scenario === "scope_request" ? null : classes[scenario] ?? null, deviations: [], needs: scope ? [{ cap: "scope_decision", why: "fixture", minimal_ask: outside }] : scenario === "blocked_needs" ? [{ cap: "network", why: "fixture", minimal_ask: "fixture" }] : [] };
   return [
     `mkdir -p "$(dirname '${safePath(p)}')" && echo '${line}' >> '${safePath(p)}'`,
-    `git add '${safePath(p)}' && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${line}'`,
+    ...(writeOutside ? [`echo '${line}' >> '${outside}'`] : []),
+    `git add '${safePath(p)}'${scope ? ` '${outside}'` : ""} && git -c user.name=sa -c user.email=sa@localhost commit -qm 'fake ${line}'`,
     `echo '${scenario === "invalid_json" ? "{invalid" : JSON.stringify(output)}'`,
   ].join('\n');
 };
