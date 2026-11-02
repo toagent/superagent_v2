@@ -156,11 +156,9 @@ function beat(client, input, roleOf = () => null, env = process.env) {
     // lands, so the board never keeps showing a tool that has already finished.
     const toolRun = !ALWAYS.has(event) && prior?.event === event;
     if (toolRun && !turn && now - mtime < THROTTLE_MS) return;
-    // The owner is resolved once per session; a session without an agent ancestor stays null.
+    // Cache only a verified process identity; a transient miss must retry ancestry discovery.
     const probe = prior?.pid ? identity.inspect(prior.pid) : null;
-    const keep =
-      prior &&
-      (prior.pid === null || (probe?.state === 'online' && probe.start === prior.pid_start));
+    const keep = prior?.pid && probe?.state === 'online' && probe.start === prior.pid_start;
     const who = keep ? { pid: prior.pid, tty: str(prior.tty) } : owner();
     let role = null;
     try {
