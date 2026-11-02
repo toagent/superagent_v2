@@ -1632,6 +1632,8 @@ describe('buildWorkflow', () => {
     };
     expect(start.merge_base).toBe(original);
     expect(n('diff-m1-r1').with?.base).toBe('$sync-review-m1-ready.output.merge_base');
+    expect(n('diff-m1-r1').with?.target_tip).toBe('$sync-review-m1-ready.output.target_tip');
+    expect(n('diff-m1-r1').with?.sync_generation).toBe('$sync-review-m1-ready.output.generation');
     expect(n('review-m1-r1').with?.diff).toEqual({
       from: '$diff-m1-r1.output.patch',
       if_skipped: '',

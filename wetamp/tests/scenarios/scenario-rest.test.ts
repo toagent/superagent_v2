@@ -285,6 +285,30 @@ test('S4: two detached runs sharing one target each publish exactly once', async
   }
 }, 180_000);
 
+test('target advanced between sync and sync-review is excluded from package scope', async () => {
+  const f = fixture('S4'),
+    publisher = join(f.root, 'publisher');
+  try {
+    f.spec.agents.code = { path: 'b.ts', content: 'b\n' };
+    f.spec.plan.accept = 'test "$(cat b.ts)" = b';
+    sh(`git worktree add -qb scenario-publisher '${publisher}' scenario-target`, f.target);
+    writeFileSync(join(publisher, 'a.ts'), 'a\n');
+    sh('git add a.ts && git commit -qm publish-a', publisher);
+    f.targetAdvanceAfterInitialSync = sh('git rev-parse HEAD', publisher).trim();
+
+    const result = await runInProcess(f);
+    const diff = JSON.parse(readFileSync(join(result.artifactsDir, 'diff-m1-r1.json'), 'utf8'));
+    expect(diff.out_of_scope).toEqual([]);
+    expectOutcome(f, result, {
+      terminal: 'completed',
+      counts: { 'diff-m1-r1': 1, 'integrate-m1.publish-m1': 1 },
+      published: true,
+    });
+  } finally {
+    restore(f);
+  }
+}, 90_000);
+
 test('S5/S7/S9/S10: generated scenarios use executor facts, never local counters', async () => {
   for (const id of ['S5', 'S7', 'S9', 'S10'] as const) {
     const f = fixture(id);

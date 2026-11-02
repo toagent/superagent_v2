@@ -1123,8 +1123,9 @@ export function buildWorkflow(
       prev = `settle-${p.id}`;
     }
     const reviewSyncReady = addSync(nodes, m, `sync-review-${m.id}`, [prev], true);
+    const reviewSyncReadyHandle = output<SyncOutput>(reviewSyncReady);
     prev = reviewSyncReady;
-    base = `$${reviewSyncReady}.output.merge_base`;
+    base = ref.required(reviewSyncReadyHandle, 'merge_base');
     const briefs = m.packages.map(brief).join(' '),
       resumeFixes =
         m.packages.length === 1 &&
@@ -1219,8 +1220,8 @@ export function buildWorkflow(
             scope_pkgs,
             base,
             scope_base: scopeBase,
-            target_tip: ref.required(syncReadyHandle, 'target_tip'),
-            sync_generation: ref.required(syncReadyHandle, 'generation'),
+            target_tip: ref.required(reviewSyncReadyHandle, 'target_tip'),
+            sync_generation: ref.required(reviewSyncReadyHandle, 'generation'),
             risk: m.risk,
             milestone: m.id,
             tag: `diff-${t}`,

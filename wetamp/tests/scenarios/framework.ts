@@ -69,6 +69,7 @@ export interface ScenarioFixture {
   runId?: string;
   targetAfterInjection?: string;
   targetAdvancedAfterResync?: boolean;
+  targetAdvanceAfterInitialSync?: string;
   carried?: Carried;
   engineSnapshot?: string;
   omitNewFindingOnRetry?: boolean;
@@ -467,6 +468,13 @@ export async function runInProcess(
   const persistEvent = store.persistWorkflowEvent.bind(store);
   store.persistWorkflowEvent = async event => {
     await persistEvent(event);
+    if (
+      event.event_type === 'node_completed' &&
+      event.step_name === 'sync-m1-ready' &&
+      f.targetAdvanceAfterInitialSync
+    ) {
+      sh(`git merge --ff-only '${f.targetAdvanceAfterInitialSync}'`, f.target);
+    }
     if (
       event.event_type === 'node_completed' &&
       event.step_name === 'gate-m1-r1' &&
