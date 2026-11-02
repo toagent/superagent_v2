@@ -1503,7 +1503,7 @@ async function acceptOnce(
     env('ARCHON') && reviewRounds !== undefined
       ? falseHandbackEvidence(runEvents(), coder)
       : undefined;
-  if (falseHandback)
+  if (falseHandback && !scopeDecisionRequest)
     Object.assign(result, {
       disposition: 'fail',
       reason: 'false_handback',
@@ -1564,8 +1564,8 @@ async function acceptOnce(
         ...result.decision.evidence,
         ...scope.out_of_scope,
         approval
-          ? 'Approve this test-only scope expansion or reject it.'
-          : 'Revert out-of-scope changes or report a blocker requesting expanded scope.',
+          ? 'Approve this scope expansion or reject it.'
+          : 'Keep only goal-required out-of-scope changes; after acceptance passes report only scope_decision so the engine holds this diff for approval. Revert all other out-of-scope changes.',
       ],
     };
   }

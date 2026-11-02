@@ -915,7 +915,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
     });
     if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
     const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
-    if (/^(verify|diff)-/.test(c.node) && decision?.reason === 'scope_approval')
+    if (/^(verify|diff|settle)-/.test(c.node) && decision?.reason === 'scope_approval')
       return { ...c, state: 'held:scope', exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&

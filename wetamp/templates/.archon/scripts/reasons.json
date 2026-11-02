@@ -186,7 +186,7 @@
     "hold": "approval",
     "determinism": "deterministic",
     "owner": "human",
-    "description": "测试文件超出 scope.write，等待批准当前diff"
+    "description": "越界文件超出 scope.write，等待批准当前diff"
   },
   {
     "code": "acceptance_failed",
@@ -438,7 +438,7 @@
     "hold": "review_limit",
     "determinism": "deterministic",
     "owner": "human",
-    "description": "测试文件超出 scope.write，等待批准当前diff"
+    "description": "越界文件超出 scope.write，等待批准当前diff"
   },
   {
     "code": "acceptance_failed+review_limit",

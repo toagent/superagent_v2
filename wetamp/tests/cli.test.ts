@@ -2552,6 +2552,19 @@ describe('decide (archon stub)', () => {
       ok: true,
     });
   });
+  // prettier-ignore
+  test('settle scope approval resumes with content-bound approval', () => {
+    const scope = stub([run('failed', { nodes: [{ nodeId: 'settle-a', state: 'failed' }] })]);
+    packageRework(scope);
+    const art = join(scope.root, 'out/artifacts/runs/r');
+    mkdirSync(art, { recursive: true });
+    writeFileSync(join(art, 'settle-a.json'), JSON.stringify({ out_of_scope: ['src/outside.ts'], scope_package: 'core', scope_blobs: { 'src/outside.ts': 'b'.repeat(40) }, decision: { kind: 'block', reason: 'scope_approval', evidence: [], debt: [] } }));
+    const view = JSON.parse(readFileSync(join(scope.dir, 'get-000.json'), 'utf8'));
+    view.output_root = join(scope.root, 'out');
+    writeFileSync(join(scope.dir, 'get-000.json'), JSON.stringify(view));
+    expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
+    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ files: ['src/outside.ts'], blobs: { 'src/outside.ts': 'b'.repeat(40) } });
+  });
   test('reject --pkg rolls counters back when native reject fails', () => {
     const s = stub([run('paused', { metadata: { approval: { nodeId: 'human-m1' } } })]);
     packageRework(s);

@@ -4951,7 +4951,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         kind: 'repair',
         evidence: expect.arrayContaining([
           'src/b.md',
-          'Revert out-of-scope changes or report a blocker requesting expanded scope.',
+          'Keep only goal-required out-of-scope changes; after acceptance passes report only scope_decision so the engine holds this diff for approval. Revert all other out-of-scope changes.',
         ]),
       },
     });
@@ -5030,7 +5030,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     sh('git add tests/a.test.ts && git -c user.name=t -c user.email=t@l commit -qm changed-test', repo);
     expect(go('G1')).toMatchObject({ disposition: 'fail', reason: 'scope_approval' });
   }, testTimeout(15_000));
-  test('scope decision request holds for approval only when acceptance passes', () => {
+  test('scope request survives false handback; scope approval does not grant budget', () => {
     // prettier-ignore
     const root = tmp(), repo = gitRepo(root), base = sh('git rev-parse HEAD', repo).trim();
     for (const path of ['schema.json', 'generated.ts', 'heartbeat.ts'])
@@ -5038,14 +5038,28 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     // prettier-ignore
     sh('git add schema.json generated.ts heartbeat.ts && git -c user.name=t -c user.email=t@l commit -qm outside', repo);
     const plan = join(root, 'plan.json'),
-      policy = join(root, 'policy.json');
+      policy = join(root, 'policy.json'),
+      events = join(root, 'events.json');
     // prettier-ignore
-    const writePlan = (cmd: string) => writeFileSync(plan, JSON.stringify({ packages: [{ id: 'a', scope: { write: ['owned/'] }, accept: [{ cmd, timeout_s: 5 }] }] }));
+    const writePlan = (cmd: string) => writeFileSync(plan, JSON.stringify({ budget: { launches: 20, weighted_tokens: 2_000_000 }, packages: [{ id: 'a', max_net_lines: 1, scope: { write: ['owned/'] }, accept: [{ cmd, timeout_s: 5 }] }] }));
     writePlan('true');
     writeFileSync(policy, JSON.stringify(snapshotPolicy(loadTiers())));
+    writeFileSync(
+      events,
+      JSON.stringify({
+        id: 'fixture',
+        events: [
+          {
+            event_type: 'node_completed',
+            step_name: 'repair-a',
+            data: { attempt: { id: 'r1' }, timing: { durationMs: 1_000 } },
+          },
+        ],
+      })
+    );
     const scopeNeed = { cap: 'scope_decision', why: 'required files', minimal_ask: 'approve' };
     // prettier-ignore
-    const go = (needs: object[]) => runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a', base, risk: 'G1', policy, coder: JSON.stringify({ status: 'blocked', error_class: 'scope_violation', needs }) }).out;
+    const go = (needs: object[]) => runScript(repo, { kind: 'accept', plan, pkgs: 'a', tag: 'verify-a', base, run_base: base, scope_base: base, generated_paths: '[]', risk: 'G1', policy, archon: 'fixture', events_file: events, coder: JSON.stringify({ status: 'blocked', error_class: 'scope_violation', needs }) }, SCRIPT, { WORKFLOW_ID: 'fixture' }).out;
     const held = go([scopeNeed]) as { diff_hash: string; scope_blobs: Record<string, string> };
     expect(held).toMatchObject({
       disposition: 'fail',
@@ -5055,10 +5069,10 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     mkdirSync(join(root, 'approvals'));
     // prettier-ignore
     writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ files: Object.keys(held.scope_blobs).sort(), blobs: held.scope_blobs }));
-    expect(go([scopeNeed])).toMatchObject({ disposition: 'advance' });
-    expect(go([scopeNeed, { cap: 'environment' }])).toMatchObject({ reason: 'coder_needs' });
+    expect(go([scopeNeed])).toMatchObject({ disposition: 'advance', reason: 'budget_exceeded' });
+    expect(go([scopeNeed, { cap: 'environment' }])).toMatchObject({ reason: 'false_handback' });
     writePlan('false');
-    expect(go([scopeNeed])).toMatchObject({ reason: 'coder_needs' });
+    expect(go([scopeNeed])).toMatchObject({ reason: 'false_handback' });
   });
   test('unknown kind fails loudly', () => {
     const root = tmp();
