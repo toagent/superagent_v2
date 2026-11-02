@@ -185,6 +185,7 @@ interface Deps {
   status: (l: RunRef) => string;
   statuses: () => Map<string, string> | null | undefined;
   now: () => number;
+  sleep: (ms: number) => void;
   presence: (who: Identity) => Presence;
 }
 interface Stores {
@@ -202,6 +203,7 @@ export class Coordination {
     this.d = {
       sa,
       now: Date.now,
+      sleep: Bun.sleepSync,
       presence: who => presence(who, sa),
       runs: id => {
         const dir = join(sa, 'runs');
@@ -733,6 +735,16 @@ export class Coordination {
   }
   inbox(who: Identity, all = false): Message[] {
     return this.routedMessages(who, all).map(({ message }) => message);
+  }
+  waitInbox(who: Identity, timeoutMs: number): Message[] | null {
+    const seen = new Set(this.inbox(who).map(message => message.id)),
+      deadline = this.d.now() + timeoutMs;
+    while (this.d.now() < deadline) {
+      this.d.sleep(Math.min(3_000, deadline - this.d.now()));
+      const messages = this.inbox(who).filter(message => !seen.has(message.id));
+      if (messages.length) return messages;
+    }
+    return null;
   }
   receipt(scope: Scope, sender: Identity, recipient: Identity, ask: string, option: string): void {
     const at = new Date(this.d.now()).toISOString();

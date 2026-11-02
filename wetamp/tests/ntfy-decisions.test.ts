@@ -79,7 +79,8 @@ describe('ntfy decision channel', () => {
     await askCli(['ask', '--source', 'agent', '--title', 'T', '--body', 'B', '--option', 'yes=Yes', '--expires-at', f.request('x').expires_at, '--callback', 'external:x'], f.config, value => output.push(value));
     const id = (output[0] as { id: string }).id; f.push(f.action());
     await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }));
-    expect(coord().inbox(caller(), true).find(message => message.source === id)).toMatchObject({ type: 'receipt', body: expect.stringContaining(`ask ${id}：yes`) });
+    expect(coord().inbox(caller(), true).find(message => message.source === id)).toMatchObject({ type: 'receipt', body: expect.stringContaining(`ask ${id}：T：Yes`) });
+    expect(output[0]).toMatchObject({ next: expect.stringContaining('inbox --wait --timeout 7000') });
     await askCli(['ask', 'status', id], f.config, value => output.push(value));
     expect(output.at(-1)).toMatchObject({ id, status: 'answered', answer: 'yes' });
     const expires = askNtfy(f.request('expires'), f.config); await publishPendingNtfy(f.config); const expiredAction = f.action();

@@ -6,6 +6,7 @@ import { runStatuses } from './archon';
 import { coord } from './coord';
 import { responsibilities, type Heartbeat, type Responsibility } from './heartbeat';
 import { loadLedger } from './ledger';
+import { pendingNtfyAsks } from './ntfy';
 type Client = 'claude' | 'codex';
 type Payload = Partial<Record<'session_id' | 'transcript_path', string>>;
 type Quote = Record<'at' | 'text', string> & Partial<Record<'reply', string>>;
@@ -13,6 +14,8 @@ type Run = Record<'run_id' | 'status', string>;
 type Json = Record<string, unknown>;
 export const waitingRuns = (sessionId: string, runs = coord().unfinishedRuns(sessionId)): Run[] =>
   runs.filter(run => run.status === 'running' || run.status === 'pending');
+export const waitingAsks = (sessionId: string): { id: string; title: string }[] =>
+  pendingNtfyAsks(sessionId);
 type LiveStates = (items: Responsibility[]) => Map<string, string | Error>;
 const liveStates: LiveStates = items => {
   const statuses = runStatuses();
@@ -215,6 +218,10 @@ if (import.meta.main) {
     mode = process.argv[2];
   if (mode === 'waiting-runs') {
     process.stdout.write(`${JSON.stringify(waitingRuns(payload.session_id ?? ''))}\n`);
+    process.exit(0);
+  }
+  if (mode === 'waiting-asks') {
+    process.stdout.write(`${JSON.stringify(waitingAsks(payload.session_id ?? ''))}\n`);
     process.exit(0);
   }
   if (mode === 'responsibilities') {

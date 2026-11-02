@@ -961,6 +961,18 @@ test('wait already blocking returns inbox after a new message arrives, before ti
   ).toMatchObject({ state: 'inbox', exit: 3 });
   expect(Date.now() - start).toBeLessThan(5000);
 });
+test('inbox wait ignores existing mail and returns only a later message', () => {
+  const s = setup(),
+    existing = s.c.handoff(s.scope, a, input);
+  let slept = false;
+  s.c.d.sleep = () => {
+    if (!slept) s.c.receipt(s.scope, b, a, 'new-ask', 'Title：Yes');
+    slept = true;
+  };
+  const messages = s.c.waitInbox(a, 3_000);
+  expect(messages?.map(message => message.source)).toEqual(['new-ask']);
+  expect(messages?.map(message => message.id)).not.toContain(existing.id);
+});
 
 function registered(
   s: ReturnType<typeof setup>,

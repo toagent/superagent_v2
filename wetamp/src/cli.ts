@@ -3458,7 +3458,7 @@ export async function syncDecisionChannel(
             caller(true),
             decision.originator.identity,
             decision.id,
-            option
+            `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}`
           );
         return;
       }
@@ -3472,7 +3472,7 @@ export async function syncDecisionChannel(
             caller(true),
             decision.originator.identity,
             decision.id,
-            `${option}；${result}`
+            `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}；${result}`
           );
         return { result, executed };
       }
@@ -4346,7 +4346,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'reauthorize', positionals: '<run>', flags: [] },
   { command: 'release', positionals: '[path|run]', flags: [] },
   { command: 'handoff', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
-  { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note'] },
+  { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note', 'wait', 'timeout'] },
   { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
   { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap', 'adopt'] },
   { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
@@ -4776,6 +4776,23 @@ export function main(argv: string[]): number {
     case 'handoff':
     case 'inbox':
       {
+        if (verb === 'inbox' && a.flags.wait) {
+          const timeout = Number(a.flags.timeout ?? 7000);
+          if (!Number.isFinite(timeout) || timeout <= 0)
+            throw new Error('inbox --timeout must be a positive number');
+          const messages = coord().waitInbox(caller(), timeout * 1000);
+          if (!messages) {
+            print({ timed_out: true });
+            return 2;
+          }
+          if (a.flags.json) print({ messages });
+          else
+            for (const message of messages.slice(0, 20))
+              console.log(
+                `${message.type ?? message.kind} ${message.source ?? message.id} ${message.body}；下一步：根据答复继续`
+              );
+          return 0;
+        }
         const previousSession =
           verb === 'claim' && a.flags.takeover
             ? coord().owner(coord().scope(target)).owner?.session_id
@@ -5218,7 +5235,12 @@ async function publishAsk(
   } catch {
     delivery = 'pending';
   }
-  emit({ id, status: 'pending', delivery });
+  emit({
+    id,
+    status: 'pending',
+    delivery,
+    next: '后台运行 superagent inbox --wait --timeout 7000 等待答复（答复约 60 秒内送达）',
+  });
   return 0;
 }
 

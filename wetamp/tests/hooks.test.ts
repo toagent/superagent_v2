@@ -535,7 +535,7 @@ describe('guard.cjs', () => {
     expect(guard('claude', { hook_event_name: 'Stop', session_id: 'idle' })).toBeNull();
   });
 
-  test('multi-run wait: commander Stop recognizes every listed run', () => {
+  test('multi-run wait and waiting asks: commander Stop recognizes active waiters', () => {
     const gate = (createRequire(import.meta.url)('../hooks/stop-gate.cjs') as any).waiterGate;
     const payload = { hook_event_name: 'Stop', session_id: 's' };
     const runs = () => [
@@ -544,7 +544,7 @@ describe('guard.cjs', () => {
     ];
     const processes = () => '10 1 claude\n11 10 superagent wait run-a --timeout 900';
     const check = (deps = {}, p: object = payload) =>
-      gate(p, 'claude', { runs, processes, rootPid: 10, ...deps });
+      gate(p, 'claude', { runs, asks: () => [], processes, rootPid: 10, ...deps });
     const blocked = check();
     expect(blocked.decision).toBe('block');
     expect(blocked.reason).toContain('superagent wait run-b --timeout 7000');
@@ -556,6 +556,20 @@ describe('guard.cjs', () => {
     expect(check({ processes: () => `${processes()}\n12 10 bun cli.ts wait run-b` })).toBeNull();
     expect(check({ derived: true })).toBeNull();
     expect(check({ runs: () => [{ run_id: 'held', status: 'held' }] })).toBeNull();
+    const waitingAsk = { id: '1234567890', title: '是否继续' };
+    expect(
+      check({ runs: () => [], asks: () => [waitingAsk], processes: () => '10 1 claude' }).reason
+    ).toBe(
+      'SUPERAGENT：问询 12345678（是否继续）尚未答复，请在后台运行：superagent inbox --wait --timeout 7000'
+    );
+    expect(
+      check({
+        runs: () => [],
+        asks: () => [waitingAsk],
+        processes: () => '10 1 claude\n11 10 superagent inbox --wait --timeout 7000',
+      })
+    ).toBeNull();
+    expect(check({ runs: () => [], asks: () => [], processes: () => '10 1 claude' })).toBeNull();
     expect(
       check({
         responsibilities: () => [

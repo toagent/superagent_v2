@@ -37,7 +37,17 @@ function waiterGate(payload, client, deps = {}) {
           }).stdout
         );
     const active = runs.filter(run => run.status === 'running' || run.status === 'pending');
-    if (!active.length) return null;
+    const asks = deps.asks
+      ? deps.asks(payload.session_id)
+      : JSON.parse(
+          spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'waiting-asks'], {
+            input: JSON.stringify(payload),
+            encoding: 'utf8',
+            env: childEnv(),
+            timeout: 10000,
+          }).stdout
+        );
+    if (!active.length && !asks.length) return null;
     const listing = deps.processes
       ? deps.processes()
       : spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 3000 })
@@ -53,19 +63,30 @@ function waiterGate(payload, client, deps = {}) {
       for (const row of rows)
         if (tree.has(row.ppid) && !tree.has(row.pid)) (tree.add(row.pid), (changed = true));
     }
-    const waited = new Set(
-      rows
-        .filter(row => tree.has(row.pid))
-        .flatMap(row => {
+    const descendants = rows.filter(row => tree.has(row.pid)),
+      commands = descendants.map(row => row.command.trim().split(/\s+/)),
+      isCli = value => /(?:^|\/)(?:superagent|cli\.ts)$/.test(value ?? ''),
+      runWait = commands.some(args =>
+        args.some((arg, index) => arg === 'wait' && isCli(args[index - 1]))
+      ),
+      inboxWait = commands.some(
+        args =>
+          args.some((arg, index) => arg === 'inbox' && isCli(args[index - 1])) &&
+          args.includes('--wait')
+      ),
+      waited = new Set(
+        descendants.flatMap(row => {
           const args = row.command.trim().split(/\s+/),
-            wait = args.findIndex(
-              (arg, index) =>
-                arg === 'wait' && /(?:^|\/)(?:superagent|cli\.ts)$/.test(args[index - 1] ?? '')
-            ),
+            wait = args.findIndex((arg, index) => arg === 'wait' && isCli(args[index - 1])),
             option = args.findIndex((arg, index) => index > wait && arg.startsWith('--'));
           return wait < 0 ? [] : args.slice(wait + 1, option < 0 ? undefined : option);
         })
-    );
+      );
+    if (asks.length && !runWait && !inboxWait) {
+      const ask = asks[0],
+        reason = `SUPERAGENT：问询 ${ask.id.slice(0, 8)}（${ask.title}）尚未答复，请在后台运行：superagent inbox --wait --timeout 7000`;
+      return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
+    }
     const missing = active.filter(run => !waited.has(String(run.run_id)));
     if (!missing.length) return null;
     const reason = `SUPERAGENT：请在后台运行以下缺失的等待进程：\n${missing.map(run => `superagent wait ${run.run_id} --timeout 7000`).join('\n')}`;
