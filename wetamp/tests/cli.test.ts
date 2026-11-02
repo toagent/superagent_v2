@@ -2777,6 +2777,7 @@ describe('brief / land (archon stub)', () => {
       dirty = run('failed', {
         output_root: output,
         nodes: [
+          { nodeId: 'integrate-m1', state: 'failed' },
           { nodeId: 'integrate-m1.resync-m1', state: 'completed' },
           { nodeId: 'integrate-m1.publish-m1', state: 'failed' },
         ],
@@ -2789,6 +2790,18 @@ describe('brief / land (archon stub)', () => {
       JSON.stringify({ status: 'dirty', reason: 'target_dirty', paths: ['untracked: "dirty.txt"'] })
     );
     expect(classifyRun(s.ledger, dirty).state).toBe('target_dirty');
+    expect(
+      classifyRun(
+        s.ledger,
+        run('failed', {
+          output_root: output,
+          nodes: [
+            { nodeId: 'integrate-m1', state: 'failed' },
+            { nodeId: 'integrate-m1.final-accept-m1', state: 'failed' },
+          ],
+        })
+      )
+    ).toMatchObject({ state: 'failed', node: 'integrate-m1' });
     const status = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
     expect(JSON.parse(status.out).receipt).toMatchObject({
       reason: 'target_dirty',

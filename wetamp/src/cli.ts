@@ -880,34 +880,37 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   if (run.status === 'cancelled') return c;
   if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
-    const art = artifactsOf(run);
+    const art = artifactsOf(run),
+      failedNodes =
+        run.status === 'failed'
+          ? (run.nodes ?? []).filter(n => n.state === 'failed').map(n => n.nodeId)
+          : [];
     if (run.status === 'failed') {
-      const authored = authoredNodeId(c.node);
+      const evidenceNode = [c.node, ...failedNodes].find(node =>
+          /^(?:re)?sync-.+$|^publish-.+$/.test(authoredNodeId(node))
+        ),
+        projected = evidenceNode ? { ...c, node: evidenceNode } : c,
+        authored = authoredNodeId(evidenceNode ?? c.node);
       const publish = /^(?:re)?sync-.+$|^publish-.+$/.test(authored)
         ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
         : undefined;
       if (publish?.reason === 'reclaim_pending')
-        return { ...c, state: 'held:reclaim_pending', exit: EXIT.held };
-      if (publish?.reason === 'target_dirty') return { ...c, state: 'target_dirty' };
+        return { ...projected, state: 'held:reclaim_pending', exit: EXIT.held };
+      if (publish?.reason === 'target_dirty') return { ...projected, state: 'target_dirty' };
       if (publish?.reason === 'target_checkout_changed')
-        return { ...c, state: 'target_checkout_changed' };
-      if (publish?.reason === 'target_advanced') return { ...c, state: 'target_advanced' };
-      if (publish?.reason === 'review_stale') return { ...c, state: 'review_stale' };
+        return { ...projected, state: 'target_checkout_changed' };
+      if (publish?.reason === 'target_advanced') return { ...projected, state: 'target_advanced' };
+      if (publish?.reason === 'review_stale') return { ...projected, state: 'review_stale' };
       const sync = authored
         .replace(/^resolve-context-/, '')
         .replace(/^resolve-/, '')
         .replace(/-ready$/, '');
       if (/^(?:re)?sync-.+$/.test(sync)) {
         const evidence = evidenceJson(l, art, `${sync}.json`) as { status?: unknown } | undefined;
-        if (evidence?.status === 'conflict') return { ...c, state: 'sync_conflict' };
+        if (evidence?.status === 'conflict') return { ...projected, state: 'sync_conflict' };
       }
     }
-    const controlNode = [
-      c.node,
-      ...(run.status === 'failed'
-        ? (run.nodes ?? []).filter(n => n.state === 'failed').map(n => n.nodeId)
-        : []),
-    ].find(node => {
+    const controlNode = [c.node, ...failedNodes].find(node => {
       const decision = decisionOf(evidenceJson(l, art, `${authoredNodeId(node)}.json`));
       return (
         decision?.kind === 'block' &&
