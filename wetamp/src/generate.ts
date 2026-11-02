@@ -110,6 +110,7 @@ function hashInputs(root: string, paths: string[], seed = ''): string {
 export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(join(root, 'tiers.json'))).hash): string => hashInputs(root, [
   '../packages/workflows/src/provider-attempts.ts',
   'templates/.archon', 'src/generate.ts', 'src/reasons.ts', 'src/config.ts', 'src/claude-health.ts', 'src/plan.ts',
+  'scripts/browser-slot.sh', 'scripts/heavy-slot.sh',
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   'schemas/nodes', 'src/contract',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
@@ -283,6 +284,13 @@ export function buildWorkflow(
       : {}),
     with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
   });
+  const repairResourceWrappers = {
+    heavy_test_wrapper: `sh -c '. "$1"; shift; heavy_exec "$@"' sh '${join(
+      gen,
+      '.archon/scripts/heavy-slot.sh'
+    ).replaceAll("'", "'\\''")}'`,
+    browser_wrapper: `sh '${join(gen, '.archon/scripts/browser-slot.sh').replaceAll("'", "'\\''")}'`,
+  };
   const integrationCommand = (
     action: 'sync' | 'publish',
     milestone: string,
@@ -402,6 +410,7 @@ export function buildWorkflow(
           prior_work: ref.value(syncHandle),
           reason: 'sync_conflict',
           accept_log: `$ARTIFACTS_DIR/${id}.json`,
+          ...repairResourceWrappers,
         },
         depends_on: [id, context],
         when: `$${id}.output.status == 'conflict'`,
@@ -524,6 +533,7 @@ export function buildWorkflow(
                 prior_work: ref.value(syncHandle),
                 reason: 'sync_conflict',
                 accept_log: `$ARTIFACTS_DIR/${syncId}.json`,
+                ...repairResourceWrappers,
               },
               depends_on: [syncId, `resolve-context-${syncId}`],
               when: `$${syncId}.output.status == 'conflict'`,
@@ -1096,6 +1106,7 @@ export function buildWorkflow(
                   : ref.value(codeHandle),
                 reason: ref.optional(verifyHandle, 'reason', null),
                 accept_log: ref.optional(verifyHandle, 'log', ''),
+                ...repairResourceWrappers,
               },
             }),
         depends_on: [...repairDeps, ...(!fake ? [repairContext] : [])],
@@ -1694,6 +1705,8 @@ export function generate(
       true
     );
   }
+  for (const script of ['browser-slot.sh', 'heavy-slot.sh'])
+    copyOwnerWritable(join(engineWetamp, 'scripts', script), join(dir, '.archon/scripts', script));
   // Freeze the engine-owned receipt reader into portable generated workflows.
   copyOwnerWritable(
     join(engineWetamp, '../packages/workflows/src/provider-attempts.ts'),

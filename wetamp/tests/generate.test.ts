@@ -33,7 +33,9 @@ import { LOAD_WAIT_BUDGET_MS } from '../templates/.archon/scripts/load-gate';
 import {
   CHECK_AUX_BUDGET_MS,
   PROCESS_TREE_RECOVERY_MS,
+  RESOURCE_SLOTS,
   RESOURCE_WAIT_BUDGET_S,
+  acquireResource,
   reviewRoundLimit,
 } from '../templates/.archon/scripts/sa-check';
 import { executionTable } from '../src/execution';
@@ -70,6 +72,10 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
   const gen = tmp(),
     repo = gitRepo(tmp());
   const p = structuredClone(fixture);
+  p.packages[0].accept.push(
+    { cmd: 'bun test tests/heavy.test.ts', timeout_s: 30, resource: 'heavy-test' },
+    { cmd: 'bun test tests/browser.test.ts', timeout_s: 30, resource: 'browser' }
+  );
   p.packages[0].scope = {
     write: ['range.ts:2-3', 'long.ts', 'new.ts'],
     read_hint: ['large.ts', 'overflow.ts', '.env.local', 'mykey.ts', '_private/file.ts'],
@@ -217,6 +223,8 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
     prior_work: '{"changed_files":["range.ts"]}',
     reason: 'product_failure',
     accept_log: '/failure.log',
+    heavy_test_wrapper: `sh -c '. "$1"; shift; heavy_exec "$@"' sh '${join(gen, '.archon/scripts/heavy-slot.sh')}'`,
+    browser_wrapper: `sh '${join(gen, '.archon/scripts/browser-slot.sh')}'`,
   })) {
     const binding = nodes.find(n => n.id === 'repair-core')!.with![field] as
       | string
@@ -229,6 +237,13 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
   expect(repair).toContain('REPAIR_CURRENT_SOURCE');
   expect(repair).toContain('REPAIR_CURRENT_HINT');
   expect(repair).not.toContain(literal);
+  const repairTemplate = readFileSync(
+    join(WETAMP, 'templates/.archon/commands/sa-repair.md'),
+    'utf8'
+  );
+  expect(repairTemplate).toContain('只用测试工具原生选择器定向重跑失败用例');
+  expect(repairTemplate).toContain('$INPUTS.heavy_test_wrapper');
+  expect(repairTemplate).toContain('$INPUTS.browser_wrapper');
   const handoff = nodes.find(n => n.id === 'handoff-m1-r2')!;
   handoff.with!.work_keys = [];
   expect(prompt('fix-m1-r2', handoff.id)).toContain('REPAIR_CURRENT_SOURCE');
@@ -710,7 +725,7 @@ test('SHIFT_LEFT_ACCEPT HF3 fingerprint is stable and changes with template byte
 
 test('EV reflection and memory views are read live; lesson data is outside both identities', () => {
   const root = join(tmp(), 'wetamp');
-  for (const path of ['templates', 'src', 'schemas'])
+  for (const path of ['templates', 'src', 'schemas', 'scripts'])
     fs.cpSync(join(WETAMP, path), join(root, path), { recursive: true });
   fs.copyFileSync(join(WETAMP, 'tiers.json'), join(root, 'tiers.json'));
   fs.mkdirSync(join(root, '../packages/workflows/src'), { recursive: true });
@@ -1937,6 +1952,8 @@ test(
     const sources = [
       [join(source, 'templates/.archon/commands/fixture.md'), 'command'],
       [join(source, 'templates/.archon/scripts/fixture.ts'), 'script'],
+      [join(source, 'scripts/browser-slot.sh'), '#!/bin/sh'],
+      [join(source, 'scripts/heavy-slot.sh'), '#!/bin/sh'],
       [join(snapshot, 'packages/workflows/src/provider-attempts.ts'), 'export {};'],
       [join(source, 'capabilities.json'), '[]'],
     ] as const;
@@ -1956,6 +1973,7 @@ test(
       for (const path of [
         '.archon/commands/fixture.md',
         '.archon/scripts/policy-attempts.ts',
+        '.archon/scripts/browser-slot.sh',
         'capabilities.json',
       ])
         expect(fs.statSync(join(gen.dir, path)).mode & 0o200).not.toBe(0);
@@ -2062,12 +2080,49 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
       expect(prompt).toContain(
         command === 'sa-code' ? '按原样各运行一次' : '失败的命令及受影响的其余命令'
       );
-      expect(prompt).toContain('标为引擎运行的检查不要运行');
+      expect(prompt).toContain(
+        command === 'sa-repair' ? '资源检查按上节仅定向重跑失败用例' : '标为引擎运行的检查不要运行'
+      );
     }
   } finally {
     boundary.mockRestore();
   }
 }, 30_000);
+
+test('browser wrapper shares engine slots, propagates exit and terminates its command', async () => {
+  const root = tmp(),
+    source = readFileSync(join(WETAMP, 'scripts/browser-slot.sh'), 'utf8');
+  const locks = [join(root, 'browser-0.lock'), join(root, 'browser-1.lock')] as const;
+  expect([...source.matchAll(/\/tmp\/superagent-browser-\d+\.lock/g)].map(m => m[0])).toEqual([
+    ...RESOURCE_SLOTS.browser,
+  ]);
+  const script = join(root, 'browser-slot.sh'),
+    trace = join(root, 'trace');
+  fs.writeFileSync(script, source.replace(RESOURCE_SLOTS.browser.join(' '), locks.join(' ')));
+  fs.chmodSync(script, 0o755);
+  const lease = () => acquireResource('browser', 1000, locks);
+  const leases = [await lease(), await lease()];
+  const waiting = Bun.spawn([script, 'sh', '-c', `echo run > '${trace}'`], { stderr: 'pipe' });
+  await Bun.sleep(100);
+  expect(existsSync(trace)).toBe(false);
+  await leases[0]!.release();
+  expect(await waiting.exited).toBe(0);
+  await leases[1]!.release();
+  expect(Bun.spawnSync([script, 'sh', '-c', 'exit 7']).exitCode).toBe(7);
+  const pidFile = join(root, 'pid');
+  const running = Bun.spawn([script, 'sh', '-c', 'echo $$ > "$1"; sleep 30', 'sh', pidFile]);
+  while (!existsSync(pidFile)) await Bun.sleep(10);
+  running.kill('SIGTERM');
+  expect(await running.exited).toBe(143);
+  expect(() => process.kill(Number(readFileSync(pidFile, 'utf8')), 0)).toThrow();
+  fs.writeFileSync(
+    join(root, 'broken.sh'),
+    source.replace(RESOURCE_SLOTS.browser.join(' '), `${root}/missing/0 ${root}/missing/1`)
+  );
+  const broken = Bun.spawnSync(['sh', join(root, 'broken.sh'), 'true'], { timeout: 1000 });
+  expect(broken.exitCode).toBe(73);
+  expect(broken.stderr.toString()).toContain('lock failed');
+});
 
 function withCleanEngine(check: () => void): () => void {
   return () => {
@@ -2094,6 +2149,11 @@ function checkGeneratedRepo(): void {
     JSON.parse(readFileSync(join(g.dir, 'plan.json'), 'utf8')).packages[0].requirements
   ).toEqual(plan.packages[0].requirements);
   expect(readFileSync(join(g.dir, 'briefs/core.md'), 'utf8')).toContain('"verified_by"');
+  for (const script of ['browser-slot.sh', 'heavy-slot.sh'])
+    expect(readFileSync(join(g.dir, '.archon/scripts', script), 'utf8')).toBe(
+      readFileSync(join(WETAMP, 'scripts', script), 'utf8')
+    );
+  expect(fs.statSync(join(g.dir, '.archon/scripts/browser-slot.sh')).mode & 0o111).not.toBe(0);
 
   const principles = readFileSync(join(WETAMP, 'templates', '.archon', 'principles.md'), 'utf8');
   const generated = Bun.YAML.parse(
