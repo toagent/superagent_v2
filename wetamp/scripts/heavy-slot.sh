@@ -19,17 +19,44 @@ heavy_queue_register() {
   command=$(printf '%s' "$*" | sed 's/\\/\\\\/g; s/"/\\"/g')
   cwd=$(printf '%s' "$PWD" | sed 's/\\/\\\\/g; s/"/\\"/g')
   run=$(printf '%s' "${INPUTS_RUN:-${SA_RUN_ID:-}}" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  printf '{"pid":%s,"command":"%s","cwd":"%s","queued_at":"%s"%s}\n' \
+  class=
+  if [ "${SA_HEAVY_CLASS:-}" = background ]; then
+    class=',"class":"background"'
+  else
+    : > "$heavy_queue_file.foreground"
+  fi
+  printf '{"pid":%s,"command":"%s","cwd":"%s","queued_at":"%s"%s%s}\n' \
     "$$" "$command" "$cwd" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "${run:+,\"run\":\"$run\"}" > "$heavy_queue_file.tmp"
+    "${run:+,\"run\":\"$run\"}" "$class" > "$heavy_queue_file.tmp"
   mv "$heavy_queue_file.tmp" "$heavy_queue_file"
+}
+
+heavy_foreground_waiting() {
+  for marker in "$heavy_lock_file.queue"/*.foreground; do
+    [ -e "$marker" ] || continue
+    pid=${marker##*/}
+    pid=${pid%.json.foreground}
+    case "$pid" in *[!0-9]*|'') rm -f "$marker"; continue ;; esac
+    if kill -0 "$pid" 2>/dev/null; then return 0; fi
+    rm -f "$marker"
+  done
+  return 1
 }
 
 heavy_run_held='
   lock=$1
   queue=$2
   shift 2
-  rm -f "$queue"
+  if [ "${SA_HEAVY_CLASS:-}" = background ]; then
+    for marker in "$lock.queue"/*.foreground; do
+      [ -e "$marker" ] || continue
+      pid=${marker##*/}; pid=${pid%.json.foreground}
+      case "$pid" in *[!0-9]*|"") rm -f "$marker"; continue ;; esac
+      if kill -0 "$pid" 2>/dev/null; then exit 76; fi
+      rm -f "$marker"
+    done
+  fi
+  rm -f "$queue" "$queue.foreground"
   holder=$lock.holder
   temporary=$holder.$$
   cleanup() {
@@ -60,20 +87,20 @@ heavy_exec() {
   fi
 
   heavy_queue_register "$@"
-  if [ -z "${SA_HEAVY_WAIT_TIMEOUT_SECONDS:-}" ] && [ -z "${SA_HEAVY_WAIT_LOG_SECONDS:-}" ] && [ -z "${SA_HEAVY_READY_FILE:-}" ]; then
+  if [ "${SA_HEAVY_CLASS:-}" != background ] && [ -z "${SA_HEAVY_WAIT_TIMEOUT_SECONDS:-}" ] && [ -z "${SA_HEAVY_WAIT_LOG_SECONDS:-}" ] && [ -z "${SA_HEAVY_READY_FILE:-}" ]; then
     case "$(uname -s)" in
       Darwin) exec /usr/bin/lockf -k "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@" ;;
       Linux)
         command -v flock >/dev/null 2>&1 || {
           echo 'heavy slot: flock is required on Linux' >&2
-          rm -f "$heavy_queue_file"
+          rm -f "$heavy_queue_file" "$heavy_queue_file.foreground"
           return 1
         }
         exec flock "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"
         ;;
       *)
         echo "heavy slot: unsupported platform $(uname -s)" >&2
-        rm -f "$heavy_queue_file"
+        rm -f "$heavy_queue_file" "$heavy_queue_file.foreground"
         return 1
         ;;
     esac
@@ -103,35 +130,39 @@ heavy_exec() {
   fi
 
   timeout=${SA_HEAVY_WAIT_TIMEOUT_SECONDS:-}
-  case "$(uname -s)" in
+  while :; do
+    if [ "${SA_HEAVY_CLASS:-}" = background ]; then
+      while heavy_foreground_waiting; do sleep 0.1; done
+    fi
+    case "$(uname -s)" in
     Darwin)
       if [ -n "$timeout" ]; then
-        /usr/bin/lockf -k -t "$timeout" "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"
+        if /usr/bin/lockf -k -t "$timeout" "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"; then status=0; else status=$?; fi
       else
-        /usr/bin/lockf -k "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"
+        if /usr/bin/lockf -k "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"; then status=0; else status=$?; fi
       fi
-      status=$?
       ;;
     Linux)
       command -v flock >/dev/null 2>&1 || {
         echo 'heavy slot: flock is required on Linux' >&2
-        rm -f "$heavy_queue_file"
+        rm -f "$heavy_queue_file" "$heavy_queue_file.foreground"
         return 1
       }
       if [ -n "$timeout" ]; then
-        flock -E 75 -w "$timeout" "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"
+        if flock -E 75 -w "$timeout" "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"; then status=0; else status=$?; fi
       else
-        flock "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"
+        if flock "$heavy_lock_file" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$heavy_lock_file" "$heavy_queue_file" "$@"; then status=0; else status=$?; fi
       fi
-      status=$?
       ;;
     *)
       echo "heavy slot: unsupported platform $(uname -s)" >&2
-      rm -f "$heavy_queue_file"
+      rm -f "$heavy_queue_file" "$heavy_queue_file.foreground"
       return 1
       ;;
-  esac
-  rm -f "$heavy_queue_file"
+    esac
+    [ "$status" -eq 76 ] || break
+  done
+  rm -f "$heavy_queue_file" "$heavy_queue_file.foreground"
 
   if [ -n "$reporter" ]; then
     : > "$reporter_cancel"

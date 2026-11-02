@@ -293,6 +293,8 @@ class AcceptanceFailed extends Error {
 const timedRunner = `
   const timeout = Number(process.argv[1]), grace = Number(process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS ?? 2000);
   const child = Bun.spawn(process.argv.slice(2), { stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', detached: true });
+  const ready = process.env.SA_ENGINE_TIMED_READY_FILE;
+  while (ready && !(await Bun.file(ready).exists())) { const early = await Promise.race([child.exited, Bun.sleep(50).then(() => null)]); if (early !== null) process.exit(early); }
   const result = await Promise.race([child.exited, Bun.sleep(timeout).then(() => null)]);
   if (result !== null) process.exit(result);
   try { process.kill(-child.pid, 'SIGTERM'); } catch {}
@@ -349,9 +351,9 @@ const verifyRecords = (): EngineVerifyRecord[] => (existsSync(promotionDir()) ? 
 // prettier-ignore
 const objects = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.flatMap(objects) : value && typeof value === 'object' ? [value as Record<string, unknown>] : [];
 // prettier-ignore
-const junit = (path: string): { files: string[]; failed: string[] } => { const xml = (Bun as unknown as { XML: { parse(value: string): unknown } }).XML.parse(readFileSync(path, 'utf8')) as Record<string, unknown>, root = xml.testsuites as Record<string, unknown> | undefined; if (!root) throw new Error('verify junit: missing testsuites'); const suites = objects(root.testsuite), files = suites.flatMap(s => typeof s['@file'] === 'string' ? [s['@file']] : []), failed = suites.flatMap(s => { const file = typeof s['@file'] === 'string' ? s['@file'] : undefined, cases = objects(s.testcase); return file && (Number(s['@failures'] ?? 0) > 0 || Number(s['@errors'] ?? 0) > 0 || cases.some(c => c.failure !== undefined || c.error !== undefined)) ? [file] : []; }); return { files: [...new Set(files)], failed: [...new Set(failed)] }; };
+const junit = (path: string): { files: string[]; failed: string[]; tests: number } => { const xml = (Bun as unknown as { XML: { parse(value: string): unknown } }).XML.parse(readFileSync(path, 'utf8')) as Record<string, unknown>, root = xml.testsuites as Record<string, unknown> | undefined; if (!root) throw new Error('verify junit: missing testsuites'); const suites = objects(root.testsuite), files = suites.flatMap(s => typeof s['@file'] === 'string' ? [s['@file']] : []), failed = suites.flatMap(s => { const file = typeof s['@file'] === 'string' ? s['@file'] : undefined, cases = objects(s.testcase); return file && (Number(s['@failures'] ?? 0) > 0 || Number(s['@errors'] ?? 0) > 0 || cases.some(c => c.failure !== undefined || c.error !== undefined)) ? [file] : []; }); return { files: [...new Set(files)], failed: [...new Set(failed)], tests: suites.reduce((n, s) => n + Number(s['@tests'] ?? objects(s.testcase).length), 0) }; };
 // prettier-ignore
-export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): number { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'); try { return runTimed(['bash', '-c', '. "$1"; shift; heavy_exec "$@"', 'verify', heavy, process.execPath, 'test', '--isolate', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs, { ...process.env, SA_ENGINE_VERIFY_TOKEN: '', SA_ENGINE_PROMOTER_TOKEN: '', SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '' }); } finally { closeSync(output); } }
+export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): number { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'), ready = `${report}.ready`; rmSync(ready, { force: true }); try { return runTimed(['bash', '-c', '. "$1"; shift; heavy_exec "$@"', 'verify', heavy, process.execPath, 'test', '--isolate', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs, { ...process.env, SA_ENGINE_VERIFY_TOKEN: '', SA_ENGINE_PROMOTER_TOKEN: '', SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '', SA_HEAVY_CLASS: 'background', SA_HEAVY_READY_FILE: ready, SA_ENGINE_TIMED_READY_FILE: ready }); } finally { closeSync(output); rmSync(ready, { force: true }); } }
 // prettier-ignore
 export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; now?: () => number; }
 // prettier-ignore
@@ -365,16 +367,14 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
   if (!isAncestor(base, sha)) throw new Error('engine verify: base is not an ancestor');
   const worktree = join(verifyRoot(), sha),
     log = join(promotionDir(), `${sha}.verify.log`),
-    deadline = (dependencies.now ?? Date.now)() + 60 * 60_000,
-    report = join(promotionDir(), `${sha}.verify.junit.xml`),
+    timeoutMs = 60 * 60_000,
     running = beginVerify(sha, base, log),
-    remaining = (): number => Math.max(1, deadline - (dependencies.now ?? Date.now)()),
+    remaining = (): number => timeoutMs,
     execute = dependencies.execute ?? executeVerifyTests;
   let result = running,
     prepared = false;
   try {
     mkdirSync(verifyRoot(), { recursive: true });
-    rmSync(report, { force: true });
     if (dependencies.prepare) {
       dependencies.prepare(worktree, sha, log, remaining());
       prepared = true;
@@ -386,12 +386,19 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
       if (install.exitCode !== 0)
         throw new Error(`bun install failed (${String(install.exitCode)})`);
     }
-    const initialExit = execute(worktree, [`--changed=${base}`], report, log, remaining()),
-      initial = existsSync(report) ? junit(report) : { files: [], failed: [] },
-      failed: string[] = [];
-    if (initialExit !== 0) {
-      if (!initial.failed.length) failed.push(...initial.files);
-      for (const [i, file] of initial.failed.entries()) {
+    const files: string[] = [], initialFailed: string[] = [], failed: string[] = [];
+    let unclassifiedFailure = false;
+    for (let shard = 1; shard <= 8; shard++) {
+      const report = join(promotionDir(), `${sha}.verify.shard-${String(shard)}.xml`);
+      rmSync(report, { force: true });
+      const exit = execute(worktree, [`--changed=${base}`, `--shard=${String(shard)}/8`], report, log, remaining());
+      try {
+        if (!existsSync(report)) { unclassifiedFailure = true; continue; }
+        const parsed = junit(report); files.push(...parsed.files); initialFailed.push(...parsed.failed);
+        if (exit !== 0 && parsed.tests > 0 && !parsed.failed.length) failed.push(...parsed.files);
+      } catch { unclassifiedFailure = true; }
+    }
+    for (const [i, file] of [...new Set(initialFailed)].entries()) {
         const rerun = join(promotionDir(), `${sha}.verify.rerun-${String(i)}.xml`);
         rmSync(rerun, { force: true });
         const exit = execute(worktree, [file], rerun, log, remaining());
@@ -400,9 +407,8 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
         } catch {
           failed.push(file);
         }
-      }
     }
-    result = { ...running, status: initialExit === 0 || (initial.failed.length > 0 && failed.length === 0) ? 'passed' : 'failed', files: initial.files, failed_files: [...new Set(failed)], at: new Date().toISOString() };
+    result = { ...running, status: !unclassifiedFailure && failed.length === 0 ? 'passed' : 'failed', files: [...new Set(files)], failed_files: [...new Set(failed)], at: new Date().toISOString() };
   } catch (error) { result = { ...running, status: 'failed', files: [], failed_files: [], error: error instanceof Error ? error.message : String(error), at: new Date().toISOString() };
   } finally {
     try {

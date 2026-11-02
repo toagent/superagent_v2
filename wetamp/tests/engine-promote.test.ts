@@ -425,17 +425,19 @@ test('auto promotion waits for the promotion lock before spawning', () => {
 
 // prettier-ignore
 test('post-promotion verify handles retries, no affected tests, persistent failure, and timeout', async () => {
-  const f = sourceFixture(), base = f.sha(), xml = (failed: boolean) => `<testsuites><testsuite file="tests/caller.test.ts" failures="${failed ? 1 : 0}"><testcase name="caller"${failed ? '><failure/></testcase>' : '/>'}</testsuite></testsuites>`;
-  const run = (name: string, exits: number[], reports: boolean[]) => {
+  const f = sourceFixture(), base = f.sha(), xml = (file = '', failed = false) => `<testsuites><testsuite${file ? ` file="${file}" tests="1" failures="${failed ? 1 : 0}"><testcase name="caller"${failed ? '><failure/></testcase>' : '/>'}</testsuite>` : ' tests="0"/>'}</testsuites>`;
+  const run = (name: string, mode: 'transient' | 'persistent' | 'empty' | 'timeout') => {
     const sha = commit(f.source, name), commands: string[][] = [], timeouts: number[] = [];
-    const result = runVerify(sha, base, { prepare: () => {}, cleanup: () => {}, now: () => 0, execute: (_worktree, args, report, _log, timeout) => { const i = commands.length; commands.push(args); timeouts.push(timeout); if (reports[i]) writeFileSync(report, xml(exits[i] !== 0)); return exits[i] ?? 0; } });
+    const result = runVerify(sha, base, { prepare: () => {}, cleanup: () => {}, now: () => commands.length * 10_000_000, execute: (_worktree, args, report, _log, timeout) => { commands.push(args); timeouts.push(timeout); const shard = args.find(x => x.startsWith('--shard=')); if (!shard) { writeFileSync(report, xml('tests/caller.test.ts', mode === 'persistent')); return mode === 'persistent' ? 1 : 0; } const n = Number(shard.split(/[=/]/)[1]); if (mode === 'timeout' && n === 1) return 124; if (mode === 'empty' || n !== 3) { writeFileSync(report, xml()); return n === 2 ? 1 : 0; } writeFileSync(report, xml('tests/caller.test.ts', true)); return 1; } });
     return { result, commands, timeouts };
   };
-  const transient = run('transient', [1, 0], [true, true]);
-  expect(transient.result.status).toBe('passed'); expect(transient.commands).toEqual([[`--changed=${base}`], ['tests/caller.test.ts']]);
-  expect(run('persistent', [1, 1], [true, true]).result).toMatchObject({ status: 'failed', failed_files: ['tests/caller.test.ts'] });
-  expect(run('no-tests', [0], [false]).result).toMatchObject({ status: 'passed', files: [], failed_files: [] });
-  const timeout = run('timeout', [124], [false]); expect(timeout.result.status).toBe('failed'); expect(timeout.timeouts).toEqual([60 * 60_000]);
+  const transient = run('transient', 'transient');
+  expect(transient.result).toMatchObject({ status: 'passed', files: ['tests/caller.test.ts'], failed_files: [] });
+  expect(transient.commands).toEqual([...Array.from({ length: 8 }, (_, i) => [`--changed=${base}`, `--shard=${String(i + 1)}/8`]), ['tests/caller.test.ts']]);
+  expect(new Set(transient.timeouts)).toEqual(new Set([60 * 60_000]));
+  expect(run('persistent', 'persistent').result).toMatchObject({ status: 'failed', failed_files: ['tests/caller.test.ts'] });
+  expect(run('no-tests', 'empty').result).toMatchObject({ status: 'passed', files: [], failed_files: [] });
+  expect(run('timeout', 'timeout').result.status).toBe('failed');
   expect((await import('../src/cli')).parseArgs(['engine', 'verify', 'abc1234', '--base', 'def5678']).flags.base).toBe('def5678');
 }, testTimeout(60_000));
 
@@ -443,7 +445,7 @@ test('post-promotion verify handles retries, no affected tests, persistent failu
 test('verify uses an independent local clone without registering a worktree', () => {
   const f = sourceFixture(), base = f.sha(), sha = commit(f.source, 'verify-clone'), before = sh('git worktree list --porcelain', f.source);
   let checkout = '', common = '', resolvedBase = '', during = '';
-  const result = runVerify(sha, base, { execute: worktree => { checkout = worktree; common = realpathSync(join(worktree, sh('git rev-parse --git-common-dir', worktree).trim())); resolvedBase = sh(`git rev-parse '${base}^{commit}'`, worktree).trim(); during = sh('git worktree list --porcelain', f.source); return 0; } });
+  const result = runVerify(sha, base, { execute: (worktree, _args, report) => { checkout = worktree; common = realpathSync(join(worktree, sh('git rev-parse --git-common-dir', worktree).trim())); resolvedBase = sh(`git rev-parse '${base}^{commit}'`, worktree).trim(); during = sh('git worktree list --porcelain', f.source); writeFileSync(report, '<testsuites><testsuite tests="0"/></testsuites>'); return 0; } });
   expect(result.status).toBe('passed'); expect(common).not.toBe(realpathSync(join(f.source, '.git'))); expect(resolvedBase).toBe(base);
   expect(during).toBe(before); expect(sh('git worktree list --porcelain', f.source)).toBe(before); expect(existsSync(checkout)).toBe(false);
 }, testTimeout(60_000));
@@ -465,7 +467,7 @@ test('verify executor uses heavy slot and kills a timed-out test process', () =>
   const root = tmp(), wetamp = join(root, 'wetamp'), scripts = join(wetamp, 'scripts'), report = join(root, 'junit.xml'), log = join(root, 'verify.log');
   mkdirSync(scripts, { recursive: true }); writeFileSync(join(scripts, 'heavy-slot.sh'), readFileSync(join(import.meta.dir, '../scripts/heavy-slot.sh')));
   process.env.SA_HEAVY_LOCK_FILE = join(root, 'heavy.lock'); process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS = '50';
-  writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test, expect } from 'bun:test'; test('ok', () => expect(1).toBe(1));`);
+  writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test, expect } from 'bun:test'; import { existsSync } from 'node:fs'; test('ok', () => { expect(process.env.SA_HEAVY_CLASS).toBe('background'); expect(existsSync(process.env.SA_HEAVY_READY_FILE!)).toBe(true); });`);
   expect(executeVerifyTests(root, ['fixture.test.ts'], report, log, 10_000)).toBe(0); expect(existsSync(report)).toBe(true);
   writeFileSync(join(wetamp, 'fixture.test.ts'), `import { test } from 'bun:test'; test('hang', async () => Bun.sleep(30_000));`);
   expect(executeVerifyTests(root, ['fixture.test.ts'], report, log, 100)).toBe(124);

@@ -196,3 +196,37 @@ test('queued state publishes queue and live holder metadata, then cleans both', 
   });
   expect(inspected.stdout.toString()).toBe('');
 });
+
+test('background work yields to live foreground waiters and ignores dead ones', async () => {
+  const { root, env } = fixture(),
+    queue = `${env.SA_HEAVY_LOCK_FILE}.queue`;
+  const holder = run({ ...env, DURATION: '0.4' }, 'holder');
+  for (let i = 0; i < 100 && !existsSync(join(root, 'started.holder')); i++) await Bun.sleep(10);
+  const background = run({ ...env, SA_HEAVY_CLASS: 'background' }, 'background');
+  for (
+    let i = 0;
+    i < 100 && (!existsSync(queue) || !readdirSync(queue).some(x => x.endsWith('.json')));
+    i++
+  )
+    await Bun.sleep(10);
+  expect(
+    readdirSync(queue)
+      .filter(x => x.endsWith('.json'))
+      .map(x => JSON.parse(readFileSync(join(queue, x), 'utf8')))
+      .some(x => x.class === 'background')
+  ).toBe(true);
+  const foreground = run(env, 'foreground');
+  for (let i = 0; i < 100 && !readdirSync(queue).some(x => x.endsWith('.foreground')); i++)
+    await Bun.sleep(10);
+  expect(await holder.exited).toBe(0);
+  for (let i = 0; i < 100 && !existsSync(join(root, 'started.foreground')); i++)
+    await Bun.sleep(10);
+  expect(existsSync(join(root, 'started.foreground'))).toBe(true);
+  expect(existsSync(join(root, 'started.background'))).toBe(false);
+  expect(await foreground.exited).toBe(0);
+  expect(await background.exited).toBe(0);
+
+  writeFileSync(join(queue, '99999999.json.foreground'), '');
+  expect(await run({ ...env, SA_HEAVY_CLASS: 'background' }, 'after-dead').exited).toBe(0);
+  expect(existsSync(join(queue, '99999999.json.foreground'))).toBe(false);
+});
