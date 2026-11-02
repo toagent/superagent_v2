@@ -133,17 +133,21 @@ test('heartbeat keeps online job launchers and falls back to the repository owne
   const launcher = { ...owner(1), client: 'codex' as const, cwd: repo, tty: null }, repositoryOwner = owner(2);
   try {
     coord().claim(repoScope(repo), repositoryOwner);
-    for (const [launcherOnline, repositoryOwnerOnline, state, expected] of [
-      [true, false, 'running', launcher],
-      [false, true, 'lost', repositoryOwner],
-      [true, true, 'running', launcher],
+    for (const [launcherPresence, repositoryOwnerPresence, state, expected, unowned] of [
+      ['online', 'offline', 'running', launcher, false],
+      ['offline', 'online', 'lost', repositoryOwner, false],
+      ['unknown', 'online', 'running', repositoryOwner, false],
+      ['online', 'online', 'running', launcher, false],
+      ['offline', 'offline', 'lost', null, false],
+      ['offline', 'offline', 'running', null, true],
     ] as const) {
       const job = { id: `job-${state}`, title: 'job', card: null, log: null, cwd: repo, kind: 'codex' as const, model: null, launcher, wrapper_pid: 0, pid: 0, started_at: new Date(now).toISOString(), state, tier: 'general' as const, guess: false, owner: null, pidAlive: true, heartbeatAt: new Date(now).toISOString() };
       const snap: Snapshot = { at: new Date(now).toISOString(), summary: {}, rows: [], activity: { jobs: [job], terms: [], procs: [], remote: [], notes: [] } };
-      const presence = (who: Identity): Presence => (same(who, launcher) ? launcherOnline : repositoryOwnerOnline) ? { state: 'online', activity: 'active' } : { state: 'offline' };
-      const result = heartbeat(snap, cockpit(snap, now), now, presence), marshal = result.marshals.find(m => m.owner !== 'unknown' && same(m.owner, expected));
-      expect((state === 'lost' ? marshal?.waiting : marshal?.running)?.map(item => item.id)).toEqual([job.id]);
-      expect(result.marshals.some(m => m.owner === 'unknown')).toBe(false);
+      const presence = (who: Identity): Presence => { const value = same(who, launcher) ? launcherPresence : repositoryOwnerPresence; return value === 'online' ? { state: value, activity: 'active' } : { state: value }; };
+      const result = heartbeat(snap, cockpit(snap, now), now, presence), marshal = expected && result.marshals.find(m => m.owner !== 'unknown' && same(m.owner, expected));
+      if (expected) expect((state === 'lost' ? marshal?.waiting : marshal?.running)?.map(item => item.id)).toEqual([job.id]);
+      expect(result.reclaim_pending).toBe(!expected && state === 'lost' ? 1 : 0);
+      expect(result.marshals.some(m => m.owner === 'unknown')).toBe(unowned);
     }
   } finally { if (previous === undefined) delete process.env.SUPERAGENT_HOME; else process.env.SUPERAGENT_HOME = previous; }
 });

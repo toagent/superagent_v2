@@ -29,7 +29,7 @@ import {
   main,
   type Ledger,
 } from '../src/cli';
-import { collectEngineSnapshots, gc as collect } from '../src/gc';
+import { collectEngineSnapshots, gc as collect, LIVE_RETENTION_MS } from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const keys = [
@@ -45,6 +45,28 @@ const keys = [
 const originalEnv = keys.map(k => process.env[k]);
 const gc = (dryRun = false, ruleVersion?: string) =>
   collect(dryRun, [process.env.TMPDIR!], ruleVersion);
+
+test('live gc removes only old dead process heartbeats and dry-run preserves candidates', () => {
+  const root = tmp(),
+    live = join(root, 'live'),
+    processStart = inspectProcess(process.pid).start,
+    old = new Date(Date.now() - LIVE_RETENTION_MS - 1).toISOString(),
+    fresh = new Date().toISOString();
+  process.env.SUPERAGENT_HOME = root;
+  mkdirSync(live, { recursive: true });
+  // prettier-ignore
+  const record = (name: string, pid: number, pid_start: string, at: string) => writeFileSync(join(live, `${name}.json`), JSON.stringify({ client: 'codex', host: hostname(), pid, pid_start, at }));
+  record('old-dead', 99999999, 'gone', old);
+  record('fresh-dead', 99999999, 'gone', fresh);
+  record('old-live', process.pid, processStart!, old);
+  record('old-reused', process.pid, 'prior-lifetime', old);
+  // prettier-ignore
+  expect(gc(true).filter(e => e.object === 'live').map(e => e.run_id).sort()).toEqual(['old-dead.json', 'old-reused.json']);
+  expect(readdirSync(live)).toHaveLength(4);
+  // prettier-ignore
+  expect(gc().filter(e => e.object === 'live').map(e => e.action)).toEqual(['removed', 'removed']);
+  expect(readdirSync(live).sort()).toEqual(['fresh-dead.json', 'old-live.json']);
+});
 interface GitCall {
   command: string[];
   cwd: string;

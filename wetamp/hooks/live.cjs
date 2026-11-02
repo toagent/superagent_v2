@@ -68,23 +68,13 @@ function launcher(home, env = process.env) {
     const cli = cliOf(inspectPid(who.pid)?.[3]?.trim().split(/\s+/) || [], true);
     if (!cli || cli.headless) return undefined;
     const p = identity.inspect(who.pid);
-    let beats = [];
-    try {
-      for (const name of fs.readdirSync(path.join(home, 'live')).filter(n => n.endsWith('.json'))) {
-        try {
-          const b = JSON.parse(fs.readFileSync(path.join(home, 'live', name), 'utf8'));
-          // Expired identity is usable only within the verified process lifetime.
-          if (
-            p.state === 'online' &&
-            b.pid === who.pid &&
-            b.client === cli.kind &&
-            b.host === os.hostname() &&
-            b.pid_start === p.start
+    let beats =
+      p.state === 'online'
+        ? identity.readProcessHeartbeats(
+            { client: cli.kind, host: os.hostname(), pid: who.pid, pid_start: p.start },
+            home
           )
-            beats.push(b);
-        } catch {}
-      }
-    } catch {}
+        : [];
     // Shared app-server processes retain old sessions; prefer current activity over stale history.
     const fresh = beats.filter(b => Date.now() - Date.parse(b.at) < identity.FRESH_MS);
     if (fresh.length) beats = fresh;
