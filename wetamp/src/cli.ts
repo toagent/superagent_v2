@@ -882,13 +882,18 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const art = artifactsOf(run),
       failedNodes =
-        run.status === 'failed'
-          ? (run.nodes ?? []).filter(n => n.state === 'failed').map(n => n.nodeId)
-          : [];
+        run.status === 'failed' ? (run.nodes ?? []).filter(n => n.state === 'failed') : [];
     if (run.status === 'failed') {
-      const evidenceNode = [c.node, ...failedNodes].find(node =>
-          /^(?:re)?sync-.+$|^publish-.+$/.test(authoredNodeId(node))
+      const currentAttemptStartedAt = Date.parse(
+          failedNodes.find(node => node.nodeId === c.node)?.startedAt ?? ''
         ),
+        evidenceNode = failedNodes.find(
+          node =>
+            /^(?:re)?sync-.+$|^publish-.+$/.test(authoredNodeId(node.nodeId)) &&
+            (node.nodeId === c.node ||
+              (Number.isFinite(currentAttemptStartedAt) &&
+                Date.parse(node.startedAt ?? '') >= currentAttemptStartedAt))
+        )?.nodeId,
         projected = evidenceNode ? { ...c, node: evidenceNode } : c,
         authored = authoredNodeId(evidenceNode ?? c.node);
       const publish = /^(?:re)?sync-.+$|^publish-.+$/.test(authored)
@@ -910,7 +915,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         if (evidence?.status === 'conflict') return { ...projected, state: 'sync_conflict' };
       }
     }
-    const controlNode = [c.node, ...failedNodes].find(node => {
+    const controlNode = [c.node, ...failedNodes.map(node => node.nodeId)].find(node => {
       const decision = decisionOf(evidenceJson(l, art, `${authoredNodeId(node)}.json`));
       return (
         decision?.kind === 'block' &&
