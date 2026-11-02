@@ -89,10 +89,17 @@ function command(file, args, env) {
     timeout: 15_000,
     maxBuffer: 4 * 1024 * 1024,
   });
-  if (result.error || result.status !== 0)
-    throw new Error(
-      result.stderr?.trim() || result.error?.message || `${file} exit ${result.status}`
-    );
+  if (result.error || result.status !== 0) {
+    let code;
+    try {
+      code = JSON.parse(result.stdout)?.error?.code;
+    } catch {}
+    const message =
+        result.stderr?.trim() || result.error?.message || `${file} exit ${result.status}`,
+      error = new Error(code ? `${message} (${code})` : message);
+    if (typeof code === 'string') error.code = code;
+    throw error;
+  }
   return JSON.parse(result.stdout);
 }
 
@@ -159,11 +166,40 @@ function recordedTerminal(record, terminals) {
   );
 }
 
-function closeOtherPanels(orca, state, title, keep, env) {
+function tidyPanels(orca, state, title, keep, shellCommand, record, env, replaceKeep = false) {
+  const pinned = [];
   for (const handle of panelHandles(state.visualLayouts, title)) {
-    if (handle !== keep)
+    if (handle === keep) continue;
+    try {
       command(orca, ['terminal', 'close', '--terminal', handle, '--tab', '--json'], env);
+    } catch (error) {
+      if (error.code !== 'terminal_tab_pinned') throw error;
+      pinned.push(handle);
+    }
   }
+  if (pinned.length === 0 || (keep && !replaceKeep)) return false;
+  const terminal = state.terminals.find(item => pinned.includes(item.handle) && live(item));
+  if (!terminal) {
+    logFailure(new Error('pinned heartbeat terminal is not live; waiting for next rescan'), env);
+    return true;
+  }
+  command(
+    orca,
+    [
+      'terminal',
+      'send',
+      '--terminal',
+      terminal.handle,
+      '--text',
+      shellCommand,
+      '--enter',
+      '--json',
+    ],
+    env
+  );
+  atomicWrite(record, { handle: terminal.handle, incarnationId: terminal.incarnationId });
+  if (keep) command(orca, ['terminal', 'close', '--terminal', keep, '--tab', '--json'], env);
+  return true;
 }
 
 function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
@@ -183,9 +219,6 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
     try {
       prior = JSON.parse(fs.readFileSync(record, 'utf8'));
     } catch {}
-    const current = recordedTerminal(prior, state.terminals);
-    closeOtherPanels(orca, state, title, current?.handle, env);
-    if (current) return;
     // The shim routes to the promoted engine; bin/superagent in this checkout is a candidate
     // and refuses production state. The loop keeps the tab useful while the engine lacks the
     // verb (before promotion) or after a crash, instead of leaving a dead terminal.
@@ -194,8 +227,11 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
       watch = [superagent, 'heartbeat', '--watch', ...scope]
         .map(value => `'${value.replace(/'/g, "'\\''")}'`)
         .join(' '),
-      shellCommand = `while true; do ${watch}; case $? in 75) continue;; esac; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`,
-      created = command(
+      shellCommand = `while true; do ${watch}; case $? in 75) continue;; esac; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`;
+    const current = recordedTerminal(prior, state.terminals);
+    if (tidyPanels(orca, state, title, current?.handle, shellCommand, record, env) || current)
+      return;
+    const created = command(
         orca,
         [
           'terminal',
@@ -221,7 +257,7 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
     if (rescanDelayMs > 0)
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
     const rescanned = listState(orca, selector, env);
-    closeOtherPanels(orca, rescanned, title, handle, env);
+    tidyPanels(orca, rescanned, title, handle, shellCommand, record, env, true);
   } finally {
     fs.closeSync(fd);
     try {

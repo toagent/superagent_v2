@@ -10,7 +10,9 @@ const panel = createRequire(import.meta.url)(modulePath) as {
   ensurePanel: (payload: object, env: Record<string, string>) => boolean;
 };
 
-function fixture(mode: 'restored' | 'connecting' | 'live' | 'empty' | 'fail' = 'empty') {
+function fixture(
+  mode: 'restored' | 'latePinned' | 'connecting' | 'live' | 'empty' | 'codeFail' = 'empty'
+) {
   const root = tmp(),
     repo = join(root, 'repo'),
     home = join(root, 'home'),
@@ -26,10 +28,11 @@ function fixture(mode: 'restored' | 'connecting' | 'live' | 'empty' | 'fail' = '
     `#!/usr/bin/env node
 const fs=require('node:fs'),a=process.argv.slice(2),mode=process.env.FAKE_MODE;
 fs.appendFileSync(process.env.FAKE_CALLS,JSON.stringify(a)+'\\n');
-if(mode==='fail'){process.stderr.write('orca failed');process.exit(2)}
+if(a[1]==='close'&&((mode==='restored'&&a[3]==='restored')||(mode==='latePinned'&&a[3]==='late'))){console.log(JSON.stringify({ok:false,error:{code:'terminal_tab_pinned'}}));process.exit(1)}
+if(a[1]==='close'&&mode==='codeFail'){console.log(JSON.stringify({ok:false,error:{code:'terminal_close_failed'}}));process.exit(2)}
 if(a[1]==='list'){
  const calls=fs.readFileSync(process.env.FAKE_CALLS,'utf8').trim().split('\\n').map(JSON.parse),n=calls.filter(x=>x[1]==='list').length;
- const handles=mode==='live'?['saved','duplicate','other']:mode==='restored'?(n===1?['restored']:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):(n===1?[]:['created']);
+ const handles=mode==='live'?['saved','duplicate','other']:mode==='restored'?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
  const incarnationId=h=>h==='saved'?'current':h==='restored'?'old':h+'-incarnation';
  const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:mode!=='connecting'||handle!=='created',orphaned:false}));
  const visualLayouts=[{root:{groups:[{tabs:handles.map(handle=>({title:handle==='other'?'心跳·other':'心跳·superagent_v2',panes:[{handle}]}))}]}}];
@@ -69,20 +72,41 @@ test('ensurePanel only detaches inside Orca and a git worktree', () => {
   expect(panel.ensurePanel({ cwd: root }, { ORCA_AGENT_SESSION_ID: 's' })).toBe(false);
 });
 
-test('restored heartbeat shell is closed and replaced', () => {
+test('pinned restored panel is re-armed in place', () => {
   const restored = fixture('restored');
   mkdirSync(join(restored.home, 'panels'), { recursive: true });
-  writeFileSync(record(restored.home, restored.repo), JSON.stringify({ handle: 'restored' }));
+  writeFileSync(
+    record(restored.home, restored.repo),
+    JSON.stringify({ handle: 'restored', incarnationId: 'previous' })
+  );
   expect(run(restored).exitCode).toBe(0);
   const calls = invocations(restored.calls);
-  expect(calls.map(call => call[1])).toEqual(['list', 'close', 'create', 'list', 'list', 'close']);
-  expect(calls.filter(call => call[1] === 'close').map(call => call[3])).toEqual([
-    'restored',
-    'late',
-  ]);
+  expect(calls.map(call => call[1])).toEqual(['list', 'close', 'send']);
+  expect(calls[2]).toContain('--enter');
   expect(JSON.parse(readFileSync(record(restored.home, restored.repo), 'utf8'))).toEqual({
-    handle: 'created',
-    incarnationId: 'created-incarnation',
+    handle: 'restored',
+    incarnationId: 'old',
+  });
+});
+
+test('late pinned panel replaces the created one on rescan', () => {
+  const restored = fixture('latePinned');
+  expect(run(restored).exitCode).toBe(0);
+  const calls = invocations(restored.calls);
+  expect(calls.map(call => call[1])).toEqual([
+    'list',
+    'create',
+    'list',
+    'list',
+    'close',
+    'send',
+    'close',
+  ]);
+  expect(calls[5]).toContain('--enter');
+  expect(calls[6]).toContain('created');
+  expect(JSON.parse(readFileSync(record(restored.home, restored.repo), 'utf8'))).toEqual({
+    handle: 'late',
+    incarnationId: 'late-incarnation',
   });
 });
 
@@ -151,9 +175,9 @@ test('concurrent ensures create once with the right command and failures stay co
     expect(result.stderr.toString()).not.toMatch(/read-only/i);
   }
 
-  const failed = fixture('fail');
+  const failed = fixture('codeFail');
   expect(run(failed).exitCode).toBe(0);
   expect(readFileSync(join(failed.home, 'logs/heartbeat-panel.log'), 'utf8')).toContain(
-    'orca failed'
+    'terminal_close_failed'
   );
 });
