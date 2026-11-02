@@ -14,6 +14,7 @@ import {
   notifyCli,
   ntfyCli,
   ntfyTickHealth,
+  superviseTickRunning,
   syncDecisionChannel,
 } from '../src/cli';
 import { caller, coord } from '../src/coord';
@@ -95,7 +96,7 @@ describe('ntfy decision channel', () => {
     await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
     expect(ntfyTickHealth({ at: new Date().toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, Date.now()).messages).toContain('ntfy 发布失败：offline');
   });
-  test('local answer uses the signed path once and inbox wait returns ask health events', async () => {
+  test('local answer uses the signed path once and inbox wait treats a tick slow owner as live', async () => {
     const f = fixture(), who = { ...caller(), session_id: 'local-session' }, scope = coord().scope(), output: unknown[] = [];
     f.config.actor = () => who;
     const id = askNtfy({ ...f.request('local'), originator: { identity: who, scope } }, f.config);
@@ -110,6 +111,11 @@ describe('ntfy decision channel', () => {
     const pending = askNtfy({ ...f.request('health'), originator: { identity: who, scope } }, f.config), now = f.config.now();
     expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString(), ntfy_publish: { ok: false, error: 'offline' } }, now)).toMatchObject({ event: 'delivery_failed', id: pending });
     expect(askWaitHealth([pending], f.config, { at: new Date(now - 181_000).toISOString() }, now)).toMatchObject({ event: 'tick_stale' });
+    expect(askWaitHealth([pending], f.config, { at: new Date(now - 181_000).toISOString() }, now, true)).toBeUndefined();
+    const owner = { pid: 42, pid_start: 'birth', started_at: new Date(now - 540_000).toISOString() };
+    expect(superviseTickRunning(owner, now, () => true)).toBeTrue();
+    expect(superviseTickRunning({ ...owner, started_at: new Date(now - 660_000).toISOString() }, now, () => true)).toBeFalse();
+    expect(superviseTickRunning(owner, now, () => false)).toBeFalse();
     ntfyCli(['ntfy', 'pause'], f.config, () => undefined); const paused = askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now)!; expect(paused).toMatchObject({ event: 'paused', id: pending }); expect(claimNtfyHealthEvent(paused.id!, paused.event, f.config)).toBeTrue(); expect(claimNtfyHealthEvent(paused.id!, paused.event, f.config)).toBeFalse(); expect(askWaitHealth([], f.config, { at: new Date(now).toISOString() }, now)).toBeUndefined(); ntfyCli(['ntfy', 'resume'], f.config, () => undefined);
     const withdrawn = askNtfy({ ...f.request('withdrawn'), callback: { kind: 'decision', id: 'gone' }, originator: { identity: who, scope } }, f.config); supersedeNtfyDecisions([], f.config); expect(askWaitHealth([withdrawn], f.config, { at: new Date(now).toISOString() }, now)).toMatchObject({ event: 'withdrawn', id: withdrawn });
     expect(askWaitHealth([pending], f.config, { at: new Date(now).toISOString() }, now + 3_600_001)).toMatchObject({ event: 'expired', id: pending });

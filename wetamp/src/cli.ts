@@ -65,7 +65,7 @@ import {
   type HoldSignal,
   type Ask as BaseAsk,
 } from './cockpit-signals';
-import { launcher, type Launcher } from './launcher';
+import { inspectProcess, launcher, type Launcher } from './launcher';
 import {
   claimCancelledExecution,
   executionOwnership,
@@ -3523,10 +3523,12 @@ export function superviseTick(mode: TickMode = {}):
   if (!current) {
     const l = lock(join(sa, 'supervise.lock'));
     if (!l.ok) return { skipped: 'locked' };
+    const releaseOwner = markSuperviseOwner(sa);
     try {
       rotateTickLog(sa);
       return tick(sa);
     } finally {
+      releaseOwner();
       l.release();
     }
   }
@@ -3543,19 +3545,21 @@ export function superviseTick(mode: TickMode = {}):
   }
   const l = lock(join(sa, 'supervise.lock'));
   if (!l.ok) return { skipped: 'locked' };
+  const releaseOwner = markSuperviseOwner(sa);
   let scheduled: ReturnType<typeof scheduleTickGroups> & { global: ReturnType<typeof tick> };
   try {
     rotateTickLog(sa);
-    const revisions = optional(reportRunRevisions) ?? null,
+    const records = ledgers().filter((ledger): ledger is Ledger => !('error' in ledger)),
+      revisions =
+        optional(() => reportRunRevisions(records.map(ledger => ledger.archon_run_id))) ?? null,
       asks = optional(loadAsks),
       statuses = optional(runStatuses) ?? null,
-      inputs = ledgers().flatMap(ledger => {
-        if ('error' in ledger) return [];
+      inputs = records.map(ledger => {
         const fixed = fixedEngineSnapshot(ledger),
           snapshot = fixed && existsSync(fixed) ? fixed : undefined,
           stat = statSync(ledgerPath(ledger.run_id)),
           status = statuses?.get(ledger.archon_run_id);
-        return [[ledger, stat, snapshot, status] satisfies TickInput];
+        return [ledger, stat, snapshot, status] satisfies TickInput;
       });
     const cached = readTickCache(sa),
       candidates = inputs.some(input =>
@@ -3567,10 +3571,45 @@ export function superviseTick(mode: TickMode = {}):
       global: tick(sa, new Set(), true),
     };
   } finally {
+    releaseOwner();
     l.release();
   }
   const promotion = autoPromote();
   return { ...scheduled, promotion, verify: autoVerify(currentEngineSnapshot()) };
+}
+
+const superviseOwnerPath = (sa = home().sa): string => join(sa, 'supervise-owner.json');
+const markSuperviseOwner = (sa: string): (() => void) => {
+  const processState = inspectProcess(process.pid),
+    owner = {
+      pid: process.pid,
+      pid_start: processState.start,
+      started_at: new Date().toISOString(),
+    },
+    path = superviseOwnerPath(sa);
+  writeAtomic(path, JSON.stringify(owner) + '\n');
+  return () => {
+    rmSync(path, { force: true });
+  };
+};
+export function superviseTickRunning(
+  owner: unknown,
+  now = Date.now(),
+  alive = (pid: number, start: string): boolean => {
+    const state = inspectProcess(pid);
+    return state.state === 'online' && state.start === start;
+  }
+): boolean {
+  if (!owner || typeof owner !== 'object') return false;
+  const value = owner as Record<string, unknown>,
+    age = now - (typeof value.started_at === 'string' ? Date.parse(value.started_at) : NaN);
+  return (
+    Number.isInteger(value.pid) &&
+    typeof value.pid_start === 'string' &&
+    age >= 0 &&
+    age <= 600_000 &&
+    alive(value.pid as number, value.pid_start)
+  );
 }
 
 const optional = <T>(read: () => T): T | undefined => {
@@ -5266,7 +5305,8 @@ export function askWaitHealth(
   ids: string[],
   supplied: Partial<NtfyConfig> = {},
   tick = readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
-  now = Date.now()
+  now = Date.now(),
+  superviseRunning = superviseTickRunning(optional(() => readJson(superviseOwnerPath())), now)
 ): { event: string; id: string; reason: string; next: string } | undefined {
   if (!ids.length) return undefined; for (const id of ids) {
     const decision = ntfyDecisionStatus(id, supplied);
@@ -5280,7 +5320,7 @@ export function askWaitHealth(
   if (tick?.ntfy_publish && !tick.ntfy_publish.ok && ids.some(id => ntfyDecisionStatus(id, supplied)?.delivery === 'pending'))
     return { event: 'delivery_failed', id: ids[0], reason: `问询推送失败：${tick.ntfy_publish.error ?? 'unknown'}`, next: '在当前对话确认选择后运行 superagent ask answer <id> <option>' };
   const tickAt = Date.parse(tick?.at ?? '');
-  if (!Number.isFinite(tickAt) || now - tickAt > 180_000)
+  if ((!Number.isFinite(tickAt) || now - tickAt > 180_000) && !superviseRunning)
     return { event: 'tick_stale', id: ids[0], reason: 'supervise-tick 超过 3 分钟未更新', next: '改走本地答复，并恢复 supervise-tick' };
   return undefined;
 }
