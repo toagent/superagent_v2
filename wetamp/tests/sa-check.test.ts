@@ -4834,6 +4834,26 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
   });
 
   // prettier-ignore
+  test('synced mainline edits are not scope violations', () => {
+    const root = tmp(), repo = gitRepo(root), plan = join(root, 'plan.json'), policy = join(root, 'policy.json');
+    const initial = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(plan, JSON.stringify({ packages: [{ id: 'a', scope: { write: ['allowed.ts'] }, accept: [{ cmd: 'true', timeout_s: 5 }] }] }));
+    writeFileSync(policy, JSON.stringify({ effort: snapshotPolicy(loadTiers()).effort, risk_paths: [], code_extensions: ['.ts'], exempt_paths: [], budget_floor: {} }));
+    writeFileSync(join(repo, 'allowed.ts'), 'package\n');
+    sh('git add allowed.ts && git -c user.name=t -c user.email=t@l commit -qm package', repo);
+    sh(`git branch target '${initial}' && git checkout -q target`, repo);
+    writeFileSync(join(repo, 'mainline.ts'), 'mainline\n');
+    sh('git add mainline.ts && git -c user.name=t -c user.email=t@l commit -qm mainline', repo);
+    const targetTip = sh('git rev-parse HEAD', repo).trim();
+    sh('git checkout -q main && git -c user.name=t -c user.email=t@l merge -qm sync target', repo);
+    const check = () => runScript(repo, { kind: 'accept', plan, policy, pkgs: 'a', tag: 'diff-m1-r1', base: initial, scope_base: initial, target_tip: targetTip, risk: 'G1' }).out;
+    expect(check()).toMatchObject({ disposition: 'advance', out_of_scope: [] });
+    writeFileSync(join(repo, 'mainline.ts'), 'package changed mainline\n');
+    sh('git add mainline.ts && git -c user.name=t -c user.email=t@l commit -qm package-outside', repo);
+    expect(check()).toMatchObject({ disposition: 'repair', out_of_scope: ['mainline.ts'] });
+  });
+
+  // prettier-ignore
   test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
     const repo = gitRepo(root);

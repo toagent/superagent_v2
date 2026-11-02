@@ -1377,7 +1377,7 @@ async function acceptOnce(
   const scope =
     base && env('RISK')
       ? scopeRisk(
-          changes(scopeBase(scopeStart, base)),
+          changes(env('TARGET_TIP') || scopeBase(scopeStart, base)),
           covered.flatMap(k => k.scope.write),
           policy(),
           env('RISK')

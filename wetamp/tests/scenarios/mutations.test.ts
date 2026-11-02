@@ -92,6 +92,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: "changes(env('TARGET_TIP') || scopeBase(scopeStart, base))",
+    to: 'changes(scopeBase(scopeStart, base))',
+    test: 'tests/sa-check.test.ts',
+    name: 'synced mainline edits are not scope violations',
+    expectedError: 'out_of_scope',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'authors.push(attemptIdentity([], node, e.data?.binding));',
     to: 'authors.push(unknown);',
     test: 'tests/sa-check.test.ts',
