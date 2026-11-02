@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tmp } from './helpers';
+import { alreadySandboxed, tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
 const INSTALL = join(WETAMP, 'scripts/install.sh');
@@ -30,11 +30,6 @@ function install(home: string, ...args: string[]) {
   return result;
 }
 
-const alreadySandboxed =
-  process.platform === 'darwin' &&
-  existsSync('/usr/bin/sandbox-exec') &&
-  Bun.spawnSync(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true'])
-    .exitCode !== 0;
 const seatbeltTest = test.skipIf(alreadySandboxed);
 const seatbeltTitle = alreadySandboxed
   ? 'real seatbelt skipped: 已在沙箱内，需在普通终端运行'
