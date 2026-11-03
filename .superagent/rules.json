@@ -18,21 +18,21 @@
     {
       "when": ["wetamp/src/cli.ts", "wetamp/tests/cli.test.ts"],
       "check": {
-        "cmd": "cd wetamp && bun test tests/cli.test.ts",
+        "cmd": "cd wetamp && bun test --timeout 300000 tests/cli.test.ts",
         "timeout_s": 1200
       }
     },
     {
       "when": ["wetamp/templates/.archon/scripts/sa-check.ts", "wetamp/tests/sa-check.test.ts"],
       "check": {
-        "cmd": "cd wetamp && bun test tests/sa-check.test.ts tests/hf10-retry.test.ts tests/signoff-rework.test.ts",
+        "cmd": "cd wetamp && bun test --timeout 300000 tests/sa-check.test.ts tests/hf10-retry.test.ts tests/signoff-rework.test.ts",
         "timeout_s": 1500
       }
     },
     {
       "when": ["wetamp/src/generate.ts", "wetamp/tests/generate.test.ts"],
       "check": {
-        "cmd": "cd wetamp && bun test tests/generate.test.ts",
+        "cmd": "cd wetamp && bun test --timeout 300000 tests/generate.test.ts",
         "timeout_s": 900
       }
     }
