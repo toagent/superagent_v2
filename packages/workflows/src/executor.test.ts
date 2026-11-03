@@ -746,6 +746,7 @@ describe('executeWorkflow', () => {
         host: hostname(),
         pid: process.pid,
         ...(uid === undefined ? {} : { uid }),
+        bound_at: expect.any(String),
       },
     };
 

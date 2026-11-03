@@ -2132,6 +2132,7 @@ export async function executeWorkflow(
     host: hostname(),
     pid: process.pid,
     ...(uid === undefined ? {} : { uid }),
+    bound_at: new Date().toISOString(),
   };
 
   if (preCreatedRun && priorCompletedNodes !== undefined) {
