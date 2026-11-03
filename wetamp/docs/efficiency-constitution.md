@@ -13,8 +13,8 @@
    自动补环境后仍缺外部资源的 held:environment，等价于带 needs 的 blocked。
    普通任务不得因排队、准入、配额、预算或未声明的人工 hold 等待。
 2. 一次做对：coder 在交付前跑通验收命令；verify 只做独立确认。
-   G0/G1 + auto 的 review 节点以运行期 G2 风险守卫默认跳过，触及 G2 时升级；
-   G2、strict 或 review:true 执行评审，不加 G2 升级守卫。
+   仅实际 diff 命中评审白名单（risk_paths 等运行期高危变更）或包声明非空 review_reason 时执行评审；
+   声明 G2、strict 或 review:true 均不单独触发评审。
 3. 引擎零误伤：内部辅助步骤故障不得被判成工作包 acceptance_failed。
    诊断缺失如实记录为引擎或诊断问题，不冒充产品验收失败。
 4. 故障即改派：可分类的厂商故障换厂商继续，AI 节点使用 transient retry。

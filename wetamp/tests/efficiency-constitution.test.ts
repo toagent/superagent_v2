@@ -53,11 +53,16 @@ const planPath = fixturePlan(root, gitRepo(root), p => {
 });
 const plan = loadPlan(planPath, [root]);
 type Node = { id: string; command?: string; retry?: unknown; when?: string; approval?: unknown };
-const workflow = (risk: 'G0' | 'G1' | 'G2', mode = 'auto', review = false): Node[] => {
+const workflow = (
+  risk: 'G0' | 'G1' | 'G2',
+  mode = 'auto',
+  review = false,
+  reviewReason?: string
+): Node[] => {
   const p = structuredClone(plan);
   p.packages[0].risk = risk;
   p.packages[0].review = review;
-  p.packages[0].review_reason = review ? 'test explicitly requests review' : undefined;
+  p.packages[0].review_reason = reviewReason;
   p.mode = mode as typeof p.mode;
   return buildWorkflow(p, milestones(p), 'constitution', root, false, 0, tiers).nodes as Node[];
 };
@@ -227,15 +232,21 @@ describe('EFFICIENCY_CONSTITUTION', () => {
 
   for (const risk of ['G0', 'G1', 'G2'] as const) {
     test(`② ${risk} reviews use the deterministic review-required decision`, () => {
-      const reviews = (review = false) =>
-        workflow(risk, 'auto', review).filter(n => n.command?.startsWith('sa-review'));
-      const auto = reviews();
-      expect(auto.length).toBeGreaterThan(0);
-      for (const node of auto) {
-        const guard = `$diff-${node.id.slice('review-'.length)}.output.review_required == 'true'`;
-        expect(node.when).toContain(guard);
+      const reviews = (mode: string, review: boolean, reason?: string) =>
+        workflow(risk, mode, review, reason).filter(n => n.command?.startsWith('sa-review'));
+      for (const mode of ['auto', 'strict']) {
+        for (const review of [false, true]) {
+          for (const reason of [undefined, '', '   ']) {
+            const auto = reviews(mode, review, reason);
+            expect(auto.length).toBeGreaterThan(0);
+            for (const node of auto) {
+              const guard = `$diff-${node.id.slice('review-'.length)}.output.review_required == 'true'`;
+              expect(node.when).toContain(guard);
+            }
+          }
+        }
       }
-      const explicit = reviews(true);
+      const explicit = reviews('auto', false, '用户明确要求评审');
       expect(explicit.length).toBeGreaterThan(0);
       for (const node of explicit) {
         expect(node.when).not.toContain('.output.review_required');
