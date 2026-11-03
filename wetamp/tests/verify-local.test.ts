@@ -180,6 +180,25 @@ git config --global --get core.hooksPath && exit 9
     });
   };
 
+  test('forwards no arguments through the Bash 3.2 heavy-slot re-entry', () => {
+    const root = tmp(),
+      scripts = join(root, 'wetamp/scripts'),
+      capture = join(root, 'args');
+    mkdirSync(scripts, { recursive: true });
+    copyFileSync(SCRIPT, join(scripts, 'verify-local.sh'));
+    writeFileSync(
+      join(scripts, 'heavy-slot.sh'),
+      'heavy_exec() { printf "%s\\n" "$#" > "$CAPTURE"; }\n'
+    );
+    const result = Bun.spawnSync(['/bin/bash', join(scripts, 'verify-local.sh')], {
+      env: { ...process.env, CAPTURE: capture },
+      stderr: 'pipe',
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).not.toContain('unbound variable');
+    expect(readFileSync(capture, 'utf8')).toBe('1\n');
+  });
+
   test('runs a serial heavy lane alongside four complete parallel light shards', () => {
     prepareShared();
     expect(sharedResult.code).toBe(0);

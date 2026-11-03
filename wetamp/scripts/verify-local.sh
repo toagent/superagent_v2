@@ -14,7 +14,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "${SA_HEAVY_LOCK_HELD:-}" != 1 ]; then
-  heavy_exec "$0" "${ORIGINAL_ARGS[@]}"
+  heavy_exec "$0" ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
   exit
 fi
 REPO="$(git -C "$WETAMP" rev-parse --show-toplevel)"
