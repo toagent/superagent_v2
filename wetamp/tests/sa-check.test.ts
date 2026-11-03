@@ -4649,97 +4649,96 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       expect(readFileSync(counter, 'utf8')).toBe('executed\nexecuted\n');
     }
   );
-  test(
-    'U5: real node environments reuse output and contract; identity changes execute again',
-    () => {
-      const root = tmp(),
-        repo = gitRepo(root),
-        art = join(root, 'art');
-      const counter = join(root, 'executions'),
-        p = join(root, 'plan.json');
-      const check: Check = {
-        cmd: `echo executed >> '${counter}'; echo original-stdout; echo original-stderr >&2`,
-        timeout_s: 5,
-        cache: true,
-      };
-      const plan = {
-        packages: [{ id: 'a', accept: [check] }],
-        environment: [] as { cmd: string; timeout_s: number }[],
-      };
-      const go = (tag: string, extra: Record<string, string> = {}) => {
-        writeFileSync(p, JSON.stringify(plan));
+  test('U5: real node environments reuse output and contract; identity changes execute again', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      art = join(root, 'art');
+    const counter = join(root, 'executions'),
+      p = join(root, 'plan.json');
+    const check: Check = {
+      cmd: `echo executed >> '${counter}'; echo original-stdout; echo original-stderr >&2`,
+      timeout_s: 30,
+      cache: true,
+    };
+    const plan = {
+      packages: [{ id: 'a', accept: [check] }],
+      environment: [] as { cmd: string; timeout_s: number }[],
+    };
+    const go = (tag: string, extra: Record<string, string> = {}) => {
+      writeFileSync(p, JSON.stringify(plan));
+      const result = runScript(
+        repo,
+        { kind: 'accept', plan: p, pkgs: 'a', tag },
+        SCRIPT,
+        {
+          ...acceptanceNodeEnvironment(art, tag),
+          ...extra,
+        },
+        true,
+        120_000
+      );
+      expect(result.code, result.err).toBe(0);
+      return result.out as Accept;
+    };
+    const count = () => readFileSync(counter, 'utf8').trim().split('\n').length;
+    const first = go('verify-a'),
+      second = go('diff-m1-r1');
+    expect(count()).toBe(1);
+    expect(second.contract_hash).toBe(first.contract_hash);
+    const replay = readFileSync(join(art, 'diff-m1-r1.log'), 'utf8');
+    expect(replay).toContain('# reused pass from verify-a');
+    expect(replay).toContain('original-stdout\noriginal-stderr\n');
+    check.resource = 'heavy-test';
+    const resourceAdded = go('resource-added');
+    check.resource = 'browser';
+    const resourceChanged = go('resource-changed');
+    expect(count()).toBe(1);
+    expect(resourceAdded.contract_hash).toBe(first.contract_hash);
+    expect(resourceChanged.contract_hash).toBe(first.contract_hash);
+    delete check.resource;
+    for (const [tag, path] of [
+      ['tracked', 'README.md'],
+      ['untracked', 'new.txt'],
+    ]) {
+      const file = join(repo, path!);
+      const original = existsSync(file) ? readFileSync(file) : null;
+      writeFileSync(file, 'changed');
+      const before = count();
+      for (let i = 0; i < 2; i++) {
         const result = runScript(
           repo,
-          { kind: 'accept', plan: p, pkgs: 'a', tag },
+          { kind: 'accept', plan: p, pkgs: 'a', tag: `${tag}-${i}` },
           SCRIPT,
-          { ...acceptanceNodeEnvironment(art, tag), ...extra },
+          acceptanceNodeEnvironment(art, tag!),
           true,
-          60_000
+          120_000
         );
-        expect(result.code, result.err).toBe(0);
-        return result.out as Accept;
-      };
-      const count = () => readFileSync(counter, 'utf8').trim().split('\n').length;
-      const first = go('verify-a'),
-        second = go('diff-m1-r1');
-      expect(count()).toBe(1);
-      expect(second.contract_hash).toBe(first.contract_hash);
-      const replay = readFileSync(join(art, 'diff-m1-r1.log'), 'utf8');
-      expect(replay).toContain('# reused pass from verify-a');
-      expect(replay).toContain('original-stdout\noriginal-stderr\n');
-      check.resource = 'heavy-test';
-      const resourceAdded = go('resource-added');
-      check.resource = 'browser';
-      const resourceChanged = go('resource-changed');
-      expect(count()).toBe(1);
-      expect(resourceAdded.contract_hash).toBe(first.contract_hash);
-      expect(resourceChanged.contract_hash).toBe(first.contract_hash);
-      delete check.resource;
-      for (const [tag, path] of [
-        ['tracked', 'README.md'],
-        ['untracked', 'new.txt'],
-      ]) {
-        const file = join(repo, path!);
-        const original = existsSync(file) ? readFileSync(file) : null;
-        writeFileSync(file, 'changed');
-        const before = count();
-        for (let i = 0; i < 2; i++) {
-          const result = runScript(
-            repo,
-            { kind: 'accept', plan: p, pkgs: 'a', tag: `${tag}-${i}` },
-            SCRIPT,
-            acceptanceNodeEnvironment(art, tag!),
-            true,
-            60_000
-          );
-          expect(result.out).toMatchObject({ workspace_clean: false, ok: false });
-        }
-        expect(count()).toBe(before + 2);
-        if (original) writeFileSync(file, original);
-        else unlinkSync(file);
+        expect(result.out).toMatchObject({ workspace_clean: false, ok: false });
       }
-      check.cache = false;
-      go('uncached-1');
-      go('uncached-2');
-      expect(count()).toBe(7);
-      check.cache = true;
-      go('project-changed', { SA_U5_PROJECT: 'changed' });
-      expect(count()).toBe(8);
-      plan.environment = [{ cmd: 'true', timeout_s: 5 }];
-      go('env-key-changed');
-      expect(count()).toBe(9);
-      check.timeout_s++;
-      go('timeout-changed');
-      expect(count()).toBe(10);
-      sh(
-        'echo changed > README.md && git add README.md && git -c user.name=t -c user.email=t@l commit -qm changed',
-        repo
-      );
-      go('tree-changed');
-      expect(count()).toBe(11);
-    },
-    testTimeout(120_000)
-  );
+      expect(count()).toBe(before + 2);
+      if (original) writeFileSync(file, original);
+      else unlinkSync(file);
+    }
+    check.cache = false;
+    go('uncached-1');
+    go('uncached-2');
+    expect(count()).toBe(7);
+    check.cache = true;
+    go('project-changed', { SA_U5_PROJECT: 'changed' });
+    expect(count()).toBe(8);
+    plan.environment = [{ cmd: 'true', timeout_s: 5 }];
+    go('env-key-changed');
+    expect(count()).toBe(9);
+    check.timeout_s++;
+    go('timeout-changed');
+    expect(count()).toBe(10);
+    sh(
+      'echo changed > README.md && git add README.md && git -c user.name=t -c user.email=t@l commit -qm changed',
+      repo
+    );
+    go('tree-changed');
+    expect(count()).toBe(11);
+  }, 300_000); // This case runs many bounded sa-check fixtures concurrently with other files.
   // prettier-ignore
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),

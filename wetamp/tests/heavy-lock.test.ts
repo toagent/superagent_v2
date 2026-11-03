@@ -165,6 +165,36 @@ test('browser admission exposes exactly two machine-wide slots', async () => {
   await Promise.all([second!.release(), next!.release()]);
 });
 
+test('resource admission publishes memory pressure and acquires after recovery', async () => {
+  const root = track(mkdtempSync(join(tmpdir(), 'memory-slots-'))),
+    lock = join(root, 'slot.lock');
+  let pressure = 2;
+  const pending = acquireResource(
+    'heavy-test',
+    500,
+    [lock],
+    'bun test',
+    root,
+    new Date().toISOString(),
+    () => Promise.resolve({ pressure, free: 45, source: 'sysctl' }),
+    5
+  );
+  const queued = join(`${lock}.queue`, `${String(process.pid)}.json`);
+  for (
+    let i = 0;
+    i < 50 && (!existsSync(queued) || !readFileSync(queued, 'utf8').includes('等待恢复'));
+    i++
+  )
+    await Bun.sleep(5);
+  expect(JSON.parse(readFileSync(queued, 'utf8')).waiting_for).toBe(
+    '内存压力高（level=2），等待恢复'
+  );
+  pressure = 1;
+  const lease = await pending;
+  expect(lease).toBeDefined();
+  await lease!.release();
+});
+
 test('a complete suite uses at most one third of the machine CPUs', async () => {
   const { root, env } = fixture();
   expect(await run(env, 'budget').exited).toBe(0);
