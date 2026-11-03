@@ -103,6 +103,7 @@ interface SignedAnswer {
 
 interface StoredDecision extends NtfyAsk {
   id: string;
+  seq?: number;
   created_at: string;
   status: 'pending' | 'answered' | 'expired' | 'failed' | 'superseded';
   delivery: 'pending' | 'sent';
@@ -370,7 +371,14 @@ function actionFor(
   };
 }
 
-function receipt(state: NtfyState, id: string, title: string, message: string, now: number): void {
+function receipt(
+  state: NtfyState,
+  id: string,
+  title: string,
+  message: string,
+  now: number,
+  seq?: number
+): void {
   if (state.sent[`alert:${id}`] || state.alerts.some(alert => alert.id === id)) {
     state.activity.push({ at: now, kind: 'deduplicated' });
     return;
@@ -382,9 +390,11 @@ function receipt(state: NtfyState, id: string, title: string, message: string, n
   const project = structured >= 0 ? parts[structured + 1] : 'superagent';
   const problem = structured >= 0 ? parts[structured + 2] : parts.at(-1);
   // prettier-ignore
-  state.alerts.push(structured >= 0
+  const alert = structured >= 0
     ? { id, ...receiptPresentation({ outcome: processing ? 'processing' : executed ? 'executed' : 'not_executed', project, headline: problem ?? '决策回执', selection: parts[0]?.split('：').at(-1) ?? '未知', result: message, next: processing || executed ? '引擎继续执行' : '操作员重读最新决策', source: id }) }
-    : { id, title, message, priority: 2, tags: [executed ? 'green_circle' : 'white_circle'] });
+    : { id, title, message, priority: 2, tags: [executed ? 'green_circle' : 'white_circle'] };
+  if (seq !== undefined) alert.title += `｜回复 #${String(seq)}`;
+  state.alerts.push(alert);
   state.alert_ids.push(id);
 }
 
@@ -458,7 +468,7 @@ async function publish(
   state: NtfyState,
   topic: 'sa-decisions' | 'sa-alerts',
   body: Record<string, unknown>
-): Promise<void> {
+): Promise<number> {
   const publisher = secureSecret(config.publisherToken, 'publisher token');
   const seq = (state.seq ?? 0) + 1;
   // prettier-ignore
@@ -480,6 +490,7 @@ async function publish(
   if (!response.ok) throw new Error(`ntfy publish failed (${String(response.status)})`);
   state.seq = seq;
   saveState(config.statePath, state);
+  return seq;
 }
 
 const HOUR = 3_600_000;
@@ -584,7 +595,7 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
     }
     const answer = secureSecret(config.answerToken, 'answer token');
     const presented = decisionPresentation(decision);
-    await publish(config, state, 'sa-decisions', {
+    decision.seq = await publish(config, state, 'sa-decisions', {
       ...presented,
       title: decision.red_phase === 'confirm' ? `确认：${presented.title}` : presented.title,
       message:
@@ -743,7 +754,8 @@ export async function syncNtfy(
                 ? `未执行｜${optionLabel(decision, answer.option)}｜${decisionPresentation(decision).title}`
                 : `未执行｜${decision ? decisionPresentation(decision).title : '未知决策'}`,
             rejection,
-            config.now()
+            config.now(),
+            decision?.seq
           );
           continue;
         }
@@ -766,7 +778,8 @@ export async function syncNtfy(
             `receipt:${decision.id}:request`,
             `已收到批准申请｜${decisionPresentation(decision).title}`,
             '请在新通知中确认',
-            config.now()
+            config.now(),
+            decision.seq
           );
           continue;
         }
@@ -785,7 +798,8 @@ export async function syncNtfy(
             gate
               ? `已收到你的『${label}』，正在执行（门禁 ${gate}）`
               : `${outcome?.result ?? '本次答复已执行'}${source === 'local' ? '（本地答复）' : ''}`,
-            config.now()
+            config.now(),
+            decision.seq
           );
           accepted++;
         } catch (error) {
@@ -804,7 +818,8 @@ export async function syncNtfy(
             decision.status === 'superseded'
               ? staleReceipt[1]
               : `处理失败（${decision.error.code}）；你的选择未改变任何状态`,
-            config.now()
+            config.now(),
+            decision.seq
           );
           failed++;
           state.callback_failures++;
@@ -829,7 +844,8 @@ export async function syncNtfy(
               `receipt:${decision.id}:${decision.default_on_expiry}`,
               `已记录：${label}｜${decisionPresentation(decision).title}`,
               '已按到期默认值执行',
-              config.now()
+              config.now(),
+              decision.seq
             );
             accepted++;
           } catch {

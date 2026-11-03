@@ -42,7 +42,7 @@ function fixture(now = 2_000_000_000_000) {
   const request = (ref: string, risk: 'normal' | 'red' = 'normal') => ({ source: 'test', title: 'Decision', body: 'Choose', risk, options: [{ id: 'yes', label: 'Yes', consequence: 'changes state' }, { id: 'no', label: 'No' }], expires_at: new Date(now + 3_600_000).toISOString(), callback: { kind: 'external' as const, ref }, dedupe_key: ref });
   const action = (post = posts.at(-1)!, index = 0) => JSON.parse(String((post.body.actions as { body: string }[])[index].body));
   const push = (value: unknown) => events.push(JSON.stringify({ id: String(++eventId).padStart(12, '0'), event: 'message', message: JSON.stringify(value) }));
-  const state = () => JSON.parse(readFileSync(config.statePath, 'utf8')) as { cursor?: string; decisions: Record<string, { status: string; error?: { code: string; message: string } }> };
+  const state = () => JSON.parse(readFileSync(config.statePath, 'utf8')) as { cursor?: string; decisions: Record<string, { seq?: number; status: string; error?: { code: string; message: string } }> };
   return { root, config, posts, request, action, push, state };
 }
 
@@ -73,6 +73,13 @@ describe('ntfy decision channel', () => {
     await publishPendingNtfy(legacy.config);
     expect(legacy.posts[0]!.body.title).toBe('#1 05-18 03:33｜');
   });
+  test('links receipts to the published decision sequence while preserving legacy state', async () => {
+    const f = fixture(), id = askNtfy(f.request('reply-sequence'), f.config); await publishPendingNtfy(f.config);
+    expect(f.state().decisions[id]?.seq).toBe(1); f.push(f.action()); await syncNtfy(() => undefined, f.config);
+    expect(String(f.posts.at(-1)!.body.title)).toEndWith('｜回复 #1');
+    const legacy = fixture(), legacyId = askNtfy(legacy.request('legacy-reply'), legacy.config); await publishPendingNtfy(legacy.config); const action = legacy.action(), state = legacy.state(); delete state.decisions[legacyId]!.seq; writeFileSync(legacy.config.statePath, JSON.stringify(state)); legacy.push(action); await syncNtfy(() => undefined, legacy.config);
+    expect(String(legacy.posts.at(-1)!.body.title)).not.toContain('回复 #');
+  });
   test('uses ntfy JSON protocol and advances past forged, replayed and callback-failed events', async () => {
     const f = fixture(), accepted: string[] = [];
     const first = askNtfy(f.request('first'), f.config); await publishPendingNtfy(f.config);
@@ -80,7 +87,7 @@ describe('ntfy decision channel', () => {
     expect((f.posts[0].body.actions as { clear: boolean }[]).every(action => action.clear)).toBeTrue();
     const valid = f.action(); f.push({ ...valid, sig: '0'.repeat(64) }); f.push(valid); f.push(valid); f.push({ ...valid, id: 'missing' });
     expect(await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).toEqual({ accepted: 1, ignored: 3, failed: 0 });
-    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => withoutHeader(post.body.title))).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜未知决策']);
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => withoutHeader(post.body.title))).toEqual(['未执行｜Decision｜回复 #1', '已记录：Yes｜Decision｜回复 #1', '未执行｜未知决策']);
     const bad = askNtfy(f.request('bad'), f.config), stale = askNtfy(f.request('stale'), f.config), live = askNtfy(f.request('live'), f.config);
     await publishPendingNtfy(f.config); const badAction = f.action(f.posts.at(-3)), staleAction = f.action(f.posts.at(-2), 1); f.push(badAction); f.push(staleAction); f.push(f.action());
     expect(await syncNtfy(d => { if (d.id === bad) throw new Error('secret body'); if (d.id === stale) throw new DecisionError('决定已变化，请重读', 'decision_changed', { status: 'accepted', at: '2033-05-18T03:33:19.000Z' }); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 2 });
