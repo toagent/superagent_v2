@@ -44,11 +44,11 @@ if [ "$name" = codex ]; then
     i=$((i + 1))
   done
   if [ "$has_sandbox" = 0 ]; then
-    rewritten=(-c 'sandbox_mode="danger-full-access"' "${rewritten[@]}")
+    rewritten=(-c 'sandbox_mode="danger-full-access"' ${rewritten[@]+"${rewritten[@]}"})
     changed=1
   fi
-  args=("${rewritten[@]}")
+  args=(${rewritten[@]+"${rewritten[@]}"})
   [ "$changed" = 0 ] || echo "ai-jail-shim: Codex 已改为使用外层沙箱" >&2
 fi
 
-exec "$HOME/.wetamp/jail/ai-jail" "$real" "${args[@]}"
+exec "$HOME/.wetamp/jail/ai-jail" "$real" ${args[@]+"${args[@]}"}

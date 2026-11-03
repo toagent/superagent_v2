@@ -127,6 +127,46 @@ describe('ai-jail', () => {
     expect(result.stderr.toString()).toContain('沙箱配置缺失');
   });
 
+  test('client shims preserve empty argument lists under macOS bash', () => {
+    const root = tmp(),
+      home = join(root, 'home'),
+      jail = join(home, '.wetamp/jail'),
+      realBin = join(root, 'real'),
+      output = join(root, 'args.txt'),
+      target = join(WETAMP, 'bin/ai-jail-shim');
+    mkdirSync(jail, { recursive: true });
+    mkdirSync(realBin);
+    writeFileSync(join(jail, 'ai-jail'), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$OUTPUT"\n', {
+      mode: 0o755,
+    });
+    for (const client of ['claude', 'codex']) {
+      writeFileSync(join(realBin, client), '#!/bin/sh\n', { mode: 0o755 });
+      Bun.spawnSync(['ln', '-s', target, join(root, client)]);
+    }
+    const cases: [string, string[], string[]][] = [
+      ['claude', [], []],
+      ['claude', ['x', '', 'y'], ['x', '', 'y']],
+      ['codex', [], ['-c', 'sandbox_mode="danger-full-access"']],
+      [
+        'codex',
+        ['--full-auto', '-s', 'read-only', 'x'],
+        ['-c', 'sandbox_mode="danger-full-access"', '-c', 'approval_policy="on-request"', 'x'],
+      ],
+    ];
+    for (const [client, args, expected] of cases) {
+      const result = Bun.spawnSync(['/bin/bash', join(root, client), ...args], {
+        env: { ...process.env, HOME: home, PATH: `${realBin}:/usr/bin:/bin`, OUTPUT: output },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+      expect(readFileSync(output, 'utf8').split('\n').slice(0, -1)).toEqual([
+        join(realBin, client),
+        ...expected,
+      ]);
+    }
+  });
+
   test('Codex shim removes nested sandbox flags and preserves command shape', () => {
     const root = tmp(),
       home = join(root, 'home'),
