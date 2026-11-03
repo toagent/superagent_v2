@@ -5003,7 +5003,8 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     ).toMatchObject({ ok: true, risk: 'G1', out_of_scope: [] });
     // 原包顺序不能决定累计范围；SCOPE_PKGS 由生成器按实际里程碑拓扑提供。
     write(['src/a.ts']);
-    expect(go('G0')).toMatchObject({
+    const scopeCoder = JSON.stringify({ status: 'blocked', error_class: 'scope_violation', needs: [{ cap: 'scope_decision' }] });
+    expect(go('G0', { coder: scopeCoder })).toMatchObject({
       risk: 'G1',
       out_of_scope: ['src/b.md'],
       disposition: 'advance',
@@ -5113,7 +5114,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     mkdirSync(join(root, 'approvals'));
     // prettier-ignore
     writeFileSync(join(root, 'approvals/human-scope-a.json'), JSON.stringify({ files: Object.keys(held.scope_blobs).sort(), blobs: held.scope_blobs }));
-    expect(go([], 'diff-m1-r1')).toMatchObject({
+    expect(go([scopeNeed], 'diff-m1-r1')).toMatchObject({
       disposition: 'advance',
       out_of_scope: ['generated.ts', 'heartbeat.ts', 'schema.json'],
     });
@@ -5125,7 +5126,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     });
     expect(go([scopeNeed, { cap: 'environment' }])).toMatchObject({ reason: 'false_handback' });
     writePlan('false');
-    expect(go([scopeNeed])).toMatchObject({ reason: 'false_handback' });
+    expect(go([scopeNeed])).toMatchObject({ reason: 'scope_violation' });
   });
   test('unknown kind fails loudly', () => {
     const root = tmp();
@@ -5344,7 +5345,7 @@ test('ROOT_ACCEPT malformed plan is an engine fault with original evidence and n
 });
 
 test.each(['scope_violation', 'plan_invalid'])(
-  'adjudication %s stops verify, settle and gate repair',
+  'pure scope decision %s follows the scope mechanism',
   error_class => {
     const root = tmp(),
       repo = gitRepo(root),
@@ -5360,18 +5361,18 @@ test.each(['scope_violation', 'plan_invalid'])(
       needs,
       blockers: ['contract conflict'],
     });
-    const plan = planFile(root, 'false');
+    const plan = planFile(root, 'true');
     const value = JSON.parse(readFileSync(plan, 'utf8'));
     value.packages[0].scope = { write: ['src/'] };
     writeFileSync(plan, JSON.stringify(value));
     const inputs = { plan, pkgs: 'a', coder, base, risk: 'G1' };
     const verify = runScript(repo, { ...inputs, kind: 'accept', tag: 'verify-a' });
-    expect(verify.code).toBe(1);
+    expect(verify.code).toBe(0);
     expect(verify.out).toMatchObject({
-      disposition: 'fail',
-      reason: 'coder_needs',
+      disposition: 'advance',
+      reason: null,
       out_of_scope: ['outside.ts'],
-      decision: { needs },
+      scope_auto_approved: ['outside.ts'],
     });
     const settled = runScript(repo, {
       ...inputs,
@@ -5380,15 +5381,10 @@ test.each(['scope_violation', 'plan_invalid'])(
       first: JSON.stringify(verify.out),
       repaired: coder,
     });
-    expect(settled.code).toBe(1);
-    expect(settled.out).toMatchObject({
-      disposition: 'fail',
-      reason: 'coder_needs',
-      decision: { needs },
-    });
-    expect(decide({ rechecks: [verify.out as Accept], reviews: [null], risk: 'G1' })).toMatchObject(
-      { verdict: 'escalate', reason: 'coder_needs', decision: { needs } }
-    );
+    expect(settled.code).toBe(0);
+    expect(
+      decide({ selfReport: coder, rechecks: [verify.out as Accept], risk: 'G1' })
+    ).toMatchObject({ verdict: 'pass', reason: null });
   }
 );
 
