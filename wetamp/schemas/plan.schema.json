@@ -191,6 +191,11 @@
             "type": "boolean",
             "description": "Request milestone review; G2 and strict always require review"
           },
+          "review_reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "User request or risk-path match that justifies review"
+          },
           "effort": {
             "enum": ["low", "medium", "high", "xhigh", "max"],
             "description": "Legacy input accepted; dispatch follows policy.effort"

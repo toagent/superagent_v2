@@ -449,6 +449,8 @@ describe('quick', () => {
             '--risk',
             'G2',
             '--review',
+            '--review-reason',
+            '命中风险白名单',
             '--json',
           ])
         )
@@ -457,6 +459,7 @@ describe('quick', () => {
       expect(explicit.packages[0]).toMatchObject({
         risk: 'G2',
         review: true,
+        review_reason: '命中风险白名单',
         scope: { write: ['src/**', 'tests/**'] },
       });
       expect(explicit.packages[0].accept[0]).toHaveProperty('cache', false);
@@ -502,6 +505,8 @@ describe('quick', () => {
       '--console',
       'codex',
       '--review',
+      '--review-reason',
+      '用户明确要求',
     ];
     try {
       const path = quickPlan(parseArgs(args));
@@ -513,7 +518,8 @@ describe('quick', () => {
       expect(plan.packages[0].title).toBe('card.md');
       expect(plan.packages[0].accept[0].timeout_s).toBe(120);
       expect(plan.console).toBe('codex');
-      expect(plan.mode).toBe('strict');
+      expect(plan.mode).toBeUndefined();
+      expect(plan.packages[0].review_reason).toBe('用户明确要求');
       expect(milestones(plan)[0].review).toBe(true);
       const workflow = buildWorkflow(plan, milestones(plan), 'card', '/GEN', true);
       expect(JSON.stringify(workflow)).toContain('gate-m1-r6');
@@ -524,6 +530,9 @@ describe('quick', () => {
           '--accept-timeout'
         );
       expect(() => quickPlan(parseArgs([...args, '--console', 'other']))).toThrow('--console');
+      expect(() =>
+        quickPlan(parseArgs(args.filter(x => !['--review-reason', '用户明确要求'].includes(x))))
+      ).toThrow('--review-reason');
       writeFileSync(card, ' ');
       expect(() => quickPlan(parseArgs(args))).toThrow('non-empty');
       expect(() => quickPlan(parseArgs([...args, '--card', join(root, 'missing')]))).toThrow();
