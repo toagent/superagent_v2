@@ -75,11 +75,16 @@ test('queued state 显示等待时长和截断后的持有者', () => {
         command: 'bun test '.repeat(10),
         started_at: new Date(now - 300_000).toISOString(),
       },
+      holders: [
+        { command: 'bun test '.repeat(10), started_at: new Date(now - 300_000).toISOString() },
+        { command: 'engine acceptance', started_at: new Date(now - 60_000).toISOString() },
+      ],
     },
   ];
   expect(renderPanel(value, tick(), now, allMarshals, 120)).toContain(
     '⏳ 排队等重型名额 2m · 持有者 bun test'
   );
+  expect(renderPanel(value, tick(), now, allMarshals, 120)).toContain('engine acceptance (1m)');
 });
 
 test('用 tick 判断新鲜度并按 heartbeat.at 漂移时长', () => {

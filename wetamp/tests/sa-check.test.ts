@@ -3681,16 +3681,16 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       const root = tmp(),
         repo = gitRepo(root),
         lock = join(root, 'resource.lock'),
-        ready = join(root, 'initial-ready'),
+        ready = (index: number) => join(root, `initial-ready-${String(index)}`),
         waiting = join(root, 'queued-waiting'),
         queued = join(root, 'queued-ready'),
         once = join(root, 'queued-once'),
         reacquire = join(root, 'reacquire.sh'),
         p = join(root, 'plan.json');
-      const lockArgs = (body: string) =>
+      const lockArgs = (slot: string, body: string) =>
         process.platform === 'darwin'
-          ? ['/usr/bin/lockf', '-k', lock, 'sh', '-c', body]
-          : ['flock', lock, 'sh', '-c', body];
+          ? ['/usr/bin/lockf', '-k', slot, 'sh', '-c', body]
+          : ['flock', slot, 'sh', '-c', body];
       writeFileSync(
         reacquire,
         process.platform === 'darwin'
@@ -3698,12 +3698,15 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
           : `#!/bin/sh\nflock -n "$SA_HEAVY_LOCK_FILE" true && exit 2\ntouch '${waiting}'\nexec flock "$SA_HEAVY_LOCK_FILE" sh -c ${JSON.stringify(`touch '${queued}'; sleep 1.2`)}\n`,
         { mode: 0o755 }
       );
-      const holder = Bun.spawn(lockArgs(`touch '${ready}'; sleep 1.2`), {
-        stdout: 'ignore',
-        stderr: 'pipe',
-      });
-      for (let i = 0; i < 100 && !existsSync(ready); i++) await Bun.sleep(10);
-      expect(existsSync(ready)).toBe(true);
+      const holders = [lock, `${lock}.1`, `${lock}.2`].map((slot, index) =>
+        Bun.spawn(lockArgs(slot, `touch '${ready(index)}'; sleep ${index === 0 ? '0.6' : '1.8'}`), {
+          stdout: 'ignore',
+          stderr: 'pipe',
+        })
+      );
+      for (let i = 0; i < 100 && holders.some((_, index) => !existsSync(ready(index))); i++)
+        await Bun.sleep(10);
+      expect(holders.every((_, index) => existsSync(ready(index)))).toBe(true);
       const command = `if [ ! -e '${once}' ]; then touch '${once}'; nohup '${reacquire}' >/dev/null 2>&1 & while [ ! -e '${waiting}' ]; do sleep 0.01; done; fi; printf '%40000s' ''; printf '%s' '{"failure_class":"product","evidence":"full stdout survived"}'; printf 'full stderr survived\\n' >&2; exit 1`;
       writeFileSync(
         p,
@@ -3730,7 +3733,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         SCRIPT,
         { SA_HEAVY_LOCK_FILE: lock }
       );
-      expect(await holder.exited).toBe(0);
+      expect(await Promise.all(holders.map(holder => holder.exited))).toEqual([0, 0, 0]);
       expect(result.out).toMatchObject({
         failures: [{ failure_class: 'product' }],
         command_results: [

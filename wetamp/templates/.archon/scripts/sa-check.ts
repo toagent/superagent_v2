@@ -94,7 +94,7 @@ const subprocessOutput = async (): Promise<typeof import('@archon/workflows/subp
 export const CHECK_AUX_TIMEOUT_MS = 10_000;
 export const CHECK_EVENT_QUERY_TIMEOUT_MS = 60_000;
 // prettier-ignore
-export const RESOURCE_WAIT_BUDGET_S = 1_800, PROCESS_TREE_RECOVERY_MS = 10_000, RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
+export const RESOURCE_WAIT_BUDGET_S = 1_800, PROCESS_TREE_RECOVERY_MS = 10_000, RESOURCE_SLOTS = { 'heavy-test': ['/tmp/superagent-heavy-test.lock', '/tmp/superagent-heavy-test.lock.1', '/tmp/superagent-heavy-test.lock.2'], browser: ['/tmp/superagent-browser-0.lock', '/tmp/superagent-browser-1.lock'] } as const satisfies Record<NonNullable<Check['resource']>, readonly string[]>;
 // prettier-ignore
 let resourceWaitElapsedMs = 0, resourceOutputSequence = 0, resourceWaitTimeoutCommand = '';
 // prettier-ignore
@@ -106,7 +106,7 @@ class ResourceWaitTimeout extends Error { constructor(readonly command: string) 
 interface ResourceLease { queuedAt: string; waitedMs: number; release(): Promise<void>; }
 // prettier-ignore
 const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
-  resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE] : RESOURCE_SLOTS[resource];
+  resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE, `${process.env.SA_HEAVY_LOCK_FILE}.1`, `${process.env.SA_HEAVY_LOCK_FILE}.2`] : RESOURCE_SLOTS[resource];
 // prettier-ignore
 function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams | undefined> {
   const command = process.platform === 'darwin' ? ['/usr/bin/lockf', '-t', '0', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'] : ['flock', '-n', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'];

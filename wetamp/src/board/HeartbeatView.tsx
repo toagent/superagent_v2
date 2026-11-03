@@ -345,7 +345,7 @@ function MobileHeartbeatFrame({
       {model.heavyQueue.slice(0, 1).map(item => (
         <Text key={item.command} color="yellow" wrap="truncate-end">
           {fit(
-            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${fit(item.holder?.command ?? '未知', 32)} (${item.holder ? panelDuration(item.holder.running_s + drift) : '未知'})`,
+            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${item.holders.length ? item.holders.map(holder => `${fit(holder.command, 20)} (${panelDuration(holder.running_s + drift)})`).join('、') : '未知'}`,
             width
           )}
         </Text>
@@ -515,7 +515,7 @@ export function HeartbeatFrame({
       {model.heavyQueue.map(item => (
         <Text key={item.command} color="yellow" wrap="truncate-end">
           {fit(
-            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${fit(item.holder?.command ?? '未知', 40)} (${item.holder ? panelDuration(item.holder.running_s + drift) : '未知'})`,
+            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${item.holders.length ? item.holders.map(holder => `${fit(holder.command, 24)} (${panelDuration(holder.running_s + drift)})`).join('、') : '未知'}`,
             width
           )}
         </Text>

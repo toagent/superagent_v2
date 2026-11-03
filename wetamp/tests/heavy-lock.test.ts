@@ -7,12 +7,14 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { acquireResource, RESOURCE_SLOTS } from '../templates/.archon/scripts/sa-check';
+import { readHeavyQueue } from '../src/board/data';
 
 const track = trackTempRoots();
 const wetamp = join(import.meta.dir, '..');
@@ -84,9 +86,29 @@ async function maxFor(extra: Record<string, string>, args: string[] = []): Promi
   return Number(readFileSync(join(root, 'max'), 'utf8'));
 }
 
-test('four complete suites share one machine-wide slot', async () => {
-  expect(await maxFor({})).toBe(1);
-  expect(readFileSync(slot, 'utf8')).toContain(RESOURCE_SLOTS['heavy-test'][0]);
+test('complete suites use three machine-wide slots with a checked shared definition', async () => {
+  expect(await maxFor({})).toBe(3);
+  const source = readFileSync(slot, 'utf8');
+  expect(source).toContain('heavy_slot_count=3');
+  expect(RESOURCE_SLOTS['heavy-test']).toEqual([
+    RESOURCE_SLOTS['heavy-test'][0],
+    `${RESOURCE_SLOTS['heavy-test'][0]}.1`,
+    `${RESOURCE_SLOTS['heavy-test'][0]}.2`,
+  ]);
+  expect(source).toContain('"$heavy_lock_file" "$heavy_lock_file.1" "$heavy_lock_file.2"');
+
+  const { root, env } = fixture(),
+    ready = join(root, 'legacy-ready');
+  const legacy = Bun.spawn(
+    process.platform === 'darwin'
+      ? ['/usr/bin/lockf', '-k', env.SA_HEAVY_LOCK_FILE, 'sh', '-c', `touch '${ready}'; sleep 0.8`]
+      : ['flock', env.SA_HEAVY_LOCK_FILE, 'sh', '-c', `touch '${ready}'; sleep 0.8`]
+  );
+  for (let i = 0; i < 100 && !existsSync(ready); i++) await Bun.sleep(10);
+  const jobs = Array.from({ length: 3 }, (_, i) => run(env, `legacy-${String(i)}`));
+  expect(await Promise.all(jobs.map(job => job.exited))).toEqual([0, 0, 0]);
+  expect(Number(readFileSync(join(root, 'max'), 'utf8'))).toBe(2);
+  expect(await legacy.exited).toBe(0);
 });
 
 test('browser admission exposes exactly two machine-wide slots', async () => {
@@ -103,12 +125,12 @@ test('browser admission exposes exactly two machine-wide slots', async () => {
   await Promise.all([second!.release(), next!.release()]);
 });
 
-test('a complete suite uses at most half the machine CPUs', async () => {
+test('a complete suite uses at most one third of the machine CPUs', async () => {
   const { root, env } = fixture();
   expect(await run(env, 'budget').exited).toBe(0);
   const args = readFileSync(join(root, 'args.budget'), 'utf8').trim();
   expect(args).toEndWith(
-    `--timeout 30000 --parallel=${Math.max(1, Math.floor(cpus().length / 2))} tests/ scripts/`
+    `--timeout 30000 --parallel=${Math.max(1, Math.floor(cpus().length / 3))} tests/ scripts/`
   );
 });
 
@@ -152,10 +174,18 @@ test('selectors and an inherited heavy slot bypass the lock', async () => {
 });
 
 test('queued state publishes queue and live holder metadata, then cleans both', async () => {
-  const { env } = fixture();
+  const { root, env } = fixture();
   const holderFile = `${env.SA_HEAVY_LOCK_FILE}.holder`;
-  const holder = run({ ...env, DURATION: '0.5' }, 'metadata');
+  const holders = Array.from({ length: 3 }, (_, i) =>
+    run({ ...env, DURATION: '0.8' }, `metadata-${String(i)}`)
+  );
   for (let i = 0; i < 100 && !existsSync(holderFile); i++) await Bun.sleep(10);
+  for (
+    let i = 0;
+    i < 100 && holders.some((_, n) => !existsSync(join(root, `started.metadata-${String(n)}`)));
+    i++
+  )
+    await Bun.sleep(10);
   const metadata = readFileSync(holderFile, 'utf8');
   expect(metadata).toContain('pid=');
   expect(metadata).toContain('command=');
@@ -183,7 +213,8 @@ test('queued state publishes queue and live holder metadata, then cleans both', 
   );
   expect(queued.command).toContain('bun');
   expect(realpathSync(queued.cwd)).toBe(realpathSync(env.TEST_WETAMP));
-  expect(await holder.exited).toBe(0);
+  expect(readHeavyQueue(env.SA_HEAVY_LOCK_FILE)[0]?.holders).toHaveLength(3);
+  expect(await Promise.all(holders.map(holder => holder.exited))).toEqual([0, 0, 0]);
   expect(await waiter.exited).toBe(0);
   expect(readdirSync(queueDir).filter(file => file.endsWith('.json'))).toEqual([]);
   expect(existsSync(holderFile)).toBe(false);
@@ -200,8 +231,15 @@ test('queued state publishes queue and live holder metadata, then cleans both', 
 test('background work yields to live foreground waiters and ignores dead ones', async () => {
   const { root, env } = fixture(),
     queue = `${env.SA_HEAVY_LOCK_FILE}.queue`;
-  const holder = run({ ...env, DURATION: '0.4' }, 'holder');
-  for (let i = 0; i < 100 && !existsSync(join(root, 'started.holder')); i++) await Bun.sleep(10);
+  const holders = Array.from({ length: 3 }, (_, i) =>
+    run({ ...env, DURATION: '0.5' }, `holder-${String(i)}`)
+  );
+  for (
+    let i = 0;
+    i < 100 && holders.some((_, n) => !existsSync(join(root, `started.holder-${String(n)}`)));
+    i++
+  )
+    await Bun.sleep(10);
   const background = run({ ...env, SA_HEAVY_CLASS: 'background' }, 'background');
   for (
     let i = 0;
@@ -218,13 +256,15 @@ test('background work yields to live foreground waiters and ignores dead ones', 
   const foreground = run(env, 'foreground');
   for (let i = 0; i < 100 && !readdirSync(queue).some(x => x.endsWith('.foreground')); i++)
     await Bun.sleep(10);
-  expect(await holder.exited).toBe(0);
+  expect(await Promise.all(holders.map(holder => holder.exited))).toEqual([0, 0, 0]);
   for (let i = 0; i < 100 && !existsSync(join(root, 'started.foreground')); i++)
     await Bun.sleep(10);
   expect(existsSync(join(root, 'started.foreground'))).toBe(true);
-  expect(existsSync(join(root, 'started.background'))).toBe(false);
   expect(await foreground.exited).toBe(0);
   expect(await background.exited).toBe(0);
+  expect(statSync(join(root, 'started.foreground')).mtimeMs).toBeLessThanOrEqual(
+    statSync(join(root, 'started.background')).mtimeMs
+  );
 
   writeFileSync(join(queue, '99999999.json.foreground'), '');
   expect(await run({ ...env, SA_HEAVY_CLASS: 'background' }, 'after-dead').exited).toBe(0);

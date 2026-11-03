@@ -115,19 +115,17 @@ export interface Snapshot {
 }
 
 // prettier-ignore
-export interface HeavyQueueEntry { pid: number; command: string; cwd: string; queued_at: string; run?: string; holder?: { command: string; started_at: string } }
+export interface HeavyQueueEntry { pid: number; command: string; cwd: string; queued_at: string; run?: string; holder?: { command: string; started_at: string }; holders?: { command: string; started_at: string }[] }
 // prettier-ignore
 export function readHeavyQueue(lock = process.env.SA_HEAVY_LOCK_FILE ?? '/tmp/superagent-heavy-test.lock'): HeavyQueueEntry[] {
   const live = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } };
-  let holder: HeavyQueueEntry['holder'];
-  try {
-    const fields = Object.fromEntries(readFileSync(`${lock}.holder`, 'utf8').trim().split('\n').map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)]; }));
-    if (live(Number(fields.pid)) && fields.command && fields.started_at)
-      holder = { command: fields.command, started_at: fields.started_at };
-  } catch { /* Missing or partial holder is unknown. */ }
+  const holders = [lock, `${lock}.1`, `${lock}.2`].flatMap(slot => { try {
+    const fields = Object.fromEntries(readFileSync(`${slot}.holder`, 'utf8').trim().split('\n').map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)]; }));
+    return live(Number(fields.pid)) && fields.command && fields.started_at ? [{ command: fields.command, started_at: fields.started_at }] : [];
+  } catch { return []; } });
   try {
     return readdirSync(`${lock}.queue`).filter(file => file.endsWith('.json')).flatMap(file => {
-      try { const value = JSON.parse(readFileSync(join(`${lock}.queue`, file), 'utf8')) as HeavyQueueEntry; return Number.isInteger(value.pid) && live(value.pid) && value.command && value.cwd && value.queued_at ? [{ ...value, ...(holder ? { holder } : {}) }] : []; } catch { return []; }
+      try { const value = JSON.parse(readFileSync(join(`${lock}.queue`, file), 'utf8')) as HeavyQueueEntry; return Number.isInteger(value.pid) && live(value.pid) && value.command && value.cwd && value.queued_at ? [{ ...value, ...(holders.length ? { holder: holders[0], holders } : {}) }] : []; } catch { return []; }
     });
   } catch { return []; }
 }
