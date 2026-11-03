@@ -92,6 +92,7 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
             accept: [{ cmd: 'test "$(cat feature.txt)" = integrated', timeout_s: 5 }],
             risk: 'G2',
             size: 'S',
+            review_reason: 'exercise reviewed delivery publication',
           },
         ];
       }),

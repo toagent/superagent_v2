@@ -36,6 +36,9 @@ const fixture = (id: ScenarioId, passRound: 1 | 2 = 1) =>
     passRound,
     plan: {
       goal: `${id} generated delivery`,
+      ...(['S6', 'S8', 'S13', 'S16', 'S17'].includes(id)
+        ? { reviewReason: `${id} exercises review-gated behavior` }
+        : {}),
       accept:
         id === 'S6'
           ? `test "$(cat scenario.txt)" = ${id} && test ! -e target-regression.txt`
@@ -406,7 +409,11 @@ test.each([
       id,
       risk,
       passRound: 1,
-      plan: { goal: `${id} resync conflict`, accept: `test "$(cat scenario.txt)" = ${id}` },
+      plan: {
+        goal: `${id} resync conflict`,
+        accept: `test "$(cat scenario.txt)" = ${id}`,
+        ...(id === 'S18' ? { reviewReason: 'S18 exercises resync review repair' } : {}),
+      },
       agents: { code: { path: 'scenario.txt', content: `${id}\n` } },
       expected: { terminal: 'completed', publishCount: 1 },
     });

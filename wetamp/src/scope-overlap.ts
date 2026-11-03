@@ -20,7 +20,17 @@ export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; er
       try {
         const ledger = loadLedger(run);
         if (!statSync(ledger.repo, { throwIfNoEntry: false })) return [];
-        if (repoScope(ledger.repo).id !== scope) return [];
+        try {
+          if (repoScope(ledger.repo).id !== scope) return [];
+        } catch (error) {
+          const status = coord().d.status(ledger);
+          if (
+            ['completed', 'failed', 'cancelled'].includes(status) &&
+            (!ledger.delivery_result || ledger.delivery_result.status === 'integrated')
+          )
+            return [];
+          throw error;
+        }
         const status = coord().d.status(ledger);
         if (
           ['completed', 'failed', 'cancelled'].includes(status) &&

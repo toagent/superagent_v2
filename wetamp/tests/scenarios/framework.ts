@@ -46,7 +46,7 @@ export interface ScenarioSpec {
   id: ScenarioId;
   risk: 'G1' | 'G2';
   passRound: 1 | 2;
-  plan: { goal: string; accept: string };
+  plan: { goal: string; accept: string; reviewReason?: string };
   agents: { code: { path: string; content: string } };
   expected: { terminal: 'completed'; publishCount: 1 };
 }
@@ -518,7 +518,9 @@ export async function runInProcess(
             accept: [{ cmd: f.spec.plan.accept, timeout_s: 5 }],
             risk: f.spec.risk,
             size: 'S',
-            ...(f.spec.passRound > 1 ? { review_reason: 'scenario exercises review repair' } : {}),
+            ...(f.spec.plan.reviewReason || f.spec.passRound > 1
+              ? { review_reason: f.spec.plan.reviewReason ?? 'scenario exercises review repair' }
+              : {}),
           },
         ];
         if (f.spec.id === 'S10')
