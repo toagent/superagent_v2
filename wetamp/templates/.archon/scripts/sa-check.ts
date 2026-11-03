@@ -21,6 +21,7 @@ import {
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { MemoryReading } from '../../../src/memory-pressure';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
 import type {
@@ -106,6 +107,25 @@ interface ResourceLease { queuedAt: string; waitedMs: number; release(): Promise
 // prettier-ignore
 const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
   resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE, `${process.env.SA_HEAVY_LOCK_FILE}.1`, `${process.env.SA_HEAVY_LOCK_FILE}.2`] : RESOURCE_SLOTS[resource];
+let memoryModule: Promise<typeof import('../../../src/memory-pressure')> | undefined;
+const readMemory = async (): Promise<MemoryReading> => {
+  const root = (() => {
+    try {
+      return dirname(dirname(realpathSync(join(dirname(env('PLAN')), 'archon'))));
+    } catch {
+      return '';
+    }
+  })();
+  const path = [
+    resolve(import.meta.dir, '../../../src/memory-pressure.ts'),
+    root && join(root, 'src/memory-pressure.ts'),
+  ].find(candidate => candidate && existsSync(candidate));
+  if (!path) return { pressure: null, free: 0, source: 'os' };
+  memoryModule ??= import(pathToFileURL(path).href) as Promise<
+    typeof import('../../../src/memory-pressure')
+  >;
+  return (await memoryModule).memoryReading();
+};
 // prettier-ignore
 function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams | undefined> {
   const command = process.platform === 'darwin' ? ['/usr/bin/lockf', '-t', '0', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'] : ['flock', '-n', path, 'sh', '-c', 'printf "acquired\\n"; cat >/dev/null'];
@@ -124,11 +144,20 @@ function tryResourceLock(path: string): Promise<ChildProcessWithoutNullStreams |
 }
 // prettier-ignore
 export async function acquireResource(resource: NonNullable<Check['resource']>, budgetMs: number,
-  lockFiles = resourceLockFiles(resource), command = '', cwd = process.cwd(), queuedAt = new Date().toISOString()): Promise<ResourceLease | undefined> {
+  lockFiles = resourceLockFiles(resource), command = '', cwd = process.cwd(), queuedAt = new Date().toISOString(), probe = readMemory, memoryPollMs = CHECK_AUX_TIMEOUT_MS / 2): Promise<ResourceLease | undefined> {
   const started = Date.now(), deadline = started + budgetMs;
   const queue = resource === 'heavy-test' ? `${lockFiles[0]}.queue/${String(process.pid)}.json` : '';
-  if (queue) { mkdirSync(dirname(queue), { recursive: true }); const temporary = `${queue}.tmp`; writeFileSync(temporary, JSON.stringify({ pid: process.pid, command, cwd, queued_at: queuedAt, ...(env('RUN') ? { run: env('RUN') } : {}) })); renameSync(temporary, queue); }
+  let waitingFor = '';
+  const publish = (waiting_for = '') => { if (!queue || waiting_for === waitingFor) return; waitingFor = waiting_for; mkdirSync(dirname(queue), { recursive: true }); const temporary = `${queue}.tmp`; writeFileSync(temporary, JSON.stringify({ pid: process.pid, command, cwd, queued_at: queuedAt, ...(waiting_for ? { waiting_for } : {}), ...(env('RUN') ? { run: env('RUN') } : {}) })); renameSync(temporary, queue); };
+  if (queue) { waitingFor = '__initial__'; publish(); }
   try { while (Date.now() < deadline) {
+    const memory = await probe();
+    if (memory.pressure !== null && memory.pressure >= 2) {
+      publish(`内存压力高（level=${String(memory.pressure)}），等待恢复`);
+      await Bun.sleep(Math.min(memoryPollMs, Math.max(1, deadline - Date.now())));
+      continue;
+    }
+    publish();
     for (const path of lockFiles) {
       const child = await tryResourceLock(path);
       if (!child) continue;

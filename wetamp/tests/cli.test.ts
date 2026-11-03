@@ -48,6 +48,7 @@ import {
   main,
   parseArgs,
   quickPlan,
+  runMemoryAdmission,
   superviseTickCli,
   updateLedger,
   waitForRunAdmission,
@@ -170,6 +171,16 @@ const run = (status: RunView['status'], extra: Partial<RunView> = {}): RunView =
 });
 
 describe('P3 engine lifecycle contracts', () => {
+  test('run memory admission rejects warning pressure and admits normal or unknown readings', () => {
+    expect(runMemoryAdmission(() => ({ pressure: 2, free: 45, source: 'sysctl' }))).toMatchObject({
+      ok: false,
+      exit: 75,
+      reason: 'admission_busy',
+      detail: '内存压力高（level=2），稍后重试',
+    });
+    expect(runMemoryAdmission(() => ({ pressure: 1, free: 10, source: 'sysctl' })).ok).toBe(true);
+    expect(runMemoryAdmission(() => ({ pressure: null, free: 0, source: 'os' })).ok).toBe(true);
+  });
   test('run admission waits for capacity and returns a typed timeout', () => {
     let elapsed = 0,
       attempts = 0;

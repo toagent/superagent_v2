@@ -11,7 +11,6 @@ import {
 } from 'node:fs';
 import { launcher, type Launcher } from './launcher';
 import { basename, dirname, join, resolve } from 'node:path';
-import { freemem, totalmem } from 'node:os';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
 import { home, loadTiers, routeNotice, routeState } from './config';
@@ -36,6 +35,8 @@ import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integ
 import { jobSession } from './usage';
 import { isTier, ROUTE_ROLE, type Tier } from './roles';
 import { envPrecheck, provisionEnvironment } from '../templates/.archon/scripts/env-precheck';
+import { memoryReading, type MemoryReading } from './memory-pressure';
+export { memoryReading, type MemoryReading } from './memory-pressure';
 export { TIERS, isTier, type Tier } from './roles';
 
 export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
@@ -86,32 +87,6 @@ const USAGE =
 export const SIMPLIFIED_CHINESE_REQUIREMENT =
   '所有自然语言输出一律简体中文：交回结果的 notes/blockers/needs、评审发现与理由、git 提交说明、给元帅或用户的消息；代码、命令、路径、标识符、错误原文、JSON 键名与枚举值保持原样。';
 export const RECENT_MS = 3_600_000;
-export interface MemoryReading {
-  pressure: number | null;
-  free: number;
-  source: 'sysctl' | 'os';
-}
-/** macOS 内核信号；不可读时显式退回 os，绝不把未知压力伪装成 normal。 */
-export function memoryReading(
-  sysctl = (): number[] => {
-    const p = Bun.spawnSync(
-      ['sysctl', '-n', 'kern.memorystatus_vm_pressure_level', 'kern.memorystatus_level'],
-      { stderr: 'ignore' }
-    );
-    if (p.exitCode !== 0) throw new Error('sysctl unavailable');
-    return p.stdout.toString().trim().split(/\s+/).map(Number);
-  },
-  available = (): number => (freemem() / totalmem()) * 100
-): MemoryReading {
-  try {
-    const [pressure, free] = sysctl();
-    if (![1, 2, 4].includes(pressure) || !Number.isFinite(free) || free < 0 || free > 100)
-      throw new Error('invalid sysctl reading');
-    return { pressure, free, source: 'sysctl' };
-  } catch {
-    return { pressure: null, free: available(), source: 'os' };
-  }
-}
 export const kindOf = (argv0: string): Kind => {
   const b = basename(argv0);
   return b === 'claude' || b === 'codex' || b === 'opencode' ? b : 'other';

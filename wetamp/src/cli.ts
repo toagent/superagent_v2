@@ -179,7 +179,7 @@ import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
-import { jobCli } from './jobs';
+import { jobCli, memoryReading, type MemoryReading } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
 import { readUsage, usageSummary, usageCli } from './usage';
@@ -1639,6 +1639,15 @@ function checkedPlan(planPath: string, override?: string) {
   return { plan: rules.plan, plan_lint, rules_added: rules.added };
 }
 
+// prettier-ignore
+export function runMemoryAdmission(probe: () => MemoryReading = memoryReading):
+  { ok: true; memory: MemoryReading } | { ok: false; memory: MemoryReading; exit: typeof EXIT_ADMISSION; reason: 'admission_busy'; detail: string } {
+  const memory = probe();
+  return memory.pressure !== null && memory.pressure >= 2
+    ? { ok: false, memory, exit: EXIT_ADMISSION, reason: 'admission_busy', detail: `内存压力高（level=${String(memory.pressure)}），稍后重试` }
+    : { ok: true, memory };
+}
+
 function startRun(planPath: string, a: Args): number {
   const allow_overlap = a.flags['allow-overlap']?.trim();
   if (a.flags['allow-overlap'] !== undefined && !allow_overlap)
@@ -1692,6 +1701,15 @@ function startRun(planPath: string, a: Args): number {
           return EXIT_USAGE;
         }
         phase = 'admission';
+        const memoryAdmission = runMemoryAdmission();
+        if (!memoryAdmission.ok) {
+          print({ ...memoryAdmission, phase, status: 'rejected' });
+          return EXIT_ADMISSION;
+        }
+        if (memoryAdmission.memory.source === 'os')
+          console.error(
+            `superagent: memory pressure unavailable; source=os free=${String(memoryAdmission.memory.free)}`
+          );
         const admission = waitForRunAdmission();
         if (!admission.ok) {
           print({
