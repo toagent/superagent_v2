@@ -819,21 +819,25 @@ export function buildWorkflow(
                 ...gateHashes,
                 target_tip: ref.required(readyHandle, 'target_tip'),
                 review_explicit: explicitReview ? '1' : '0',
-                review_final: ref.optional(
-                  conditionalOutput<AcceptOutput>(finalAccept),
-                  'review_required',
-                  false
-                ),
-                ...Object.fromEntries(
-                  Array.from({ length: resyncMaxRounds }, (_, i) => [
-                    `review_${String(i + 1)}`,
-                    ref.optional(
-                      conditionalOutput<AcceptOutput>(acceptId(i + 1)),
-                      'review_required',
-                      false
-                    ),
-                  ])
-                ),
+                ...(explicitReview
+                  ? {}
+                  : {
+                      review_final: ref.optional(
+                        conditionalOutput<AcceptOutput>(finalAccept),
+                        'review_required',
+                        false
+                      ),
+                      ...Object.fromEntries(
+                        Array.from({ length: resyncMaxRounds }, (_, i) => [
+                          `review_${String(i + 1)}`,
+                          ref.optional(
+                            conditionalOutput<AcceptOutput>(acceptId(i + 1)),
+                            'review_required',
+                            false
+                          ),
+                        ])
+                      ),
+                    }),
               },
             }
           : {
