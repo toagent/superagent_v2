@@ -1,10 +1,36 @@
 import { expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
-import { admitExecution, unknownEffects, type ExecutionRunView } from './execution-lifecycle';
+import {
+  admitExecution,
+  executionOwnership,
+  unknownEffects,
+  type ExecutionRunView,
+} from './execution-lifecycle';
 const trackTempRoot = trackTempRoots();
+test('execution ownership distinguishes binding latency from PID reuse', () => {
+  const base = {
+    id: 'r',
+    status: 'running' as const,
+    started_at: '2026-11-03T00:23:20.000Z',
+  };
+  for (const [bound_at, start, state] of [
+    ['2026-11-03T00:23:21.900Z', '2026-11-03T00:23:21.000Z', 'online'],
+    ['2026-11-03T00:23:21.000Z', '2026-11-03T00:23:21.000Z', 'online'],
+    ['2026-11-03T00:23:21.000Z', '2026-11-03T00:23:22.000Z', 'unknown'],
+    [undefined, '2026-11-03T00:23:21.000Z', 'online'],
+    [undefined, '2026-11-03T00:23:22.000Z', 'unknown'],
+  ] as const) {
+    const ownership = executionOwnership(
+      { ...base, metadata: { execution_owner: { host: hostname(), pid: 42, bound_at } } },
+      () => ({ state: 'online', start })
+    );
+    expect(ownership.state).toBe(state);
+    expect(ownership.reused).toBe(state === 'unknown' ? true : undefined);
+  }
+});
 test('only the current engine-owned paused node has known effects', () => {
   const nodes = [
     { nodeId: 'gate', state: 'running' },

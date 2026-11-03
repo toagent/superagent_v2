@@ -510,6 +510,8 @@ export interface ExecutionOwnerRecord {
   pid: number;
   /** POSIX user id; absent on Windows, where the endpoint is not scoped by uid. */
   uid?: number;
+  /** When this process bound itself as the run's execution owner. */
+  bound_at?: string;
 }
 
 /** Typed view of the execution-owner stamp; undefined on runs that predate it. */
@@ -518,12 +520,25 @@ export function readExecutionOwner(
 ): ExecutionOwnerRecord | undefined {
   const raw = metadata?.[EXECUTION_OWNER_METADATA_KEY];
   if (typeof raw !== 'object' || raw === null) return undefined;
-  const { host, pid, uid } = raw as { host?: unknown; pid?: unknown; uid?: unknown };
+  const {
+    host,
+    pid,
+    uid,
+    bound_at: boundAt,
+  } = raw as {
+    host?: unknown;
+    pid?: unknown;
+    uid?: unknown;
+    bound_at?: unknown;
+  };
   if (typeof host !== 'string' || host.length === 0) return undefined;
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return undefined;
-  return typeof uid === 'number' && Number.isInteger(uid) && uid >= 0
-    ? { host, pid, uid }
-    : { host, pid };
+  return {
+    host,
+    pid,
+    ...(typeof uid === 'number' && Number.isInteger(uid) && uid >= 0 ? { uid } : {}),
+    ...(typeof boundAt === 'string' ? { bound_at: boundAt } : {}),
+  };
 }
 
 /** Typed view of the run-lifecycle keys on a run's metadata; undefined when unset. */

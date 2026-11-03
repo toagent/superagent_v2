@@ -154,8 +154,11 @@ export function executionOwnership(
   if (run.status === 'pending' || owner?.host !== hostname()) return { state: 'unknown' };
   const probe = inspectProcess(owner.pid);
   if (probe.state !== 'online') return probe;
-  if (run.started_at && Date.parse(probe.start) > Date.parse(run.started_at))
-    return { state: 'unknown', reused: true };
+  const ownerBoundAt = owner.bound_at ? Date.parse(owner.bound_at) : undefined;
+  // Legacy rows compare two second-granularity timestamps. Allow one second so a
+  // process that crossed a clock boundary while binding is not mistaken for PID reuse.
+  const reuseBoundary = ownerBoundAt ?? (run.started_at ? Date.parse(run.started_at) + 1000 : NaN);
+  if (Date.parse(probe.start) > reuseBoundary) return { state: 'unknown', reused: true };
   return { state: 'online' };
 }
 export function ownershipUnknown(run: ExecutionRunView, inspectProcess: ProcessProbe): boolean {
