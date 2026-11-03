@@ -1511,8 +1511,7 @@ async function acceptOnce(
   const scopeAutoApproved =
     scope.out_of_scope.length > 0 &&
     autoApproveScope(scope.out_of_scope, policy(), await scopeConflicts(scope.out_of_scope, p));
-  const scopeDecisionRequest =
-    ok && scope.out_of_scope.length > 0 && !scopeAutoApproved && onlyScopeDecision(coder);
+  const scopeDecisionRequest = scope.out_of_scope.length > 0 && onlyScopeDecision(coder);
   const result = {
     ...disposition(
       scopeDecisionRequest ? '' : coder,
@@ -2315,7 +2314,8 @@ export function deliveryDecision(input: {
   const adjudication =
     coder?.status !== 'done' &&
     ['scope_violation', 'plan_invalid'].includes(coder?.error_class ?? '') &&
-    coder?.needs?.length;
+    coder?.needs?.length &&
+    !onlyScopeDecision(input.selfReport ?? '');
   const audit = {
     ...(coder && (coder.status !== 'done' || coder.error_class || coder.needs?.length)
       ? { self_report_conflict: true as const }
