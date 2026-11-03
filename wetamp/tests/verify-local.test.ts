@@ -191,7 +191,7 @@ git config --global --get core.hooksPath && exit 9
       'heavy_exec() { printf "%s\\n" "$#" > "$CAPTURE"; }\n'
     );
     const result = Bun.spawnSync(['/bin/bash', join(scripts, 'verify-local.sh')], {
-      env: { ...process.env, CAPTURE: capture },
+      env: { ...process.env, SA_HEAVY_LOCK_HELD: '', CAPTURE: capture },
       stderr: 'pipe',
     });
     expect(result.exitCode).toBe(0);

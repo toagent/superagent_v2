@@ -21,6 +21,7 @@ import {
   planOf,
   cancellationStats,
   consolidationMetrics,
+  reviewWhitelistStats,
 } from '../src/report';
 import type { Job } from '../src/jobs';
 import type { UsageSession } from '../src/usage';
@@ -59,6 +60,18 @@ const provider = (model: string, value: Record<string, number>): Record<string, 
     effort: 'xhigh',
   },
   spend: { tokens: { source: 'provider', value } },
+});
+
+// prettier-ignore
+test('review whitelist report proposes removals and additions from structured evidence', () => {
+  const result = reviewWhitelistStats(['**/*token*', '**/auth/**'], [
+    { id: 'a', paths: ['src/token.ts'], reviews: 3, productive_rounds: 0, defects: 0 },
+    { id: 'b', paths: ['src/api/one.ts'], reviews: 0, productive_rounds: 0, defects: 1 },
+    { id: 'c', paths: ['src/api/two.ts'], reviews: 0, productive_rounds: 0, defects: 1 },
+  ]);
+  expect(result.suggestions).toEqual({ remove: ['**/*token*'], add: ['src/api/**'] });
+  expect(result.rules[0]).toMatchObject({ matched_packages: 1, reviews: 3, productive_rounds: 0, yield: 0 });
+  expect(result.summary.length).toBeLessThanOrEqual(20);
 });
 
 describe('F-22 report', () => {
