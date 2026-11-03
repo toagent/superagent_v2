@@ -592,8 +592,8 @@ export function buildWorkflow(
       const reviewContext = `review-context-resync-${m.id}-r${String(round)}`;
       const reviewWhen =
         `$${syncReady}.output.status == 'resolved' && ` +
-        `$${accepted}.output.disposition == 'advance' && ` +
-        (explicitReview ? "'true' == 'true'" : `$${accepted}.output.review_required == 'true'`);
+        `$${accepted}.output.disposition == 'advance'` +
+        (explicitReview ? '' : ` && $${accepted}.output.review_required == 'true'`);
       if (round > 1) {
         const priorGate = gateId(round - 1);
         const handoff = `handoff-resync-${m.id}-r${String(round)}`;
