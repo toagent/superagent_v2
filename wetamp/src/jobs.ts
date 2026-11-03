@@ -57,6 +57,8 @@ export interface Job {
   };
   session_id?: string | null;
   request_ref?: string;
+  review_reason?: string;
+  review_round?: number;
   receipt?: ExecutionReceipt;
   wrapper_pid: number;
   pid: number;
@@ -80,7 +82,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round 1|2|3] [--author-model <model>] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round <n>] [--author-model <model> --review-reason <reason> [--dual]] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
 export const SIMPLIFIED_CHINESE_REQUIREMENT =
   '所有自然语言输出一律简体中文：交回结果的 notes/blockers/needs、评审发现与理由、git 提交说明、给元帅或用户的消息；代码、命令、路径、标识符、错误原文、JSON 键名与枚举值保持原样。';
 export const RECENT_MS = 3_600_000;
@@ -235,7 +237,7 @@ export function cleanJob(id: string): void {
 // prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; input?: string; output?: string; log?: string; role: Tier | null; execution?: Job['execution']; automatic?: boolean; worktree?: string; base?: string; request_ref?: string },
+  f: { title: string; card?: string; input?: string; output?: string; log?: string; role: Tier | null; execution?: Job['execution']; automatic?: boolean; worktree?: string; base?: string; request_ref?: string; review_reason?: string; review_round?: number },
   probe: () => MemoryReading
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
@@ -256,6 +258,7 @@ async function exec(
     model: f.execution?.model ?? modelOf(cmd.slice(1)),
     role: f.role,
     request_ref: requestRef?.length ? requestRef : 'plan-external',
+    ...(f.review_reason ? { review_reason: f.review_reason, review_round: f.review_round } : {}),
     ...(f.execution ? { execution: f.execution } : {}),
     ...(launched ? { launcher: launched } : {}),
     wrapper_pid: process.pid,
@@ -519,6 +522,14 @@ export async function jobCli(
   if (!automatic && isTier(role) && !['codex', 'claude'].includes(kindOf(cmd[0])))
     throw new Error('job: unsupported role provider; expected codex or claude');
   if (a.flags['request-ref'] !== undefined && !a.flags['request-ref'].trim()) throw new Error('job: empty request-ref');
+  const authors = a.flags['author-model'] ?? [], reviewReason = a.flags['review-reason']?.trim();
+  const reviewRound = Number(a.flags.round ?? 1);
+  if (authors.length && !reviewReason)
+    throw new Error('job: review requires --review-reason <用户原话或白名单命中说明>; 默认不评审（法无禁止皆可为）');
+  if (authors.length && card && !a.flags.dual && readJobs().jobs.some(j =>
+    j.card === resolve(card) && (j.review_round ?? j.execution?.round ?? 1) === reviewRound &&
+    (j.review_reason !== undefined || j.execution?.role === 'review') && ['queued', 'running', 'done'].includes(j.state)))
+    throw new Error('job: this --card and --round already has a review; use --dual with --review-reason to override');
   refreshBudgetQuota();
   let execution: Job['execution'];
   if (isTier(role)) {
@@ -530,7 +541,6 @@ export async function jobCli(
     const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
     const risk = a.flags.risk ?? 'G1';
     if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2') throw new Error('job: invalid risk');
-    const authors = a.flags['author-model'] ?? [];
     if (role === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
       throw new Error('job: independent review requires --author-model');
     const descriptor = describeExecution(tiers, ROUTE_ROLE[role], risk, Number(a.flags.round ?? 1));
@@ -551,5 +561,5 @@ export async function jobCli(
     if (automatic) console.error(`job: selected ${provider}/${candidate.model}; first routed candidate${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
   }
 
-  return exec(cmd, { title, card, input, output, log, role: roleOf(role), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'] }, probe);
+  return exec(cmd, { title, card, input, output, log, role: roleOf(role), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'], review_reason: reviewReason, review_round: authors.length ? reviewRound : undefined }, probe);
 }

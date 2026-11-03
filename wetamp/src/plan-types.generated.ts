@@ -130,6 +130,10 @@ export interface Plan {
      */
     review?: boolean;
     /**
+     * User request or risk-path match that justifies review
+     */
+    review_reason?: string;
+    /**
      * Legacy input accepted; dispatch follows policy.effort
      */
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';

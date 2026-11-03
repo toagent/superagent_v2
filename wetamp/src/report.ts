@@ -28,7 +28,7 @@ import { confined } from './board/workflow';
 import { join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail, reportRuns } from './archon';
 import { buildNodeSummaries } from '../../packages/cli/src/commands/workflow';
-import { home, WETAMP } from './config';
+import { home, loadTiers, WETAMP } from './config';
 import {
   type Ledger,
   type Pair,
@@ -586,6 +586,83 @@ export function consolidationMetrics(
     },
     engine_failure_count: engine_failures,
   };
+}
+
+export interface ReviewWhitelistEvidence {
+  id: string;
+  paths: string[];
+  reviews: number;
+  productive_rounds: number;
+  defects: number;
+  request_ref?: string;
+  started_at?: string;
+}
+
+/** Deterministic policy: report evidence and candidates; never mutate tiers.json. */
+// prettier-ignore
+export function reviewWhitelistStats(rules: string[], packages: ReviewWhitelistEvidence[]) {
+  const rows = rules.map(rule => {
+    const matched = packages.filter(p => p.paths.some(path => new Bun.Glob(rule).match(path)));
+    const reviews = matched.reduce((n, p) => n + p.reviews, 0);
+    const productive = matched.reduce((n, p) => n + p.productive_rounds, 0);
+    return { rule, matched_packages: matched.length, reviews, productive_rounds: productive,
+      yield: reviews ? productive / reviews : 0 };
+  });
+  const defects: Record<string, number> = {};
+  for (const p of packages.filter(p => p.reviews === 0 && p.defects > 0))
+    for (const path of new Set(p.paths.map(x => `${x.split('/').slice(0, 2).join('/')}/**`)))
+      defects[path] = (defects[path] ?? 0) + p.defects;
+  const suggestions = {
+    remove: rows.filter(r => r.reviews >= 3 && r.productive_rounds === 0).map(r => r.rule),
+    add: Object.entries(defects).filter(([, count]) => count >= 2).map(([path]) => path),
+  };
+  return { rules: rows, unreviewed_defects: defects, suggestions,
+    summary: [`规则 ${String(rows.length)} 条；候选移除 ${String(suggestions.remove.length)} 条；候选加入 ${String(suggestions.add.length)} 条。`,
+      ...suggestions.remove.map(x => `移除候选: ${x}`), ...suggestions.add.map(x => `加入候选: ${x}`)].slice(0, 20) };
+}
+
+// prettier-ignore
+export function reviewWhitelistReport(ls: Ledger[], since = '') {
+  const failed = new Set((() => { try { const dir = join(home().sa, 'engine', 'promotions');
+    const promotions = readdirSync(dir).filter(f => f.endsWith('.verify.json')).flatMap(f => { try {
+      const r = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { at?: string; status?: string; failed_files?: string[] };
+      return r.status === 'failed' && (!since || (r.at ?? '') >= since) ? r.failed_files ?? [] : [];
+    } catch { return []; } });
+    let inbox: string[] = [];
+    try { inbox = readdirSync(join(home().sa, 'coord', 'inbox')).flatMap(f => { try {
+      const m = JSON.parse(readFileSync(join(home().sa, 'coord', 'inbox', f), 'utf8')) as { at?: string; dedupe_key?: string };
+      const key = m.dedupe_key ? JSON.parse(m.dedupe_key) as unknown : undefined;
+      return (!since || (m.at ?? '') >= since) && Array.isArray(key) && key[0] === 'post-promotion-verify' && Array.isArray(key[2])
+        ? key[2].filter((x): x is string => typeof x === 'string') : [];
+    } catch { return []; } }); } catch { /* No coordination inbox yet. */ }
+    return [...promotions, ...inbox]; } catch { return []; } })());
+  const packages: ReviewWhitelistEvidence[] = [];
+  for (const l of ls.filter(l => !since || l.started_at >= since)) try {
+    const run = getRun(l.archon_run_id, cwdOf(l)), plan = planOf(l), art = artifactsOf(run);
+    if (!plan) continue;
+    for (const p of plan.packages) {
+      const paths = [`verify-${p.id}`, `settle-${p.id}`].flatMap(tag => {
+        const out = evidenceJson(l, art, `${tag}.coder.json`) as { changed_files?: unknown } | undefined;
+        return Array.isArray(out?.changed_files) ? out.changed_files.filter((x): x is string => typeof x === 'string') : [];
+      });
+      const milestone = p.milestone ?? 'm1';
+      const reviews = (run.nodes ?? []).filter(n => n.state === 'completed' && new RegExp(`^review-${milestone}-r\\d+$`).test(n.nodeId));
+      const productive = reviews.filter(n => {
+        const round = Number(/-r(\d+)$/.exec(n.nodeId)?.[1] ?? 0);
+        const out = evidenceJson(l, art, `gate-${milestone}-r${String(round)}.review.json`) as { status?: unknown; findings?: { severity?: string }[] } | undefined;
+        return out?.status === 'FAIL' && out.findings?.some(f => ['blocker', 'high'].includes(f.severity ?? '')) &&
+          (run.nodes ?? []).some(x => x.state === 'completed' && x.nodeId === `fix-${milestone}-r${String(round + 1)}`);
+      }).length;
+      const prefixes = new Set(paths.map(x => x.split('/').slice(0, 2).join('/')));
+      packages.push({ id: `${l.run_id}/${p.id}`, paths, reviews: reviews.length, productive_rounds: productive,
+        request_ref: plan.request_ref, started_at: l.started_at,
+        defects: reviews.length ? 0 : [...failed].filter(f => [...prefixes].some(prefix => f === prefix || f.startsWith(prefix + '/'))).length });
+    }
+  } catch { /* Unreadable runs are omitted, never treated as clean evidence. */ }
+  for (const p of packages.filter(p => !p.reviews && p.request_ref))
+    p.defects += packages.some(q => q.request_ref === p.request_ref && (q.started_at ?? '') > (p.started_at ?? '') &&
+      q.paths.some(path => p.paths.some(old => path === old || path.startsWith(old.split('/').slice(0, 2).join('/') + '/')))) ? 1 : 0;
+  return reviewWhitelistStats(loadTiers().policy.risk_paths, packages);
 }
 
 /**
