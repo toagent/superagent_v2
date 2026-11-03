@@ -175,7 +175,7 @@ import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
-import { buildReport, consolidationMetrics, reportSummary } from './report';
+import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
 import { jobCli } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
@@ -275,6 +275,9 @@ export const OPTIONS = {
   scope: { type: 'string', multiple: true },
   risk: { type: 'string' },
   review: { type: 'boolean' },
+  'review-reason': { type: 'string' },
+  dual: { type: 'boolean' },
+  'review-whitelist': { type: 'boolean' },
   'no-cache': { type: 'boolean' },
   base: { type: 'string' },
   worktree: { type: 'string' },
@@ -1561,6 +1564,9 @@ export function quickPlan(a: Args): string {
   const risk = a.flags.risk ?? 'G1';
   if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2')
     throw new Error('quick --risk must be G0|G1|G2');
+  const reviewReason = a.flags['review-reason']?.trim();
+  if (a.flags.review && !reviewReason)
+    throw new Error('quick --review requires --review-reason <用户原话或白名单命中说明>');
   const git = (...args: string[]): string => {
     const p = Bun.spawnSync(['git', ...args], {
       cwd: a.flags.repo ?? process.cwd(),
@@ -1580,8 +1586,6 @@ export function quickPlan(a: Args): string {
     ...(a.flags.environment
       ? { environment: a.flags.environment.map(cmd => ({ cmd, timeout_s: acceptTimeout })) }
       : {}),
-    // An explicitly requested independent review must never land as DEGRADED_PASS.
-    ...(a.flags.review ? { mode: 'strict' as const } : {}),
     budget: { weighted_tokens: 0, unlimited_tokens: true },
     packages: [
       {
@@ -1598,7 +1602,7 @@ export function quickPlan(a: Args): string {
           timeout_s: acceptTimeout,
           cache: !a.flags['no-cache'],
         })),
-        ...(a.flags.review ? { review: true } : {}),
+        ...(a.flags.review ? { review: true, review_reason: reviewReason } : {}),
       },
     ],
   };
@@ -4431,7 +4435,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note', 'wait', 'timeout'] },
   { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
   { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap', 'adopt'] },
-  { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
+  { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'wait', positionals: '<run>...', flags: ['timeout'] },
   { command: 'wait-on', positionals: '<run>', flags: ['on', 'reason'] },
   { command: 'status', flags: [] },
@@ -4446,7 +4450,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'notify', flags: ['id', 'title', 'body', 'priority'] },
   { command: 'ntfy', positionals: 'pause|resume|status', flags: [] },
   { command: 'accept', positionals: '<run>', flags: ['pkg'] },
-  { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days'] },
+  { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days', 'review-whitelist'] },
   { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
   { command: 'quota', flags: [] },
   { command: 'usage', flags: ['since', 'repo', 'refresh'] },
@@ -4460,7 +4464,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'heartbeat', flags: ['watch', 'cwd', 'all'] },
   { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'models', flags: ['mode'] },
-  { command: 'job exec', positionals: '[-- <cmd...>]', flags: ['title', 'request-ref', 'card', 'prompt-file', 'output', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'worktree', 'base'] },
+  { command: 'job exec', positionals: '[-- <cmd...>]', flags: ['title', 'request-ref', 'card', 'prompt-file', 'output', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'review-reason', 'dual', 'worktree', 'base'] },
   { command: 'job clean', positionals: '<id>', flags: [] },
   { command: 'jobs', flags: ['all'] },
   { command: 'rollover', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
@@ -5180,6 +5184,12 @@ export function main(argv: string[]): number {
         : 0;
     }
     case 'report': {
+      if (a.flags['review-whitelist']) {
+        const since = a.flags.since ? reportSince(['--since', a.flags.since]) : '';
+        const all = ledgers().flatMap(l => ('error' in l ? [] : [l]));
+        print(reviewWhitelistReport(all, since));
+        return 0;
+      }
       if (a.flags['by-engine'] !== undefined) {
         const commit = a.flags['by-engine'],
           baselineDays = Number(a.flags['baseline-days'] ?? 7);
