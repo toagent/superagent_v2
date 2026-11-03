@@ -89,7 +89,7 @@ describe('ntfy decision channel', () => {
     expect(readFileSync(f.config.statePath, 'utf8')).not.toContain('secret body');
     f.push(staleAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜未执行｜No｜Decision'), message: expect.stringContaining('你的选择未改变任何状态') });
     queueNtfyAlert('receipt', 'done', f.config); await publishPendingNtfy(f.config);
-    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: `${'━'.repeat(14)}\ndone` });
   });
   test('requires a fresh red confirmation and expires without one', async () => {
     const f = fixture(), accepted: string[] = []; askNtfy({ ...f.request('red', 'red'), project: 'Archon', headline: '红线操作' }, f.config);
@@ -165,7 +165,7 @@ describe('ntfy decision channel', () => {
     await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
     await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(1);
-    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: expect.stringContaining('｜Stalled'), message: 'Needs attention', priority: 3, tags: ['large_blue_circle'] });
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: expect.stringContaining('｜Stalled'), message: `${'━'.repeat(14)}\nNeeds attention`, priority: 3, tags: ['large_blue_circle'] });
     expect(output).toEqual([{ id: 'alert-1', delivery: 'sent' }, { id: 'alert-1', delivery: 'sent' }]);
     await notifyCli(['notify', '--id', 'urgent', '--title', 'Urgent', '--body', 'Act', '--priority', '5'], f.config, () => undefined);
     expect(f.posts.at(-1)!.body.priority).toBe(5);
@@ -182,7 +182,7 @@ describe('ntfy decision channel', () => {
     askNtfy(request, f.config); await publishPendingNtfy(f.config);
     expect(f.posts[0]!.body).toMatchObject({ title: expect.stringContaining('｜需你决定｜Archon｜是否放行？'), priority: 4, tags: ['orange_circle'] });
     const message = String(f.posts[0]!.body.message);
-    expect(message).toStartWith('━'.repeat(14)); expect(message).toContain('▍选项对比'); expect(message).toContain('来源：run-24'); expect(Buffer.byteLength(message)).toBeLessThanOrEqual(4000);
+    expect(message).toStartWith('━'.repeat(14)); expect(message).not.toStartWith(`${'━'.repeat(14)}\n${'━'.repeat(14)}`); expect(message).toContain('▍选项对比'); expect(message).toContain('来源：run-24'); expect(Buffer.byteLength(message)).toBeLessThanOrEqual(4000);
     f.push(f.action(f.posts[0])); await syncNtfy(() => undefined, f.config);
     expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜已执行｜Archon｜是否放行？'), priority: 2, tags: ['green_circle'] });
     expect(String(f.posts.at(-1)!.body.message)).toContain('▍还需要你吗');

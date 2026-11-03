@@ -461,6 +461,7 @@ async function publish(
 ): Promise<void> {
   const publisher = secureSecret(config.publisherToken, 'publisher token');
   const seq = (state.seq ?? 0) + 1;
+  const message = body.message;
   // prettier-ignore
   const publishedAt = new Date(config.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-');
   let response: Response;
@@ -472,6 +473,10 @@ async function publish(
         topic,
         ...body,
         title: `#${String(seq)} ${publishedAt}｜${typeof body.title === 'string' ? body.title : ''}`,
+        message:
+          typeof message === 'string' && !message.startsWith('━') && !message.startsWith('─')
+            ? `${HEAVY}\n${message}`
+            : message,
       }),
     });
   } catch {
