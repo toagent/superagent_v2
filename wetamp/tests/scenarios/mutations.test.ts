@@ -76,11 +76,11 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
-    from: "scopeDecisionRequest ? '' : coder",
-    to: 'coder',
+    from: "return !!needs?.length && needs.every(need => need.cap === 'scope_decision');",
+    to: 'return false;',
     test: 'tests/sa-check.test.ts',
-    name: 'scope request survives false handback',
-    expectedError: 'scope_approval',
+    name: 'pure scope decision scope_violation follows the scope mechanism',
+    expectedError: 'Received: 1',
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
