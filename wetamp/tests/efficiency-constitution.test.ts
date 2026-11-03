@@ -57,6 +57,7 @@ const workflow = (risk: 'G0' | 'G1' | 'G2', mode = 'auto', review = false): Node
   const p = structuredClone(plan);
   p.packages[0].risk = risk;
   p.packages[0].review = review;
+  p.packages[0].review_reason = review ? 'test explicitly requests review' : undefined;
   p.mode = mode as typeof p.mode;
   return buildWorkflow(p, milestones(p), 'constitution', root, false, 0, tiers).nodes as Node[];
 };
@@ -225,19 +226,19 @@ describe('EFFICIENCY_CONSTITUTION', () => {
   }
 
   for (const risk of ['G0', 'G1', 'G2'] as const) {
-    test(`② ${risk} reviews are guarded only when runtime G2 escalation is needed`, () => {
-      const reviews = (mode: string, review = false) =>
-        workflow(risk, mode, review).filter(n => n.command?.startsWith('sa-review'));
-      const auto = reviews('auto');
+    test(`② ${risk} reviews use the deterministic review-required decision`, () => {
+      const reviews = (review = false) =>
+        workflow(risk, 'auto', review).filter(n => n.command?.startsWith('sa-review'));
+      const auto = reviews();
       expect(auto.length).toBeGreaterThan(0);
       for (const node of auto) {
-        const guard = `$diff-${node.id.slice('review-'.length)}.output.risk == 'G2'`;
-        if (risk === 'G2') expect(node.when).not.toContain(guard);
-        else expect(node.when).toContain(guard);
+        const guard = `$diff-${node.id.slice('review-'.length)}.output.review_required == 'true'`;
+        expect(node.when).toContain(guard);
       }
-      for (const nodes of [reviews('strict'), reviews('auto', true)]) {
-        expect(nodes.length).toBeGreaterThan(0);
-        for (const node of nodes) expect(node.when).not.toContain(".output.risk == 'G2'");
+      const explicit = reviews(true);
+      expect(explicit.length).toBeGreaterThan(0);
+      for (const node of explicit) {
+        expect(node.when).not.toContain('.output.review_required');
       }
     });
   }
