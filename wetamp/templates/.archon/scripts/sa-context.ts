@@ -13,7 +13,6 @@ import type { ExecutionDescriptor } from '../../../src/execution';
 import type { Learning } from '../../../src/learning';
 import type { CoderOutput } from '../../../src/contract';
 import { capabilityGuidance, resolveCapabilities } from './capabilities';
-import { waitForLoad } from './load-gate';
 import {
   readAttempt,
   environmentIdentity,
@@ -328,7 +327,6 @@ if (import.meta.main) {
     const artifacts = process.env.ARTIFACTS_DIR ?? '';
     if (!artifacts && (pkg || review || contextNode || process.env.INPUTS_HANDOFF === '1'))
       throw new Error('context: ARTIFACTS_DIR missing');
-    if (pkg || review) await waitForLoad();
     if (pkg || review || contextNode) {
       const git = Bun.spawnSync(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], {
         stdout: 'pipe',
