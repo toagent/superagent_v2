@@ -37,6 +37,9 @@ while ! mkdir "$COUNTER_ROOT/mutex" 2>/dev/null; do sleep 0.01; done
 active=$(cat "$COUNTER_ROOT/active"); active=$((active + 1)); echo "$active" > "$COUNTER_ROOT/active"
 max=$(cat "$COUNTER_ROOT/max"); [ "$active" -le "$max" ] || echo "$active" > "$COUNTER_ROOT/max"
 rmdir "$COUNTER_ROOT/mutex"; touch "$COUNTER_ROOT/started.$JOB_ID"
+while ! mkdir "$COUNTER_ROOT/order-mutex" 2>/dev/null; do sleep 0.01; done
+echo "$JOB_ID" >> "$COUNTER_ROOT/order"
+rmdir "$COUNTER_ROOT/order-mutex"
 sleep "\${DURATION:-0.15}"
 while ! mkdir "$COUNTER_ROOT/mutex" 2>/dev/null; do sleep 0.01; done
 active=$(cat "$COUNTER_ROOT/active"); echo $((active - 1)) > "$COUNTER_ROOT/active"
@@ -109,6 +112,43 @@ test('complete suites use three machine-wide slots with a checked shared definit
   expect(await Promise.all(jobs.map(job => job.exited))).toEqual([0, 0, 0]);
   expect(Number(readFileSync(join(root, 'max'), 'utf8'))).toBe(2);
   expect(await legacy.exited).toBe(0);
+});
+
+test('an old waiter on slot zero remains mutually exclusive with new callers', async () => {
+  if (process.platform !== 'darwin') return;
+  const { root, env } = fixture(),
+    blockerReady = join(root, 'blocker-ready'),
+    oldStarted = join(root, 'old-started'),
+    oldDone = join(root, 'old-done');
+  const blocker = Bun.spawn([
+    '/usr/bin/lockf',
+    '-k',
+    env.SA_HEAVY_LOCK_FILE,
+    'sh',
+    '-c',
+    `touch '${blockerReady}'; sleep 0.4`,
+  ]);
+  for (let i = 0; i < 100 && !existsSync(blockerReady); i++) await Bun.sleep(10);
+  const old = Bun.spawn([
+    '/usr/bin/lockf',
+    '-k',
+    env.SA_HEAVY_LOCK_FILE,
+    'sh',
+    '-c',
+    `touch '${oldStarted}'; sleep 0.7; touch '${oldDone}'`,
+  ]);
+  const side = [`${env.SA_HEAVY_LOCK_FILE}.1`, `${env.SA_HEAVY_LOCK_FILE}.2`].map(lock =>
+    Bun.spawn(['/usr/bin/lockf', '-k', lock, 'sleep', '1.3'])
+  );
+  expect(await blocker.exited).toBe(0);
+  for (let i = 0; i < 100 && !existsSync(oldStarted); i++) await Bun.sleep(10);
+  const next = run(env, 'after-old');
+  await Bun.sleep(200);
+  expect(existsSync(oldDone)).toBe(false);
+  expect(existsSync(join(root, 'started.after-old'))).toBe(false);
+  expect(
+    await Promise.all([old.exited, ...side.map(holder => holder.exited), next.exited])
+  ).toEqual([0, 0, 0, 0]);
 });
 
 test('browser admission exposes exactly two machine-wide slots', async () => {
@@ -268,5 +308,42 @@ test('background work yields to live foreground waiters and ignores dead ones', 
 
   writeFileSync(join(queue, '99999999.json.foreground'), '');
   expect(await run({ ...env, SA_HEAVY_CLASS: 'background' }, 'after-dead').exited).toBe(0);
+  expect(existsSync(join(queue, '99999999.json.foreground'))).toBe(false);
+});
+
+test('foreground waiters acquire in queue order and skip a dead entry', async () => {
+  const { root, env } = fixture(),
+    queue = `${env.SA_HEAVY_LOCK_FILE}.queue`;
+  const holders = Array.from({ length: 3 }, (_, i) =>
+    run({ ...env, DURATION: String(4 + i * 0.6) }, `fifo-holder-${String(i)}`)
+  );
+  for (
+    let i = 0;
+    i < 100 && holders.some((_, n) => !existsSync(join(root, `started.fifo-holder-${String(n)}`)));
+    i++
+  )
+    await Bun.sleep(10);
+  writeFileSync(
+    join(queue, '99999999.json'),
+    JSON.stringify({ pid: 99999999, command: 'dead', cwd: '/', queued_at: '2000-01-01T00:00:00Z' })
+  );
+  writeFileSync(join(queue, '99999999.json.foreground'), '');
+  const waiters = [],
+    errors: Promise<string>[] = [];
+  for (const id of ['fifo-1', 'fifo-2', 'fifo-3']) {
+    const waiter = run(env, id);
+    waiters.push(waiter);
+    errors.push(new Response(waiter.stderr).text());
+    await Bun.sleep(1100);
+  }
+  expect(await Promise.all([...holders, ...waiters].map(process => process.exited))).toEqual([
+    0, 0, 0, 0, 0, 0,
+  ]);
+  const order = readFileSync(join(root, 'order'), 'utf8')
+    .trim()
+    .split('\n')
+    .filter(id => /^fifo-\d$/.test(id));
+  expect(order).toEqual(['fifo-1', 'fifo-2', 'fifo-3']);
+  expect((await Promise.all(errors)).join('')).not.toContain('already locked');
   expect(existsSync(join(queue, '99999999.json.foreground'))).toBe(false);
 });

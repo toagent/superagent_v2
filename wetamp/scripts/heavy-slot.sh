@@ -55,6 +55,17 @@ heavy_foreground_waiting() {
 
 heavy_foreground_eligible() {
   [ "${SA_HEAVY_CLASS:-}" != background ] || return 0
+  holders=0
+  for lock in $(heavy_slot_files); do
+    holder=$lock.holder
+    [ -f "$holder" ] || continue
+    IFS= read -r holder_pid_line < "$holder" || continue
+    holder_pid=${holder_pid_line#pid=}
+    case "$holder_pid" in *[!0-9]*|'') continue ;; esac
+    kill -0 "$holder_pid" 2>/dev/null && holders=$((holders + 1))
+  done
+  available=$((heavy_slot_count - holders))
+  [ "$available" -gt 0 ] || return 1
   candidates=
   for marker in "$heavy_lock_file.queue"/*.foreground; do
     [ -e "$marker" ] || continue
@@ -65,7 +76,7 @@ heavy_foreground_eligible() {
     candidates="$candidates${queued_at:-9999} $pid
 "
   done
-  printf '%s' "$candidates" | sort | sed -n "1,${heavy_slot_count}p" | awk -v pid="$$" '$2 == pid { found=1 } END { exit !found }'
+  printf '%s' "$candidates" | sort | sed -n "1,${available}p" | awk -v pid="$$" '$2 == pid { found=1 } END { exit !found }'
 }
 
 heavy_run_held='
@@ -152,7 +163,7 @@ heavy_exec() {
     for lock in $(heavy_slot_files); do
       rm -f "$acquired"
       case "$(uname -s)" in
-        Darwin) if /usr/bin/lockf -t 0 "$lock" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$lock" "$heavy_queue_file" "$acquired" "$@"; then status=0; else status=$?; fi ;;
+        Darwin) if /usr/bin/lockf -k -s -t 0 "$lock" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$lock" "$heavy_queue_file" "$acquired" "$@"; then status=0; else status=$?; fi ;;
         Linux) command -v flock >/dev/null 2>&1 || { echo 'heavy slot: flock is required on Linux' >&2; return 1; }; if flock -E 75 -n "$lock" env SA_HEAVY_LOCK_HELD=1 sh -c "$heavy_run_held" sh "$lock" "$heavy_queue_file" "$acquired" "$@"; then status=0; else status=$?; fi ;;
         *) echo "heavy slot: unsupported platform $(uname -s)" >&2; return 1 ;;
       esac
