@@ -344,19 +344,19 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
       run.target.branch
     );
     if (
-      !checkout ||
-      realpathSync(checkout) !== repo ||
-      git(repo, 'symbolic-ref', '--short', 'HEAD') !== run.target.branch
+      checkout &&
+      (realpathSync(checkout) !== repo ||
+        git(repo, 'symbolic-ref', '--short', 'HEAD') !== run.target.branch)
     )
       return {
         status: 'rejected',
         reason: 'target_checkout_changed',
-        evidence: checkout
-          ? `target branch is checked out at ${checkout}`
-          : `target checkout is no longer on ${run.target.branch}`,
+        evidence: `target branch is checked out at ${checkout}`,
       };
-    const paths = checkoutChanges(checkout);
-    if (paths.length) return { status: 'dirty', paths };
+    if (checkout) {
+      const paths = checkoutChanges(checkout);
+      if (paths.length) return { status: 'dirty', paths };
+    }
     const head = git(run.worktree, 'rev-parse', 'HEAD');
     const ancestor = Bun.spawnSync(
       ['git', '-C', repo, 'merge-base', '--is-ancestor', targetTip, head],
@@ -394,7 +394,9 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
 
     run.fence();
     if (head !== targetTip) {
-      const merged = Bun.spawnSync(['git', '-C', checkout, 'merge', '--ff-only', head], {
+      // An unoccupied ref touches no worktree or index; CAS plus the integration lock prevents races.
+      const args = checkout ? ['merge', '--ff-only', head] : ['update-ref', ref, head, targetTip];
+      const merged = Bun.spawnSync(['git', '-C', checkout ?? repo, ...args], {
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: QUERY_TIMEOUT_MS,

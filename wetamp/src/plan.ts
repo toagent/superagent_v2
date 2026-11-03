@@ -209,7 +209,7 @@ export function milestones(plan: Plan): Milestone[] {
       packages: group,
       risk,
       human: group.some(p => p.signoff === 'human'),
-      review: risk === 'G2' || plan.mode === 'strict' || group.some(p => p.review === true),
+      review: group.some(p => Boolean(p.review_reason?.trim())),
     };
   });
 }

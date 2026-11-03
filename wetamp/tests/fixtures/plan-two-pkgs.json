@@ -12,6 +12,7 @@
       "accept": [{ "cmd": "test -f core.txt", "timeout_s": 30 }],
       "risk": "G1",
       "review": true,
+      "review_reason": "fixture explicitly requests review",
       "size": "S"
     },
     {

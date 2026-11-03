@@ -85,6 +85,8 @@ import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
 import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
+import { scopeOverlaps } from './scope-overlap';
+export { scopeOverlaps } from './scope-overlap';
 import { answerHeldOwnerAsk, reclaimOnce, reclaimTick } from './reclaim';
 import { responsibilityList, waitingAsks } from './resume-card';
 import {
@@ -1625,58 +1627,6 @@ function preflight(): void {
       path: sa,
     })
   );
-}
-
-export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; error?: string }[] {
-  try {
-    if (process.env.DATABASE_URL) throw new Error('DATABASE_URL: SQLite status unavailable');
-    const scope = repoScope(plan.repo).id;
-    return ledgers().flatMap<{ run_id: string; paths: string[]; error?: string }>(l => {
-      try {
-        if ('error' in l) throw new Error(l.error);
-        // Only a missing path is clear; permission and other filesystem errors stay unknown.
-        if (!statSync(l.repo, { throwIfNoEntry: false })) return [];
-        let status: string;
-        try {
-          status = coord().d.status(l);
-        } catch (error) {
-          if (repoScope(l.repo).id !== scope) return [];
-          throw error;
-        }
-        if (
-          ['completed', 'failed', 'cancelled'].includes(status) &&
-          (!l.delivery_result || l.delivery_result.status === 'integrated')
-        )
-          return [];
-        if (repoScope(l.repo).id !== scope) return [];
-        if (status === 'unknown') throw new Error('run status unavailable');
-        const frozen = join(l.gen_dir, 'plan.json');
-        const previous = loadPlan(
-          existsSync(frozen) ? frozen : resolve(l.repo, l.plan)
-        ).packages.flatMap(p => p.scope.write);
-        const prefix = (glob: string) => glob.split(/[*?{[]/, 1)[0];
-        const paths = plan.packages
-          .flatMap(p => p.scope.write)
-          .filter(path =>
-            previous.some(
-              other =>
-                path === other ||
-                new Bun.Glob(other).match(path) ||
-                new Bun.Glob(path).match(other) ||
-                (prefix(path) !== path &&
-                  prefix(other) !== other &&
-                  (prefix(path).startsWith(prefix(other)) ||
-                    prefix(other).startsWith(prefix(path))))
-            )
-          );
-        return paths.length ? [{ run_id: l.run_id, paths: [...new Set(paths)] }] : [];
-      } catch (error) {
-        return [{ run_id: l.run_id, paths: [], error: redact(String(error)) }];
-      }
-    });
-  } catch (error) {
-    return [{ run_id: 'unknown', paths: [], error: redact(String(error)) }];
-  }
 }
 
 function checkedPlan(planPath: string, override?: string) {

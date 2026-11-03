@@ -42,12 +42,44 @@ function fixture(now = 2_000_000_000_000) {
   const request = (ref: string, risk: 'normal' | 'red' = 'normal') => ({ source: 'test', title: 'Decision', body: 'Choose', risk, options: [{ id: 'yes', label: 'Yes', consequence: 'changes state' }, { id: 'no', label: 'No' }], expires_at: new Date(now + 3_600_000).toISOString(), callback: { kind: 'external' as const, ref }, dedupe_key: ref });
   const action = (post = posts.at(-1)!, index = 0) => JSON.parse(String((post.body.actions as { body: string }[])[index].body));
   const push = (value: unknown) => events.push(JSON.stringify({ id: String(++eventId).padStart(12, '0'), event: 'message', message: JSON.stringify(value) }));
-  const state = () => JSON.parse(readFileSync(config.statePath, 'utf8')) as { cursor?: string; decisions: Record<string, { status: string; error?: { code: string; message: string } }> };
+  const state = () => JSON.parse(readFileSync(config.statePath, 'utf8')) as { cursor?: string; decisions: Record<string, { seq?: number; status: string; error?: { code: string; message: string } }> };
   return { root, config, posts, request, action, push, state };
 }
 
 // prettier-ignore
 describe('ntfy decision channel', () => {
+  const withoutHeader = (value: unknown): string => String(value).replace(/^#\d+ \d{2}-\d{2} \d{2}:\d{2}｜/, '');
+  test('prefixes every topic with a durable sequence and local publish time', async () => {
+    const f = fixture();
+    askNtfy(f.request('sequence'), f.config);
+    const online = f.config.fetch; f.config.fetch = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    await expect(publishPendingNtfy(f.config)).rejects.toThrow('ntfy publish unavailable'); f.config.fetch = online;
+    expect(JSON.parse(readFileSync(f.config.statePath, 'utf8'))).not.toHaveProperty('seq');
+    queueNtfyAlert('first', 'First', f.config);
+    queueNtfyAlert('second', 'Second', f.config);
+    await publishPendingNtfy(f.config);
+    expect(f.posts.map(post => post.body.title)).toEqual([
+      '#1 05-18 03:33｜Decision',
+      '#2 05-18 03:33｜',
+      '#3 05-18 03:33｜',
+    ]);
+    queueNtfyAlert('restart', 'Restart', f.config);
+    await publishPendingNtfy(f.config);
+    expect(f.posts.at(-1)!.body.title).toBe('#4 05-18 03:33｜');
+
+    const legacy = fixture();
+    queueNtfyAlert('legacy', 'Legacy', legacy.config);
+    expect(JSON.parse(readFileSync(legacy.config.statePath, 'utf8'))).not.toHaveProperty('seq');
+    await publishPendingNtfy(legacy.config);
+    expect(legacy.posts[0]!.body.title).toBe('#1 05-18 03:33｜');
+  });
+  test('links receipts to the published decision sequence while preserving legacy state', async () => {
+    const f = fixture(), id = askNtfy(f.request('reply-sequence'), f.config); await publishPendingNtfy(f.config);
+    expect(f.state().decisions[id]?.seq).toBe(1); f.push(f.action()); await syncNtfy(() => undefined, f.config);
+    expect(String(f.posts.at(-1)!.body.title)).toEndWith('｜回复 #1');
+    const legacy = fixture(), legacyId = askNtfy(legacy.request('legacy-reply'), legacy.config); await publishPendingNtfy(legacy.config); const action = legacy.action(), state = legacy.state(); delete state.decisions[legacyId]!.seq; writeFileSync(legacy.config.statePath, JSON.stringify(state)); legacy.push(action); await syncNtfy(() => undefined, legacy.config);
+    expect(String(legacy.posts.at(-1)!.body.title)).not.toContain('回复 #');
+  });
   test('uses ntfy JSON protocol and advances past forged, replayed and callback-failed events', async () => {
     const f = fixture(), accepted: string[] = [];
     const first = askNtfy(f.request('first'), f.config); await publishPendingNtfy(f.config);
@@ -55,22 +87,22 @@ describe('ntfy decision channel', () => {
     expect((f.posts[0].body.actions as { clear: boolean }[]).every(action => action.clear)).toBeTrue();
     const valid = f.action(); f.push({ ...valid, sig: '0'.repeat(64) }); f.push(valid); f.push(valid); f.push({ ...valid, id: 'missing' });
     expect(await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).toEqual({ accepted: 1, ignored: 3, failed: 0 });
-    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => post.body.title)).toEqual(['未执行｜Decision', '已记录：Yes｜Decision', '未执行｜未知决策']);
+    expect(f.posts.filter(post => post.body.topic === 'sa-alerts').map(post => withoutHeader(post.body.title))).toEqual(['未执行｜Decision｜回复 #1', '已记录：Yes｜Decision｜回复 #1', '未执行｜未知决策']);
     const bad = askNtfy(f.request('bad'), f.config), stale = askNtfy(f.request('stale'), f.config), live = askNtfy(f.request('live'), f.config);
     await publishPendingNtfy(f.config); const badAction = f.action(f.posts.at(-3)), staleAction = f.action(f.posts.at(-2), 1); f.push(badAction); f.push(staleAction); f.push(f.action());
     expect(await syncNtfy(d => { if (d.id === bad) throw new Error('secret body'); if (d.id === stale) throw new DecisionError('决定已变化，请重读', 'decision_changed', { status: 'accepted', at: '2033-05-18T03:33:19.000Z' }); accepted.push(d.id); }, f.config)).toMatchObject({ accepted: 1, failed: 2 });
     expect(f.state().decisions).toMatchObject({ [first]: { status: 'answered' }, [bad]: { status: 'failed', error: { code: 'callback_failed', message: '回调处理失败' } }, [stale]: { status: 'superseded', error: { code: 'decision_changed' } }, [live]: { status: 'answered' } });
-    expect(f.posts.find(post => String(post.body.message).includes('你点的选项：No'))?.body).toMatchObject({ title: '未执行｜No｜Decision', message: expect.stringContaining('在 2033-05-18T03:33:19.000Z 已 accepted') });
+    expect(f.posts.find(post => String(post.body.message).includes('你点的选项：No'))?.body).toMatchObject({ title: expect.stringContaining('｜未执行｜No｜Decision'), message: expect.stringContaining('在 2033-05-18T03:33:19.000Z 已 accepted') });
     expect(readFileSync(f.config.statePath, 'utf8')).not.toContain('secret body');
-    f.push(staleAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜No｜Decision', message: expect.stringContaining('你的选择未改变任何状态') });
+    f.push(staleAction); await syncNtfy(() => undefined, f.config); expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜未执行｜No｜Decision'), message: expect.stringContaining('你的选择未改变任何状态') });
     queueNtfyAlert('receipt', 'done', f.config); await publishPendingNtfy(f.config);
-    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: 'done' });
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', message: `${'━'.repeat(14)}\ndone` });
   });
   test('requires a fresh red confirmation and expires without one', async () => {
     const f = fixture(), accepted: string[] = []; askNtfy({ ...f.request('red', 'red'), project: 'Archon', headline: '红线操作' }, f.config);
     await publishPendingNtfy(f.config); f.push(f.action());
     expect((await syncNtfy((_d, option) => { accepted.push(option); }, f.config)).accepted).toBe(0);
-    expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜Archon｜红线操作', message: expect.stringContaining('▍还需要你吗\n是') });
+    expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜未执行｜Archon｜红线操作'), message: expect.stringContaining('▍还需要你吗\n是') });
     const confirmation = f.posts.filter(post => post.body.topic === 'sa-decisions').at(-1)!;
     expect(confirmation.body).toMatchObject({ priority: 5, tags: ['red_circle'] });
     expect((confirmation.body.actions as { label: string }[])[0].label).toBe('确认批准');
@@ -126,7 +158,7 @@ describe('ntfy decision channel', () => {
   test('accepts validated ask specs and omits missing presentation fields', async () => {
     const f = fixture(), path = join(f.root, 'ask.json'), base = { source: 'marshal', source_ref: { ref: 'run-27', initiator: 'marshal' }, title: '是否放行？', body: '正文不应重复', options: [{ id: 'yes', label: '是', effect: '继续 run' }, { id: 'no', label: '否' }], recommend: { option: '是', reason: '验收通过' }, risk: 'normal', expires_at: f.request('x').expires_at, callback: { kind: 'external', ref: 'external:27' } };
     writeFileSync(path, JSON.stringify(base)); await askCli(['ask', '--spec', path], f.config, () => undefined);
-    expect(f.posts[0]!.body.title).toBe('需你决定｜是否放行？');
+    expect(withoutHeader(f.posts[0]!.body.title)).toBe('需你决定｜是否放行？');
     const message = String(f.posts[0]!.body.message);
     expect(message).toContain('▍一句话\n是否放行？'); expect(message).not.toContain('正文不应重复');
     expect(message).toContain('• 是｜继续 run\n• 否'); expect(message).not.toContain('未说明'); expect(message).not.toContain('▍这个任务是什么');
@@ -140,7 +172,7 @@ describe('ntfy decision channel', () => {
     await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
     await notifyCli(['notify', '--id', 'alert-1', '--title', 'Stalled', '--body', 'Needs attention'], f.config, value => output.push(value));
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(1);
-    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: 'Stalled', message: 'Needs attention', priority: 3, tags: ['large_blue_circle'] });
+    expect(f.posts.at(-1)!.body).toMatchObject({ topic: 'sa-alerts', title: expect.stringContaining('｜Stalled'), message: `${'━'.repeat(14)}\nNeeds attention`, priority: 3, tags: ['large_blue_circle'] });
     expect(output).toEqual([{ id: 'alert-1', delivery: 'sent' }, { id: 'alert-1', delivery: 'sent' }]);
     await notifyCli(['notify', '--id', 'urgent', '--title', 'Urgent', '--body', 'Act', '--priority', '5'], f.config, () => undefined);
     expect(f.posts.at(-1)!.body.priority).toBe(5);
@@ -155,11 +187,11 @@ describe('ntfy decision channel', () => {
   test('renders structured decisions and receipts as full plain-text briefs', async () => {
     const f = fixture(), request = { ...f.request('full'), source: { ref: 'run-24', initiator: 'codex 元帅（Archon）', queued_at: '2033-05-18T03:00:00.000Z' }, project: 'Archon', headline: '是否放行？', purpose: '修复 ntfy 决策信息', why: '人工门禁等待决策', recommend: { option: '是', reason: '验收已通过' }, options: [{ id: 'yes', label: '是', timing: '立即', effect: '继续 run', reversible: '可取消', risk: '可能需要修复' }, { id: 'no', label: '否', consequence: '保持停顿', risk: '延迟交付' }] };
     askNtfy(request, f.config); await publishPendingNtfy(f.config);
-    expect(f.posts[0]!.body).toMatchObject({ title: '需你决定｜Archon｜是否放行？', priority: 4, tags: ['orange_circle'] });
+    expect(f.posts[0]!.body).toMatchObject({ title: expect.stringContaining('｜需你决定｜Archon｜是否放行？'), priority: 4, tags: ['orange_circle'] });
     const message = String(f.posts[0]!.body.message);
-    expect(message).toStartWith('━'.repeat(14)); expect(message).toContain('▍选项对比'); expect(message).toContain('来源：run-24'); expect(Buffer.byteLength(message)).toBeLessThanOrEqual(4000);
+    expect(message).toStartWith('━'.repeat(14)); expect(message).not.toStartWith(`${'━'.repeat(14)}\n${'━'.repeat(14)}`); expect(message).toContain('▍选项对比'); expect(message).toContain('来源：run-24'); expect(Buffer.byteLength(message)).toBeLessThanOrEqual(4000);
     f.push(f.action(f.posts[0])); await syncNtfy(() => undefined, f.config);
-    expect(f.posts.at(-1)!.body).toMatchObject({ title: '已执行｜Archon｜是否放行？', priority: 2, tags: ['green_circle'] });
+    expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜已执行｜Archon｜是否放行？'), priority: 2, tags: ['green_circle'] });
     expect(String(f.posts.at(-1)!.body.message)).toContain('▍还需要你吗');
   });
   test('moves a gate answer to its current episode and reports execution in progress', async () => {
@@ -173,7 +205,7 @@ describe('ntfy decision channel', () => {
       f.push(f.action());
       expect((await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] }))).accepted).toBe(1);
       expect(JSON.parse(readFileSync(join(f.root, 'asks.json'), 'utf8'))[currentKey].status).toBe('yes');
-      expect(f.posts.at(-1)!.body).toMatchObject({ title: '正在执行｜Archon｜是否批准签收并续跑？', priority: 2, tags: ['white_circle'] });
+      expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜正在执行｜Archon｜是否批准签收并续跑？'), priority: 2, tags: ['white_circle'] });
       expect(String(f.posts.at(-1)!.body.message)).toContain('已收到你的『Yes』，正在执行（门禁 signoff）');
       const expires = askNtfy({ ...f.request('expires'), expires_at: new Date(2_000_000_001_000).toISOString(), callback: { kind: 'ask', key: oldKey } }, f.config); writeFileSync(join(f.root, 'asks.json'), JSON.stringify({ [middleKey]: { id: expires, status: 'superseded', legacy_key: oldKey }, [currentKey]: { id: expires, status: 'pending', legacy_key: oldKey } })); f.config.now = () => 2_000_000_002_000;
       await syncDecisionChannel(f.config, async () => ({ decisions: [], unknown: [] })); expect(JSON.parse(readFileSync(join(f.root, 'asks.json'), 'utf8'))[currentKey].status).toBe('expired');
@@ -187,7 +219,7 @@ describe('ntfy decision channel', () => {
     const inbox = async () => ({ decisions, unknown: [] });
     queueNtfyAlert('alert', 'unlimited', f.config); await syncDecisionChannel(f.config, inbox, undefined, 5); await publishPendingNtfy(f.config);
     expect(f.posts.map(post => post.body.topic)).toEqual([...Array(5).fill('sa-decisions'), 'sa-alerts']);
-    expect(f.posts.slice(0, 5).map(post => post.body.title)).toEqual([...Array(5)].map((_, i) => `Decision ${i}`));
+    expect(f.posts.slice(0, 5).map(post => withoutHeader(post.body.title))).toEqual([...Array(5)].map((_, i) => `Decision ${i}`));
     await syncDecisionChannel(f.config, inbox, undefined, 5); now += 3_600_001; await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(7);
   });
@@ -197,9 +229,9 @@ describe('ntfy decision channel', () => {
     const pending = askNtfy({ ...f.request('pending'), callback: { kind: 'decision' as const, id: 'pending' } }, f.config);
     await syncDecisionChannel(f.config, async () => ({ decisions: [decision('live')], unknown: [] }));
     expect(f.state().decisions).toMatchObject({ [sent]: { status: 'superseded' }, [pending]: { status: 'superseded' } });
-    expect(f.posts.filter(post => post.body.topic === 'sa-decisions').map(post => post.body.title)).toEqual(['sent：detail', 'live：detail']);
+    expect(f.posts.filter(post => post.body.topic === 'sa-decisions').map(post => withoutHeader(post.body.title))).toEqual(['sent：detail', 'live：detail']);
     f.push(staleAction); await syncNtfy(() => undefined, f.config);
-    expect(f.posts.at(-1)!.body).toMatchObject({ title: '未执行｜No｜sent', message: expect.stringContaining('由引擎在') });
+    expect(f.posts.at(-1)!.body).toMatchObject({ title: expect.stringContaining('｜未执行｜No｜sent'), message: expect.stringContaining('由引擎在') });
   });
   test('held owner online answers route through the dedicated callback once', async () => {
     const f = fixture(), ref = 'a'.repeat(64), handled: string[] = [], who = caller(), request = { ...f.request(ref), originator: { identity: who, scope: { kind: 'repo' as const, id: f.root } }, callback: { kind: 'held' as const, ref } }, id = askNtfy(request, f.config);
@@ -217,8 +249,8 @@ describe('ntfy decision channel', () => {
     await publishPendingNtfy(f.config); await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(6);
     expect(f.posts.filter(post => post.body.topic === 'sa-alerts')).toHaveLength(10);
-    expect(f.posts.filter(post => post.body.title === 'superagent 推送已限流')).toHaveLength(1);
-    expect(f.posts.find(post => post.body.title === 'superagent 推送已限流')?.body).toMatchObject({ priority: 2, tags: ['white_circle'] });
+    expect(f.posts.filter(post => withoutHeader(post.body.title) === 'superagent 推送已限流')).toHaveLength(1);
+    expect(f.posts.find(post => withoutHeader(post.body.title) === 'superagent 推送已限流')?.body).toMatchObject({ priority: 2, tags: ['white_circle'] });
     queueNtfyAlert('alert-0', 'duplicate', f.config); await publishPendingNtfy(f.config);
     now += 3_600_001; await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(8);

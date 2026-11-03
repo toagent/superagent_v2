@@ -518,6 +518,7 @@ export async function runInProcess(
             accept: [{ cmd: f.spec.plan.accept, timeout_s: 5 }],
             risk: f.spec.risk,
             size: 'S',
+            ...(f.spec.passRound > 1 ? { review_reason: 'scenario exercises review repair' } : {}),
           },
         ];
         if (f.spec.id === 'S10')

@@ -30,6 +30,7 @@ import {
   readAuthorEvidence,
   ledgerOf,
   scopeRisk,
+  autoApproveScope,
   approvableScopeTests,
   deliveryDecision as rawDeliveryDecision,
   readAttempt,
@@ -1912,17 +1913,20 @@ describe('F-13 delivery scope', () => {
   test('in-scope code edits keep the declared risk; G0 touching code is inferred G1', () => {
     expect(scopeRisk([ch(['src/a.ts'])], ['src/'], pol, 'G1')).toEqual({
       risk: 'G1',
+      review_required: false,
       out_of_scope: [],
     });
     expect(scopeRisk([ch(['src/a.ts'])], ['src'], pol, 'G0').risk).toBe('G1');
     expect(scopeRisk([ch(['README.md'])], ['src'], pol, 'G0')).toEqual({
       risk: 'G0',
+      review_required: false,
       out_of_scope: [],
     });
   });
   test('out-of-scope paths remain evidence while risk paths, gitlinks and symlinks raise G2', () => {
     expect(scopeRisk([ch(['lib/x.ts', 'src/x.ts'])], ['src/**'], pol, 'G1')).toEqual({
       risk: 'G1',
+      review_required: false,
       out_of_scope: ['lib/x.ts'],
     });
     expect(scopeRisk([ch(['src/auth/k.ts'])], ['src'], pol, 'G1').risk).toBe('G2');
@@ -1930,6 +1934,9 @@ describe('F-13 delivery scope', () => {
       'G2'
     );
     expect(scopeRisk([ch(['src/l'], ['100644', '120000'])], ['src'], pol, 'G0').risk).toBe('G2');
+    expect(autoApproveScope(['lib/x.ts'], pol, false)).toBeTrue();
+    expect(autoApproveScope(['lib/x.ts'], pol, true)).toBeFalse();
+    expect(autoApproveScope(['db/x.sql'], pol, false)).toBeFalse();
   });
   test('only corresponding test files are eligible for a scope decision', () => {
     const root = tmp();
@@ -2654,7 +2661,7 @@ describe('sa-check script', () => {
       debt,
     });
   });
-  test('NR: no review passes TESTED only with green advance and effective risk below G2', () => {
+  test('NR: no review passes TESTED when the structured review trigger is false', () => {
     const root = tmp(),
       repo = gitRepo(root),
       plan = fixturePlan(root, repo);
@@ -2681,7 +2688,10 @@ describe('sa-check script', () => {
         debt: [],
       },
     });
-    expect(gate('G2')).toMatchObject({ code: 1, err: expect.stringContaining('gate: no review') });
+    expect(gate('G2')).toMatchObject({
+      code: 0,
+      out: { grade: 'TESTED', reason: 'review_not_required', risk: 'G2' },
+    });
     expect(gate('G2', true)).toMatchObject({ code: 0, out: { grade: 'PASS', risk: 'G2' } });
   });
   test('B1 carry same-diff reuses a qualified review after acceptance recovers; contract or identity drift refuses reuse', () => {
@@ -2914,7 +2924,7 @@ describe('sa-check script', () => {
       risk: 'G1',
     });
     expect(r.out).toMatchObject({
-      reason: 'scope_violation',
+      reason: null,
       net_lines: {
         used: 20,
         limit: 50,
@@ -2924,6 +2934,7 @@ describe('sa-check script', () => {
         ],
       },
       out_of_scope: ['client.generated.ts', 'uv.lock'],
+      scope_auto_approved: ['client.generated.ts', 'uv.lock'],
     });
   });
   // prettier-ignore
@@ -3062,9 +3073,10 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     expect(approved.code, approved.err).toBe(0);
     expect(approved.out).toMatchObject({
       ok: false,
-      disposition: 'repair',
-      reason: 'scope_violation',
+      disposition: 'advance',
+      reason: null,
       out_of_scope: ['outside.ts'],
+      scope_auto_approved: ['outside.ts'],
       failures: [{ failure_class: 'test_env', adjudicated: true }],
     });
   });
@@ -4901,6 +4913,12 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
   test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
     const repo = gitRepo(root);
+    const isolatedEnv = {
+      SUPERAGENT_HOME: join(root, 'home'),
+      ARCHON_HOME: join(root, 'archon'),
+    };
+    mkdirSync(join(isolatedEnv.SUPERAGENT_HOME, 'runs'), { recursive: true });
+    mkdirSync(isolatedEnv.ARCHON_HOME, { recursive: true });
     const commit = (f: string) =>
       sh(
         `mkdir -p $(dirname ${f}) && echo ${f} > ${f} && git add ${f} && git -c user.name=t -c user.email=t@l commit -qm ${f}`,
@@ -4941,7 +4959,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
         risk,
         policy: pol,
         ...extra,
-      }).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[]; scope_blobs: Record<string, string> };
+      }, SCRIPT, isolatedEnv).out as { patch: string; delta: string; diff_hash: string; risk: string; out_of_scope: string[]; scope_blobs: Record<string, string> };
     const r = go('G0');
     expect(readFileSync(r.delta, 'utf8')).toContain('src/b.md');
     expect(readFileSync(r.delta, 'utf8')).not.toContain('src/a.ts');
@@ -4989,15 +5007,8 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     expect(go('G0')).toMatchObject({
       risk: 'G1',
       out_of_scope: ['src/b.md'],
-      disposition: 'repair',
-      reason: 'scope_violation',
-      decision: {
-        kind: 'repair',
-        evidence: expect.arrayContaining([
-          'src/b.md',
-          'Keep only goal-required out-of-scope changes; after acceptance passes report only scope_decision so the engine holds this diff for approval. Revert all other out-of-scope changes.',
-        ]),
-      },
+      disposition: 'advance',
+      scope_auto_approved: ['src/b.md'],
     });
     write(['src/']);
     expect(go('G0')).toMatchObject({ disposition: 'advance', out_of_scope: [] });
@@ -5017,30 +5028,12 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       risk: 'G0',
       policy: pol,
       terminal: '1',
-    });
-    expect(terminal.code).toBe(1);
+    }, SCRIPT, isolatedEnv);
+    expect(terminal.code).toBe(0);
     expect(terminal.out).toMatchObject({
-      disposition: 'fail',
-      reason: 'scope_violation',
+      disposition: 'advance',
       out_of_scope: ['src/b.md'],
-    });
-    const exhausted = runScript(repo, {
-      kind: 'settle',
-      plan: p,
-      pkgs: 'a',
-      tag: 'settle-a',
-      base,
-      risk: 'G0',
-      policy: pol,
-      first: 'repair',
-      repaired: '{"status":"done","error_class":null,"needs":[]}',
-    });
-    expect(exhausted.code).toBe(1);
-    expect(exhausted.out).toMatchObject({
-      disposition: 'fail',
-      reason: 'repair_exhausted:scope_violation',
-      repair_reason: 'scope_violation',
-      out_of_scope: ['src/b.md'],
+      scope_auto_approved: ['src/b.md'],
     });
     write(['src/a.ts'], PRODUCT_FAILURE);
     const limited = runScript(repo, {
@@ -5052,7 +5045,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       base,
       risk: 'G1',
       policy: pol,
-    });
+    }, SCRIPT, isolatedEnv);
     expect(limited.code).toBe(1);
     expect(limited.out).toMatchObject({
       disposition: 'fail',
@@ -5062,6 +5055,8 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     write(['src/']);
     commit('src/auth/x.md');
     expect(go('G1')).toMatchObject({ risk: 'G2', out_of_scope: [] });
+    configured.risk_paths.push('tests/**');
+    writeFileSync(pol, JSON.stringify(configured));
     commit('tests/a.test.ts');
     const held = go('G1');
     expect(held).toMatchObject({ disposition: 'fail', reason: 'scope_approval', out_of_scope: ['tests/a.test.ts'] });

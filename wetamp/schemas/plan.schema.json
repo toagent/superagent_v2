@@ -189,12 +189,13 @@
           },
           "review": {
             "type": "boolean",
-            "description": "Request milestone review; G2 and strict always require review"
+            "description": "Legacy review request; ignored unless review_reason is present"
           },
           "review_reason": {
             "type": "string",
             "minLength": 1,
-            "description": "User request or risk-path match that justifies review"
+            "pattern": "\\S",
+            "description": "User's original reason for requesting an independent review"
           },
           "effort": {
             "enum": ["low", "medium", "high", "xhigh", "max"],

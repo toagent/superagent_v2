@@ -99,19 +99,16 @@ test('S2/S11: generated G2 workflow binds gate evidence without preset role', as
       const result = await runGateContract(f);
       expectOutcome(f, result, {
         terminal: 'completed',
-        counts: { 'code-p': 1, 'review-m1-r1': 1, 'gate-m1-r1': 1 },
+        counts: { 'code-p': 1, 'review-m1-r1': 0, 'gate-m1-r1': 1 },
         published: false,
       });
       expectGate(result, 1);
-      const gate = completedOutput(result, 'gate-m1-r1') as {
-        identity: { authors: { model: string }[]; reviewer: { model: string } };
-      };
+      const gate = completedOutput(result, 'gate-m1-r1');
       expect(gate).toMatchObject({
         risk: 'G2',
-        grade: 'PASS',
-        identity: { reviewer: { model: 'fixture/reviewer' } },
+        grade: 'TESTED',
+        identity: null,
       });
-      expect(gate.identity.authors.every(author => author.model === 'fixture/coder')).toBeTrue();
       expect(f.roles.length).toBeGreaterThan(0);
       expect(new Set(f.roles)).toEqual(new Set(['']));
       expect(process.env.SUPERAGENT_ROLE).toBe('');
