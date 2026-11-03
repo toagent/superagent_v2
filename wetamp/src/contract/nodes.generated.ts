@@ -238,7 +238,9 @@ export interface AcceptOutput {
   disposition: 'advance' | 'repair' | 'adjudicate' | 'fail' | 'suspend';
   reason: string | null;
   risk: string | null;
+  review_required?: boolean;
   out_of_scope: string[];
+  scope_auto_approved?: string[];
   baseline?: 'comparable' | 'incomparable';
   baseline_reason?: string;
   base_results?: BaseResult[];
@@ -428,7 +430,9 @@ export const acceptOutputFormat = {
     disposition: { enum: ['advance', 'repair', 'adjudicate', 'fail', 'suspend'] },
     reason: { type: ['string', 'null'] },
     risk: { type: ['string', 'null'] },
+    review_required: { type: 'boolean' },
     out_of_scope: { type: 'array', items: { type: 'string' } },
+    scope_auto_approved: { type: 'array', items: { type: 'string' } },
     baseline: { enum: ['comparable', 'incomparable'] },
     baseline_reason: { type: 'string' },
     base_results: { type: 'array', items: { $ref: '#/$defs/BaseResult' } },

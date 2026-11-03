@@ -116,7 +116,7 @@ export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(
   'schemas/output.schema.json', 'templates/brief.md', 'tiers.json',
   'schemas/nodes', 'src/contract',
   // Lesson selection/injection and node roles freeze into generated briefs, commands and YAML.
-  'src/memory.ts', 'src/board/workflow.ts', 'src/execution.ts',
+  'src/memory.ts', 'src/board/workflow.ts', 'src/execution.ts', 'src/scope-overlap.ts',
 ], policyHash);
 /** Shared by console restart and board refresh; includes their CLI/data consumers. */
 export const residentHash = (root = WETAMP): string => hashInputs(root, ['src'], engineHash(root));
@@ -305,10 +305,11 @@ export function buildWorkflow(
     ).replaceAll("'", "'\\''")}'`;
   const integrationScript = (milestone: string, output: string): string =>
     [
+      `const reviewRequired = Object.entries(process.env).some(([key, value]) => key.startsWith('INPUTS_REVIEW_') && (value === '1' || value === 'true'));`,
       `const child = Bun.spawn([process.execPath, ${JSON.stringify(
         join(engineWetamp, 'src/land.ts')
       )}], {`,
-      `  env: { ...process.env, INPUTS_ACTION: 'publish', INPUTS_RUN: '${run}', INPUTS_MILESTONE: '${milestone}', INPUTS_OUTPUT: '${output}' },`,
+      `  env: { ...process.env, INPUTS_ACTION: 'publish', INPUTS_RUN: '${run}', INPUTS_MILESTONE: '${milestone}', INPUTS_OUTPUT: '${output}', INPUTS_REVIEW_REQUIRED: reviewRequired ? '1' : '0' },`,
       `  stdout: 'pipe', stderr: 'pipe',`,
       `});`,
       `const [stdout, stderr, exitCode] = await Promise.all([`,
@@ -448,7 +449,7 @@ export function buildWorkflow(
     acceptInputs: Node,
     gateBindings: { round: number; node: string; carried?: boolean }[]
   ): Node => {
-    const reviewRequired = m.review || m.risk === 'G2';
+    const explicitReview = m.review;
     const resyncMaxRounds = maxRounds;
     const resyncBase = `resync-base-${m.id}`;
     const syncId = `resync-${m.id}`;
@@ -596,7 +597,8 @@ export function buildWorkflow(
       const reviewContext = `review-context-resync-${m.id}-r${String(round)}`;
       const reviewWhen =
         `$${syncReady}.output.status == 'resolved' && ` +
-        `$${accepted}.output.disposition == 'advance'`;
+        `$${accepted}.output.disposition == 'advance' && ` +
+        (explicitReview ? "'true' == 'true'" : `$${accepted}.output.review_required == 'true'`);
       if (round > 1) {
         const priorGate = gateId(round - 1);
         const handoff = `handoff-resync-${m.id}-r${String(round)}`;
@@ -695,7 +697,7 @@ export function buildWorkflow(
       );
       integrationNodes.push({
         id: reviewAttempt,
-        when: reviewRequired ? reviewWhen : `$${syncReady}.output.status == '__never__'`,
+        when: reviewWhen,
         depends_on: [accepted],
         ...attemptInputs(attemptPath(gen, `review-resync-${m.id}-r${String(round)}`)),
         output_format: attemptOutputFormat,
@@ -703,7 +705,7 @@ export function buildWorkflow(
       if (!fake)
         integrationNodes.push({
           id: reviewContext,
-          when: reviewRequired ? reviewWhen : `$${syncReady}.output.status == '__never__'`,
+          when: reviewWhen,
           always_run: true,
           depends_on: [reviewAttempt],
           ...attemptInputs(
@@ -716,7 +718,7 @@ export function buildWorkflow(
         });
       integrationNodes.push({
         id: reviewer,
-        when: reviewRequired ? reviewWhen : `$${syncReady}.output.status == '__never__'`,
+        when: reviewWhen,
         ...(fake
           ? { bash: fakeReview(round) }
           : {
@@ -757,7 +759,7 @@ export function buildWorkflow(
           [accepted, reviewer],
           {
             kind: 'gate',
-            review: reviewRequired ? '1' : '0',
+            review: explicitReview ? '1' : ref.optional(acceptedHandle, 'review_required', false),
             review_node: reviewer,
             round,
             ...resyncRounds,
@@ -821,7 +823,22 @@ export function buildWorkflow(
               with: {
                 ...gateHashes,
                 target_tip: ref.required(readyHandle, 'target_tip'),
-                review_required: reviewRequired ? '1' : '0',
+                review_explicit: explicitReview ? '1' : '0',
+                review_final: ref.optional(
+                  conditionalOutput<AcceptOutput>(finalAccept),
+                  'review_required',
+                  false
+                ),
+                ...Object.fromEntries(
+                  Array.from({ length: resyncMaxRounds }, (_, i) => [
+                    `review_${String(i + 1)}`,
+                    ref.optional(
+                      conditionalOutput<AcceptOutput>(acceptId(i + 1)),
+                      'review_required',
+                      false
+                    ),
+                  ])
+                ),
               },
             }
           : {
@@ -1273,7 +1290,7 @@ export function buildWorkflow(
       const reviewAttempt = `attempt-review-${t}`;
       const reviewEligible =
         `$diff-${t}.output.disposition == 'advance'` +
-        (m.review ? '' : ` && $diff-${t}.output.risk == 'G2'`);
+        (m.review ? '' : ` && $diff-${t}.output.review_required == 'true'`);
       const reviewWhen =
         r === 1
           ? checkpointDrift
@@ -1350,7 +1367,7 @@ export function buildWorkflow(
           [`diff-${t}`, `review-${t}`],
           {
             kind: 'gate',
-            review: m.review ? '1' : '0',
+            review: m.review ? '1' : ref.optional(diffHandle, 'review_required', false),
             round: r,
             ...rounds,
             risk: m.risk,

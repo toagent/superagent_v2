@@ -37,7 +37,7 @@ const plan = (root: string, write: string[], accept: string[]): Plan =>
         goal: 'core',
         scope: { write },
         accept: accept.map(cmd => ({ cmd, timeout_s: 1 })),
-        risk: 'G1',
+        risk: 'G0',
         size: 'S',
       },
     ],
@@ -86,6 +86,19 @@ test('hub modules with more than fifteen unit test consumers only add info', () 
     result = planPrecheck(plan(root, ['wetamp/src/cli.ts'], []), root);
   expect(result.blocking).toEqual([]);
   expect(result.info.join('\n')).toMatch(/wetamp\/src\/cli\.ts.*16.*仅提示/);
+});
+
+test('G1 requires behavior acceptance and reports ignored legacy review requests', () => {
+  const root = fixture(),
+    subject = plan(root, [], ['cd wetamp && bun run type-check']);
+  subject.packages[0].risk = 'G1';
+  subject.packages[0].review = true;
+  const rejected = planPrecheck(subject, root);
+  expect(rejected.blocking.join('\n')).toContain('冒烟/行为测试');
+  expect(rejected.info.join('\n')).toContain('review:true 已忽略');
+  expect(planPrecheck(subject, root, 'approved exception').blocking).toEqual([]);
+  subject.packages[0].accept.push({ cmd: 'bun test wetamp/tests/foo.test.ts', timeout_s: 10 });
+  expect(planPrecheck(subject, root).blocking).toEqual([]);
 });
 
 test('shell syntax errors are reported with their package and command number in any repo', () => {

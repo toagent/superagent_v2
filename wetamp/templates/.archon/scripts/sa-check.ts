@@ -1182,7 +1182,7 @@ export function scopeRisk(
   write: string[],
   pol: Policy,
   declared: string
-): { risk: string; out_of_scope: string[] } {
+): { risk: string; review_required: boolean; out_of_scope: string[] } {
   const inScope = (p: string): boolean =>
     pol.exempt_paths.some(g => glob(g, p)) ||
     write.some(w => p === w || p.startsWith(w.replace(/\/*$/, '/')) || glob(w, p));
@@ -1197,7 +1197,45 @@ export function scopeRisk(
         ? 'G1'
         : 'G0'
   );
-  return { risk: maxRisk(declared, ...inferred), out_of_scope };
+  return {
+    risk: maxRisk(declared, ...inferred),
+    review_required: inferred.includes('G2'),
+    out_of_scope,
+  };
+}
+
+const riskPath = (pol: Policy, path: string): boolean =>
+  pol.risk_paths.some(g =>
+    glob(g.toLowerCase(), (g.includes('/') ? path : basename(path)).toLowerCase())
+  );
+
+export const autoApproveScope = (paths: string[], pol: Policy, conflicts: boolean): boolean =>
+  paths.length > 0 && !conflicts && paths.every(path => !riskPath(pol, path));
+
+async function scopeConflicts(paths: string[], current: Plan): Promise<boolean> {
+  try {
+    const runs = process.env.SUPERAGENT_HOME ? join(process.env.SUPERAGENT_HOME, 'runs') : '';
+    if (runs && existsSync(runs) && !readdirSync(runs).some(file => file.endsWith('.json')))
+      return false;
+    const source = [
+      resolve(import.meta.dir, '../../../src/scope-overlap.ts'),
+      process.env.SUPERAGENT_HOME
+        ? join(process.env.SUPERAGENT_HOME, 'engine/current/wetamp/src/scope-overlap.ts')
+        : '',
+    ].find(path => path && existsSync(path));
+    if (!source) return true;
+    const { scopeOverlaps } = (await import(
+      pathToFileURL(source).href
+    )) as typeof import('../../../src/scope-overlap');
+    const probe = {
+      ...current,
+      packages: [{ ...current.packages[0], scope: { ...current.packages[0].scope, write: paths } }],
+    };
+    const own = basename(dirname(env('PLAN')));
+    return scopeOverlaps(probe).some(overlap => overlap.run_id !== own);
+  } catch {
+    return true;
+  }
 }
 
 const moduleKey = (path: string): string =>
@@ -1382,7 +1420,7 @@ async function acceptOnce(
           policy(),
           env('RISK')
         )
-      : { risk: env('RISK') || null, out_of_scope: [] };
+      : { risk: env('RISK') || null, review_required: false, out_of_scope: [] };
   const ok = failed.length === 0 && !dirty;
   const reviewRounds = env('MILESTONE') || env('ARCHON') ? maxRounds() : undefined;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.
@@ -1472,7 +1510,11 @@ async function acceptOnce(
       failure.evidence = `${approvalPath}; ${candidate.report}`;
     } else adjudication ??= pending;
   }
-  const scopeDecisionRequest = ok && scope.out_of_scope.length > 0 && onlyScopeDecision(coder);
+  const scopeAutoApproved =
+    scope.out_of_scope.length > 0 &&
+    autoApproveScope(scope.out_of_scope, policy(), await scopeConflicts(scope.out_of_scope, p));
+  const scopeDecisionRequest =
+    ok && scope.out_of_scope.length > 0 && !scopeAutoApproved && onlyScopeDecision(coder);
   const result = {
     ...disposition(
       scopeDecisionRequest ? '' : coder,
@@ -1554,6 +1596,7 @@ async function acceptOnce(
     scopeApproval && result.disposition === 'advance' ? 'scope_approval' : 'scope_violation';
   if (
     scope.out_of_scope.length &&
+    !scopeAutoApproved &&
     (result.disposition === 'advance' || result.disposition === 'repair') &&
     !approvedDiff('scope', pkgs[0].id, hash, scope.out_of_scope, scopeBlobs)
   ) {
@@ -1602,6 +1645,7 @@ async function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
+    ...(scopeAutoApproved ? { scope_auto_approved: scope.out_of_scope } : {}),
     ...(scopeApproval ? { scope_package: pkgs[0].id, scope_blobs: scopeBlobs } : {}),
     ...(lines ? { net_lines: lines } : {}),
     head,
@@ -2380,7 +2424,7 @@ export function deliveryDecision(input: {
     !input.reviews ||
     reviews.at(-1)?.status === 'PASS' ||
     reusable ||
-    (input.reviewRequired === false && !input.strict && input.risk !== 'G2');
+    input.reviewRequired === false;
   const verified =
     reusable ||
     (accepted &&
@@ -2503,13 +2547,7 @@ export function deliveryDecision(input: {
       }
     return out('block', 'finding_stuck', debtOf(reviews, ledger));
   }
-  if (
-    accepted &&
-    input.reviewRequired === false &&
-    reviews.every(r => r === null) &&
-    !input.strict &&
-    input.risk !== 'G2'
-  )
+  if (accepted && input.reviewRequired === false && reviews.every(r => r === null))
     return out('advance', 'review_not_required', debtOf(reviews, ledger));
   const debt = debtOf(reviews, ledger);
   const last = reviews.at(-1);
@@ -3301,7 +3339,7 @@ function gate(): void {
     risk,
     strict: plan().mode === 'strict',
     expired: expired(),
-    reviewRequired: env('REVIEW') !== '0',
+    reviewRequired: !['0', 'false'].includes(env('REVIEW')),
     reviewRounds,
     initialLedger: priorLedger?.value,
     reviewRoundOffset: priorLedger?.used ?? 0,

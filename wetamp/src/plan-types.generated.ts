@@ -126,9 +126,13 @@ export interface Plan {
      */
     signoff?: 'auto' | 'human';
     /**
-     * Request milestone review; G2 and strict always require review
+     * Legacy review request; ignored unless review_reason is present
      */
     review?: boolean;
+    /**
+     * User's original reason for requesting an independent review
+     */
+    review_reason?: string;
     /**
      * Legacy input accepted; dispatch follows policy.effort
      */

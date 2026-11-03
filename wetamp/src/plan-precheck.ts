@@ -64,6 +64,33 @@ export interface PlanPrecheck {
   info: string[];
 }
 
+const staticAcceptance = (cmd: string): boolean => {
+  const staticNames = new Set([
+    'type-check',
+    'typecheck',
+    'tsc',
+    'lint',
+    'eslint',
+    'format',
+    'fmt',
+    'prettier',
+  ]);
+  return cmd
+    .split(/&&|\|\||[;|]/)
+    .map(part => part.trim())
+    .filter(Boolean)
+    .every(part => {
+      const words = part.split(/\s+/).filter(Boolean);
+      if (words[0] === 'cd' || words[0] === 'export') return true;
+      while (words[0]?.includes('=') && !words[0].startsWith('-')) words.shift();
+      if (words[0] === 'env') words.shift();
+      const names = words
+        .filter(word => !word.startsWith('-'))
+        .map(word => word.replace(/^.*\//, ''));
+      return names.some(name => staticNames.has(name));
+    });
+};
+
 // prettier-ignore
 const repeatFailures = (plan: Plan, override?: string): PlanPrecheck => {
   if (process.env.SUPERAGENT_MEMORY === 'off')
@@ -159,6 +186,10 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
   for (const pkg of plan.packages) {
     const write = pkg.scope.write, commands = pkg.accept.map(check => check.cmd);
     const prefix = `[${pkg.id}] `;
+    if (pkg.review === true && !pkg.review_reason?.trim())
+      info.push(`${prefix}review:true 已忽略：评审只由白名单命中或用户原话触发`);
+    if (pkg.risk !== 'G0' && pkg.accept.every(check => staticAcceptance(check.cmd)))
+      (override?.trim() ? info : blocking).push(`${prefix}G1/G2 包至少需要一条非纯静态的冒烟/行为测试；可用 --lint-override 覆盖`);
     for (const cmd of commands) for (const test of commandTests(cmd))
       if (!tree.has(test) && !covered(test, write)) blocking.push(`${prefix}修正验收命令 ${cmd}（base_ref 不存在 ${test}）或把 ${test} 加入 scope.write`);
     const sources = [...tree].filter(path => (/^wetamp\/src\/.+\.ts$/.test(path) || /^wetamp\/hooks\/[^/]+\.cjs$/.test(path)) && covered(path, write));
