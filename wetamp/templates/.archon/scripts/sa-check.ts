@@ -1995,8 +1995,7 @@ export async function prepareEnvironment(cwd: string, p: Parameters<typeof envir
   return { ok: failed.length === 0, failed, failures, precheck, provisioned, notes, log };
 }
 
-const severities = (risk: string): string[] =>
-  risk === 'G2' ? ['blocker', 'high', 'medium'] : ['blocker', 'high'];
+const severities = (risk: string): string[] => (risk === 'G2' ? ['blocker', 'high'] : ['blocker']);
 
 /** 第 2 轮及以后的有效关闭：原 id、carry_over:true、status:closed 且附 evidence；同轮同 id 另有 open 条目则 open 胜出。 */
 const closes = (r: Review, id: string): boolean =>
@@ -2028,7 +2027,7 @@ export interface Ledger {
 }
 
 /**
- * F-19/FC 累计台账，由评审与验证历史派生。基准轮（首份非空评审）：product 的 blocker/high（G2 含 medium）阻塞。
+ * F-19/FC 累计台账，由评审与验证历史派生。基准轮（首份非空评审）：product 的 blocker 阻塞，G2 额外阻塞 high。
  * 之后只有 closes() 成立的条目才关闭；缺失、改 id、carry_over:false 一律仍 open。不在台账里的 id 一律是新发现——
  * 自报 carry_over:true 也不扩大阻塞集合：只有 blocker 阻塞，其余记债；已在台账里的条目升为 blocker 时转为阻塞。
  */

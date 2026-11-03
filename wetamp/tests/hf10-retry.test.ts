@@ -82,7 +82,7 @@ for (const scope of ['package', 'milestone'] as const)
           timeout_s: 5,
         },
       ];
-    // FC permits repair-limit debt in non-strict G1; this fixture exhausts the strict review rounds.
+    // This fixture keeps producing blockers to exhaust the review rounds.
     if (scope === 'milestone') plan.mode = 'strict';
     const py = join(root, 'supervisor.py');
     writeFileSync(
@@ -136,7 +136,7 @@ for (const scope of ['package', 'milestone'] as const)
           findings: [
             {
               id: `R${round - 1}-1`,
-              severity: round === 2 ? 'high' : 'blocker',
+              severity: 'blocker',
               file: 'fake',
               line: 1,
               status: 'closed',

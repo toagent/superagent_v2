@@ -649,6 +649,8 @@ test('review guidance and generated reason registry use their typed owners', () 
     expect(guidance).toContain('output schema');
     expect(guidance).not.toContain('product | test_env');
     expect(guidance).toContain('最后一条回复只输出');
+    expect(guidance).toContain('会使冒烟/验收命令失败');
+    expect(guidance).toContain('medium/low 一律写入 `debt`');
   }
   for (const name of ['sa-code.md', 'sa-repair.md', 'sa-fix.md']) {
     const guidance = readFileSync(
@@ -656,6 +658,7 @@ test('review guidance and generated reason registry use their typed owners', () 
       'utf8'
     );
     expect(guidance).toContain('过程中正常调用工具');
+    expect(guidance).toContain('验收（冒烟/行为测试）通过且核心目标达成即交付');
     expect(guidance).toContain('最后一条回复只输出');
     expect(guidance).not.toMatch(/^\u53ea输出符合 output_format/m);
   }

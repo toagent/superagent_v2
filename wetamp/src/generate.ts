@@ -1514,23 +1514,28 @@ const fakeEdit = (p: Pkg, line: string): string => {
   ].join('\n');
 };
 
-const FAKE_HIGH = {
+const FAKE_BLOCKER = {
   id: 'R1-1',
-  severity: 'high',
+  severity: 'blocker',
   file: 'fake',
   line: 1,
   failure_class: 'product',
   command: null,
 };
-/** 桩评审：第 1 轮 open 一条 high；之后按原 id 关闭并附证据（gate 只认这种关闭）。 */
+/** 桩评审：第 1 轮 open 一条 blocker；之后按原 id 关闭并附证据（gate 只认这种关闭）。 */
 const fakeReview = (r: number): string => {
   const findings =
     process.env.FAKE_CODER_SCENARIO === 'scope_request'
       ? []
       : [
           r === 1
-            ? { ...FAKE_HIGH, status: 'open', evidence: 'fake', carry_over: false }
-            : { ...FAKE_HIGH, status: 'closed', evidence: 'fake fix verified', carry_over: true },
+            ? { ...FAKE_BLOCKER, status: 'open', evidence: 'fake', carry_over: false }
+            : {
+                ...FAKE_BLOCKER,
+                status: 'closed',
+                evidence: 'fake fix verified',
+                carry_over: true,
+              },
         ];
   const status = findings.length && r === 1 ? 'FAIL' : 'PASS';
   const out = { status, notes: 'fake', findings, fixture_confirmations: [], debt: [] };

@@ -12,6 +12,8 @@ argument-hint: (inputs bound by the generated workflow)
 
 只核验台账遗留与本轮增量：
 
+`blocker` 仅指会使冒烟/验收命令失败、造成数据丢失或安全/凭据事故、或未达卡片核心目标的问题（含 `coder_partial` 缺失）；其余发现一律记入 `debt`。
+
 - 每个失败给出 `failure_class`（枚举以本节点 output schema 为准），判据为“改产品代码能否修好”；分类不明填 unknown，保持阻塞等待诊断；已证明非产品类别必须在 `evidence` 附证据路径，涉及验收命令时 `command` 填原命令，否则填 null。不信 coder 自报；已证明非产品类别记已知问题/debt，不计入 FAIL 的阻塞发现。
   核对 manifest 的 `acceptance`；若 `coder_partial: true`，编码端自报未完成，请判断完整性，缺失按 blocker 记。
   若 `error_class_ignored: true`，从 manifest 的 `coder` 读取原 `error_class`：编码端自报 <class>，请核实。
@@ -20,6 +22,6 @@ argument-hint: (inputs bound by the generated workflow)
 - `carry_over.debt` 只列本轮状态有变化的条目：已修复用原 `id`、`carry_over: true`、`status: closed` 并附 `evidence`；未变化的不必回抄，未列出的 debt 自动保持 open，没有 evidence 的 `closed` 仍按 open 计。
 - 新发现 `id` 用 `R<本轮轮次>-<序号>`（本轮为 R$INPUTS.round，序号从 1 起）、`carry_over: false`；新发现只有 blocker 才阻塞，其余写进 `debt`。
 - 本轮修复越出任务书预期范围又未在 `deviations[]`（manifest 的 `coder`）登记的文件，记一条 `medium` 新发现。
-- `status`：存在 open 的遗留 blocker/high（G2 含 medium）或新的 blocker → `FAIL`；否则 `PASS`；无法完成 → `INCOMPLETE`。
+- `status`：存在 open 的遗留 blocker、G2 的遗留 high 或新的 blocker → `FAIL`；medium/low 一律写入 `debt`，否则 `PASS`；无法完成 → `INCOMPLETE`。
 
 最后一条回复只输出符合 output_format 的 JSON。

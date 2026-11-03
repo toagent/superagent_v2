@@ -670,7 +670,7 @@ const f = (severity: F['severity'], extra: Partial<F> = {}): F => ({
   ...extra,
 });
 /** 第 2 轮及以后用原 id 关闭并附证据：gate 唯一承认的关闭方式。 */
-const fixed = (id: string, severity: F['severity'] = 'high'): F =>
+const fixed = (id: string, severity: F['severity'] = 'blocker'): F =>
   f(severity, { id, status: 'closed', carry_over: true, evidence: 'diff L3 removes it' });
 const review = (status: Rv['status'], findings: F[] = [], debt: string[] = []): Rv => ({
   status,
@@ -719,7 +719,7 @@ describe('NONCONVERGENCE delivery gate', () => {
       },
     });
     const persistent = R('FAIL', [
-      f('high', { id: 'persistent', failure_class: 'product', evidence: '/tmp/product.log' }),
+      f('blocker', { id: 'persistent', failure_class: 'product', evidence: '/tmp/product.log' }),
     ]);
     expect(
       deliveryDecision({
@@ -876,7 +876,7 @@ describe('NONCONVERGENCE delivery gate', () => {
     expect(
       decide({
         risk,
-        reviews: [R('PASS', [f('high', { failure_class: 'unknown' })])],
+        reviews: [R('PASS', [f('blocker', { failure_class: 'unknown' })])],
         rechecks: [C('a')],
       })
     ).toMatchObject({ verdict: 'escalate', reason: 'acceptance_failed' });
@@ -966,7 +966,7 @@ describe('NONCONVERGENCE delivery gate', () => {
     });
   });
   test('unchanged diff stops unknown diagnosis even after an empty commit', () => {
-    const unknown = R('PASS', [f('high', { failure_class: 'unknown' })]);
+    const unknown = R('PASS', [f('blocker', { failure_class: 'unknown' })]);
     const result = decide({
       reviews: [unknown, null],
       rechecks: [
@@ -998,7 +998,7 @@ describe('FC failure classification', () => {
       JSON.parse('{"failure_class":"invalid"}'),
       { failure_class: 'fixture' as const, evidence: '' },
     ]) {
-      const finding = f('high', { evidence: '/tmp/accept.log', ...extra });
+      const finding = f('blocker', { evidence: '/tmp/accept.log', ...extra });
       const d = decide({ reviews: [R('FAIL', [finding])], rechecks: [C('a')], risk: 'G1' });
       expect(d.verdict).toBe(extra.failure_class === 'product' ? 'fix' : 'escalate');
       expect(d.ledger.debt).toEqual([]);
@@ -1108,7 +1108,7 @@ describe('FC failure classification', () => {
   });
   test('reviewer classifies exact failed commands; omitted classification fails closed', () => {
     const check = { ...C('a', false), failed: ['bun test'], disposition: 'repair' as const };
-    const finding = f('high', {
+    const finding = f('blocker', {
       command: 'bun test',
       failure_class: 'fixture',
       evidence: '/tmp/test.log',
@@ -1238,7 +1238,7 @@ describe('FC failure classification', () => {
   });
   test('FC-R1-02: unresolved products cannot bypass skipped-review reuse checks', () => {
     const r = R('FAIL', [
-      f('high', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' }),
+      f('blocker', { id: 'stable', failure_class: 'product', evidence: '/tmp/fail.log' }),
     ]);
     const prior = {
       ...C('diff'),
@@ -1395,11 +1395,19 @@ test('HF10 attempt counters default only missing files to zero and reject invali
 });
 
 describe('gate rules', () => {
-  test('R1: open high blocks G1; medium does not', () => {
-    expect(ids([R('FAIL', [f('high'), f('medium')])])).toEqual(['x-high']);
+  test('R1: G1 open high and medium pass as debt', () => {
+    expect(
+      decide({ reviews: [R('FAIL', [f('high'), f('medium')])], rechecks: [C('a')], risk: 'G1' })
+    ).toMatchObject({
+      verdict: 'pass',
+      ledger: { blocking: [], debt: [{ severity: 'high' }, { severity: 'medium' }] },
+    });
   });
-  test('R1: G2 also blocks on medium', () => {
-    expect(ids([R('FAIL', [f('medium'), f('low')])], 'G2')).toEqual(['x-medium']);
+  test('R1: G2 blocks high but keeps medium as debt', () => {
+    expect(ids([R('FAIL', [f('high'), f('medium')])], 'G2')).toEqual(['x-high']);
+    expect(ledgerOf([R('FAIL', [f('high'), f('medium')])], 'G2').debt.map(e => e.id)).toEqual([
+      'x-medium',
+    ]);
   });
   test('R2+: new non-blocker findings do not block; new blocker does', () => {
     const r2 = R('FAIL', [f('high', { id: 'R2-1' }), f('blocker', { id: 'R2-2' })]);
@@ -1408,35 +1416,35 @@ describe('gate rules', () => {
   test('closed findings never block', () => {
     expect(ids([R('PASS', [f('blocker', { status: 'closed' })])])).toEqual([]);
   });
-  test('R2: a previous high only closes by original id, carry_over and evidence', () => {
-    const r1 = R('FAIL', [f('high', { id: 'R1-1' })]);
+  test('R2: a previous blocker only closes by original id, carry_over and evidence', () => {
+    const r1 = R('FAIL', [f('blocker', { id: 'R1-1' })]);
     expect(ids([r1, R('PASS', [fixed('R1-1')])])).toEqual([]);
   });
-  test('R2: omitting a previous high keeps it open (PASS with omission is not success)', () => {
+  test('R2: omitting a previous blocker keeps it open (PASS with omission is not success)', () => {
     const d = decide({
-      reviews: [R('FAIL', [f('high', { id: 'R1-1' })]), R('PASS')],
+      reviews: [R('FAIL', [f('blocker', { id: 'R1-1' })]), R('PASS')],
       rechecks: [C('a'), C('b')],
       risk: 'G1',
     });
     expect(d).toMatchObject({ verdict: 'fix', reason: 'review_inconsistent' });
   });
   test('R2: renamed id, carry_over:false or closed without evidence all stay open', () => {
-    const r1 = R('FAIL', [f('high', { id: 'R1-1' })]);
+    const r1 = R('FAIL', [f('blocker', { id: 'R1-1' })]);
     expect(ids([r1, R('PASS', [fixed('R1-1b')])])).toEqual(['R1-1']);
     expect(ids([r1, R('PASS', [{ ...fixed('R1-1'), carry_over: false }])])).toEqual(['R1-1']);
     expect(ids([r1, R('PASS', [{ ...fixed('R1-1'), evidence: ' ' }])])).toEqual(['R1-1']);
   });
   test('R3 baseline is what R2 left open, not only what R2 reported', () => {
-    const r1 = R('FAIL', [f('high', { id: 'R1-1' }), f('high', { id: 'R1-2' })]);
+    const r1 = R('FAIL', [f('blocker', { id: 'R1-1' }), f('blocker', { id: 'R1-2' })]);
     const r2 = R('FAIL', [fixed('R1-1')]);
     expect(
       ledgerOf([r1, r2, R('PASS', [])], 'G1', { strict: true }).blocking.map(e => e.id)
     ).toEqual(['R1-2']);
   });
-  test('G2: a previous medium also needs explicit closure', () => {
+  test('G2: a previous medium remains debt without explicit closure', () => {
     const r1 = R('FAIL', [f('medium', { id: 'R1-1' })]);
-    expect(ids([r1, R('PASS')], 'G2')).toEqual(['R1-1']);
-    expect(ids([r1, R('PASS', [fixed('R1-1', 'medium')])], 'G2')).toEqual([]);
+    expect(ids([r1, R('PASS')], 'G2')).toEqual([]);
+    expect(ledgerOf([r1, R('PASS')], 'G2').debt.map(e => e.id)).toEqual(['R1-1']);
   });
   test('r1 PASS with green acceptance passes, carrying debt', () => {
     expect(
@@ -1493,9 +1501,9 @@ describe('gate rules', () => {
       fold(R('PASS', [fixed('B1', 'blocker'), noEvidence])).ledger.debt.map(e => e.id)
     ).toEqual(['D1', 'D2']);
   });
-  test('N1: a duplicate id (closed + open high) in one review escalates as invalid_review', () => {
-    const r1 = R('FAIL', [f('high', { id: 'H1' })]);
-    const r2 = R('PASS', [fixed('H1'), f('high', { id: 'H1', carry_over: true })]);
+  test('N1: a duplicate id (closed + open blocker) in one review escalates as invalid_review', () => {
+    const r1 = R('FAIL', [f('blocker', { id: 'H1' })]);
+    const r2 = R('PASS', [fixed('H1'), f('blocker', { id: 'H1', carry_over: true })]);
     expect(decide({ reviews: [r1, r2], rechecks: [C('a'), C('b')], risk: 'G1' })).toMatchObject({
       verdict: 'escalate',
       rounds: 2,
@@ -1510,13 +1518,13 @@ describe('gate rules', () => {
   });
   test('r1 FAIL asks for a fix round', () => {
     expect(
-      decide({ reviews: [R('FAIL', [f('high')])], rechecks: [C('a')], risk: 'G1' })
+      decide({ reviews: [R('FAIL', [f('blocker')])], rechecks: [C('a')], risk: 'G1' })
     ).toMatchObject({ verdict: 'fix', reason: 'review_failed' });
   });
-  test('r2 PASS that closes the r1 high with evidence passes', () => {
+  test('r2 PASS that closes the r1 blocker with evidence passes', () => {
     expect(
       decide({
-        reviews: [R('FAIL', [f('high', { id: 'R1-1' })]), R('PASS', [fixed('R1-1')])],
+        reviews: [R('FAIL', [f('blocker', { id: 'R1-1' })]), R('PASS', [fixed('R1-1')])],
         rechecks: [C('a'), C('b')],
         risk: 'G1',
       })
@@ -1574,11 +1582,11 @@ describe('gate rules', () => {
       reason: 'review_incomplete',
     });
   });
-  test('ledger: R2 漏掉 R1 高危仍阻塞，R3 保留未关闭问题并继续修复', () => {
-    const r1 = R('FAIL', [f('high', { id: 'R1-1', file: 'k.ts', line: 9 })]);
+  test('ledger: R2 漏掉 R1 blocker 仍阻塞，R3 保留未关闭问题并继续修复', () => {
+    const r1 = R('FAIL', [f('blocker', { id: 'R1-1', file: 'k.ts', line: 9 })]);
     const l = ledgerOf([r1, R('PASS')], 'G1');
     expect(l.blocking).toMatchObject([
-      { id: 'R1-1', severity: 'high', file: 'k.ts', line: 9, round: 1 },
+      { id: 'R1-1', severity: 'blocker', file: 'k.ts', line: 9, round: 1 },
     ]);
     expect(
       decide({ reviews: [r1, R('PASS')], rechecks: [C('a'), C('b')], risk: 'G1' })
@@ -1674,8 +1682,8 @@ describe('gate rules', () => {
       verdict: 'fix',
       reason: 'acceptance_failed',
     });
-    // 首份非空评审才是台账基准：其 open high 照常阻塞
-    expect(ids([null, R('FAIL', [f('high', { id: 'R2-1' })])])).toEqual(['R2-1']);
+    // 首份非空评审才是台账基准：其 open blocker 照常阻塞
+    expect(ids([null, R('FAIL', [f('blocker', { id: 'R2-1' })])])).toEqual(['R2-1']);
   });
   test('no review is a wiring error', () => {
     expect(decide({ reviews: [], rechecks: [], risk: 'G1' }).decision).toMatchObject({
@@ -3907,7 +3915,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     const inputs = {
       kind: 'gate',
       round: '1',
-      r1: JSON.stringify(R('FAIL', [f('high')])),
+      r1: JSON.stringify(R('FAIL', [f('blocker')])),
       c1: JSON.stringify(C('a')),
       risk: 'G1',
       milestone: 'm1',
