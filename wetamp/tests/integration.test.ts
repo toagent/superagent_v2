@@ -407,7 +407,7 @@ test('publish accepts matching review evidence and rejects drift or a stale owne
   expect(existsSync(fenced.run().receipt)).toBe(false);
 });
 
-test('publish rejects a target checkout switched to another branch', () => {
+test('publish advances an unoccupied target without changing the operator checkout', () => {
   const switched = fixture();
   const integrated = commit(switched.worktree, 'feature.txt', 'feature\n');
   const switchedBefore = switched.expected().target_tip;
@@ -415,21 +415,38 @@ test('publish rejects a target checkout switched to another branch', () => {
   const operatorHead = sh('git rev-parse HEAD', switched.target).trim();
   const operatorIndex = sh('git write-tree', switched.target).trim();
   const operatorStatus = sh('git status --porcelain=v1', switched.target);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    expect(publish(switched.run(), { target_tip: switchedBefore })).toMatchObject({
-      status: 'rejected',
-      reason: 'target_checkout_changed',
-    });
-    expect(sh('git rev-parse wetamp', switched.target).trim()).toBe(switchedBefore);
-    expect(sh('git rev-parse HEAD', switched.target).trim()).toBe(operatorHead);
-    expect(sh('git write-tree', switched.target).trim()).toBe(operatorIndex);
-    expect(sh('git status --porcelain=v1', switched.target)).toBe(operatorStatus);
-    expect(existsSync(switched.run().receipt)).toBe(false);
-  }
-  sh('git switch -q wetamp', switched.target);
   expect(publish(switched.run(), { target_tip: switchedBefore })).toMatchObject({
     status: 'published',
     receipt: { integrated },
   });
   expect(sh('git rev-parse wetamp', switched.target).trim()).toBe(integrated);
+  expect(sh('git rev-parse HEAD', switched.target).trim()).toBe(operatorHead);
+  expect(sh('git write-tree', switched.target).trim()).toBe(operatorIndex);
+  expect(sh('git status --porcelain=v1', switched.target)).toBe(operatorStatus);
+  expect(existsSync(switched.run().receipt)).toBe(true);
+});
+
+test('publish rejects an occupied target and reports an unoccupied CAS race', () => {
+  const occupied = fixture(),
+    before = occupied.expected().target_tip;
+  commit(occupied.worktree, 'feature.txt', 'feature\n');
+  sh('git switch -qc operator', occupied.target);
+  sh(`git worktree add -q '${join(occupied.root, 'occupied')}' wetamp`, occupied.target);
+  expect(publish(occupied.run(), { target_tip: before })).toMatchObject({
+    status: 'rejected',
+    reason: 'target_checkout_changed',
+  });
+  expect(sh('git rev-parse wetamp', occupied.target).trim()).toBe(before);
+
+  const raced = fixture(),
+    expected = raced.expected(),
+    head = commit(raced.worktree, 'feature.txt', 'feature\n');
+  sh('git switch -qc operator', raced.target);
+  expect(
+    publish(
+      { ...raced.run(), fence: () => sh(`git update-ref refs/heads/wetamp ${head}`, raced.target) },
+      expected
+    )
+  ).toEqual({ status: 'advanced', target_tip: head });
+  expect(existsSync(raced.run().receipt)).toBe(false);
 });

@@ -18,7 +18,6 @@ import {
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
-import { LOAD_WAIT_BUDGET_MS } from '../templates/.archon/scripts/load-gate';
 import { REASONS } from './reasons';
 import { injectMemory } from './memory';
 import {
@@ -162,7 +161,6 @@ const commandTimeout = (checks: Pkg['accept'], passes: number, setup: Pkg['accep
             setup.reduce((n, c) => n + c.timeout_s, 0) * 1000 +
             CHECK_AUX_BUDGET_MS +
             CHECK_OVERHEAD_MS +
-            LOAD_WAIT_BUDGET_MS +
             RESOURCE_WAIT_BUDGET_S * 1000 +
             PROCESS_TREE_RECOVERY_MS
         ),
@@ -281,9 +279,6 @@ export function buildWorkflow(
   const attemptInputs = (counter: string, pkg = '', review = '', gate = ''): Node => ({
     script: 'sa-context',
     runtime: 'bun',
-    ...(pkg || review
-      ? { timeout: ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS + LOAD_WAIT_BUDGET_MS }
-      : {}),
     with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
   });
   const repairResourceWrappers = {
