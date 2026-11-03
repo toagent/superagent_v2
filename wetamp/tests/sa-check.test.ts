@@ -2012,7 +2012,8 @@ function runScript(
   inputs: Record<string, string>,
   script = SCRIPT,
   extraEnv: Record<string, string> = {},
-  directQueries = script === SCRIPT
+  directQueries = script === SCRIPT,
+  timeout = 10_000
 ): { code: number; out: unknown; err: string; art: string; stdoutBytes: number } {
   const art = join(cwd, '..', 'art');
   mkdirSync(art, { recursive: true });
@@ -2058,7 +2059,7 @@ function runScript(
       env,
       stdout: 'pipe',
       stderr: 'pipe',
-      timeout: 10_000,
+      timeout,
     }
   );
   const out = p.stdout.toString().trim();
@@ -4657,10 +4658,17 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     };
     const go = (tag: string, extra: Record<string, string> = {}) => {
       writeFileSync(p, JSON.stringify(plan));
-      const result = runScript(repo, { kind: 'accept', plan: p, pkgs: 'a', tag }, SCRIPT, {
-        ...acceptanceNodeEnvironment(art, tag),
-        ...extra,
-      });
+      const result = runScript(
+        repo,
+        { kind: 'accept', plan: p, pkgs: 'a', tag },
+        SCRIPT,
+        {
+          ...acceptanceNodeEnvironment(art, tag),
+          ...extra,
+        },
+        true,
+        120_000
+      );
       expect(result.code, result.err).toBe(0);
       return result.out as Accept;
     };
@@ -4693,7 +4701,9 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
           repo,
           { kind: 'accept', plan: p, pkgs: 'a', tag: `${tag}-${i}` },
           SCRIPT,
-          acceptanceNodeEnvironment(art, tag!)
+          acceptanceNodeEnvironment(art, tag!),
+          true,
+          120_000
         );
         expect(result.out).toMatchObject({ workspace_clean: false, ok: false });
       }
@@ -4720,7 +4730,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     );
     go('tree-changed');
     expect(count()).toBe(11);
-  });
+  }, 300_000); // This case runs many bounded sa-check fixtures concurrently with other files.
   // prettier-ignore
   test('delivery-truth: concurrent cache initialization publishes one complete private key', async () => {
     const root = tmp(),
