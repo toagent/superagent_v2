@@ -21,7 +21,7 @@ import {
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { MemoryReading } from '../../../src/jobs';
+import type { MemoryReading } from '../../../src/memory-pressure';
 // 只引类型：Bun 转译时擦除，复制到 gen 目录后不依赖 src/
 import type { Check, Plan, Pkg } from '../../../src/plan';
 import type {
@@ -107,7 +107,7 @@ interface ResourceLease { queuedAt: string; waitedMs: number; release(): Promise
 // prettier-ignore
 const resourceLockFiles = (resource: NonNullable<Check['resource']>): readonly string[] =>
   resource === 'heavy-test' && process.env.SA_HEAVY_LOCK_FILE ? [process.env.SA_HEAVY_LOCK_FILE, `${process.env.SA_HEAVY_LOCK_FILE}.1`, `${process.env.SA_HEAVY_LOCK_FILE}.2`] : RESOURCE_SLOTS[resource];
-let memoryModule: Promise<typeof import('../../../src/jobs')> | undefined;
+let memoryModule: Promise<typeof import('../../../src/memory-pressure')> | undefined;
 const readMemory = async (): Promise<MemoryReading> => {
   const root = (() => {
     try {
@@ -117,11 +117,13 @@ const readMemory = async (): Promise<MemoryReading> => {
     }
   })();
   const path = [
-    resolve(import.meta.dir, '../../../src/jobs.ts'),
-    root && join(root, 'src/jobs.ts'),
+    resolve(import.meta.dir, '../../../src/memory-pressure.ts'),
+    root && join(root, 'src/memory-pressure.ts'),
   ].find(candidate => candidate && existsSync(candidate));
   if (!path) return { pressure: null, free: 0, source: 'os' };
-  memoryModule ??= import(pathToFileURL(path).href) as Promise<typeof import('../../../src/jobs')>;
+  memoryModule ??= import(pathToFileURL(path).href) as Promise<
+    typeof import('../../../src/memory-pressure')
+  >;
   return (await memoryModule).memoryReading();
 };
 // prettier-ignore

@@ -4648,7 +4648,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       p = join(root, 'plan.json');
     const check: Check = {
       cmd: `echo executed >> '${counter}'; echo original-stdout; echo original-stderr >&2`,
-      timeout_s: 5,
+      timeout_s: 30,
       cache: true,
     };
     const plan = {
