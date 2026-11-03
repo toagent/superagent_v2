@@ -134,6 +134,7 @@ const answerOutcome = (value: unknown): NtfyAnswerOutcome | undefined => {
 
 interface NtfyState {
   version: 1;
+  seq?: number;
   cursor?: string;
   decisions: Record<string, StoredDecision>;
   used_nonces: Record<string, number>;
@@ -454,21 +455,31 @@ export function supersedeNtfyDecisions(activeIds: Iterable<string>, supplied: Pa
 
 async function publish(
   config: NtfyConfig,
+  state: NtfyState,
   topic: 'sa-decisions' | 'sa-alerts',
   body: Record<string, unknown>
 ): Promise<void> {
   const publisher = secureSecret(config.publisherToken, 'publisher token');
+  const seq = (state.seq ?? 0) + 1;
+  // prettier-ignore
+  const publishedAt = new Date(config.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-');
   let response: Response;
   try {
     response = await config.fetch(config.baseUrl, {
       method: 'POST',
       headers: { Authorization: `Bearer ${publisher}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic, ...body }),
+      body: JSON.stringify({
+        topic,
+        ...body,
+        title: `#${String(seq)} ${publishedAt}｜${typeof body.title === 'string' ? body.title : ''}`,
+      }),
     });
   } catch {
     throw new Error('ntfy publish unavailable');
   }
   if (!response.ok) throw new Error(`ntfy publish failed (${String(response.status)})`);
+  state.seq = seq;
+  saveState(config.statePath, state);
 }
 
 const HOUR = 3_600_000;
@@ -573,7 +584,7 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
     }
     const answer = secureSecret(config.answerToken, 'answer token');
     const presented = decisionPresentation(decision);
-    await publish(config, 'sa-decisions', {
+    await publish(config, state, 'sa-decisions', {
       ...presented,
       title: decision.red_phase === 'confirm' ? `确认：${presented.title}` : presented.title,
       message:
@@ -601,7 +612,7 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
       state.activity.push({ at: now, kind: 'deduplicated' });
       continue;
     }
-    await publish(config, 'sa-alerts', {
+    await publish(config, state, 'sa-alerts', {
       ...(alert.title ? { title: alert.title } : {}),
       message: alert.message,
       priority: alert.priority ?? 3,
@@ -617,7 +628,7 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
   );
   recordLimited(state, limitedKeys, now);
   if (canSummarize && limitedKeys.length) {
-    await publish(config, 'sa-alerts', {
+    await publish(config, state, 'sa-alerts', {
       title: 'superagent 推送已限流',
       message: `另有 ${String(limitedKeys.length)} 条未推送，见 superagent brief`,
       priority: 2,
