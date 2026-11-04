@@ -2347,6 +2347,10 @@ async function executeNodeInternal(
   const nodeOptionsWithAbort: SendQueryOptions | undefined = {
     ...nodeOptions,
     abortSignal: nodeAbortController.signal,
+    nodeConfig: {
+      ...nodeOptions?.nodeConfig,
+      ...(resumeIntent === 'source-fork' ? { requiresExactSession: true } : {}),
+    },
     ...(resumeIntent === 'owner-continuation'
       ? { forkSession: false }
       : shouldForkSession
@@ -2552,6 +2556,11 @@ async function executeNodeInternal(
           }
           structuredOutput = msg.structuredOutput;
           if (msg.failure !== undefined) {
+            if (resumeIntent === 'source-fork' && msg.resumed === false) {
+              throw new SessionResumeFailure(
+                `Node '${node.id}' could not resume the exact session from '${namedResumeSourceNodeId}'. Policy stopped before an incompatible fallback.`
+              );
+            }
             throw providerReportedFailure(
               `Node '${node.id}'`,
               msg.failure,

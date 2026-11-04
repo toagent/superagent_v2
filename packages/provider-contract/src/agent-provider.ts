@@ -210,6 +210,8 @@ export interface NativeTool {
 export interface NodeConfig {
   /** Node ID from the workflow DAG — used by providers for per-node isolation (e.g., session dirs). */
   nodeId?: string;
+  /** Engine-only: this turn must continue the requested session before policy may use fallback. */
+  requiresExactSession?: boolean;
   mcp?: string;
   hooks?: unknown;
   skills?: string[];

@@ -702,6 +702,17 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
       (r: { input: Input }) => r.input.source === 'claude' && r.input.text === p.prompt
     )
   ).toHaveLength(2);
+  store.apply(
+    { ...seed, message: 'cancel-all' },
+    store.list().map(t => ({ kind: 'cancel', task: t.id, expected_revision: t.revision }))
+  );
+  const cancelledContext = hook({
+    ...p,
+    hook_event_name: 'SessionStart',
+    session_id: 'new-session',
+  });
+  expect(cancelledContext).toContain('use intake backlog for history');
+  expect(cancelledContext).not.toContain('problem, value');
   writeFileSync(join(intakeRoot(home, repo), 'state.json'), '{corrupt');
   expect(hook(p)).toContain('advisory');
 });
@@ -864,7 +875,9 @@ test('backlog excludes current cancellation intents from obligations and preserv
     total_obligations: 2,
     tasks: [{ id: parent }, { id: child }],
   });
-  expect(s.context('/repo').coverage).toMatchObject({ obligations: 1, total_obligations: 3 });
+  const context = s.context('/repo');
+  expect(context.coverage).toMatchObject({ obligations: 1, total_obligations: 3, cancelled: 2 });
+  expect(context.tasks).toEqual([expect.objectContaining({ id: child })]);
   expect(s.list()).toEqual(before);
   apply(s, 'amend-parent', [amend(parent)]);
   expect(s.backlog('/repo', evidence)).toMatchObject({ obligations: 2, total_obligations: 3 });
@@ -886,7 +899,9 @@ test('fixed-bound context visits all ID/key pointers once despite continuous app
     const result = apply(s, 'task-' + n, [
       { ...create(), requirements: [{ id: 'A', text: 'x'.repeat(12000) }] },
     ]);
-    ids.push(result.results![0]!.task!);
+    const id = result.results![0]!.task!;
+    if (n % 4 === 0) apply(s, 'cancel-' + n, [{ kind: 'cancel', task: id, expected_revision: 1 }]);
+    else ids.push(id);
     const raw = input('raw-' + n);
     s.receive(raw);
     keys.push(JSON.stringify([raw.source, raw.session, raw.message]));
@@ -899,7 +914,8 @@ test('fixed-bound context visits all ID/key pointers once despite continuous app
   do {
     const page = s.context('/repo', 1024, cursor);
     expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(1024);
-    expect(page.coverage.tasks.total).toBe(16);
+    expect(page.coverage.tasks.total).toBe(12);
+    expect(page.coverage.cancelled).toBe(4);
     expect(page.coverage.inputs.total).toBe(16);
     expect(page.coverage.tasks.shown).toBe(page.tasks.length);
     expect(page.coverage.inputs.shown).toBe(page.inputs.length);
@@ -919,7 +935,7 @@ test('fixed-bound context visits all ID/key pointers once despite continuous app
   } while (cursor);
   expect(seenTasks).toEqual(ids);
   expect(seenInputs).toEqual(keys);
-  expect(s.context('/repo', 65536).coverage.tasks.total).toBe(16 + pages);
+  expect(s.context('/repo', 65536).coverage.tasks.total).toBe(12 + pages);
   expect(() => s.context('/repo', 128)).toThrow('metadata');
   expect(() => s.context('/repo', 1024, 'not-a-cursor')).toThrow('cursor');
   expect(() => s.context('/other', 1024, firstCursor)).toThrow('cursor');

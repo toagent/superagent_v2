@@ -7,4 +7,4 @@
 
 run/quick 保留 controller 安装与磁盘空间检查，不读取 selftest 回执或自动启动诊断；land 也不自动刷新 selftest。需要诊断时显式运行 `wetamp/scripts/selftest.sh`。
 
-paused run 不占启动容量；pending/running 与未知状态仍计数，身份不明的启动预留仍拒绝准入。恢复继续使用原生执行锁、owner 核验与执行资源准入。G2、strict、显式评审、human 签收与真实验收保持原契约。
+paused run 不占启动容量；pending/running 与未知状态仍计数，身份不明的启动预留仍拒绝准入。恢复继续使用原生执行锁、owner 核验与执行资源准入。只有实际改动命中 `policy.risk_paths` 或用户本轮明确要求时才评审；G2、strict、`review:true` 不单独触发。human 签收与真实验收保持原契约，冒烟通过即交付。

@@ -4,7 +4,7 @@
 
 Git 危险判定唯一入口为 `hooks/git-danger.cjs`，项目 hook 与三端兼容 wrapper 都复用现有 shell AST 和安全删除查询。强推、删除远端、丢弃非任务数据、删除未保留提交仍受保护。凭据隐私保护保持不变。reviewer 可运行产生临时文件、缓存与被忽略产物的测试；评审结束由引擎检查被审 checkout 的污染，变更保留现场并将评审判无效，不自动提交或清理。
 
-预算默认 observe；G0/G1 无默认独立评审；签收默认 auto。G2、strict 与显式评审要求仍走合格独立评审。
+预算默认 observe，签收默认 auto。只有实际改动命中 `policy.risk_paths` 或用户本轮明确要求时才做一次合格独立评审；G2、strict、`review:true` 声明均不单独触发。主控聚焦实测，冒烟通过即交付。
 
 主控合入并确认整套 hooks/依赖后，备份现有脚本，再执行 `ln -s <已合入仓库>/wetamp/hooks/git-guardrail.sh ~/.wetamp/bin/git-guardrail.sh`。wrapper 经 symlink 定位相邻 tracked 入口；也可用 `SUPERAGENT_GIT_GUARD` 显式指定入口。不要只复制 cjs 单文件，AST 依赖和相邻模块必须可解析。本工作包不修改 live 脚本、配置或 core.hooksPath。
 

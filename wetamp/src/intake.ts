@@ -584,7 +584,7 @@ export class Intake {
     const stamp = signature(),
       tasks = state.tasks.filter(t => t.repo === repo);
     const eligible = [
-      state.tasks.map(t => t.repo === repo),
+      state.tasks.map(t => t.repo === repo && !cancelled(t)),
       state.inputs.map(
         r => r.input.repo === repo && (!r.results || r.results.some(x => x.status !== 'accepted'))
       ),
@@ -598,6 +598,7 @@ export class Intake {
         inputs: { total: 0, shown: 0, remaining: 0, later: 0 },
         obligations: obligationCount(tasks),
         total_obligations: obligationCount(tasks, true),
+        cancelled: tasks.filter(cancelled).length,
       },
       next: null as string | null,
     };

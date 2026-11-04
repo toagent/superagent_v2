@@ -39,6 +39,7 @@ import { loadMcpConfig } from '../mcp/config';
 import {
   hasOpenAdditionalProperties,
   normalizeJsonSchemaForOpenAiStrict,
+  tryParseStructuredOutput,
 } from '../shared/structured-output';
 import { closeOpenToolCalls } from '../shared/tool-calls';
 import {
@@ -360,6 +361,15 @@ function isToolItem(item: ThreadItem): item is ToolItem {
   );
 }
 
+function isReceiptOnlyItem(item: ThreadItem): boolean {
+  return (
+    item.type === 'agentMessage' ||
+    item.type === 'reasoning' ||
+    item.type === 'userMessage' ||
+    item.type === 'contextCompaction'
+  );
+}
+
 /**
  * The `tool_call` for an item that runs a tool. `title` is what the operator reads (the
  * command, the query, `server/tool`); `name` is the kind of tool.
@@ -627,8 +637,10 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
   let retries = 0;
 
   let stallInterrupts = 0;
-  let interrupting: 'stall' | 'structured_output_runaway' | undefined;
-  let retriedStructuredOutput = false;
+  let interrupting: 'stall' | 'structured_output_runaway' | 'receipt_item_violation' | undefined;
+  let structuredRecovery: 'none' | 'continue_work' | 'schema_receipt' | 'freeform_receipt' = 'none';
+  let workStarted = false;
+  let receiptViolationType: ThreadItem['type'] | undefined;
   let structuredWhitespace = 0;
   let structuredMessageItemId: string | undefined;
   let lastProgressAt = Date.now();
@@ -797,6 +809,18 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         if (!parentItem && !agentThreads.has(itemThreadId)) break;
         lastProgressAt = Date.now();
         const completed = notification.method === 'item/completed';
+        const receiptOnly =
+          structuredRecovery === 'schema_receipt' || structuredRecovery === 'freeform_receipt';
+        const currentTurnItem = itemThreadId === threadId && itemTurnId === turnId;
+        if (currentTurnItem && receiptOnly && !isReceiptOnlyItem(item)) {
+          if (interrupting === undefined) {
+            interrupting = 'receipt_item_violation';
+            receiptViolationType = item.type;
+            await connection.request('turn/interrupt', { threadId, turnId });
+          }
+          break;
+        }
+        if (parentItem && !receiptOnly && !isReceiptOnlyItem(item)) workStarted = true;
         // Unified exec is a process lifecycle, not a foreground tool call: its end may
         // arrive after the result, which closes foreground tool calls in the contract.
         if (
@@ -852,21 +876,51 @@ async function* streamTurn(request: TurnRequest): AsyncGenerator<MessageChunk> {
         if (completedThreadId !== threadId || turn.id !== turnId || parentCompleted) break;
         lastProgressAt = Date.now();
         if (interrupting !== undefined && turn.status === 'interrupted') {
-          if (interrupting === 'structured_output_runaway' && retriedStructuredOutput)
+          if (interrupting === 'receipt_item_violation')
             throw new ClassifiedProviderError(
-              'transient',
-              'Codex structured_output_runaway repeated after one compact JSON retry'
+              'unknown',
+              `Codex receipt-only recovery emitted disallowed item type: ${receiptViolationType ?? 'unknown'}`
             );
           const retryStructuredOutput = interrupting === 'structured_output_runaway';
-          if (retryStructuredOutput) retriedStructuredOutput = true;
+          if (retryStructuredOutput) {
+            if (!workStarted && structuredRecovery === 'continue_work')
+              throw new ClassifiedProviderError(
+                'transient',
+                'Codex structured_output_runaway repeated before work started'
+              );
+            if (structuredRecovery === 'freeform_receipt')
+              throw new ClassifiedProviderError(
+                'transient',
+                'Codex structured_output_runaway repeated after freeform receipt recovery'
+              );
+            structuredRecovery = !workStarted
+              ? 'continue_work'
+              : structuredRecovery === 'schema_receipt'
+                ? 'freeform_receipt'
+                : 'schema_receipt';
+          }
+          const receiptOnly =
+            structuredRecovery === 'schema_receipt' || structuredRecovery === 'freeform_receipt';
           const resumed = await connection.request('turn/start', {
-            ...request.turnParams,
+            ...(structuredRecovery === 'freeform_receipt'
+              ? { ...request.turnParams, outputSchema: undefined }
+              : request.turnParams),
             threadId,
+            ...(receiptOnly
+              ? {
+                  sandboxPolicy: { type: 'readOnly' as const, networkAccess: false },
+                  approvalPolicy: 'never' as const,
+                }
+              : {}),
             input: [
               {
                 type: 'text',
                 text: retryStructuredOutput
-                  ? 'Return only the requested schema as compact single-line JSON with short string fields. Do not call tools or modify files.'
+                  ? structuredRecovery === 'continue_work'
+                    ? 'Continue and complete the task first, then return the requested structured result.'
+                    : structuredRecovery === 'freeform_receipt'
+                      ? 'Return the requested structured result as compact JSON in a final ```json code block. Do not call tools or modify files.'
+                      : 'Return only the requested schema as compact single-line JSON with short string fields. Do not call tools or modify files.'
                   : 'Continue from where you were interrupted.',
                 text_elements: [],
               },
@@ -930,9 +984,9 @@ function* completeTurn(
     if (request.hasOutputFormat && state.lastAgentMessage) {
       // Codex returns structured output as the final message's text. Parse it onto
       // structuredOutput so the dag-executor handles all providers uniformly.
-      try {
-        result.structuredOutput = JSON.parse(state.lastAgentMessage);
-      } catch {
+      const parsed = tryParseStructuredOutput(state.lastAgentMessage);
+      if (parsed !== undefined) result.structuredOutput = parsed;
+      else {
         getLog().warn(
           { outputPreview: state.lastAgentMessage.slice(0, 200) },
           'codex.structured_output_not_json'
