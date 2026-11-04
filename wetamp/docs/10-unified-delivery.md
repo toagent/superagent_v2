@@ -14,7 +14,7 @@ superagent land <run> --apply
 `land --apply` 可显式重试，legacy 保留原候选验收及审计路径。
 Run completed 仍由引擎独占写入。交付失败不改 Run 的终态，且不能理解为已合入。
 只有 completed run、completed land 节点及真实生成验收证据齐备才执行。
-候选验收继续调用 `acceptRun` 与单一 `deliveryDecision`，G2/strict 不降级。
+候选验收继续调用 `acceptRun` 与单一 `deliveryDecision`。只有实际改动命中 `policy.risk_paths` 或用户本轮明确要求时才评审；G2、strict、`review:true` 不单独触发，冒烟通过即交付。
 
 交付使用原 `applyLand` 的 common-dir/target lease、scratch merge、mergiraf、
 候选验收和目标漂移检查。同分支目标 HEAD 可沿启动 HEAD 正常前进；目标目录

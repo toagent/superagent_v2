@@ -1,6 +1,6 @@
 # superagent on Archon：架构与自定义方案
 
-状态：U3 文档校准（2026-10-14）；早期决策与 PoC 记录保留为历史。实施计划见 `01-implementation-plan.md`，PoC 记录见 `02-poc-checklist.md`。
+状态：持续按现行实现校准；历史设计、实施计划与 PoC 记录由 git 历史保存。
 
 ## 0. 决策记录（用户拍板，不再重议）
 
@@ -9,7 +9,7 @@
 | 2026-10-09 | 放弃两版自研方案（改造 superagent v2 守护进程 / v4 从零重写）：都是重复造轮子。                                                                                                                                           |
 | 2026-10-09 | 基于本仓库（`coleam00/Archon` 的 fork，v0.11.1，upstream `dev` 7009a90a）改造；**必须能无缝升级 upstream**；实现与自定义方案全部放 `wetamp/`。                                                                            |
 | 2026-10-09 | **不做沙箱**。Codex 直接用 Archon 原生 provider（线程以 `danger-full-access` 启动，`packages/providers/src/codex/provider.ts:1072`），Claude 用原生 provider。v2 的 `adapters/*`、`sandbox-policy`、bash 包装层全部不要。 |
-| 2026-10-08 | 评审模型 ≠ 作者模型（硬约束）；G2 合格独立评审通过即放行集成；红线问题通过 ntfy 两段确认，其余决策 AI 投票过半。                                                                                                          |
+| 2026-11-03 | 仅实际改动命中 `tiers.json` 的 `policy.risk_paths` 或用户本轮明确要求时做一次合格独立评审；G2、strict、`review:true` 声明不单独触发。评审模型 ≠ 作者模型；红线问题通过 ntfy 两段确认；冒烟通过即交付。                    |
 | 2026-10-09 | 效率主因是拆包过细、评审过频：评审按**里程碑**一次，不按包。                                                                                                                                                              |
 | 2026-10-09 | 早期 owner-lost overlay 决策已由 P3 取代：恢复接纳与 fence 下沉 Archon，wetamp 不自动恢复。                                                                                                                               |
 
@@ -30,7 +30,7 @@ wetamp/bin/superagent  ──生成──▶  ~/.superagent/gen/<run>/.archon/{w
 Archon CLI（bun 源码运行，packages/cli）  ──▶ ~/.superagent/archon/archon.db（唯一账本）+ workspaces/<repo>/{worktrees,artifacts,workflow-source}
         │
         ├─ prompt 节点 → 原生 codex / claude provider（无沙箱）
-        ├─ bash/script 节点 → 验收命令、diff 汇总、投票计数、合入命令
+        ├─ bash/script 节点 → 验收命令、diff 汇总、合入命令
         └─ approval 节点 → supervise tick：ntfy 答复 ⇄ approve（是）/ abandon（否）
 ```
 
@@ -146,7 +146,7 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 - 包与包之间按 `deps` 拓扑串联；**同一 run 内不并行写同一 worktree**（M1 决定，合包后包少，损失可忽略）。
   跨 run 天然并行（每个 run 独立 Archon worktree）。需要包级并行时再用 `workflow:` 子运行 + `isolation: worktree`（M3 可选）。
 - 评审模型 ≠ 作者模型由**结构**保证：`@sa-coder` 与 `@sa-reviewer` 是两个别名，`install.sh` 断言二者 `provider/model` 不相等；
-  生成器不信任 prompt 文案。`@sa-reviewer-alt`（另一厂商）用于 AI 投票与 `@sa-reviewer` 熔断时的手工切换。
+  生成器不信任 prompt 文案。`@sa-reviewer-alt`（另一厂商）用于 `@sa-reviewer` 熔断时的手工切换。
 - 模型故障：Archon 原生 `retry`、`workflows.autoResumeOnQuotaReset/quotaMaxAttempts` 处理限流/配额；
   跨厂商切换 = `superagent resume <run> --model @sa-reviewer=claude/opus`（经每次运行的 `--config` 层，不改持久配置）。
 - 验收命令（`accept`）由 bash 节点执行，退出码即结果，不交给模型复述。
@@ -164,12 +164,12 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 
 ## 5. 门禁与无人值守
 
-| 情形                          | 机制                                                                                                                                                                    |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G0/G1 + auto                  | 默认跳过评审，主控聚焦实测；运行期发现 G2 风险才升级；没有默认人工节点                                                                                                  |
-| G2 / strict / review:true     | 合格独立评审通过且主控实测后放行；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                            |
-| 红线（包 `signoff: "human"`） | `human-<M>` 原生 `approval` 持久暂停；ntfy 按 run+node 去重投递，两段确认后才批准，否决则 `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
-| 超 6 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                        |
+| 情形                                        | 机制                                                                                                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 未命中评审白名单                            | G2、strict、`review:true` 声明均不单独触发评审；主控聚焦实测，冒烟通过即交付；没有默认人工节点                                                                          |
+| 命中 `policy.risk_paths` 或用户本轮明确要求 | 做一次合格独立评审并由主控实测；实际评审模型必须不同于作者                                                                                                              |
+| 红线（包 `signoff: "human"`）               | `human-<M>` 原生 `approval` 持久暂停；ntfy 按 run+node 去重投递，两段确认后才批准，否决则 `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
+| 超 6 轮                                     | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                        |
 
 显式后台启动支持顶层原生审批；交互循环与组合内隐藏审批继续拒绝后台派发。
 历史 `wait` 事件门的输出仍为 `status/event/waited_ms`，拒绝通过 abandon 表达。
@@ -184,7 +184,7 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 - **执行生命周期**：Archon 拥有 run/attempt/retry/resume/审批与终态。环境与编码/修复/评审节点的原生 `retry` 复用 `tiers.json` `policy.auto_retry`；接纳锁与恢复 fence 在 `packages/workflows/src/execution-lifecycle.ts`，预算派发在 `policy-dispatch.ts`，通过注入契约调用。ledger 的 `recoveries/auto_retries/progress_fp/stalled` 仅供历史只读展示，不热迁移。
 - **挂起处置表**（`src/reasons.ts` `HOLD_POLICY`）：signoff 桥接 Archon 原生审批（旧 run 的事件签收仍可读）；deadline 按 plan 截止终止；paused 等待引擎唤醒；gate/coder/environment 等失败只投一条明确决定。owner live/unknown 不接管，owner-lost 仅观察；`recover` 要求副作用对账，lost-ack 留引擎 admission fence、不得重派。提问沿用 `dispatchAsk` 的持久化/对账，明确 retry/resume/approve 交引擎执行，dispositions 保留审计。
 - **隔离与原子写**：ledger 逐条解析校验（必备字符串字段、历史 `recoveries` 若存在须为数组、`run_id` 与文件名一致），坏记录在 tick 里报 `action:error`、在 `report` 里计入 `unreadable`，不影响其他 run；asks.json 读不出时不当空表、不覆盖，需要提问的 run 报错。ledger、asks、attempts、config 一律同目录唯一临时文件 + rename；ledger 读改写与 recover 同锁（`updateLedger`）。
-- **投送闸**：twin-toolkit 只把本机 `scripts/verify-local.sh` 通过的提交投送到 twin 机（见 `PROGRESS.md` wpE）。
+- **投送闸**：twin-toolkit 只把本机 `scripts/verify-local.sh` 通过的提交投送到 twin 机。
 
 ## 6. 兼容 CLI（`wetamp/bin/superagent`）
 

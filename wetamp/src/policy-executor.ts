@@ -161,6 +161,7 @@ function runtimeExecution(
     floor: policy.budget_floor.S,
     events: () => events,
     requestedModel: options.model,
+    requiresExactSession: options.nodeConfig?.requiresExactSession,
     provider,
     sendQuery,
     sendQueryFor,
