@@ -1,0 +1,1280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Superagent task export v1 (proposed)",
+  "description": "候选接口；字段语义及 Schema 外约束见 REQUIREMENTS.md。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_instance",
+    "source_version",
+    "scope",
+    "since",
+    "until",
+    "timezone",
+    "read_started_at",
+    "observed_at",
+    "consistency",
+    "status",
+    "coverage",
+    "records",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "source_instance": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "scope_id",
+        "selection",
+        "repos",
+        "includes_unassigned"
+      ],
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "pattern": "^scope-[0-9a-f]{64}$"
+        },
+        "selection": {
+          "enum": [
+            "all",
+            "repos"
+          ]
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "repo_id",
+              "label"
+            ],
+            "properties": {
+              "repo_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "includes_unassigned": {
+          "type": "boolean"
+        }
+      }
+    },
+    "since": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "until": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 1
+    },
+    "read_started_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "consistency": {
+      "const": "per_record"
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "run",
+        "job",
+        "intake"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/coverage"
+        },
+        "job": {
+          "$ref": "#/$defs/coverage"
+        },
+        "intake": {
+          "$ref": "#/$defs/coverage"
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      },
+      "maxItems": 10000
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/error"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "errors": {
+            "maxItems": 0
+          },
+          "coverage": {
+            "properties": {
+              "run": {
+                "properties": {
+                  "status": {
+                    "const": "complete"
+                  },
+                  "history": {
+                    "properties": {
+                      "status": {
+                        "const": "complete"
+                      },
+                      "guaranteed_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "Z$"
+                      },
+                      "gaps": {
+                        "maxItems": 0
+                      }
+                    }
+                  },
+                  "scanned": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "job": {
+                "properties": {
+                  "status": {
+                    "const": "complete"
+                  },
+                  "history": {
+                    "properties": {
+                      "status": {
+                        "const": "complete"
+                      },
+                      "guaranteed_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "Z$"
+                      },
+                      "gaps": {
+                        "maxItems": 0
+                      }
+                    }
+                  },
+                  "scanned": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "intake": {
+                "properties": {
+                  "status": {
+                    "const": "complete"
+                  },
+                  "history": {
+                    "properties": {
+                      "status": {
+                        "const": "complete"
+                      },
+                      "guaranteed_since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "Z$"
+                      },
+                      "gaps": {
+                        "maxItems": 0
+                      }
+                    }
+                  },
+                  "scanned": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "records": {
+            "items": {
+              "properties": {
+                "selection_reasons": {
+                  "not": {
+                    "contains": {
+                      "const": "time_unknown"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "partial",
+              "failed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "errors": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "recordRef": {
+      "type": "object",
+      "required": [
+        "repo_id",
+        "source_kind",
+        "source_id"
+      ],
+      "properties": {
+        "repo_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "run",
+            "package",
+            "job",
+            "intake"
+          ]
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": [
+        "relation",
+        "target"
+      ],
+      "properties": {
+        "relation": {
+          "enum": [
+            "executes",
+            "depends_on",
+            "derived_from",
+            "related_to"
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/recordRef"
+        }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "required": [
+        "since",
+        "until",
+        "reason"
+      ],
+      "properties": {
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "until": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "required": [
+        "status",
+        "guaranteed_since",
+        "gaps"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "unknown"
+          ]
+        },
+        "guaranteed_since": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gap"
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "status",
+        "scanned",
+        "emitted",
+        "history",
+        "limitations"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "unsupported"
+          ]
+        },
+        "scanned": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "emitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "history": {
+          "$ref": "#/$defs/history"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "source_kind",
+        "repo_id",
+        "source_id",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "run",
+            "package",
+            "job",
+            "intake",
+            null
+          ]
+        },
+        "repo_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "source_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "event_id",
+        "type",
+        "occurred_at",
+        "summary",
+        "evidence_ids"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurred_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "required": [
+        "attempt_id",
+        "raw_status",
+        "started_at",
+        "ended_at"
+      ],
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "raw_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "ended_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "summary",
+        "artifact_evidence_ids"
+      ],
+      "properties": {
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "artifact_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": [
+        "gate",
+        "check_id",
+        "name",
+        "command",
+        "exit_code",
+        "passed",
+        "status",
+        "evidence_ids"
+      ],
+      "properties": {
+        "gate": {
+          "enum": [
+            "coder",
+            "acceptance",
+            "review"
+          ]
+        },
+        "check_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown",
+            "not_run",
+            "degraded"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 0
+              },
+              "passed": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "type": "integer"
+              },
+              "passed": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "unknown",
+                  "not_run",
+                  "degraded"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "passed": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "passed": {
+                "type": "null"
+              },
+              "status": {
+                "enum": [
+                  "unknown",
+                  "not_run",
+                  "degraded"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "insight": {
+      "type": "object",
+      "required": [
+        "kind",
+        "content",
+        "origin",
+        "assertion",
+        "evidence_ids"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "lesson",
+            "caution",
+            "knowledge",
+            "decision"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "origin": {
+          "enum": [
+            "human",
+            "agent",
+            "system",
+            "unknown"
+          ]
+        },
+        "assertion": {
+          "const": "reported"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": [
+        "scope",
+        "duration_ms",
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "cost"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "self",
+            "inclusive",
+            "unknown"
+          ]
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cached_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "amount",
+                "currency"
+              ],
+              "properties": {
+                "amount": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                "currency": {
+                  "type": "string",
+                  "pattern": "^[A-Z]{3}$"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "locator",
+        "uri",
+        "availability",
+        "occurred_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "source_record",
+            "event",
+            "check",
+            "artifact",
+            "commit"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "availability": {
+          "enum": [
+            "available",
+            "missing",
+            "unknown"
+          ]
+        },
+        "occurred_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        }
+      }
+    },
+    "omission": {
+      "type": "object",
+      "required": [
+        "field",
+        "reason"
+      ],
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "enum": [
+            "not_recorded",
+            "not_supported",
+            "redacted",
+            "unavailable"
+          ]
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "source_kind",
+        "source_id",
+        "repo_id",
+        "parent",
+        "related",
+        "request_ref",
+        "source_revision",
+        "revision",
+        "observed_at",
+        "title",
+        "goal",
+        "state",
+        "raw_status",
+        "projected_status",
+        "terminal",
+        "process_exit_code",
+        "created_at",
+        "started_at",
+        "updated_at",
+        "ended_at",
+        "selection_reasons",
+        "window_events",
+        "attempts",
+        "result",
+        "checks",
+        "insights",
+        "usage",
+        "evidence",
+        "omissions"
+      ],
+      "properties": {
+        "source_kind": {
+          "enum": [
+            "run",
+            "package",
+            "job",
+            "intake"
+          ]
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/recordRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "related": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relation"
+          }
+        },
+        "request_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "source_revision": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "goal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "running",
+            "blocked",
+            "completed",
+            "failed",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "raw_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "projected_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "terminal": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "process_exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "ended_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "selection_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "created",
+              "changed",
+              "active_overlap",
+              "parent_selected",
+              "time_unknown"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "window_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attempt"
+          }
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/result"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          }
+        },
+        "insights": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/insight"
+          }
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "omissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/omission"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_kind": {
+                "const": "package"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parent": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/recordRef"
+                  },
+                  {
+                    "properties": {
+                      "source_kind": {
+                        "const": "run"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "pending",
+                  "running",
+                  "blocked"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "completed",
+                  "failed",
+                  "cancelled"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

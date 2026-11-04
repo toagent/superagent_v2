@@ -1,0 +1,4 @@
+# External contract and size-budgeted implementation must remain byte/line stable.
+schemas/task-export.schema.json
+src/export/index.ts
+tests/export.test.ts

@@ -4445,6 +4445,7 @@ const optionUsage = (name: OptionName): string => {
 };
 export const USAGE = [
   'usage: superagent <command> [options]',
+  '  export --source-instance <id> --since <RFC3339> --until <RFC3339> --timezone <IANA> (--repo <path>...|--all-repos) --json',
   ...CLI_COMMAND_USAGE.map(
     ({ command, positionals, flags }) =>
       `  ${command}${positionals ? ` ${positionals}` : ''}${flags.map(optionUsage).join('')}`
@@ -5581,6 +5582,7 @@ export function heartbeatEngineExitCode(
 async function runCli(): Promise<void> {
   try {
     const argv = process.argv.slice(2);
+    if (argv[0] === 'export') process.exit((await import('./export')).exportCli(argv));
     // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
     // 参数非法时 verb 取不到，交给 main 报用法
     const verb = ((): string | undefined => {
