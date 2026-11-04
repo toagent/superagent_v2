@@ -26,7 +26,7 @@ wetamp/scripts/selftest.sh         # 显式运行真实模型契约诊断；run/
 plan 的目标 repo 必须位于 `SUPERAGENT_WRITE_ROOTS`（冒号分隔，默认 `~/work`）下，格式见 `schemas/plan.schema.json`
 （示例 `tests/fixtures/plan-two-pkgs.json`：`repo`、`base_ref`、`packages[]`，可选 `deadline`、`budget`，包可带 `milestone`、
 `signoff: "human"`；可选 `console: "codex"`）。
-包可设 `review: true` 请求里程碑评审；G2、strict 或验收有效风险升到 G2 必须评审，其余默认主控实测，gate 标记 `TESTED`。
+只有实际改动命中 `tiers.json` 的 `policy.risk_paths`，或用户本轮明确要求时才做一次独立评审；G2、strict、`review: true` 声明均不单独触发。其余由主控聚焦实测，冒烟通过即交付，gate 标记 `TESTED`。
 
 小活用 `superagent quick --goal "修复启动错误" --accept "bun test tests/start.test.ts" --scope "src/**" --scope "tests/**"`，
 `run` 和 `quick` 默认拒绝同仓库写范围重叠（包括已执行完但 `delivery_result` 非 integrated 的 run），状态或历史 plan 不可读也按无法判定拒绝；可用 `--allow-overlap "具体原因"` 显式放行，原因保存到 ledger 的 `allow_overlap`。历史 plan 优先读取 gen_dir/plan.json，否则相对 ledger.repo 解析。此参数不绕过 SQLite-only 等其他启动检查，不自动排队或重试。
@@ -36,7 +36,7 @@ repo 默认 cwd 所在 git 根，base 默认当前分支，可用 `--repo <path>
 生成的 plan 先校验，保存在 `$SUPERAGENT_HOME/plans/quick-<ts>.json`，再走 run 的同一启动路径；p50 预算与 deadline 预测不足只警告，仅显式 hard 预算执行 budget floor 合计校验。
 默认单包；多包只在可独立验收且可并行或风险不同时拆；不按文件或步骤拆；小活用 quick。
 
-元帅推荐用 `superagent quick --card /path/card.md --accept "bun run test" --accept-timeout 900 --review --console codex --repo /path/repo --base feature-branch --scope "src/**" --json`，再 `superagent wait <run_id> --timeout 1500` 等终态；卡片须含问题、价值、时机、目标、不变量与验收。卡片完整内容冻结进 plan，`--card` 与 `--goal` 互斥；`--accept-timeout` 为每条验收命令的正整数秒数，默认 900。编码、评审、修复复用现有至多 6 轮 workflow，`--review` 使用现有 strict 门禁，实际评审模型必须不同于所有实际作者，不能降级为 `DEGRADED_PASS`；G2 原有自动独立评审不变，模型池只在 `tiers.json` 配置。`--console` 可选，未传保留原来的 Claude 路由；`--repo`/`--base` 可承接已有提交，但引擎仍新建隔离 worktree，不直接复用脏工作区。仅调研等辅助工作用 `job exec`，不要逐轮手工派修复与评审。
+元帅推荐用 `superagent quick --card /path/card.md --accept "bun run test" --accept-timeout 900 --console codex --repo /path/repo --base feature-branch --scope "src/**" --json`，再 `superagent wait <run_id> --timeout 1500` 等终态；卡片须含问题、价值、时机、目标、不变量与验收。卡片完整内容冻结进 plan，`--card` 与 `--goal` 互斥；`--accept-timeout` 为每条验收命令的正整数秒数，默认 900。触发评审时复用现有至多 6 轮 workflow，实际评审模型必须不同于所有实际作者；模型池只在 `tiers.json` 配置。`--console` 可选，未传保留原来的 Claude 路由；`--repo`/`--base` 可承接已有提交，但引擎仍新建隔离 worktree，不直接复用脏工作区。仅调研等辅助工作用 `job exec`，不要逐轮手工派修复与评审。
 
 ```bash
 superagent run plan.json                 # 立即返回 {run_id, archon_run_id, branch, gen_dir}
@@ -97,7 +97,7 @@ superagent inbox --ack <id> accepted|rejected|done --note "短文"
 
 发现其他负责人仓库的问题，先 handoff；owner online/unknown 时普通 claim 会被拒，显式接管需要用户授权原话。
 wait 收到交接会返回 `inbox`（退出码 3），先 `inbox --ack` 答复。缺 controller/launcher 的旧 run 不自动处置，先 claim，再显式 resume/decide。
-terminal adopt/retry 只接受已提交且干净的引擎，ledger 记录 engine_commit。模型、路由和边界见 [COORD 设计](docs/2026-10-11-cross-controller-coordination.md)。
+terminal adopt/retry 只接受已提交且干净的引擎，ledger 记录 engine_commit。模型、路由和边界以 `tiers.json` 与当前三端共享协议为准。
 
 ## 清理
 
