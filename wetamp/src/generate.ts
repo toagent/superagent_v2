@@ -1572,8 +1572,27 @@ export function renderBrief(
 ): string {
   const list = (xs: string[] | undefined): string =>
     xs?.length ? xs.map(x => `- \`${x}\``).join('\n') : '- （无）';
-  const coderAccept = p.accept.filter(check => !check.resource);
-  const engineAccept = p.accept.filter(check => check.resource);
+  const scopedTests = new Set(
+    p.scope.write
+      .map(path => path.replace(/:\d+(?:-\d+)?$/, ''))
+      .filter(path => path.endsWith('.test.ts'))
+  );
+  const commandTests = (cmd: string): string[] =>
+    [...cmd.matchAll(/['"]?([^'"\s;&|]+\.test\.ts)['"]?/g)].map(match => {
+      const before = cmd.slice(0, match.index),
+        dirs = [...before.matchAll(/(?:^|&&)\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*&&/g)];
+      return join(dirs.at(-1)?.slice(1).find(Boolean) ?? '', match[1]).replaceAll('\\', '/');
+    });
+  const typeCheck = (cmd: string): boolean =>
+    cmd
+      .split(/[\s;&|]+/)
+      .some(word => ['type-check', 'typecheck', 'tsc'].includes(word.replace(/^.*\//, '')));
+  const coderAccept = p.accept.filter(
+    check =>
+      !check.resource &&
+      (typeCheck(check.cmd) || commandTests(check.cmd).some(test => scopedTests.has(test)))
+  );
+  const engineAccept = p.accept;
   const vars: Partial<Record<string, string>> = {
     id: p.id,
     title: p.title,
