@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Database } from 'bun:sqlite';
 import { gitHead, home } from '../config';
 import { archonRunIds } from '../archon';
 import { loadLedger, type Ledger } from '../ledger';
 import { readJobs, type Job } from '../jobs';
+import { Intake, type Task } from '../intake';
 import type { Plan } from '../plan';
 
 type SourceKind = 'run' | 'package' | 'job' | 'intake';
@@ -14,7 +15,8 @@ type State = 'pending' | 'running' | 'blocked' | 'completed' | 'failed' | 'cance
 interface ErrorItem { code: string; source_kind: SourceKind | null; repo_id: string | null; source_id: string | null; message: string; retryable: boolean }
 interface Attempt { attempt_id: string; raw_status: string | null; started_at: string | null; ended_at: string | null }
 type RecordItem = Record<string, unknown> & { source_kind: SourceKind; source_id: string; repo_id: string | null; selection_reasons: string[] };
-interface RunRow { id: string; status: string; started_at: string | null; completed_at: string | null; last_activity_at: string | null }
+interface RunRow { id: string; status: string; started_at: string | null; completed_at: string | null; last_activity_at: string | null; output_root?: string | null; metadata?: string | Record<string, unknown> | null }
+interface Check { gate: 'coder' | 'acceptance' | 'review'; check_id: string; name: string; command: string | null; exit_code: number | null; passed: boolean | null; status: 'passed' | 'failed' | 'unknown' | 'not_run' | 'degraded'; evidence_ids: string[] }
 
 const LIMIT_RECORDS = 10_000;
 const LIMIT_BYTES = 64 * 1024 * 1024;
@@ -55,8 +57,11 @@ const reasons = (created: string | null, updated: string | null, started: string
   if (![created, updated, started, ended].some(Boolean)) out.push('time_unknown');
   return out;
 };
-const omissions = (fields: string[]): { field: string; reason: 'not_supported' }[] => fields.sort().map(field => ({ field, reason: 'not_supported' }));
+const omissions = (fields: string[], reason: 'not_recorded' | 'not_supported' = 'not_supported') => fields.sort().map(field => ({ field, reason }));
 const events = (id: string, values: [string, string | null][], since: number, until: number) => values.flatMap(([type, occurred_at], index) => inWindow(occurred_at, since, until) ? [{ event_id: `${id}:${type}:${String(index)}`, type, occurred_at, summary: null, evidence_ids: ['source'] }] : []);
+const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const finite = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+const ref = (repo_id: string, source_kind: SourceKind, source_id: string) => ({ repo_id, source_kind, source_id });
 
 function repo(path: string): { repo_id: string; label: string; root: string } {
   const query = (arg: string): string => {
@@ -93,10 +98,71 @@ function readRuns(ids: string[]): { rows: Map<string, RunRow>; error?: string } 
     try {
       if (!ids.length) return { rows: new Map() };
       const unique = [...new Set(ids)];
-      const rows = db.query<RunRow, string[]>(`SELECT id,status,started_at,completed_at,last_activity_at FROM remote_agent_workflow_runs WHERE id IN (${unique.map(() => '?').join(',')})`).all(...unique);
+      const rows = db.query<RunRow, string[]>(`SELECT * FROM remote_agent_workflow_runs WHERE id IN (${unique.map(() => '?').join(',')})`).all(...unique);
       return { rows: new Map(rows.map(row => [row.id, row])) };
     } finally { db.close(); }
   } catch { return { rows: new Map(), error: 'archon.db 不可读，无法读取执行状态。' }; }
+}
+
+function readIntakes(): { tasks: Task[]; bad: number } {
+  const root = join(home().sa, 'intake');
+  if (!existsSync(root)) return { tasks: [], bad: 0 };
+  const tasks: Task[] = []; let bad = 0;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !existsSync(join(root, entry.name, 'state.json'))) continue;
+    try { tasks.push(...new Intake(join(root, entry.name)).list()); } catch { bad++; }
+  }
+  return { tasks, bad };
+}
+
+function safeJson(root: string, name: string): Record<string, unknown> | undefined {
+  if (basename(name) !== name || !existsSync(root)) return;
+  try {
+    const base = realpathSync(root), path = realpathSync(join(base, name));
+    if (!path.startsWith(base + sep)) return;
+    return object(JSON.parse(readFileSync(path, 'utf8')));
+  } catch { return; }
+}
+
+function packageFacts(ledger: Ledger, row: RunRow | undefined, pkg: Plan['packages'][number]) {
+  const definitions: Check[] = pkg.accept.map((check, index) => ({ gate: 'acceptance', check_id: `acceptance-${String(index)}`, name: check.cmd, command: check.cmd, exit_code: null, passed: null, status: 'not_run', evidence_ids: [] }));
+  const evidence: Record<string, unknown>[] = [], checks = [...definitions], insights: Record<string, unknown>[] = [];
+  const root = row?.output_root ? join(row.output_root, 'artifacts', 'runs', row.id) : '';
+  const allowed = root && [ledger.repo, home().sa].some(value => { try { const base = realpathSync(value), path = realpathSync(root); return path === base || path.startsWith(base + sep); } catch { return false; } });
+  if (!allowed) return { checks, evidence, insights };
+  const add = (gate: Check['gate'], values: unknown[], prefix: string): void => { values.forEach((raw, index) => {
+    const value = object(raw), definition = object(value.check);
+    const command = typeof value.cmd === 'string' ? value.cmd : typeof definition.cmd === 'string' ? definition.cmd : null;
+    const exit = typeof value.exit === 'number' && Number.isInteger(value.exit) ? value.exit : null;
+    const id = `${prefix}-${String(index)}`, pass = exit === null ? null : exit === 0;
+    const item: Check = { gate, check_id: id, name: command ?? id, command, exit_code: exit, passed: pass, status: pass === null ? 'unknown' : pass ? 'passed' : 'failed', evidence_ids: [id] };
+    const existing = gate === 'acceptance' && command ? checks.findIndex(check => check.gate === gate && check.command === command) : -1;
+    if (existing >= 0) checks.splice(existing, 1, item); else checks.push(item);
+    evidence.push({ id, kind: 'check', locator: `run/${ledger.run_id}/package/${pkg.id}/${gate}/${id}`, uri: null, availability: 'available', occurred_at: null });
+  }); };
+  const coder = safeJson(root, `verify-${pkg.id}.coder.json`); add('coder', Array.isArray(coder?.quick_checks) ? coder.quick_checks : [], 'coder');
+  const accepted = safeJson(root, `settle-${pkg.id}.json`) ?? safeJson(root, `verify-${pkg.id}.json`); add('acceptance', Array.isArray(accepted?.command_results) ? accepted.command_results : [], 'acceptance');
+  const gate = readdirSync(root).filter(name => new RegExp(`^gate-${(pkg.milestone ?? 'm1').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-r\\d+\\.json$`).test(name)).sort().at(-1);
+  const review = gate ? safeJson(root, gate) : undefined;
+  if (review && (review.reviewed === true || review.grade === 'DEGRADED_PASS')) {
+    const degraded = review.grade === 'DEGRADED_PASS';
+    checks.push({ gate: 'review', check_id: 'review', name: 'review', command: null, exit_code: null, passed: null, status: degraded ? 'degraded' : 'unknown', evidence_ids: ['review'] });
+    evidence.push({ id: 'review', kind: 'check', locator: `run/${ledger.run_id}/package/${pkg.id}/review/review`, uri: null, availability: 'available', occurred_at: null });
+  }
+  for (const value of Array.isArray(accepted?.insights) ? accepted.insights : []) {
+    const item = object(value); if (['lesson', 'caution', 'knowledge', 'decision'].includes(String(item.kind)) && typeof item.content === 'string') insights.push({ kind: item.kind, content: item.content.slice(0, 2048), origin: ['human', 'agent', 'system'].includes(String(item.origin)) ? item.origin : 'unknown', assertion: 'reported', evidence_ids: ['source'] });
+  }
+  return { checks, evidence, insights };
+}
+
+function usageOf(row: RunRow | undefined) {
+  let metadata: Record<string, unknown> = {};
+  try { metadata = typeof row?.metadata === 'string' ? object(JSON.parse(row.metadata)) : object(row?.metadata); } catch { /* Invalid metadata is unavailable. */ }
+  const input = finite(metadata.total_tokens_in), output = finite(metadata.total_tokens_out), cached = finite(metadata.total_cache_read_tokens), cost = finite(metadata.total_cost_usd);
+  const duration = row?.started_at && row.completed_at ? Math.max(0, Date.parse(row.completed_at) - Date.parse(row.started_at)) : null;
+  if ([input, output, cached, cost, duration].every(value => value === null)) return null;
+  const amount = cost === null ? null : cost.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
+  return { scope: 'inclusive', duration_ms: Number.isFinite(duration) ? duration : null, input_tokens: input, output_tokens: output, cached_input_tokens: cached, cost: amount === null ? null : { amount, currency: 'USD' } };
 }
 
 function readPlan(ledger: Ledger): Plan {
@@ -136,7 +202,10 @@ export function buildExport(argv: string[], now = new Date()): { exit: number; o
   let jobs: Job[] = [], badJobs: string[] = [];
   try { ({ jobs, bad: badJobs } = readJobs()); } catch { errors.push({ code: 'SOURCE_UNREADABLE', source_kind: 'job', repo_id: null, source_id: null, message: 'job 来源不可读。', retryable: true }); }
   for (const item of badJobs) errors.push({ code: 'SOURCE_UNREADABLE', source_kind: 'job', repo_id: null, source_id: item.split(':', 1)[0] || null, message: 'job 记录不可读。', retryable: true });
-  const knownPaths = [...new Set([...ledgers.map(item => item.repo), ...jobs.map(item => item.worktree?.repo ?? item.cwd)])];
+  let intake: ReturnType<typeof readIntakes> = { tasks: [], bad: 0 };
+  try { intake = readIntakes(); } catch { intake.bad++; }
+  if (intake.bad) errors.push({ code: 'SOURCE_UNREADABLE', source_kind: 'intake', repo_id: null, source_id: null, message: 'intake 来源部分不可读。', retryable: true });
+  const knownPaths = [...new Set([...ledgers.map(item => item.repo), ...jobs.map(item => item.worktree?.repo ?? item.cwd), ...intake.tasks.map(item => item.repo)])];
   const repoById = new Map<string, ReturnType<typeof repo>>();
   for (const path of input.all ? knownPaths : input.repos) try { const item = repo(path); repoById.set(item.repo_id, item); } catch { if (!input.all) return { exit: 2, error: 'INVALID_ARGUMENT --repo' }; }
   const selected = new Set(repoById.keys()), includesUnassigned = input.all, pathIds = new Map<string, string | null>();
@@ -164,13 +233,16 @@ export function buildExport(argv: string[], now = new Date()): { exit: number; o
     const raw = current?.raw_status ?? null;
     const run = baseRecord('run', ledger.run_id, repoId, observed, raw, created, started, updated, ended, selection, {
       request_ref: plan.request_ref ?? null, attempts, window_events: events(ledger.run_id, [['created', created], ['updated', updated], ...attempts.flatMap(attempt => [['attempt_started', attempt.started_at], ['attempt_ended', attempt.ended_at]] as [string, string | null][])], input.since, input.until),
-      omissions: omissions(['checks', 'goal', 'insights', 'result', 'title', 'usage']),
+      usage: usageOf(execution.rows.get(current?.attempt_id ?? '')), omissions: omissions(['checks', 'goal', 'insights', 'result', 'title', ...(usageOf(execution.rows.get(current?.attempt_id ?? '')) ? [] : ['usage'])], 'not_recorded'),
     });
     run.revision = revision(run); records.push(run);
     for (const pkg of plan.packages) {
       const id = JSON.stringify([ledger.run_id, pkg.id]), pkgRaw = raw === 'pending' ? 'pending' : null;
+      const facts = packageFacts(ledger, execution.rows.get(current?.attempt_id ?? ''), pkg);
       const item = baseRecord('package', id, repoId, observed, pkgRaw, created, null, null, null, ['parent_selected'], {
-        parent: { repo_id: repoId, source_kind: 'run', source_id: ledger.run_id }, title: pkg.title, goal: pkg.goal,
+        parent: ref(repoId, 'run', ledger.run_id), title: pkg.title, goal: pkg.goal, checks: facts.checks, insights: facts.insights,
+        evidence: [{ id: 'source', kind: 'source_record', locator: `package/${id}`, uri: null, availability: 'available', occurred_at: null }, ...facts.evidence],
+        omissions: omissions(['result', 'usage', ...(facts.insights.length ? [] : ['insights'])], 'not_recorded'),
       });
       item.revision = revision(item); records.push(item);
     }
@@ -186,9 +258,25 @@ export function buildExport(argv: string[], now = new Date()): { exit: number; o
     });
     item.revision = revision(item); records.push(item);
   }
+  for (const task of intake.tasks) {
+    const repoId = identify(task.repo); if (!repoId) continue;
+    const cancelled = task.cancellations.some(item => item.revision === task.revision);
+    const parent = task.parent ? ref(repoId, 'intake', task.parent) : null;
+    const related = [
+      ...(parent ? [{ relation: 'derived_from', target: parent }] : []),
+      ...task.dependencies.map(id => ({ relation: 'depends_on', target: ref(repoId, 'intake', id) })),
+      ...task.runs.flatMap(binding => binding.run_id ? [
+        { relation: 'executes', target: ref(repoId, 'run', binding.run_id) },
+        ...(binding.requirement_map ?? []).map(item => ({ relation: 'executes', target: ref(repoId, 'package', JSON.stringify([binding.run_id, item.package])) })),
+      ] : []),
+    ];
+    const item = baseRecord('intake', task.id, repoId, observed, cancelled ? 'cancelled' : null, null, null, null, null, ['time_unknown'], {
+      parent, related, source_revision: task.revision, omissions: omissions(['checks', 'goal', 'insights', 'result', 'title', 'usage']),
+    });
+    item.revision = revision(item); records.push(item);
+  }
   records.sort((a, b) => `${a.repo_id ?? ''}\0${a.source_kind}\0${a.source_id}`.localeCompare(`${b.repo_id ?? ''}\0${b.source_kind}\0${b.source_id}`));
-  errors.push({ code: 'SOURCE_UNSUPPORTED', source_kind: 'intake', repo_id: null, source_id: null, message: 'intake 导出将在后续工作包实现。', retryable: false });
-  for (const kind of ['run', 'job'] as const) errors.push({ code: 'HISTORY_UNKNOWN', source_kind: kind, repo_id: null, source_id: null, message: `${kind} 历史没有可证明的完整保留起点。`, retryable: false });
+  for (const kind of ['run', 'job', 'intake'] as const) errors.push({ code: 'HISTORY_UNKNOWN', source_kind: kind, repo_id: null, source_id: null, message: `${kind} 历史没有可证明的完整保留起点。`, retryable: false });
   const history = { status: 'unknown', guaranteed_since: null, gaps: [] };
   const runEmitted = records.filter(record => record.source_kind === 'run' || record.source_kind === 'package').length;
   const output: Record<string, unknown> = {
@@ -199,7 +287,7 @@ export function buildExport(argv: string[], now = new Date()): { exit: number; o
     coverage: {
       run: { status: errors.some(error => error.source_kind === 'run' && error.code === 'SOURCE_UNREADABLE') ? 'partial' : 'complete', scanned: ledgerFiles.length, emitted: runEmitted, history, limitations: ['历史保留起点未知。'] },
       job: { status: errors.some(error => error.source_kind === 'job' && error.code === 'SOURCE_UNREADABLE') ? 'partial' : 'complete', scanned: jobs.length + badJobs.length, emitted: records.filter(record => record.source_kind === 'job').length, history, limitations: ['历史保留起点未知。'] },
-      intake: { status: 'unsupported', scanned: null, emitted: 0, history, limitations: ['本工作包尚未实现 intake 来源。'] },
+      intake: { status: intake.bad ? 'partial' : 'complete', scanned: intake.tasks.length + intake.bad, emitted: records.filter(record => record.source_kind === 'intake').length, history, limitations: ['历史保留起点未知；来源没有事实时间时按 time_unknown 输出。'] },
     }, records, errors,
   };
   const encoded = JSON.stringify(output);

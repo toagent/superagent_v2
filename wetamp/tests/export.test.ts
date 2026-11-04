@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import Ajv2020 from '../../packages/workflows/node_modules/ajv/dist/2020';
 import { buildExport } from '../src/export';
+import { intakeRoot } from '../src/intake';
 import { tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
@@ -65,9 +66,9 @@ beforeEach(() => {
     adoptions: [{ at: '2026-11-03T02:00:00Z', from: 'a1', to: 'a2', engine_from: null, engine_to: 'x', reason: 'resume' }],
   });
   const db = new Database(join(archon, 'archon.db'));
-  db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT PRIMARY KEY,status TEXT,started_at TEXT,completed_at TEXT,last_activity_at TEXT)');
-  db.run("INSERT INTO remote_agent_workflow_runs VALUES ('a1','failed','2026-11-01T21:00:00Z','2026-11-02T01:00:00Z','2026-11-02T01:00:00Z')");
-  db.run("INSERT INTO remote_agent_workflow_runs VALUES ('a2','completed','2026-11-03T02:00:00Z','2026-11-03T03:00:00Z','2026-11-03T03:00:00Z')");
+  db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT PRIMARY KEY,status TEXT,started_at TEXT,completed_at TEXT,last_activity_at TEXT,output_root TEXT,metadata TEXT)');
+  db.run("INSERT INTO remote_agent_workflow_runs VALUES ('a1','failed','2026-11-01T21:00:00Z','2026-11-02T01:00:00Z','2026-11-02T01:00:00Z',NULL,NULL)");
+  db.run("INSERT INTO remote_agent_workflow_runs VALUES ('a2','completed','2026-11-03T02:00:00Z','2026-11-03T03:00:00Z','2026-11-03T03:00:00Z',NULL,NULL)");
   db.close();
   addJob('job-done', 'done', '2026-11-02T05:00:00Z', '2026-11-02T06:00:00Z', { request_ref: 'same' });
   addJob('job-running', 'running', '2026-11-03T05:00:00Z', undefined, { request_ref: 'same' });
@@ -89,7 +90,7 @@ test('导出 run/package/job，保留恢复身份、状态和来源数量，且�
   expect(exportedRun).toMatchObject({ state: 'completed', created_at: '2026-11-01T20:00:00.000Z' });
   expect((exportedRun.attempts as unknown[])).toHaveLength(2);
   expect(output.records.find(item => item.source_id === 'job-lost')).toMatchObject({ state: 'unknown', terminal: null });
-  expect(output.errors.map(item => item.code)).toEqual(['SOURCE_UNSUPPORTED', 'HISTORY_UNKNOWN', 'HISTORY_UNKNOWN']);
+  expect(output.errors.map(item => item.code)).toEqual(['HISTORY_UNKNOWN', 'HISTORY_UNKNOWN', 'HISTORY_UNKNOWN']);
   expect(treeHash(join(root, 'home'))).toBe(before);
 });
 
@@ -145,12 +146,58 @@ test('记录数超限整体失败且不返回截断数据', () => {
   expect(validate(output), JSON.stringify(validate.errors)).toBe(true);
 });
 
-test('真实空来源不伪报 complete，未知历史和 unsupported intake 明示', () => {
+test('真实空来源不伪报 complete，intake 的未知历史明示', () => {
   const empty = tmp(), sa = join(empty, 'home'); mkdirSync(join(sa, 'runs'), { recursive: true }); mkdirSync(join(sa, 'jobs')); mkdirSync(join(sa, 'archon'));
   Object.assign(process.env, { SUPERAGENT_HOME: sa, ARCHON_HOME: join(sa, 'archon') });
   const result = buildExport(args(), new Date('2026-11-05T00:00:00Z'));
   const output = result.output as Output;
   expect(result.exit).toBe(3); expect(output.records).toEqual([]); expect(output.status).toBe('partial');
-  expect(output.errors.map(item => item.code)).toContain('SOURCE_UNSUPPORTED');
+  expect(output.coverage.intake).toMatchObject({ status: 'complete', scanned: 0, emitted: 0 });
+  expect(output.errors).toContainEqual(expect.objectContaining({ code: 'HISTORY_UNKNOWN', source_kind: 'intake' }));
   expect(validate(output), JSON.stringify(validate.errors)).toBe(true);
+});
+
+test('原始 intake 保留取消项、跨仓同 ID 与显式执行依赖关系，且敏感字段不外泄', () => {
+  const repo2 = join(root, 'repo2'); mkdirSync(repo2); run('git', '-C', repo2, 'init', '-q');
+  const secret = 'PRIVATE-TOKEN-DO-NOT-EXPORT';
+  for (const [path, parent] of [[repo, 'parent-task'], [repo2, undefined]] as const) {
+    const dir = intakeRoot(join(root, 'home'), path); mkdirSync(dir, { recursive: true });
+    writeJson(join(dir, 'state.json'), { version: 1, inputs: [{ secret }], tasks: [{
+      id: 'same-task', repo: path, actor: secret, owner: secret, revision: 2,
+      revisions: [{ brief: secret, acceptance: secret, input: secret }], dependencies: ['dep-task'],
+      ...(parent ? { parent } : {}), questions: [], cancellations: [{ revision: 2, input: secret }],
+      runs: [{ revision: 2, launch_id: 'l1', plan: secret, digest: secret, dispatch: 'accepted', run_id: 'r1', requirement_map: [{ task_requirement_id: 't', package: 'p1', requirement_id: 'r' }] }],
+    }] });
+  }
+  const before = treeHash(join(root, 'home')), { output } = exportAt();
+  const intakes = output.records.filter(item => item.source_kind === 'intake' && item.source_id === 'same-task');
+  expect(intakes).toHaveLength(2); expect(new Set(intakes.map(item => item.repo_id)).size).toBe(2);
+  const bound = intakes.find(item => item.repo_id === output.records.find(item => item.source_kind === 'run')?.repo_id)!;
+  expect(bound).toMatchObject({ state: 'cancelled', source_revision: 2, parent: { source_id: 'parent-task' } });
+  expect((bound.related as { relation: string; target: { source_id: string } }[]).map(item => [item.relation, item.target.source_id])).toContainEqual(['executes', '["r1","p1"]']);
+  expect(JSON.stringify(output)).not.toContain(secret); expect(treeHash(join(root, 'home'))).toBe(before);
+  expect(validate(output), JSON.stringify(validate.errors)).toBe(true);
+});
+
+test('plan 定义、coder、acceptance 与 degraded review 分开，且只读固定产物字段', () => {
+  const planPath = join(root, 'home', 'gen', 'r1', 'plan.json'), plan = JSON.parse(readFileSync(planPath, 'utf8'));
+  plan.packages[0].accept = [{ cmd: 'bun test' }]; plan.packages[1].accept = [{ cmd: 'bun lint' }]; writeJson(planPath, plan);
+  const outputRoot = join(root, 'home', 'workspace'), artifacts = join(outputRoot, 'artifacts', 'runs', 'a2'); mkdirSync(artifacts, { recursive: true });
+  const db = new Database(join(root, 'home', 'archon', 'archon.db')); db.run('UPDATE remote_agent_workflow_runs SET output_root=? WHERE id=?', [outputRoot, 'a2']); db.close();
+  writeJson(join(artifacts, 'verify-p1.coder.json'), { quick_checks: [{ cmd: 'bun test', exit: 0 }], token: 'LEAK-ME', artifact: '../../outside' });
+  writeJson(join(artifacts, 'settle-p1.json'), { command_results: [{ check: { cmd: 'bun test' }, exit: 1 }], insights: [{ kind: 'caution', content: '保留实测失败。', origin: 'agent' }] });
+  writeJson(join(artifacts, 'gate-m1-r1.json'), { grade: 'DEGRADED_PASS', verdict: 'pass' });
+  const { output } = exportAt(), p1 = output.records.find(item => item.source_id === '["r1","p1"]')!, p2 = output.records.find(item => item.source_id === '["r1","p2"]')!;
+  expect((p1.checks as Record<string, unknown>[]).map(item => [item.gate, item.status, item.passed])).toEqual([['acceptance', 'failed', false], ['coder', 'passed', true], ['review', 'degraded', null]]);
+  expect(p2.checks).toContainEqual(expect.objectContaining({ gate: 'acceptance', command: 'bun lint', status: 'not_run', passed: null }));
+  expect(p1.insights).toEqual([expect.objectContaining({ kind: 'caution', assertion: 'reported' })]);
+  expect(JSON.stringify(output)).not.toContain('LEAK-ME'); expect(validate(output), JSON.stringify(validate.errors)).toBe(true);
+});
+
+test('run 用量只投影 SQLite 已记录的 inclusive 汇总', () => {
+  const db = new Database(join(root, 'home', 'archon', 'archon.db'));
+  db.run('UPDATE remote_agent_workflow_runs SET metadata=? WHERE id=?', [JSON.stringify({ total_tokens_in: 120, total_tokens_out: 30, total_cache_read_tokens: 80, total_cost_usd: 0.0123, secret: 'NOPE' }), 'a2']); db.close();
+  const { output } = exportAt(), exported = output.records.find(item => item.source_kind === 'run')!;
+  expect(exported.usage).toEqual({ scope: 'inclusive', duration_ms: 3_600_000, input_tokens: 120, output_tokens: 30, cached_input_tokens: 80, cost: { amount: '0.0123', currency: 'USD' } });
+  expect(JSON.stringify(output)).not.toContain('NOPE'); expect(validate(output), JSON.stringify(validate.errors)).toBe(true);
 });
