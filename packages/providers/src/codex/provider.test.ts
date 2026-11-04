@@ -1235,7 +1235,7 @@ describe('CodexProvider', () => {
       expect(resultOf(chunks).structuredOutput).toBeUndefined();
     });
 
-    test('interrupts runaway whitespace and retries compact JSON once in the same thread', async () => {
+    test('continues the task when structured output runs away before work starts', async () => {
       const script: FakeTurnScript = { completion: null };
       const { provider, server } = providerWith(script);
       const chunks: MessageChunk[] = [];
@@ -1247,6 +1247,8 @@ describe('CodexProvider', () => {
           if (chunk.type === 'warning' && chunk.code === 'codex.structured_output_runaway') {
             script.notifications = [
               tokenUsage({ input: 20, output: 2005 }, { input: 10, output: 4 }),
+              itemStarted(command('exec-1', 'true')),
+              itemCompleted(command('exec-1', 'true', { exitCode: 0 })),
               agentMessage('{"summary":"ok"}'),
             ];
             script.completion = { status: 'completed' };
@@ -1270,9 +1272,14 @@ describe('CodexProvider', () => {
       expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(1);
       const starts = server.processes[0].requests.filter(r => r.method === 'turn/start');
       expect(starts).toHaveLength(2);
+      expect(starts[1].params).not.toHaveProperty('sandboxPolicy');
       expect(starts[1].params.input).toEqual([
-        expect.objectContaining({ text: expect.stringContaining('compact single-line JSON') }),
+        expect.objectContaining({ text: expect.stringContaining('complete the task first') }),
       ]);
+      expect((starts[1].params.input as { text: string }[])[0].text).not.toContain(
+        'Do not call tools'
+      );
+      expect(chunks).toContainEqual(expect.objectContaining({ type: 'tool_call' }));
     });
 
     test('settles an earlier turn background task after a runaway retry', async () => {
@@ -1312,11 +1319,13 @@ describe('CodexProvider', () => {
       expect(chunks.at(-1)).toEqual({ type: 'settled' });
     });
 
-    test('fails after one compact JSON retry when whitespace runs away again', async () => {
+    test('repairs a completed task in read-only turns, then restores the thread sandbox', async () => {
       const script: FakeTurnScript = { completion: null };
       const { provider, server } = providerWith(script);
-      const running = run(provider, { outputFormat: { type: 'json_schema', schema } });
+      const options = { outputFormat: { type: 'json_schema' as const, schema } };
+      const running = run(provider, options);
       while (!server.processes[0]) await new Promise<void>(resolve => setImmediate(resolve));
+      server.processes[0].send(itemCompleted(command('exec-1', 'true', { exitCode: 0 })));
       for (let attempt = 0; attempt < 2; attempt += 1) {
         server.processes[0].send({
           method: 'item/agentMessage/delta',
@@ -1330,11 +1339,58 @@ describe('CodexProvider', () => {
         while (server.processes[0].methods.filter(m => m === 'turn/interrupt').length <= attempt)
           await new Promise<void>(resolve => setImmediate(resolve));
       }
-      const chunks = await running;
-      expect(resultOf(chunks).failure).toMatchObject({ class: 'transient' });
-      expect(resultOf(chunks).failure?.evidence).toContain('structured_output_runaway');
-      expect(server.processes[0].methods.filter(m => m === 'turn/start')).toHaveLength(2);
+      while (server.processes[0].methods.filter(m => m === 'turn/start').length < 3)
+        await new Promise<void>(resolve => setImmediate(resolve));
+      const starts = server.processes[0].requests.filter(r => r.method === 'turn/start');
+      expect(starts).toHaveLength(3);
+      for (const start of starts.slice(1)) {
+        expect(start.params).toMatchObject({
+          sandboxPolicy: { type: 'readOnly', networkAccess: false },
+          approvalPolicy: 'never',
+        });
+      }
+      expect(starts[1].params).toHaveProperty('outputSchema');
+      expect(starts[2].params).not.toHaveProperty('outputSchema');
       expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(2);
+      server.processes[0].send(agentMessage('```json\n{"summary":"ok"}\n```'));
+      server.processes[0].send(turnCompleted('completed'));
+      const chunks = await running;
+      expect(resultOf(chunks).structuredOutput).toEqual({ summary: 'ok' });
+
+      script.notifications = [agentMessage('{"summary":"next"}')];
+      script.completion = { status: 'completed' };
+      await run(provider, options, resultOf(chunks).sessionId);
+      expect(paramsOf(server, 'thread/resume')).toMatchObject({ sandbox: 'danger-full-access' });
+    });
+
+    test('interrupts and rejects action or unknown items during receipt-only recovery', async () => {
+      const violations = [
+        mcpToolCall('mcp-1', 'server', 'tool', 'inProgress', {}),
+        subAgentActivity('started'),
+        { type: 'futureAction', id: 'future-1' },
+      ];
+      for (const item of violations) {
+        const script: FakeTurnScript = { completion: null };
+        const { provider, server } = providerWith(script);
+        const running = run(provider, { outputFormat: { type: 'json_schema', schema } });
+        while (!server.processes[0]) await new Promise<void>(resolve => setImmediate(resolve));
+        server.processes[0].send(itemCompleted(command('exec-1', 'true', { exitCode: 0 })));
+        server.processes[0].send({
+          method: 'item/agentMessage/delta',
+          params: {
+            threadId: THREAD_ID,
+            turnId: TURN_ID,
+            itemId: 'runaway',
+            delta: ' '.repeat(2001),
+          },
+        });
+        while (server.processes[0].methods.filter(m => m === 'turn/start').length < 2)
+          await new Promise<void>(resolve => setImmediate(resolve));
+        server.processes[0].send(itemStarted(item as Parameters<typeof itemStarted>[0]));
+        const result = resultOf(await running);
+        expect(result.failure?.evidence).toContain('disallowed item type');
+        expect(server.processes[0].methods.filter(m => m === 'turn/interrupt')).toHaveLength(2);
+      }
     });
   });
 
