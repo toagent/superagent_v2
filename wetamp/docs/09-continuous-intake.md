@@ -117,7 +117,8 @@ run completed 且所有有效 decision 有证据与 verified requirement，并�
 保留 `tasks/inputs/truncated`，新增 `coverage/next`。coverage.tasks/inputs 分别给出
 固定读取上界内的 eligible `total`、本页 `shown`、尚未遍历 `remaining`、上界后的 `later`；
 `coverage.obligations` 是当前 revision 未撤销 Task 的义务数，`coverage.total_obligations`
-包含已撤销 Task 的义务。过大条目降为 id/key 短指针，
+包含已撤销 Task 的义务，`coverage.cancelled` 是当前 revision 已撤销的 Task 数。context 的
+`tasks` 只遍历未撤销 Task；已撤销 Task 仍可通过 backlog/show 查询。过大条目降为 id/key 短指针，
 使用 show/input 查询正文。每页 JSON 严格受字节预算限制。
 
 ```sh
@@ -130,6 +131,7 @@ superagent intake backlog task-parent --repo /absolute/project/path
 重复消费 `next` 直到 null，再处理 `later`：重新开始一次遍历。游标绑定 repo、现有
 append-only 数组上界与绝对位置；持续追加不重启遍历，条目正文仍是当前 revision。
 历史缩短/重排或无效游标会明确报错；页末不能冒称最新全体任务已完成。
+没有未撤销 Task 时，原生 hook 不注入 Task 正文，只保留 backlog 历史指针。
 
 `backlog` 是同一 Intake 的只读进度投影，不额外持久化或调用模型；包含全部 Task、
 父子关系、当前义务/覆盖 ID、completion 与 unknown 原因、questions、取消历史、show 指针。
