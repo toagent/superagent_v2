@@ -37,7 +37,7 @@ export interface EngineReceipt {
   bootstrap_evidence?: string;
 }
 // prettier-ignore
-export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; pid?: number; pid_start?: string; host?: string; token?: string; error?: string; reported?: boolean; retries?: number; }
+export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; pid?: number; pid_start?: string; host?: string; token?: string; error?: string; failure_kind?: 'infrastructure' | 'regression'; reported?: boolean; retries?: number; }
 
 const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
@@ -447,11 +447,11 @@ const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): str
   } catch {
     subject = '';
   }
-  const kind = record.error === 'verify_process_lost' ? '基础设施异常' : '发现回归';
+  const kind = record.failed_files.length === 0 ? '基础设施异常' : '发现回归';
   return `引擎上线后复验${kind}｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
 };
 // prettier-ignore
-const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const title = verifyFailureTitle(record, currentSha); (dependencies.handoff ?? ((item, messageTitle) => { const dedupe_key = JSON.stringify(['post-promotion-verify', item.error === 'verify_process_lost' ? 'infrastructure' : 'regression', [...new Set(item.failed_files)].sort()]); coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: messageTitle, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ') || 'unknown'}\nlog: ${item.log}`, evidence: [item.sha, item.log], dedupe_key, severity: 'normal' }, 0, false); }))(record, title); writeVerify({ ...record, reported: true }); };
+const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const failure_kind = record.failed_files.length === 0 ? 'infrastructure' : 'regression'; if (failure_kind === 'regression') { const title = verifyFailureTitle(record, currentSha); (dependencies.handoff ?? ((item, messageTitle) => { const dedupe_key = JSON.stringify(['post-promotion-verify', failure_kind, [...new Set(item.failed_files)].sort()]); coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: messageTitle, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ')}\nlog: ${item.log}`, evidence: [item.sha, item.log], dedupe_key, severity: 'normal' }, 0, false); }))(record, title); } writeVerify({ ...record, failure_kind, reported: true }); };
 // prettier-ignore
 export function autoVerify(current: string | undefined, dependencies: AutoVerifyDependencies = {}): { sha: string; base?: string; started: boolean; error?: string } | undefined {
   if (!current) return;
@@ -481,6 +481,10 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
           .filter(r => r.sha !== currentSha && isAncestor(r.sha, currentSha))
           .at(-1)?.sha;
     if (!base) return { sha: currentSha, started: false };
+    if (retry) {
+      if (!/^[0-9a-f]{40}$/i.test(retry.sha)) throw new Error('engine auto-verify: invalid retry sha');
+      rmSync(join(verifyRoot(), retry.sha), { recursive: true, force: true });
+    }
     const token = crypto.randomUUID(), command = [process.execPath, join(current, 'wetamp/src/cli.ts'), 'engine', 'verify', currentSha, '--base', base],
       spawned = dependencies.spawn
         ? dependencies.spawn(command, { ...process.env, SA_ENGINE_VERIFY_TOKEN: token })

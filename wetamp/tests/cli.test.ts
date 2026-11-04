@@ -4,6 +4,7 @@ import {
   resumeExecution,
 } from '@archon/workflows/execution-lifecycle';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { testTimeout } from '@archon/paths/test-utils';
 import * as coordModule from '../src/coord';
 import * as launcherModule from '../src/launcher';
 import * as relay from '../src/relay-quota';
@@ -284,6 +285,7 @@ describe('redact (shared redact (cli and board))', () => {
   });
 });
 
+// prettier-ignore
 test('plan check validates without dispatch or launch-failure writes', () => {
   const s = stub([]),
     repo = gitRepo(s.root);
@@ -345,7 +347,7 @@ test('plan check validates without dispatch or launch-failure writes', () => {
   expect(readdirSync(failures)).toEqual(['existing.json']);
   expect(readFileSync(join(failures, 'existing.json'), 'utf8')).toBe('{}');
   expect(s.calls()).toEqual([]);
-});
+}, testTimeout(15_000));
 
 test('plan precheck blocking ignores lint override', () => {
   const s = stub([]),

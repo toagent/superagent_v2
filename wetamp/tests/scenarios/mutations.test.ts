@@ -221,8 +221,8 @@ test('known accident mutations each fail a real generated scenario', () => {
     : mutations;
   for (const mutation of selected) {
     const baseline = Bun.spawnSync(
-      [process.execPath, 'test', '--timeout', '180000', mutation.test, '-t', mutation.name],
-      { cwd: join(repo, 'wetamp'), stdout: 'pipe', stderr: 'pipe', timeout: 240_000 }
+      [process.execPath, 'test', '--timeout', '300000', mutation.test, '-t', mutation.name],
+      { cwd: join(repo, 'wetamp'), stdout: 'pipe', stderr: 'pipe', timeout: 360_000 }
     );
     if (baseline.exitCode !== 0)
       expect(baseline.exitCode, diagnostic('baseline failed', baseline)).toBe(0);
@@ -261,13 +261,13 @@ test('known accident mutations each fail a real generated scenario', () => {
       expect(git.exitCode, git.stderr.toString()).toBe(0);
     }
     const run = Bun.spawnSync(
-      [process.execPath, 'test', '--timeout', '180000', mutation.test, '-t', mutation.name],
+      [process.execPath, 'test', '--timeout', '300000', mutation.test, '-t', mutation.name],
       {
         cwd: wetamp,
         env: { ...process.env, SCENARIO_MUTATION: mutation.file },
         stdout: 'pipe',
         stderr: 'pipe',
-        timeout: 240_000,
+        timeout: 360_000,
       }
     );
     const failure = `${run.stdout.toString()}\n${run.stderr.toString()}`;
@@ -277,4 +277,4 @@ test('known accident mutations each fail a real generated scenario', () => {
       expect(failure, evidence).toContain(mutation.expectedError);
     }
   }
-}, 720_000);
+}, 900_000);

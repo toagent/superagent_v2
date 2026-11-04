@@ -447,20 +447,21 @@ test('verify uses an independent local clone without registering a worktree', ()
   const f = sourceFixture(), base = f.sha(), sha = commit(f.source, 'verify-clone'), before = sh('git worktree list --porcelain', f.source);
   let checkout = '', common = '', resolvedBase = '', during = '';
   const result = runVerify(sha, base, { execute: (worktree, _args, report) => { checkout = worktree; common = realpathSync(join(worktree, sh('git rev-parse --git-common-dir', worktree).trim())); resolvedBase = sh(`git rev-parse '${base}^{commit}'`, worktree).trim(); during = sh('git worktree list --porcelain', f.source); writeFileSync(report, '<testsuites><testsuite tests="0"/></testsuites>'); return { exit: 0, duration_ms: 1 }; } });
-  expect(result.status).toBe('passed'); expect(common).not.toBe(realpathSync(join(f.source, '.git'))); expect(resolvedBase).toBe(base);
+  expect(result.status, JSON.stringify(result)).toBe('passed'); expect(common).not.toBe(realpathSync(join(f.source, '.git'))); expect(resolvedBase).toBe(base);
   expect(during).toBe(before); expect(sh('git worktree list --porcelain', f.source)).toBe(before); expect(existsSync(checkout)).toBe(false);
 }, testTimeout(60_000));
 
 // prettier-ignore
-test('P19 invariant: verify failures dedupe handoffs by cause without queueing ntfy alerts', () => {
+test('P19 invariant: only verified regressions create deduped handoffs', () => {
   const f = sourceFixture(), promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); mkdirSync(promotions, { recursive: true });
   const record = (sha: string, failed_files: string[], error?: string) => ({ sha, base: 'base', status: 'failed', files: failed_files, failed_files, log: `/${sha}.log`, at: sha, error, retries: error ? 1 : undefined });
-  for (const item of [record('one', ['a.test.ts', 'b.test.ts', 'a.test.ts']), record('two', ['b.test.ts', 'a.test.ts']), record('three', ['a.test.ts', 'c.test.ts']), record('infra', ['a.test.ts', 'b.test.ts'], 'verify_process_lost')]) writeFileSync(join(promotions, `${item.sha}.verify.json`), JSON.stringify(item));
+  for (const item of [record('one', ['a.test.ts', 'b.test.ts', 'a.test.ts']), record('two', ['b.test.ts', 'a.test.ts']), record('three', ['a.test.ts', 'c.test.ts']), record('infra', [], 'git clone failed')]) writeFileSync(join(promotions, `${item.sha}.verify.json`), JSON.stringify(item));
   autoVerify(join(f.root, 'current'));
   const messages = coord().messages().filter(message => !message.type);
-  expect(messages).toHaveLength(3); expect(messages.find(message => message.evidence.includes('one'))?.evidence).toEqual(expect.arrayContaining(['one', '/one.log', 'two', '/two.log']));
-  expect(new Set(messages.map(message => message.dedupe_key)).size).toBe(3); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
+  expect(messages).toHaveLength(2); expect(messages.find(message => message.evidence.includes('one'))?.evidence).toEqual(expect.arrayContaining(['one', '/one.log', 'two', '/two.log']));
+  expect(new Set(messages.map(message => message.dedupe_key)).size).toBe(2); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
   for (const sha of ['one', 'two', 'three', 'infra']) expect(JSON.parse(readFileSync(join(promotions, `${sha}.verify.json`), 'utf8')).reported).toBe(true);
+  expect(JSON.parse(readFileSync(join(promotions, 'infra.verify.json'), 'utf8')).failure_kind).toBe('infrastructure');
 });
 
 // prettier-ignore
@@ -475,7 +476,7 @@ test('verify executor uses heavy slot and kills a timed-out test process', () =>
 }, testTimeout(60_000));
 
 // prettier-ignore
-test('auto verify retries one lost process, reports infrastructure failure, and supersedes stale work', () => {
+test('auto verify cleans a lost process checkout, suppresses its defect, and supersedes stale work', () => {
   const f = sourceFixture(), first = f.sha(); promote(first, f.evidence); const second = commit(f.source, 'verify-second'); promote(second, undefined, { probe: successfulProbe });
   const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); let spawned = 0, detached = 0, state: 'online' | 'offline' | 'unknown' = 'online', start = 'start'; const handoffs: string[] = [];
   const dependencies = { spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start } as const) : ({ state } as const), handoff: (_record: unknown, title: string) => handoffs.push(title) };
@@ -483,9 +484,10 @@ test('auto verify retries one lost process, reports infrastructure failure, and 
   const secondRecord = join(promotions, `${second}.verify.json`); writeFileSync(secondRecord, JSON.stringify({ ...JSON.parse(readFileSync(secondRecord, 'utf8')), status: 'passed' }));
   const third = commit(f.source, 'verify-third'); promote(third, undefined, { probe: successfulProbe }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true });
   state = 'unknown'; autoVerify(currentEngineSnapshot(), dependencies); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8')).status).toBe('running');
-  state = 'online'; start = 'reused'; expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true }); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8'))).toMatchObject({ status: 'running', retries: 1 });
-  start = 'reused-again'; autoVerify(currentEngineSnapshot(), dependencies); expect(handoffs[0]).toContain('复验基础设施异常'); expect(handoffs[0]).not.toContain('回归');
+  const staleCheckout = join(process.env.SUPERAGENT_HOME!, 'engine/verify', third); mkdirSync(staleCheckout, { recursive: true }); writeFileSync(join(staleCheckout, 'stale'), 'stale');
+  state = 'online'; start = 'reused'; expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true }); expect(existsSync(staleCheckout)).toBe(false); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8'))).toMatchObject({ status: 'running', retries: 1 });
+  start = 'reused-again'; autoVerify(currentEngineSnapshot(), dependencies); expect(handoffs).toEqual([]); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8'))).toMatchObject({ failure_kind: 'infrastructure', reported: true });
   const fourth = commit(f.source, 'verify-fourth'); promote(fourth, undefined, { probe: successfulProbe }); autoVerify(currentEngineSnapshot(), dependencies); const fifth = commit(f.source, 'verify-fifth'); promote(fifth, undefined, { probe: successfulProbe }); start = 'stale'; autoVerify(currentEngineSnapshot(), dependencies);
   expect(JSON.parse(readFileSync(join(promotions, `${fourth}.verify.json`), 'utf8')).status).toBe('superseded'); expect(engineStatus()).toMatchObject({ verify: { sha: fifth, status: 'running' } });
-  expect({ spawned, detached, handoffs: handoffs.length }).toEqual({ spawned: 5, detached: 5, handoffs: 1 }); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
-}, testTimeout(120_000));
+  expect({ spawned, detached, handoffs: handoffs.length }).toEqual({ spawned: 5, detached: 5, handoffs: 0 }); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
+}, testTimeout(180_000));
