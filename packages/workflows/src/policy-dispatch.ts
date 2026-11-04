@@ -49,6 +49,7 @@ export interface DispatchExecution<Candidate extends DispatchCandidate> {
   options(candidate: Candidate): SendQueryOptions;
   now?: () => number;
   requestedModel?: string;
+  requiresExactSession?: boolean;
 }
 
 /** One execution boundary consumes only typed failure classes; provider prose never selects a route. */
@@ -90,11 +91,17 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
           (a.cooldown_until ?? 0) > now()
       )
     );
-  const candidates = [...execution.candidates].sort(
+  const orderedCandidates = [...execution.candidates].sort(
     (a, b) =>
       Number(a.provider !== execution.provider) - Number(b.provider !== execution.provider) ||
       cooling(a) - cooling(b)
   );
+  const candidates = execution.requiresExactSession
+    ? orderedCandidates.filter(
+        candidate =>
+          candidate.provider === execution.provider && candidate.model === execution.requestedModel
+      )
+    : orderedCandidates;
   let vendorFailed = true;
   let reassignmentBlocked = false;
   let previousProvider = execution.provider;
@@ -232,6 +239,11 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
         code: 'superagent.budget_observed',
         message: observed,
       };
+    if (execution.requiresExactSession && (failure !== undefined || result.isError)) {
+      yield accounted({ ...result, resumed: false }, candidate.model);
+      yield { type: 'settled' };
+      return;
+    }
     if (
       (!failedByVendor && stillAvailable && cooldown === undefined) ||
       options.abortSignal?.aborted
@@ -256,11 +268,13 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     last ?? {
       type: 'result',
       isError: true,
+      ...(execution.requiresExactSession ? { resumed: false } : {}),
       failure: {
         class: 'misconfigured',
         evidence: `policy: no eligible ${execution.provider} model for ${execution.node}`,
       },
-    }
+    },
+    execution.requiresExactSession ? execution.requestedModel : undefined
   );
   yield { type: 'settled' };
 }

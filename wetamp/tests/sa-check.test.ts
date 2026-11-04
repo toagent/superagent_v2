@@ -4012,6 +4012,49 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     expect(sh('git status --porcelain', repo)).toBe('');
     expect(sh('git worktree list', repo).trim().split('\n')).toHaveLength(1);
   });
+  test('probe: runs preceding non-resource checks before the failed check', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim(),
+      path = planFile(root, 'false', ['true']);
+    const plan = JSON.parse(readFileSync(path, 'utf8'));
+    plan.packages[0].accept = [
+      { cmd: 'printf built > .probe-build', timeout_s: 5 },
+      { cmd: 'test -f .probe-build; false', timeout_s: 5 },
+    ];
+    writeFileSync(path, JSON.stringify(plan));
+    const result = runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', tag: 'ordered', base });
+    expect(result.out).toMatchObject({
+      ok: false,
+      base_results: [{ cmd: 'test -f .probe-build; false', pass: null }],
+    });
+    const probeLog = readFileSync(join(result.art, 'ordered.probe.log'), 'utf8');
+    expect(probeLog.indexOf('$ printf built > .probe-build')).toBeLessThan(
+      probeLog.indexOf('$ test -f .probe-build; false')
+    );
+  });
+  test('probe: keeps JUnit and archived attempts separate from primary acceptance', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      base = sh('git rev-parse HEAD', repo).trim(),
+      path = planFile(root, 'false', ['true']);
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'junit.xml*\n');
+    const plan = JSON.parse(readFileSync(path, 'utf8'));
+    plan.packages[0].accept[0] = {
+      cmd: `printf '%s' '<testsuite tests="1"><testcase classname="suite" name="case"><failure>candidate</failure></testcase></testsuite>' > junit.xml; exit 1`,
+      timeout_s: 5,
+      report: { junit: 'junit.xml', collect: `printf 'suite::case\\n'` },
+    };
+    writeFileSync(path, JSON.stringify(plan));
+    const result = runScript(repo, { kind: 'accept', plan: path, pkgs: 'a', tag: 'junit', base });
+    expect(readFileSync(join(result.art, 'junit.attempt-1.junit.xml'), 'utf8')).toContain(
+      'candidate'
+    );
+    expect(readFileSync(join(result.art, 'junit.probe.attempt-1.junit.xml'), 'utf8')).toContain(
+      'candidate'
+    );
+    expect(readdirSync(result.art)).toContain('junit.probe.attempt-1.junit.xml');
+  });
   test('accept with base: failing command is probed at base (pre-existing vs introduced)', () => {
     const root = tmp();
     const repo = gitRepo(root);

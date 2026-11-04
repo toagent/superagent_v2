@@ -132,6 +132,22 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: '!check.resource && candidates.some(result => result.check.cmd === check.cmd && result.pass === true)',
+    to: '[]',
+    test: 'tests/sa-check.test.ts',
+    name: 'probe runs preceding non-resource checks',
+    expectedError: 'Expected: true',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: '`${artifactTag}.attempt-${String(attempts.length + 1)}.junit.xml`',
+    to: "`${env('TAG')}.attempt-${String(attempts.length + 1)}.junit.xml`",
+    test: 'tests/sa-check.test.ts',
+    name: 'probe archives JUnit separately',
+    expectedError: 'ENOENT',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'saved.pass === true && saved.exit === 0 && typeof saved.duration_ms',
     to: 'saved.pass === true && (saved.exit === undefined || saved.exit === 0) && typeof saved.duration_ms',
     test: 'tests/sa-check.test.ts',

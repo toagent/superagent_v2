@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Intake, intakeRoot } from './intake';
+import { Intake, intakeRoot, isTaskNotification } from './intake';
 
 const advisory = (event: string) => ({
   hookSpecificOutput: {
@@ -46,7 +46,7 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
       common = git('--path-format=absolute', '--git-common-dir');
     if (!dir || !common) return advisory(event);
     if (realpathSync(dir) !== realpathSync(common)) return;
-    const root = intakeRoot(env.SUPERAGENT_HOME || join(homedir(), '.superagent'), repo);
+    const root = intakeRoot(env.SUPERAGENT_HOME ?? join(homedir(), '.superagent'), repo);
     if (!existsSync(join(root, 'state.json'))) return;
     const store = new Intake(root);
     if (!store.list().some(t => t.repo === repo)) return;
@@ -56,30 +56,31 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
     let inputKey: string | undefined;
     if (event === 'UserPromptSubmit') {
       if (!identity) return advisory(event);
-      const message = client === 'codex' ? p.turn_id : randomUUID();
-      if (
-        typeof message !== 'string' ||
-        !message.trim() ||
-        typeof p.prompt !== 'string' ||
-        !p.prompt.trim()
-      )
-        return advisory(event);
-      const input = {
-        source: client,
-        session: p.session_id,
-        message,
-        text: p.prompt,
-        repo,
-        ...identity,
-      };
-      store.receive(input);
-      inputKey = JSON.stringify([client, p.session_id, message]);
+      if (typeof p.prompt !== 'string' || !p.prompt.trim()) return advisory(event);
+      if (!isTaskNotification({ source: client, text: p.prompt })) {
+        const message = client === 'codex' ? p.turn_id : randomUUID();
+        if (typeof message !== 'string' || !message.trim()) return advisory(event);
+        const input = {
+          source: client,
+          session: p.session_id,
+          message,
+          text: p.prompt,
+          repo,
+          ...identity,
+        };
+        store.receive(input);
+        inputKey = JSON.stringify([client, p.session_id, message]);
+      }
     }
+    const context = store.context(repo, 4096);
     return {
       hookSpecificOutput: {
         hookEventName: event,
         additionalContext: JSON.stringify({
-          intake: store.context(repo, 4096),
+          intake:
+            context.coverage.tasks.total === 0
+              ? 'No active Tasks; use intake backlog for history.'
+              : context,
           inputKey,
           instruction:
             'Interpret with typed intake apply; status-only uses actions: []. Preserve old Tasks unless explicitly cancelled; after answering/amending continue original work. Cross-owner changes require handoff. Read intake context 4096 <next> until next is null before judging scope or reporting progress; later items need a new traversal. Use intake backlog as the progress source and intake show/input for full bodies.',

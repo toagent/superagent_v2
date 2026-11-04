@@ -37,6 +37,16 @@ export interface Input {
   actor: string;
   owner: string;
 }
+export const isTaskNotification = (input: Pick<Input, 'source' | 'text'>): boolean => {
+  const value = input.text.trim(),
+    close = '</task-notification>';
+  return (
+    input.source === 'claude' &&
+    value.startsWith('<task-notification>') &&
+    value.endsWith(close) &&
+    value.indexOf(close) === value.length - close.length
+  );
+};
 export interface Binding {
   revision: number;
   launch_id: string;
@@ -582,12 +592,28 @@ export class Intake {
       }
     }
     const stamp = signature(),
-      tasks = state.tasks.filter(t => t.repo === repo);
+      tasks = state.tasks.filter(t => t.repo === repo),
+      liveTasks = new Set(tasks.filter(t => !cancelled(t)).map(t => t.id));
+    const liveInput = (r: Received): boolean => {
+      if (r.input.repo !== repo || isTaskNotification(r.input)) return false;
+      if (!r.results) return true;
+      return r.results.some((result, index) => {
+        if (result.status === 'accepted') return false;
+        const action = r.actions?.[index];
+        const target =
+          result.task ??
+          (action !== null &&
+          typeof action === 'object' &&
+          !Array.isArray(action) &&
+          typeof (action as Record<string, unknown>).task === 'string'
+            ? ((action as Record<string, unknown>).task as string)
+            : undefined);
+        return target !== undefined && liveTasks.has(target);
+      });
+    };
     const eligible = [
-      state.tasks.map(t => t.repo === repo),
-      state.inputs.map(
-        r => r.input.repo === repo && (!r.results || r.results.some(x => x.status !== 'accepted'))
-      ),
+      state.tasks.map(t => t.repo === repo && !cancelled(t)),
+      state.inputs.map(liveInput),
     ];
     const out = {
       tasks: [] as unknown[],
@@ -595,9 +621,10 @@ export class Intake {
       truncated: false,
       coverage: {
         tasks: { total: 0, shown: 0, remaining: 0, later: 0 },
-        inputs: { total: 0, shown: 0, remaining: 0, later: 0 },
+        inputs: { total: 0, shown: 0, remaining: 0, later: 0, omitted: 0 },
         obligations: obligationCount(tasks),
         total_obligations: obligationCount(tasks, true),
+        cancelled: tasks.filter(cancelled).length,
       },
       next: null as string | null,
     };
@@ -611,6 +638,9 @@ export class Intake {
         c.remaining = flags.slice(pos, bound).filter(Boolean).length;
         c.later = flags.slice(bound).filter(Boolean).length;
       });
+      out.coverage.inputs.omitted = state.inputs
+        .slice(0, bounds[1])
+        .filter((r, i) => r.input.repo === repo && !eligible[1][i]).length;
       out.next = positions.some((n, i) => n < bounds[i])
         ? Buffer.from(JSON.stringify({ bounds, positions, signature: stamp })).toString('base64url')
         : null;

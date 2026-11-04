@@ -87,6 +87,22 @@ test('VENDOR_FAILOVER unclassified throw preserves failure without reassignment'
   expect(readPolicyAttempts(s.artifacts)).toHaveLength(1);
 });
 
+test('EXACT_SESSION stops before fallback while a fresh retry keeps normal routing', async () => {
+  const exact = setup();
+  exact.execution.requiresExactSession = true;
+  const exactChunks = await collect(executePolicy(exact.execution, 'p', '/scratch', 'original'));
+  expect(exact.calls).toEqual([{ model: 'codex-a', session: 'original', provider: 'codex' }]);
+  expect(exactChunks.at(-2)).toMatchObject({
+    type: 'result',
+    failure: { class: 'overloaded' },
+    resumed: false,
+  });
+
+  const fresh = setup();
+  await collect(executePolicy(fresh.execution, 'p', '/scratch'));
+  expect(fresh.calls.map(call => call.model)).toEqual(['codex-a', 'codex-b', 'claude-a']);
+});
+
 for (const missing of ['result', 'settled'] as const)
   test(`VENDOR_FAILOVER missing ${missing} is transient, falls back, and exhausts typed`, async () => {
     const incomplete = (s: ReturnType<typeof setup>) =>

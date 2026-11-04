@@ -29592,6 +29592,9 @@ describe('executeDagWorkflow -- addressable session resume', () => {
     ]);
     const sessions = mockSendQueryDag.mock.calls.map(call => call[2]);
     expect(sessions).toEqual([undefined, 'source-session', undefined]);
+    expect(
+      mockSendQueryDag.mock.calls.map(call => call[3]?.nodeConfig?.requiresExactSession)
+    ).toEqual([undefined, true, undefined]);
     const events = persistedEvents(store);
     expect(
       events.some(

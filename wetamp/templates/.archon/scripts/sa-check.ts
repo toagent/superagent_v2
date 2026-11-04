@@ -698,7 +698,8 @@ async function run(
   envKey = '',
   failures: CheckFailure[] = [],
   results: CommandResult[] = [],
-  retryFailure = true
+  retryFailure = true,
+  artifactTag = env('TAG')
 ): Promise<string[]> {
   const failed: string[] = [];
   const commandEnv =
@@ -846,7 +847,7 @@ async function run(
         ? junitCases(outputReport, expected, executionStarted)
         : undefined;
       // prettier-ignore
-      const junit = outputReport && artifacts ? join(artifacts, `${env('TAG')}.attempt-${String(attempts.length + 1)}.junit.xml`) : outputReport;
+      const junit = outputReport && artifacts ? join(artifacts, `${artifactTag}.attempt-${String(attempts.length + 1)}.junit.xml`) : outputReport;
       if (outputReport && junit !== outputReport && existsSync(outputReport))
         writeFileSync(junit, readFileSync(outputReport));
       const consistent =
@@ -1461,7 +1462,8 @@ async function acceptOnce(
     base && failed.length && !resourceWaitTimedOut
       ? await probe(
           base,
-          checks.filter(c => failed.includes(c.cmd)),
+          covered.map(pkg => pkg.accept),
+          failed,
           tag,
           commandResults
         )
@@ -1824,7 +1826,7 @@ async function settle(): Promise<void> {
 
 /** 在 base 的临时 detached 工作树里准备同一环境后重跑失败命令；无法准备时不作基线结论。 */
 // prettier-ignore
-async function probe(base: string, checks: Check[], tag: string,
+async function probe(base: string, checkGroups: Check[][], failed: string[], tag: string,
   candidates: CommandResult[]): Promise<NonNullable<Accept['base_results']>> {
   const log = join(artifacts, `${tag}.probe.log`),
     setup = environmentChecks(plan());
@@ -1838,7 +1840,13 @@ async function probe(base: string, checks: Check[], tag: string,
       return [];
     }
     const output: NonNullable<Accept['base_results']> = [];
-    for (const c of checks) {
+    for (const group of checkGroups) for (const c of group.filter(check => failed.includes(check.cmd))) {
+      const prerequisites = group.slice(0, group.indexOf(c)).filter(check =>
+        !check.resource && candidates.some(result => result.check.cmd === check.cmd && result.pass === true));
+      if ((await run(prerequisites, log, dir, '', [], [], false, `${tag}.probe-setup`)).length) {
+        output.push({ cmd: c.cmd, pass: null, reason: 'baseline incomparable: prerequisite failed' });
+        continue;
+      }
       const candidate = candidates.find(result => result.check.cmd === c.cmd)?.structured;
       const caseFiles = candidate?.complete ? [...new Set(candidate.ids.map(id => id.split('::')[0]))] : [];
       const pytestFiles = caseFiles.filter(path => {
@@ -1858,8 +1866,13 @@ async function probe(base: string, checks: Check[], tag: string,
       }
       const failures: CheckFailure[] = [],
         results: CommandResult[] = [];
+      let check = c;
+      if (c.report) {
+        const probeJunit = `${c.report.junit}.probe-${sha(JSON.stringify([tag, c.cmd])).slice(0, 12)}`;
+        check = { ...c, cmd: c.cmd.replaceAll(c.report.junit, probeJunit), report: { ...c.report, junit: probeJunit } };
+      }
       // prettier-ignore
-      const passed = (await run([c], log, dir, sha(JSON.stringify(['probe', base])), failures, results)).length === 0;
+      const passed = (await run([check], log, dir, sha(JSON.stringify(['probe', base])), failures, results, true, `${tag}.probe`)).length === 0;
       // Exit 1 alone cannot distinguish assertions from setup errors. Only a
       // structured non-environment failure proves the baseline actually ran.
       const comparable =
