@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Intake, intakeRoot } from './intake';
+import { Intake, intakeRoot, isTaskNotification } from './intake';
 
 const advisory = (event: string) => ({
   hookSpecificOutput: {
@@ -56,24 +56,21 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
     let inputKey: string | undefined;
     if (event === 'UserPromptSubmit') {
       if (!identity) return advisory(event);
-      const message = client === 'codex' ? p.turn_id : randomUUID();
-      if (
-        typeof message !== 'string' ||
-        !message.trim() ||
-        typeof p.prompt !== 'string' ||
-        !p.prompt.trim()
-      )
-        return advisory(event);
-      const input = {
-        source: client,
-        session: p.session_id,
-        message,
-        text: p.prompt,
-        repo,
-        ...identity,
-      };
-      store.receive(input);
-      inputKey = JSON.stringify([client, p.session_id, message]);
+      if (typeof p.prompt !== 'string' || !p.prompt.trim()) return advisory(event);
+      if (!isTaskNotification({ source: client, text: p.prompt })) {
+        const message = client === 'codex' ? p.turn_id : randomUUID();
+        if (typeof message !== 'string' || !message.trim()) return advisory(event);
+        const input = {
+          source: client,
+          session: p.session_id,
+          message,
+          text: p.prompt,
+          repo,
+          ...identity,
+        };
+        store.receive(input);
+        inputKey = JSON.stringify([client, p.session_id, message]);
+      }
     }
     const context = store.context(repo, 4096);
     return {

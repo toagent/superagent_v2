@@ -116,6 +116,9 @@ run completed 且所有有效 decision 有证据与 verified requirement，并�
 
 保留 `tasks/inputs/truncated`，新增 `coverage/next`。coverage.tasks/inputs 分别给出
 固定读取上界内的 eligible `total`、本页 `shown`、尚未遍历 `remaining`、上界后的 `later`；
+inputs 只注入未解释记录，以及 pending/rejected 动作仍指向未撤销 Task 的记录；已解释完毕或
+只指向已撤销 Task 的记录仍可用 `input` 查询，并计入 `coverage.inputs.omitted`。Claude Code
+harness 的完整 `<task-notification>` 元素也只保留在历史中，不作为用户输入注入。
 `coverage.obligations` 是当前 revision 未撤销 Task 的义务数，`coverage.total_obligations`
 包含已撤销 Task 的义务，`coverage.cancelled` 是当前 revision 已撤销的 Task 数。context 的
 `tasks` 只遍历未撤销 Task；已撤销 Task 仍可通过 backlog/show 查询。过大条目降为 id/key 短指针，
