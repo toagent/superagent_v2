@@ -9,7 +9,7 @@
 | 2026-10-09 | 放弃两版自研方案（改造 superagent v2 守护进程 / v4 从零重写）：都是重复造轮子。                                                                                                                                           |
 | 2026-10-09 | 基于本仓库（`coleam00/Archon` 的 fork，v0.11.1，upstream `dev` 7009a90a）改造；**必须能无缝升级 upstream**；实现与自定义方案全部放 `wetamp/`。                                                                            |
 | 2026-10-09 | **不做沙箱**。Codex 直接用 Archon 原生 provider（线程以 `danger-full-access` 启动，`packages/providers/src/codex/provider.ts:1072`），Claude 用原生 provider。v2 的 `adapters/*`、`sandbox-policy`、bash 包装层全部不要。 |
-| 2026-10-08 | 评审模型 ≠ 作者模型（硬约束）；G2 合格独立评审通过即放行集成；红线问题通过 ntfy 两段确认，其余决策 AI 投票过半。                                                                                                          |
+| 2026-11-03 | 仅实际改动命中 `tiers.json` 的 `policy.risk_paths` 或用户本轮明确要求时做一次合格独立评审；G2、strict、`review:true` 声明不单独触发。评审模型 ≠ 作者模型；红线问题通过 ntfy 两段确认；冒烟通过即交付。                    |
 | 2026-10-09 | 效率主因是拆包过细、评审过频：评审按**里程碑**一次，不按包。                                                                                                                                                              |
 | 2026-10-09 | 早期 owner-lost overlay 决策已由 P3 取代：恢复接纳与 fence 下沉 Archon，wetamp 不自动恢复。                                                                                                                               |
 
@@ -30,7 +30,7 @@ wetamp/bin/superagent  ──生成──▶  ~/.superagent/gen/<run>/.archon/{w
 Archon CLI（bun 源码运行，packages/cli）  ──▶ ~/.superagent/archon/archon.db（唯一账本）+ workspaces/<repo>/{worktrees,artifacts,workflow-source}
         │
         ├─ prompt 节点 → 原生 codex / claude provider（无沙箱）
-        ├─ bash/script 节点 → 验收命令、diff 汇总、投票计数、合入命令
+        ├─ bash/script 节点 → 验收命令、diff 汇总、合入命令
         └─ approval 节点 → supervise tick：ntfy 答复 ⇄ approve（是）/ abandon（否）
 ```
 
@@ -146,7 +146,7 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 - 包与包之间按 `deps` 拓扑串联；**同一 run 内不并行写同一 worktree**（M1 决定，合包后包少，损失可忽略）。
   跨 run 天然并行（每个 run 独立 Archon worktree）。需要包级并行时再用 `workflow:` 子运行 + `isolation: worktree`（M3 可选）。
 - 评审模型 ≠ 作者模型由**结构**保证：`@sa-coder` 与 `@sa-reviewer` 是两个别名，`install.sh` 断言二者 `provider/model` 不相等；
-  生成器不信任 prompt 文案。`@sa-reviewer-alt`（另一厂商）用于 AI 投票与 `@sa-reviewer` 熔断时的手工切换。
+  生成器不信任 prompt 文案。`@sa-reviewer-alt`（另一厂商）用于 `@sa-reviewer` 熔断时的手工切换。
 - 模型故障：Archon 原生 `retry`、`workflows.autoResumeOnQuotaReset/quotaMaxAttempts` 处理限流/配额；
   跨厂商切换 = `superagent resume <run> --model @sa-reviewer=claude/opus`（经每次运行的 `--config` 层，不改持久配置）。
 - 验收命令（`accept`）由 bash 节点执行，退出码即结果，不交给模型复述。
