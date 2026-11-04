@@ -4029,9 +4029,9 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
       base_results: [{ cmd: 'test -f .probe-build; false', pass: null }],
     });
     const probeLog = readFileSync(join(result.art, 'ordered.probe.log'), 'utf8');
-    expect(probeLog.indexOf('$ printf built > .probe-build')).toBeLessThan(
-      probeLog.indexOf('$ test -f .probe-build; false')
-    );
+    const prerequisite = probeLog.indexOf('$ printf built > .probe-build'),
+      failed = probeLog.indexOf('$ test -f .probe-build; false');
+    expect(prerequisite >= 0 && prerequisite < failed).toBe(true);
   });
   test('probe: keeps JUnit and archived attempts separate from primary acceptance', () => {
     const root = tmp(),
