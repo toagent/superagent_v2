@@ -1,6 +1,6 @@
 # superagent on Archon：架构与自定义方案
 
-状态：U3 文档校准（2026-10-14）；早期决策与 PoC 记录保留为历史。实施计划见 `01-implementation-plan.md`，PoC 记录见 `02-poc-checklist.md`。
+状态：持续按现行实现校准；历史设计、实施计划与 PoC 记录由 git 历史保存。
 
 ## 0. 决策记录（用户拍板，不再重议）
 
@@ -164,12 +164,12 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 
 ## 5. 门禁与无人值守
 
-| 情形                          | 机制                                                                                                                                                                    |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G0/G1 + auto                  | 默认跳过评审，主控聚焦实测；运行期发现 G2 风险才升级；没有默认人工节点                                                                                                  |
-| G2 / strict / review:true     | 合格独立评审通过且主控实测后放行；分歧用 `vote-<M>`：`@sa-reviewer` + `@sa-reviewer-alt` 各出 JSON 结论，script 节点计票过半                                            |
-| 红线（包 `signoff: "human"`） | `human-<M>` 原生 `approval` 持久暂停；ntfy 按 run+node 去重投递，两段确认后才批准，否决则 `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
-| 超 6 轮                       | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                        |
+| 情形                                        | 机制                                                                                                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 未命中评审白名单                            | G2、strict、`review:true` 声明均不单独触发评审；主控聚焦实测，冒烟通过即交付；没有默认人工节点                                                                          |
+| 命中 `policy.risk_paths` 或用户本轮明确要求 | 做一次合格独立评审并由主控实测；实际评审模型必须不同于作者                                                                                                              |
+| 红线（包 `signoff: "human"`）               | `human-<M>` 原生 `approval` 持久暂停；ntfy 按 run+node 去重投递，两段确认后才批准，否决则 `workflow abandon`；signoff 按 plan 绝对截止时间检查。旧 run 的事件门仍可读。 |
+| 超 6 轮                                     | `gate-<M>` 失败，run 失败；`superagent brief` 把升级原因打给用户                                                                                                        |
 
 显式后台启动支持顶层原生审批；交互循环与组合内隐藏审批继续拒绝后台派发。
 历史 `wait` 事件门的输出仍为 `status/event/waited_ms`，拒绝通过 abandon 表达。
@@ -184,7 +184,7 @@ land            bash: 打印合入命令（本地 merge/ff，不 push）  output
 - **执行生命周期**：Archon 拥有 run/attempt/retry/resume/审批与终态。环境与编码/修复/评审节点的原生 `retry` 复用 `tiers.json` `policy.auto_retry`；接纳锁与恢复 fence 在 `packages/workflows/src/execution-lifecycle.ts`，预算派发在 `policy-dispatch.ts`，通过注入契约调用。ledger 的 `recoveries/auto_retries/progress_fp/stalled` 仅供历史只读展示，不热迁移。
 - **挂起处置表**（`src/reasons.ts` `HOLD_POLICY`）：signoff 桥接 Archon 原生审批（旧 run 的事件签收仍可读）；deadline 按 plan 截止终止；paused 等待引擎唤醒；gate/coder/environment 等失败只投一条明确决定。owner live/unknown 不接管，owner-lost 仅观察；`recover` 要求副作用对账，lost-ack 留引擎 admission fence、不得重派。提问沿用 `dispatchAsk` 的持久化/对账，明确 retry/resume/approve 交引擎执行，dispositions 保留审计。
 - **隔离与原子写**：ledger 逐条解析校验（必备字符串字段、历史 `recoveries` 若存在须为数组、`run_id` 与文件名一致），坏记录在 tick 里报 `action:error`、在 `report` 里计入 `unreadable`，不影响其他 run；asks.json 读不出时不当空表、不覆盖，需要提问的 run 报错。ledger、asks、attempts、config 一律同目录唯一临时文件 + rename；ledger 读改写与 recover 同锁（`updateLedger`）。
-- **投送闸**：twin-toolkit 只把本机 `scripts/verify-local.sh` 通过的提交投送到 twin 机（见 `PROGRESS.md` wpE）。
+- **投送闸**：twin-toolkit 只把本机 `scripts/verify-local.sh` 通过的提交投送到 twin 机。
 
 ## 6. 兼容 CLI（`wetamp/bin/superagent`）
 
