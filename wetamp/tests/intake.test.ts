@@ -317,6 +317,27 @@ test('bounded restart context retains pending pointers without injecting full hi
   expect(() => s.context('/repo', 12)).toThrow('budget');
 });
 
+test('context keeps live inputs and counts interpreted or cancelled-task inputs as omitted', () => {
+  const s = new Intake(root()),
+    active = newTask(s, 'active'),
+    stopped = newTask(s, 'stopped');
+  apply(s, 'cancel', [{ kind: 'cancel', task: stopped, expected_revision: 1 }]);
+  apply(s, 'rejected-live', [amend(active, 9)]);
+  apply(s, 'rejected-stopped', [amend(stopped, 9)]);
+  s.receive(input('uninterpreted'));
+  s.receive({
+    ...input('notification'),
+    source: 'claude',
+    text: '<task-notification><task-id>old</task-id></task-notification>',
+  });
+  const context = s.context('/repo');
+  expect(context.inputs.map(x => (x as { key: string }).key)).toEqual([
+    JSON.stringify(['test', 'session', 'rejected-live']),
+    JSON.stringify(['test', 'session', 'uninterpreted']),
+  ]);
+  expect(context.coverage.inputs).toMatchObject({ total: 2, omitted: 5 });
+});
+
 test.each([false, true])(
   'CLI completion requires frozen identity (%s) and final evidence',
   bindFrozen => {
@@ -694,6 +715,15 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
   expect(hook({ ...p, turn_id: undefined })).toContain('advisory');
   expect(hook({ ...p, session_id: 'unbound' })).toContain('advisory');
   expect(hook({ ...p, prompt: 'conflicting body' })).toContain('advisory');
+  const beforeNotification = readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8');
+  expect(
+    hook(
+      { ...p, prompt: '<task-notification><task-id>background</task-id></task-notification>' },
+      'claude'
+    )
+  ).not.toContain('inputKey');
+  expect(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8')).toBe(beforeNotification);
+  hook({ ...p, prompt: 'ordinary <task-notification> text' }, 'claude');
   hook(p, 'claude');
   hook(p, 'claude');
   const state = JSON.parse(readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8'));
@@ -702,6 +732,9 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
       (r: { input: Input }) => r.input.source === 'claude' && r.input.text === p.prompt
     )
   ).toHaveLength(2);
+  expect(
+    state.inputs.some((r: { input: Input }) => r.input.text === 'ordinary <task-notification> text')
+  ).toBe(true);
   store.apply(
     { ...seed, message: 'cancel-all' },
     store.list().map(t => ({ kind: 'cancel', task: t.id, expected_revision: t.revision }))
