@@ -31,6 +31,14 @@ const mutations: Mutation[] = [
     expectedError: 'expect(received).toBe(expected)',
   },
   {
+    file: 'src/generate.ts',
+    from: 'const engineAccept = p.accept;',
+    to: 'const engineAccept = coderAccept;',
+    test: 'tests/generate.test.ts',
+    name: 'splits coder smoke checks from complete engine acceptance',
+    expectedError: 'expect(received).toContain(expected)',
+  },
+  {
     file: 'src/land.ts',
     from: 'const who = authorization.run;',
     to: 'const who = caller();',

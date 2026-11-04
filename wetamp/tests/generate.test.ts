@@ -1853,9 +1853,15 @@ describe('renderBrief', () => {
       `新增测试上限（除非任务备注另有明确要求）：${String(limit.cases)} 个用例、${String(limit.lines)} 行测试代码。`
     );
   });
-  test('carries goal, write scope, accept commands and hint path verbatim', () => {
+  test('splits coder smoke checks from complete engine acceptance', () => {
     const p = structuredClone(fixture.packages[0]);
-    p.accept.push({ cmd: 'bun run test', timeout_s: 900, resource: 'heavy-test' });
+    p.scope.write.push('wetamp/src/core.ts', 'wetamp/tests/core.test.ts:2-8');
+    p.accept.push(
+      { cmd: 'cd wetamp && env NODE_ENV=test bun run type-check', timeout_s: 30 },
+      { cmd: 'cd wetamp && bun test tests/core.test.ts tests/other.test.ts', timeout_s: 30 },
+      { cmd: 'cd wetamp && bun test tests/other.test.ts', timeout_s: 30 },
+      { cmd: 'cd wetamp && bun test tests/core.test.ts', timeout_s: 900, resource: 'heavy-test' }
+    );
     const b = renderBrief(p, '/H/core.md', capsOf(fixture, p, []));
     for (const s of [
       '$HOME and $ARTIFACTS_DIR literal',
@@ -1867,9 +1873,12 @@ describe('renderBrief', () => {
       expect(b).toContain(s);
     const own = b.split('### 你要运行的验收命令')[1]?.split('### 引擎验收会运行')[0];
     const engine = b.split('### 引擎验收会运行（你不要运行）')[1]?.split('## 你的权限')[0];
-    expect(own).toContain('`test -f core.txt`');
-    expect(own).not.toContain('`bun run test`');
-    expect(engine).toContain('`bun run test`');
+    expect(own).toContain('`cd wetamp && env NODE_ENV=test bun run type-check`');
+    expect(own).toContain('`cd wetamp && bun test tests/core.test.ts tests/other.test.ts`');
+    expect(own).not.toContain('`test -f core.txt`');
+    expect(own).not.toContain('`cd wetamp && bun test tests/other.test.ts`');
+    expect(own).not.toContain('`cd wetamp && bun test tests/core.test.ts`');
+    for (const check of p.accept) expect(engine).toContain(`\`${check.cmd}\``);
     expect(b).toContain('命令通过不代替逐项核对需求的实现位置与对应测试');
     expect(b).not.toContain('跑长时测试（全量、E2E）');
   });
@@ -2060,7 +2069,6 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
         '保持相同 cwd 与环境前缀',
         '失败就在本会话继续修，直到全部通过',
         '把实际命令与退出码写进 `quick_checks`',
-        '引擎的 verify 照常独立复跑，是唯一的放行依据',
         'coder 自报永远不作为验收证据',
         '基线上就失败且与本次工作无关',
         '"cap":"environment"',
@@ -2079,10 +2087,23 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
       ])
         expect(prompt).not.toContain(stale);
       expect(prompt).toContain(
-        command === 'sa-code' ? '按原样各运行一次' : '失败的命令及受影响的其余命令'
+        command === 'sa-code'
+          ? '按原样各运行一次'
+          : command === 'sa-repair'
+            ? '原生选择器定向重跑失败用例'
+            : '失败的命令及受影响的其余命令'
       );
       expect(prompt).toContain(
-        command === 'sa-repair' ? '资源检查按上节仅定向重跑失败用例' : '标为引擎运行的检查不要运行'
+        command === 'sa-repair'
+          ? '资源检查仍使用上节包装前缀'
+          : command === 'sa-code'
+            ? '引擎验收不要运行'
+            : '标为引擎运行的检查不要运行'
+      );
+      expect(prompt).toContain(
+        command === 'sa-fix'
+          ? '引擎的 verify 照常独立复跑，是唯一的放行依据'
+          : '引擎的 verify 独立运行全部 accept，是唯一的放行依据'
       );
     }
   } finally {
