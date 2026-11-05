@@ -275,6 +275,8 @@ function fixture(): Snapshot {
     coderModel: 'gpt-6.1-sol',
     model: 'gpt-6-astra',
     nodes: { done: 2, total: 3, current: 'review-a', currentRole: 'reviewer' },
+    activeNodes:
+      state === 'running' ? [{ id: 'review-a', role: 'reviewer', model: 'gpt-6-astra' }] : [],
     exit: null,
     span: {
       started_ms: Date.parse(started_at),
@@ -400,6 +402,10 @@ test('2 runs, 1 job, pending/superseded and all four token roles render the shar
     ['b', '军师·astra', '进行中', '/console/r/archon-b'],
     ['a', '将军·sol6.1', '完成', '/console/r/archon-a'],
   ]);
+  const c = cockpit(s, now);
+  expect(d.runs[0]).toMatchObject({ stage: c.runs[1].stage, pct: c.runs[1].progress.pct });
+  expect(d.needs[0].decision).toEqual(c.needs[0].decision);
+  expect(d.tree[0].children[0].pct).toBe(c.tree[0].children[0].progress.pct);
   expect(d.tokenRows?.map(r => [r.role, r.total])).toEqual([
     ['将军', 4000],
     ['军师', 3000],

@@ -206,7 +206,15 @@ export function overview(s: Snapshot) {
     }),
     metrics: c.metrics,
     running: c.tree.length,
-    needs: c.needs.map(r => ({ project: r.project, question: r.question, waiting: r.waiting })),
+    needs: c.needs.map(r => ({
+      project: r.project,
+      question: r.question,
+      waiting: r.waiting,
+      id: r.id,
+      state: r.state,
+      stage: r.stage,
+      decision: r.decision,
+    })),
     tokenRows: c.tokenRows,
     runs: c.runs
       .filter(r => today.has(r.id))
@@ -221,7 +229,19 @@ export function overview(s: Snapshot) {
         tokens: r.tokens === '未知' ? '—' : r.tokens,
         elapsed: r.elapsed,
         state: state(r.state),
+        stage: r.stage,
+        node: r.node,
+        pct: r.progress.pct,
+        eta_s: r.progress.eta_s,
       })),
+    tree: c.tree.map(r => ({
+      id: r.id,
+      project: r.project,
+      title: r.title,
+      stage: r.stage,
+      pct: r.progress.pct,
+      children: r.children.map(n => ({ id: n.id, role: n.role, pct: n.progress.pct })),
+    })),
   };
 }
 export const html = (s: string | number): string =>
