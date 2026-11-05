@@ -459,12 +459,11 @@ test('HF5c status exposes legacy ownership when launchd is absent, including orp
 // prettier-ignore
 test('console snapshots are demand-only, authorized, and coalesce concurrent readers', async () => {
   let loads = 0, refreshes = 0, now = 0;
-  let release: () => void = () => {};
-  const wait = new Promise<void>(resolve => { release = resolve; });
+  const releases: (() => void)[] = [];
   const demand = createDemandSnapshot(async () => {
-    loads++;
-    await wait;
-    return { summary: {}, rows: [], at: 'fresh' };
+    const load = ++loads;
+    await new Promise<void>(resolve => { releases.push(resolve); });
+    return { summary: {}, rows: [], at: `fresh-${String(load)}` };
   }, () => { refreshes++; }, 5000, () => now);
   const forward = Object.assign(async () => new Response('native'), { preconnect: () => {} });
   const serve = handler(39890, 'fixture', () => ({ at: demand.snapshot().at }),
@@ -478,24 +477,41 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   const first = serve(request('/sa/data?t=fixture'));
   const second = serve(request('/sa/data?t=fixture'));
   expect(loads).toBe(1);
-  release();
-  expect(await (await first).json()).toEqual({ at: 'fresh' });
+  releases.shift()!();
+  expect(await (await first).json()).toEqual({ at: 'fresh-1' });
   await second;
   expect(refreshes).toBe(1);
   await serve(request('/sa/data?t=fixture'));
   expect(loads).toBe(1);
   now = 6000;
-  await serve(request('/sa/data?t=fixture'));
+  await Promise.all([demand.update(), demand.update(), demand.update()]);
   expect(loads).toBe(2);
+  expect(demand.snapshot().at).toBe('fresh-1');
+  releases.shift()!();
+  await Bun.sleep(0);
+  expect(demand.snapshot().at).toBe('fresh-2');
+  expect(refreshes).toBe(2);
 });
 
-test('console snapshot retries immediately after load failure', async () => {
-  let loads = 0;
-  const demand = createDemandSnapshot(async () => {
-    if (++loads === 1) throw new Error('fixture');
-    return { summary: {}, rows: [], at: 'recovered' };
-  });
+test('console snapshot propagates initial failure and retries a failed background refresh', async () => {
+  let loads = 0,
+    now = 0;
+  const demand = createDemandSnapshot(
+    async () => {
+      if (++loads === 1 || loads === 3) throw new Error('fixture');
+      return { summary: {}, rows: [], at: `recovered-${String(loads)}` };
+    },
+    () => {},
+    5000,
+    () => now
+  );
   await expect(demand.update()).rejects.toThrow('fixture');
   await demand.update();
-  expect(loads).toBe(2);
+  now = 6000;
+  await expect(demand.update()).resolves.toBeUndefined();
+  await Bun.sleep(0);
+  await demand.update();
+  await Bun.sleep(0);
+  expect(loads).toBe(4);
+  expect(demand.snapshot().at).toBe('recovered-4');
 });

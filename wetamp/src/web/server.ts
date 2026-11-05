@@ -411,17 +411,23 @@ export function createDemandSnapshot(
   let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() };
   let pending: Promise<void> | undefined;
   let loadedAt: number | undefined;
+  const reload = (): Promise<void> =>
+    (pending ??= (async () => {
+      snapshot = await load(Number.MAX_SAFE_INTEGER);
+      loadedAt = now();
+      refresh();
+    })().finally(() => {
+      pending = undefined;
+    }));
   return {
     snapshot: () => snapshot,
     update: () => {
-      if (loadedAt !== undefined && now() - loadedAt < freshMs) return Promise.resolve();
-      return (pending ??= (async () => {
-        snapshot = await load(Number.MAX_SAFE_INTEGER);
-        loadedAt = now();
-        refresh();
-      })().finally(() => {
-        pending = undefined;
-      }));
+      if (loadedAt === undefined) return reload();
+      if (now() - loadedAt >= freshMs)
+        void reload().catch((e: unknown) => {
+          console.error(`console snapshot refresh failed: ${(e as Error).message}`);
+        });
+      return Promise.resolve();
     },
   };
 }
