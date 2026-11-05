@@ -21,6 +21,41 @@
     "description": "净增行数超过工作包上限"
   },
   {
+    "code": "stalled",
+    "hold": "stalled",
+    "determinism": "transient",
+    "owner": "coder",
+    "description": "编码节点工具调用长时间无进展"
+  },
+  {
+    "code": "owner_unknown",
+    "hold": "auto_recover",
+    "determinism": "transient",
+    "owner": "engine",
+    "description": "执行所有者无法确认"
+  },
+  {
+    "code": "recovery_admission_unknown",
+    "hold": "auto_recover",
+    "determinism": "transient",
+    "owner": "engine",
+    "description": "恢复接纳状态无法确认"
+  },
+  {
+    "code": "rework",
+    "hold": "signoff",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "人工签收拒绝后等待返工"
+  },
+  {
+    "code": "target_dirty",
+    "hold": "approval",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "目标检出存在未提交改动"
+  },
+  {
     "code": "reclaim_pending",
     "hold": "auto_recover",
     "determinism": "transient",

@@ -68,6 +68,22 @@ export const HOLD_POLICY = {
 } as const satisfies Record<string, Policy>;
 export type Hold = keyof typeof HOLD_POLICY;
 
+/** Every held state projected by classify/classifyRun resolves through this registry-owned map. */
+export const CLASSIFIED_HOLD_REASONS = {
+  recovery_admission_unknown: 'recovery_admission_unknown',
+  scope: 'scope_approval',
+  rework: 'rework',
+  human: 'signoff',
+  target_dirty: 'target_dirty',
+  paused: 'paused',
+  environment: 'environment',
+  owner_unknown: 'owner_unknown',
+  gate: 'gate',
+  reclaim_pending: 'reclaim_pending',
+  engine_suspect: 'engine_suspect',
+} as const;
+export type ClassifiedHold = keyof typeof CLASSIFIED_HOLD_REASONS;
+
 // 仅用于引擎标识与 plan 名称；自由文本证据不进入提醒标题。
 export const askName = (v: string, limit: number): string =>
   Array.from(v.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, limit).join('');
@@ -201,6 +217,17 @@ export const REASONS: Reason[] = [
   deterministic('review_not_required', 'gate', 'engine', '验收通过且无需评审'),
   deterministic('land_target_unknown', 'needs', 'human', '合入缺少可验证的本地目标分支'),
   deterministic('budget_exceeded', 'signoff', 'human', '净增行数超过工作包上限'),
+  entry('stalled', 'stalled', 'transient', 'coder', '编码节点工具调用长时间无进展'),
+  entry('owner_unknown', 'auto_recover', 'transient', 'engine', '执行所有者无法确认'),
+  entry(
+    'recovery_admission_unknown',
+    'auto_recover',
+    'transient',
+    'engine',
+    '恢复接纳状态无法确认'
+  ),
+  deterministic('rework', 'signoff', 'human', '人工签收拒绝后等待返工'),
+  deterministic('target_dirty', 'approval', 'human', '目标检出存在未提交改动'),
   entry('reclaim_pending', 'auto_recover', 'transient', 'engine', '回收续授权尚未完成'),
   entry('lock_timeout', 'environment', 'transient', 'env', '等待集成锁超时'),
   entry(

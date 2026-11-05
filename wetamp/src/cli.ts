@@ -94,10 +94,12 @@ import {
   askQuestion,
   askName,
   CANCELLATION_REASONS,
+  CLASSIFIED_HOLD_REASONS,
   HOLD_POLICY,
   holdAction,
   reasonOf,
   type Hold,
+  type ClassifiedHold,
   type Policy,
 } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -531,10 +533,13 @@ export interface Classified {
   event?: string;
 }
 
+export { CLASSIFIED_HOLD_REASONS };
+const heldState = <T extends ClassifiedHold>(hold: T): `held:${T}` => `held:${hold}`;
+
 /** archon run 状态 → superagent 状态。environment 失败是“待决策”而非终局失败：decide retry 可 resume。 */
 export function classify(run: RunView): Classified {
   if (!['completed', 'cancelled'].includes(run.status) && recoveryAdmissionUnknown(run))
-    return { state: 'held:recovery_admission_unknown', exit: EXIT.held };
+    return { state: heldState('recovery_admission_unknown'), exit: EXIT.held };
   const failed = run.nodes?.find(n => n.state === 'failed')?.nodeId;
   switch (run.status) {
     case 'completed':
@@ -547,30 +552,30 @@ export function classify(run: RunView): Classified {
       const bodyGateId = (approval as (typeof approval & { bodyGateId?: string }) | undefined)
         ?.bodyGateId;
       if (approval?.nodeId.startsWith('human-scope-'))
-        return { state: 'held:scope', exit: EXIT.held, node: approval.nodeId };
+        return { state: heldState('scope'), exit: EXIT.held, node: approval.nodeId };
       if (
         approval?.nodeId.startsWith('human-') &&
         (approval as typeof approval & { resolved?: string }).resolved === 'rejected'
       )
-        return { state: 'held:rework', exit: EXIT.held, node: approval.nodeId };
+        return { state: heldState('rework'), exit: EXIT.held, node: approval.nodeId };
       if (approval?.nodeId.startsWith('human-'))
-        return { state: 'held:human', exit: EXIT.held, node: approval.nodeId };
+        return { state: heldState('human'), exit: EXIT.held, node: approval.nodeId };
       if (
         approval?.nodeId.startsWith('target-dirty-') ||
         (approval?.nodeId.startsWith('integrate-') && bodyGateId?.startsWith('target-dirty-'))
       )
-        return { state: 'held:target_dirty', exit: EXIT.held, node: approval.nodeId };
+        return { state: heldState('target_dirty'), exit: EXIT.held, node: approval.nodeId };
       return event?.startsWith('sa.human.')
-        ? { state: 'held:human', exit: EXIT.held, node: run.metadata?.wait?.nodeId, event }
+        ? { state: heldState('human'), exit: EXIT.held, node: run.metadata?.wait?.nodeId, event }
         : {
-            state: 'held:paused',
+            state: heldState('paused'),
             exit: EXIT.held,
             node: run.metadata?.approval?.nodeId ?? run.metadata?.wait?.nodeId,
           };
     }
     case 'failed':
       if (failed === 'environment')
-        return { state: 'held:environment', exit: EXIT.held, node: failed };
+        return { state: heldState('environment'), exit: EXIT.held, node: failed };
       return { state: 'failed', exit: EXIT.failed, node: failed };
     default:
       // A pending row is Archon's detached launch before its child claims it: no execution owner
@@ -589,7 +594,7 @@ export function classify(run: RunView): Classified {
         ownershipUnknown(run) &&
         (run.metadata?.execution_owner || run.nodes?.length)
       )
-        return { state: 'held:owner_unknown', exit: EXIT.held };
+        return { state: heldState('owner_unknown'), exit: EXIT.held };
       return { state: ownerLost(run) ? 'owner_lost' : run.status, exit: EXIT.running };
   }
 }
@@ -891,7 +896,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
   if (run.status === 'cancelled') return c;
-  if (coderBudgetExceeded(run, c)) return { ...c, state: 'held:gate', exit: EXIT.held };
+  if (coderBudgetExceeded(run, c)) return { ...c, state: heldState('gate'), exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
     const art = artifactsOf(run),
       failedNodes =
@@ -913,7 +918,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
         : undefined;
       if (publish?.reason === 'reclaim_pending')
-        return { ...projected, state: 'held:reclaim_pending', exit: EXIT.held };
+        return { ...projected, state: heldState('reclaim_pending'), exit: EXIT.held };
       if (publish?.reason === 'target_dirty') return { ...projected, state: 'target_dirty' };
       if (publish?.reason === 'target_checkout_changed')
         return { ...projected, state: 'target_checkout_changed' };
@@ -937,15 +942,15 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
         )
       );
     });
-    if (controlNode) return { ...c, node: controlNode, state: 'held:gate', exit: EXIT.held };
+    if (controlNode) return { ...c, node: controlNode, state: heldState('gate'), exit: EXIT.held };
     const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
     if (/^(verify|diff|settle)-/.test(c.node) && decision?.reason === 'scope_approval')
-      return { ...c, state: 'held:scope', exit: EXIT.held };
+      return { ...c, state: heldState('scope'), exit: EXIT.held };
     if (
       /^(verify|settle|gate)-/.test(c.node) &&
       (!decision || decision.kind === 'advance' || decision.kind === 'debt')
     )
-      return { ...c, state: 'held:engine_suspect', exit: EXIT.held };
+      return { ...c, state: heldState('engine_suspect'), exit: EXIT.held };
   }
   return c;
 }

@@ -168,6 +168,17 @@ const lesson = (id: string, patch: Partial<Lesson> = {}): Lesson => ({
   ...patch,
 });
 const seed = (...lessons: Lesson[]): void => memoryWrite(() => ({ lessons }));
+test('running stalled episode keeps its registered transient reason', () => {
+  raw.status = 'running';
+  raw.nodes = [{ nodeId: 'code-core', state: 'running' }];
+  writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+  ledger.dispositions = [
+    { at: new Date(NOW - 1000).toISOString(), reason: 'stalled', action: 'ask', ok: true },
+  ];
+  const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
+  expect(folded.reasons).toEqual(['stalled']);
+  expect(folded).toMatchObject({ category: 'transient', signature: 'stalled' });
+});
 test('cancelled and abandoned runs do not retain immutable orphan holds', () => {
   writeFileSync(
     join(artifactsOf(raw), 'verify-core.json'),

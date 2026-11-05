@@ -21,7 +21,7 @@ import { confined, workflowRoles } from './board/workflow';
 import { callsOf } from './report';
 import { readUsage } from './usage';
 import { readJobs } from './jobs';
-import { reasonOf } from './reasons';
+import { CLASSIFIED_HOLD_REASONS, reasonOf } from './reasons';
 import { redact } from './redact';
 import { caller, coord, repoScope } from './coord';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
@@ -572,6 +572,7 @@ const publishReasons = (l: Ledger, run: RunView, plan: Plan): string[] => {
 // Closed mapping is diagnostic only: unknown vendor prose is never a retry decision.
 export const failureReason = (text: string): string => reasonOf(text)?.code ?? 'unclassified';
 const holdCodes: Partial<Record<string, string>> = {
+  ...CLASSIFIED_HOLD_REASONS,
   redline: 'coder_redline',
   needs: 'coder_needs',
 };
