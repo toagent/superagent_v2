@@ -80,6 +80,9 @@ export const stageKind = (nodeId: string | null | undefined): StageKind => {
   ) as StageKind;
 };
 export function stages(r: BoardRow): string {
+  if (r.state === 'completed') return '完成';
+  if (r.state === 'cancelled') return '取消';
+  if (r.state === 'failed') return '失败';
   const kind = stageKind(r.nodes.current);
   const round = /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? String(r.engine?.round ?? 1);
   const ms = r.engine?.milestones ?? [],

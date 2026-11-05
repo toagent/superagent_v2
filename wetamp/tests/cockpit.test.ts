@@ -156,6 +156,19 @@ test('midnight is local, future starts and missing endings never enter today cou
 });
 test('compact stage labels follow the current engine node', () => {
   expect(stages(row('r'))).toBe('评审 r2');
+  for (const [state, label] of Object.entries({
+    completed: '完成',
+    cancelled: '取消',
+    failed: '失败',
+  })) {
+    const terminal = row(state, state);
+    terminal.nodes.current = null;
+    expect(stages(terminal)).toBe(label);
+  }
+  const running = row('running-null');
+  running.nodes.current = null;
+  expect(stages(running)).toBe('准备');
+  expect(stages(row('completed-node', 'completed', 'land-m1'))).toBe('完成');
   for (const [node, label] of [
     ['code-a', '编码 m1/1'],
     ['land', '合入'],
