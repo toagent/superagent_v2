@@ -633,8 +633,7 @@
             "string",
             "null"
           ],
-          "minLength": 1,
-          "maxLength": 2048
+          "minLength": 1
         },
         "exit_code": {
           "type": [
@@ -1136,8 +1135,7 @@
             "string",
             "null"
           ],
-          "minLength": 1,
-          "maxLength": 512
+          "minLength": 1
         },
         "goal": {
           "type": [

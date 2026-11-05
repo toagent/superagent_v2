@@ -105,6 +105,21 @@ test('相同事实的 revision 与 scope 稳定，真实状态改变后 revision
   expect(changed?.revision).not.toBe(first.records.find(item => item.source_id === 'job-done')?.revision);
 });
 
+test('超长 package title 与验收命令通过导出 schema 且原样保留', () => {
+  const planPath = join(root, 'home', 'gen', 'r1', 'plan.json');
+  const plan = JSON.parse(readFileSync(planPath, 'utf8'));
+  const title = 'T'.repeat(513), command = `echo ${'x'.repeat(2_049)}`;
+  plan.packages[0].title = title;
+  plan.packages[0].accept = [{ cmd: command }];
+  writeJson(planPath, plan);
+
+  const result = buildExport(args(), new Date('2026-11-05T00:00:00Z'));
+  expect(validate(result.output), JSON.stringify(validate.errors)).toBe(true);
+  const exported = (result.output as Output).records.find(item => item.source_id === '["r1","p1"]')!;
+  expect(exported.title).toBe(title);
+  expect(exported.checks).toContainEqual(expect.objectContaining({ command }));
+});
+
 test('显式偏移与 DST 窗口按半开 UTC 区间处理', () => {
   addJob('at-until', 'done', '2026-11-03T05:00:00Z', '2026-11-03T05:30:00Z');
   const result = buildExport(['export', '--source-instance', 'fixture', '--since', '2026-11-02T01:00:00-04:00', '--until', '2026-11-03T00:00:00-05:00', '--timezone', 'America/New_York', '--all-repos', '--json'], new Date('2026-11-05T00:00:00Z'));
