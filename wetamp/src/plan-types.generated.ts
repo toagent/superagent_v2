@@ -118,7 +118,7 @@ export interface Plan {
     risk: 'G0' | 'G1' | 'G2';
     size: 'S' | 'M' | 'L';
     /**
-     * Maximum net added non-test, non-generated lines since the run start merge-base
+     * Maximum net added non-test, non-generated lines authored by this package
      */
     max_net_lines?: number;
     /**

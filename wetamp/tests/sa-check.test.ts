@@ -2937,6 +2937,38 @@ describe('sa-check script', () => {
       scope_auto_approved: ['client.generated.ts', 'uv.lock'],
     });
   });
+  test('accept: line budget counts only the current package after a prior package', () => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      runBase = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'prior.ts'), 'prior\n'.repeat(40));
+    sh('git add prior.ts && git commit -qm prior-package', repo);
+    const packageBase = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'current.ts'), 'current\n'.repeat(7));
+    sh('git add current.ts && git commit -qm current-package', repo);
+    const plan = planFile(root, 'true'),
+      value = JSON.parse(readFileSync(plan, 'utf8'));
+    value.packages[0].max_net_lines = 10;
+    value.packages[0].scope = { write: ['current.ts'] };
+    writeFileSync(plan, JSON.stringify(value));
+    const result = runScript(repo, {
+      kind: 'accept',
+      plan,
+      pkgs: 'a',
+      tag: 'verify-a',
+      run_base: runBase,
+      generated_paths: '[]',
+      base: runBase,
+      scope_base: runBase,
+      target_tip: packageBase,
+      risk: 'G1',
+    });
+    expect(result.out).toMatchObject({
+      reason: null,
+      net_lines: { used: 7, limit: 10, excluded: [] },
+      out_of_scope: [],
+    });
+  });
   // prettier-ignore
   test('accept: JUnit merge does not need uv and records exact flaky rerun without cache', () => {
     const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), counts = join(root, 'counts'), bin = join(root, 'bin'), uvCalls = join(root, 'uv-calls');

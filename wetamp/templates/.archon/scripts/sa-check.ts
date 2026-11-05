@@ -1132,6 +1132,11 @@ export function scopeBase(runStart: string, base: string): string {
   return merged.exitCode === 0 && !merged.signalCode ? merged.stdout.toString().trim() : base;
 }
 
+/** Use one authored-change baseline for both scope and package complexity checks. */
+function packageChangeBase(runStart: string, base: string): string {
+  return env('TARGET_TIP') || scopeBase(runStart, base);
+}
+
 const LOCKFILES = new Set([
   'bun.lock',
   'bun.lockb',
@@ -1187,7 +1192,8 @@ export const budgetExceeded = (limit: number | undefined, used: number): boolean
 
 function lineBudget(
   pkgs: Pkg[],
-  tag: string
+  tag: string,
+  base: string
 ): (NonNullable<Accept['net_lines']> & { excluded: NetLineExclusion[] }) | undefined {
   if (!tag.startsWith('verify-') || pkgs.length !== 1 || pkgs[0].max_net_lines === undefined)
     return undefined;
@@ -1195,7 +1201,7 @@ function lineBudget(
   if (!Array.isArray(generated) || generated.some(path => typeof path !== 'string'))
     throw new Error('generated_paths must be a string array');
   const lines = netLineBudgetFromNumstat(
-    git('diff', '--numstat', '-z', '--no-renames', env('RUN_BASE'), 'HEAD', '--'),
+    git('diff', '--numstat', '-z', '--no-renames', base, 'HEAD', '--'),
     generated as string[]
   );
   return { ...lines, limit: pkgs[0].max_net_lines };
@@ -1440,10 +1446,11 @@ async function acceptOnce(
     appendFileSync(log, `# reused stable acceptance from ${env('ACCEPTANCE_EVIDENCE')}\n`);
   }
   const scopeStart = env('SCOPE_BASE');
+  const changeBase = base ? packageChangeBase(scopeStart, base) : '';
   const scope =
     base && env('RISK')
       ? scopeRisk(
-          changes(env('TARGET_TIP') || scopeBase(scopeStart, base)),
+          changes(changeBase),
           covered.flatMap(k => k.scope.write),
           policy(),
           env('RISK')
@@ -1587,7 +1594,7 @@ async function acceptOnce(
   // prettier-ignore
   if (resourceWaitTimedOut)
     Object.assign(result, { disposition: 'fail', reason: 'resource_wait_timeout', decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' } });
-  const lines = lineBudget(pkgs, tag);
+  const lines = lineBudget(pkgs, tag, changeBase);
   if (
     lines &&
     budgetExceeded(lines.limit, lines.used) &&
