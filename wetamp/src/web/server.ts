@@ -401,22 +401,28 @@ export async function ensureWebDist(hash = residentHash()): Promise<void> {
 /** Only authenticated snapshot requests do work; concurrent readers share one load. */
 export function createDemandSnapshot(
   load = createLoader(),
-  refresh = requestUsageRefresh
+  refresh = requestUsageRefresh,
+  freshMs = 5000,
+  now = Date.now
 ): {
   snapshot: () => Snapshot;
   update: () => Promise<void>;
 } {
   let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() };
   let pending: Promise<void> | undefined;
+  let loadedAt: number | undefined;
   return {
     snapshot: () => snapshot,
-    update: () =>
-      (pending ??= (async () => {
+    update: () => {
+      if (loadedAt !== undefined && now() - loadedAt < freshMs) return Promise.resolve();
+      return (pending ??= (async () => {
         snapshot = await load(Number.MAX_SAFE_INTEGER);
+        loadedAt = now();
         refresh();
       })().finally(() => {
         pending = undefined;
-      })),
+      }));
+    },
   };
 }
 // prettier-ignore

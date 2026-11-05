@@ -458,14 +458,14 @@ test('HF5c status exposes legacy ownership when launchd is absent, including orp
 
 // prettier-ignore
 test('console snapshots are demand-only, authorized, and coalesce concurrent readers', async () => {
-  let loads = 0, refreshes = 0;
+  let loads = 0, refreshes = 0, now = 0;
   let release: () => void = () => {};
   const wait = new Promise<void>(resolve => { release = resolve; });
   const demand = createDemandSnapshot(async () => {
     loads++;
     await wait;
     return { summary: {}, rows: [], at: 'fresh' };
-  }, () => { refreshes++; });
+  }, () => { refreshes++; }, 5000, () => now);
   const forward = Object.assign(async () => new Response('native'), { preconnect: () => {} });
   const serve = handler(39890, 'fixture', () => ({ at: demand.snapshot().at }),
     'http://localhost', forward, undefined, demand.snapshot, demand.update);
@@ -483,5 +483,19 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   await second;
   expect(refreshes).toBe(1);
   await serve(request('/sa/data?t=fixture'));
+  expect(loads).toBe(1);
+  now = 6000;
+  await serve(request('/sa/data?t=fixture'));
+  expect(loads).toBe(2);
+});
+
+test('console snapshot retries immediately after load failure', async () => {
+  let loads = 0;
+  const demand = createDemandSnapshot(async () => {
+    if (++loads === 1) throw new Error('fixture');
+    return { summary: {}, rows: [], at: 'recovered' };
+  });
+  await expect(demand.update()).rejects.toThrow('fixture');
+  await demand.update();
   expect(loads).toBe(2);
 });
