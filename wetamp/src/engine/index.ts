@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   chmodSync,
   closeSync,
   existsSync,
@@ -39,7 +40,7 @@ export interface EngineReceipt {
   bootstrap_evidence?: string;
 }
 // prettier-ignore
-export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; pid?: number; pid_start?: string; host?: string; token?: string; error?: string; failure_kind?: 'infrastructure' | 'regression'; reported?: boolean; retries?: number; }
+export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; attempt?: string; checkout?: string; pid?: number; pid_start?: string; ppid?: number; process_pgid?: number; pgid?: number; pgid_start?: string; host?: string; token?: string; signal?: NodeJS.Signals; error?: string; failure_kind?: 'infrastructure' | 'regression'; reported?: boolean; retries?: number; }
 
 const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
@@ -296,15 +297,20 @@ class AcceptanceFailed extends Error {
 
 const timedRunner = `
   const timeout = Number(process.argv[1]), grace = Number(process.env.SA_ENGINE_ACCEPTANCE_KILL_GRACE_MS ?? 2000);
-  const child = Bun.spawn(process.argv.slice(2), { stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', detached: true });
+  const verifyToken = process.env.SA_ENGINE_VERIFY_TOKEN;
+  const lifecycle = process.env.SA_ENGINE_VERIFY_MODULE ? await import(process.env.SA_ENGINE_VERIFY_MODULE) : undefined;
+  const child = Bun.spawn(process.argv.slice(2), { env: { ...process.env, SA_ENGINE_VERIFY_TOKEN: '' }, stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', detached: true });
+  lifecycle?.recordVerifyGroup(process.env.SA_ENGINE_VERIFY_SHA, process.env.SA_ENGINE_VERIFY_ATTEMPT, verifyToken, child.pid);
   const ready = process.env.SA_ENGINE_TIMED_READY_FILE;
-  while (ready && !(await Bun.file(ready).exists())) { const early = await Promise.race([child.exited, Bun.sleep(50).then(() => null)]); if (early !== null) process.exit(early); }
+  while (ready && !(await Bun.file(ready).exists())) { const early = await Promise.race([child.exited, Bun.sleep(50).then(() => null)]); if (early !== null) { lifecycle?.finishVerifyGroup(process.env.SA_ENGINE_VERIFY_SHA, process.env.SA_ENGINE_VERIFY_ATTEMPT, verifyToken, child.signalCode); process.exit(early); } }
   const result = await Promise.race([child.exited, Bun.sleep(timeout).then(() => null)]);
-  if (result !== null) process.exit(result);
+  if (result !== null) { lifecycle?.finishVerifyGroup(process.env.SA_ENGINE_VERIFY_SHA, process.env.SA_ENGINE_VERIFY_ATTEMPT, verifyToken, child.signalCode); process.exit(result); }
   try { process.kill(-child.pid, 'SIGTERM'); } catch {}
-  await Bun.sleep(grace);
-  try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-  await child.exited; process.exit(124);
+  const stopped = await Promise.race([child.exited, Bun.sleep(grace).then(() => null)]);
+  if (stopped === null) try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+  await child.exited;
+  lifecycle?.finishVerifyGroup(process.env.SA_ENGINE_VERIFY_SHA, process.env.SA_ENGINE_VERIFY_ATTEMPT, verifyToken, child.signalCode ?? (stopped === null ? 'SIGKILL' : 'SIGTERM'));
+  process.exit(124);
 `;
 // prettier-ignore
 const runTimed = (command: string[], cwd: string, output: number, timeoutMs: number, env = process.env): number => Bun.spawnSync([process.execPath, '-e', timedRunner, String(timeoutMs), ...command], { cwd, env, stdout: output, stderr: output }).exitCode;
@@ -346,8 +352,10 @@ export function runAcceptance(
 
 const verifyRoot = (): string => join(root(), 'verify');
 const verifyPath = (sha: string): string => join(promotionDir(), `${sha}.verify.json`);
+const verifyAttemptsPath = (sha: string): string =>
+  join(promotionDir(), `${sha}.verify.attempts.jsonl`);
 // prettier-ignore
-const writeVerify = (value: EngineVerifyRecord): void => { mkdirSync(promotionDir(), { recursive: true }); writeAtomic(verifyPath(value.sha), JSON.stringify(value, null, 2) + '\n'); };
+const writeVerify = (value: EngineVerifyRecord): void => { mkdirSync(promotionDir(), { recursive: true }); appendFileSync(verifyAttemptsPath(value.sha), JSON.stringify(value) + '\n'); writeAtomic(verifyPath(value.sha), JSON.stringify(value, null, 2) + '\n'); };
 // prettier-ignore
 export const verifyRecord = (sha: string): EngineVerifyRecord | undefined => { try { return JSON.parse(readFileSync(verifyPath(sha), 'utf8')) as EngineVerifyRecord; } catch { return; } };
 // prettier-ignore
@@ -359,11 +367,171 @@ const junit = (path: string): { files: string[]; failed: string[]; tests: number
 // prettier-ignore
 export interface VerifyExecution { exit: number; duration_ms: number; }
 // prettier-ignore
-export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): VerifyExecution { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'), ready = `${report}.ready`, started = Date.now(); rmSync(ready, { force: true }); try { const exit = runTimed(['bash', '-c', '. "$1"; shift; heavy_exec env -u SA_HEAVY_LOCK_HELD "$@"', 'verify', heavy, process.execPath, 'test', '--isolate', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs, { ...process.env, SA_ENGINE_VERIFY_TOKEN: '', SA_ENGINE_PROMOTER_TOKEN: '', SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '', SA_HEAVY_CLASS: 'background', SA_HEAVY_READY_FILE: ready, SA_ENGINE_TIMED_READY_FILE: ready }), acquired = existsSync(ready) ? statSync(ready).mtimeMs : started; return { exit, duration_ms: Math.max(0, Date.now() - Math.max(started, acquired)) }; } finally { closeSync(output); rmSync(ready, { force: true }); } }
+export function executeVerifyTests(worktree: string, args: string[], report: string, log: string, timeoutMs: number): VerifyExecution { const output = openSync(log, 'a'), heavy = join(worktree, 'wetamp/scripts/heavy-slot.sh'), ready = `${report}.ready`, started = Date.now(); rmSync(ready, { force: true }); try { const exit = runTimed(['bash', '-c', '. "$1"; shift; heavy_exec env -u SA_HEAVY_LOCK_HELD "$@"', 'verify', heavy, process.execPath, 'test', '--isolate', ...args, '--timeout', '120000', '--reporter=junit', `--reporter-outfile=${report}`], join(worktree, 'wetamp'), output, timeoutMs, { ...process.env, SA_ENGINE_VERIFY_MODULE: import.meta.path, SA_ENGINE_PROMOTER_TOKEN: '', SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '', SA_HEAVY_CLASS: 'background', SA_HEAVY_READY_FILE: ready, SA_ENGINE_TIMED_READY_FILE: ready }), acquired = existsSync(ready) ? statSync(ready).mtimeMs : started; return { exit, duration_ms: Math.max(0, Date.now() - Math.max(started, acquired)) }; } finally { closeSync(output); rmSync(ready, { force: true }); } }
 // prettier-ignore
-export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; }
-// prettier-ignore
-const beginVerify = (sha: string, base: string, log: string): EngineVerifyRecord => { const expected = process.env.SA_ENGINE_VERIFY_TOKEN; if (expected) { for (let i = 0; i < 500; i++) { const record = verifyRecord(sha), identity = inspectProcess(process.pid); if (record?.status === 'running' && record.base === base && record.token === expected && record.pid === process.pid && identity.state === 'online' && identity.start === record.pid_start) return record; Bun.sleepSync(10); } throw new Error('engine verify: process identity mismatch'); } const identity = inspectProcess(process.pid); if (identity.state !== 'online') throw new Error('engine verify: process identity unavailable'); const record: EngineVerifyRecord = { sha, base, status: 'running', files: [], failed_files: [], log, at: new Date().toISOString(), pid: process.pid, pid_start: identity.start, host: hostname() }; writeVerify(record); return record; };
+export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; inspect?: typeof inspectProcess; groupAlive?: (pgid: number) => boolean | 'unknown'; }
+
+const processGroup = (pid: number): number | undefined => {
+  const result = Bun.spawnSync(['ps', '-o', 'pgid=', '-p', String(pid)], {
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  if (result.exitCode !== 0) return;
+  const value = Number(result.stdout.toString().trim());
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+};
+const defaultGroupAlive = (pgid: number): boolean | 'unknown' => {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return false;
+    return 'unknown';
+  }
+};
+const attemptState = (
+  record: EngineVerifyRecord,
+  inspect: typeof inspectProcess,
+  groupAlive = defaultGroupAlive
+): 'live' | 'dead' | 'unknown' => {
+  if (!record.pid || !record.pid_start || !record.host || record.host !== hostname())
+    return 'unknown';
+  const parent = inspect(record.pid);
+  if (parent.state === 'unknown') return 'unknown';
+  if (parent.state === 'online' && parent.start === record.pid_start) return 'live';
+  if (record.pgid === undefined) return 'dead';
+  const leader = inspect(record.pgid);
+  if (leader.state === 'unknown') return 'unknown';
+  if (leader.state === 'online') return leader.start === record.pgid_start ? 'live' : 'dead';
+  const group = groupAlive(record.pgid);
+  return group === true ? 'live' : group === false ? 'dead' : 'unknown';
+};
+const lostVerify = (
+  record: EngineVerifyRecord,
+  status: EngineVerifyRecord['status'] = 'failed'
+): EngineVerifyRecord => ({
+  ...record,
+  status,
+  error: 'verify_process_lost',
+  at: new Date().toISOString(),
+});
+const cleanupVerify = (record: EngineVerifyRecord, cleanup?: (worktree: string) => void): void => {
+  const checkout = record.checkout ?? (record.attempt ? undefined : join(verifyRoot(), record.sha));
+  if (!checkout) return;
+  if (cleanup) cleanup(checkout);
+  else rmSync(checkout, { recursive: true, force: true });
+};
+
+export function recordVerifyGroup(
+  sha: string | undefined,
+  attempt: string | undefined,
+  token: string | undefined,
+  pgid: number,
+  inspect = inspectProcess
+): void {
+  if (!sha || !attempt) return;
+  const record = verifyRecord(sha);
+  if (record?.status !== 'running' || record.attempt !== attempt || record.token !== token) return;
+  const identity = inspect(pgid);
+  if (identity.state !== 'online') return;
+  writeVerify({ ...record, pgid, pgid_start: identity.start, at: new Date().toISOString() });
+}
+export function finishVerifyGroup(
+  sha: string | undefined,
+  attempt: string | undefined,
+  token: string | undefined,
+  signal: NodeJS.Signals | null
+): void {
+  if (!sha || !attempt) return;
+  const record = verifyRecord(sha);
+  if (record?.status !== 'running' || record.attempt !== attempt || record.token !== token) return;
+  const next = { ...record, at: new Date().toISOString(), ...(signal ? { signal } : {}) };
+  delete next.pgid;
+  delete next.pgid_start;
+  writeVerify(next);
+}
+
+const beginVerify = (
+  sha: string,
+  base: string,
+  log: string,
+  dependencies: VerifyDependencies
+): EngineVerifyRecord => {
+  const expected = process.env.SA_ENGINE_VERIFY_TOKEN,
+    inspect = dependencies.inspect ?? inspectProcess;
+  if (expected) {
+    for (let i = 0; i < 500; i++) {
+      const record = verifyRecord(sha),
+        identity = inspect(process.pid);
+      if (
+        record?.status === 'running' &&
+        record.base === base &&
+        record.token === expected &&
+        record.pid === process.pid &&
+        identity.state === 'online' &&
+        identity.start === record.pid_start
+      )
+        return record;
+      Bun.sleepSync(10);
+    }
+    throw new Error('engine verify: process identity mismatch');
+  }
+  const prior = verifyRecord(sha);
+  if (prior?.status === 'running') {
+    const state = attemptState(prior, inspect, dependencies.groupAlive);
+    if (state !== 'dead')
+      throw new Error(
+        `engine verify: attempt already running pid=${String(prior.pid ?? 'unknown')} at=${prior.at}`
+      );
+    const lost = lostVerify(prior);
+    writeVerify(lost);
+    cleanupVerify(lost, dependencies.cleanup);
+  }
+  const identity = inspect(process.pid);
+  if (identity.state !== 'online') throw new Error('engine verify: process identity unavailable');
+  const attempt = crypto.randomUUID(),
+    record: EngineVerifyRecord = {
+      sha,
+      base,
+      status: 'running',
+      files: [],
+      failed_files: [],
+      log,
+      at: new Date().toISOString(),
+      attempt,
+      checkout: join(verifyRoot(), sha, attempt),
+      pid: process.pid,
+      pid_start: identity.start,
+      ppid: process.ppid,
+      process_pgid: processGroup(process.pid),
+      host: hostname(),
+    };
+  writeVerify(record);
+  return record;
+};
+
+const installVerifySignalHandlers = (record: EngineVerifyRecord): (() => void) => {
+  const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const,
+    handlers = signals.map((signal, index) => {
+      const handler = (): never => {
+        const current = verifyRecord(record.sha);
+        if (current && current.attempt === record.attempt)
+          writeVerify({
+            ...current,
+            signal,
+            ppid: process.ppid,
+            process_pgid: processGroup(process.pid),
+            at: new Date().toISOString(),
+          });
+        process.exit(128 + [15, 2, 1][index]);
+      };
+      process.on(signal, handler);
+      return [signal, handler] as const;
+    });
+  return () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  };
+};
 // prettier-ignore
 export function runVerify(inputSha: string, inputBase: string, dependencies: VerifyDependencies = {}): EngineVerifyRecord {
   if (!/^[0-9a-f]{7,40}$/i.test(inputSha) || !/^[0-9a-f]{7,40}$/i.test(inputBase))
@@ -371,16 +539,17 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
   const sha = canonicalSha(inputSha),
     base = canonicalSha(inputBase);
   if (!isAncestor(base, sha)) throw new Error('engine verify: base is not an ancestor');
-  const worktree = join(verifyRoot(), sha),
-    log = join(promotionDir(), `${sha}.verify.log`),
+  const log = join(promotionDir(), `${sha}.verify.log`),
     timeoutMs = 60 * 60_000,
-    running = beginVerify(sha, base, log),
+    running = beginVerify(sha, base, log, dependencies),
+    worktree = running.checkout ?? join(verifyRoot(), sha, running.attempt ?? 'legacy'),
+    removeSignalHandlers = installVerifySignalHandlers(running),
     execute = dependencies.execute ?? executeVerifyTests;
   let result = running,
     prepared = false,
     remainingMs = timeoutMs;
   const remaining = (): number => Math.max(1, remainingMs),
-    run = (args: string[], report: string): number => { const execution = execute(worktree, args, report, log, remaining()); remainingMs = Math.max(0, remainingMs - execution.duration_ms); return execution.exit; };
+    run = (args: string[], report: string): number => { const previous = { sha: process.env.SA_ENGINE_VERIFY_SHA, attempt: process.env.SA_ENGINE_VERIFY_ATTEMPT }; process.env.SA_ENGINE_VERIFY_SHA = sha; process.env.SA_ENGINE_VERIFY_ATTEMPT = running.attempt; try { const execution = execute(worktree, args, report, log, remaining()); remainingMs = Math.max(0, remainingMs - execution.duration_ms); return execution.exit; } finally { if (previous.sha === undefined) delete process.env.SA_ENGINE_VERIFY_SHA; else process.env.SA_ENGINE_VERIFY_SHA = previous.sha; if (previous.attempt === undefined) delete process.env.SA_ENGINE_VERIFY_ATTEMPT; else process.env.SA_ENGINE_VERIFY_ATTEMPT = previous.attempt; } };
   try {
     mkdirSync(verifyRoot(), { recursive: true });
     if (dependencies.prepare) {
@@ -431,12 +600,13 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
       result.status = 'failed';
       result.error = `cleanup: ${error instanceof Error ? error.message : String(error)}`;
     }
+    removeSignalHandlers();
   }
   writeVerify(result);
   return result;
 }
 // prettier-ignore
-export interface AutoVerifyDependencies { spawn?: (command: string[], env: Record<string, string | undefined>) => { pid: number; unref(): void }; inspect?: typeof inspectProcess; handoff?: (record: EngineVerifyRecord, title: string) => void; }
+export interface AutoVerifyDependencies { spawn?: (command: string[], env: Record<string, string | undefined>) => { pid: number; unref(): void }; inspect?: typeof inspectProcess; groupAlive?: (pgid: number) => boolean | 'unknown'; handoff?: (record: EngineVerifyRecord, title: string) => void; }
 const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): string => {
   let subject = '';
   try {
@@ -462,11 +632,11 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
   try {
     let records = verifyRecords();
     for (const record of records.filter(r => r.status === 'running')) {
-      if (!record.pid || !record.pid_start || !record.host || record.host !== hostname())
-        return { sha: record.sha, started: false };
-      const identity = inspect(record.pid);
-      if (identity.state === 'unknown' || (identity.state === 'online' && identity.start === record.pid_start)) return { sha: record.sha, started: false };
-      writeVerify({ ...record, status: record.sha !== currentSha && isAncestor(record.sha, currentSha) ? 'superseded' : 'failed', error: 'verify_process_lost', at: new Date().toISOString() });
+      const state = attemptState(record, inspect, dependencies.groupAlive);
+      if (state !== 'dead') return { sha: record.sha, started: false, ...(record.pgid ? { error: state === 'live' ? 'verify_process_group_alive' : 'verify_process_group_unknown' } : {}) };
+      const lost = lostVerify(record, record.sha !== currentSha && isAncestor(record.sha, currentSha) ? 'superseded' : 'failed');
+      writeVerify(lost);
+      cleanupVerify(lost);
     }
     records = verifyRecords();
     for (const record of records.filter(r => r.status === 'failed' && !r.reported && !(r.error === 'verify_process_lost' && (r.retries ?? 0) < 1)))
@@ -483,11 +653,8 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
           .filter(r => r.sha !== currentSha && isAncestor(r.sha, currentSha))
           .at(-1)?.sha;
     if (!base) return { sha: currentSha, started: false };
-    if (retry) {
-      if (!/^[0-9a-f]{40}$/i.test(retry.sha)) throw new Error('engine auto-verify: invalid retry sha');
-      rmSync(join(verifyRoot(), retry.sha), { recursive: true, force: true });
-    }
-    const token = crypto.randomUUID(), command = [process.execPath, join(current, 'wetamp/src/cli.ts'), 'engine', 'verify', currentSha, '--base', base],
+    if (retry && !/^[0-9a-f]{40}$/i.test(retry.sha)) throw new Error('engine auto-verify: invalid retry sha');
+    const token = crypto.randomUUID(), attempt = crypto.randomUUID(), command = [process.execPath, join(current, 'wetamp/src/cli.ts'), 'engine', 'verify', currentSha, '--base', base],
       spawned = dependencies.spawn
         ? dependencies.spawn(command, { ...process.env, SA_ENGINE_VERIFY_TOKEN: token })
         : Bun.spawn(command, {
@@ -501,7 +668,7 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
       identity = inspect(spawned.pid);
     if (identity.state !== 'online')
       throw new Error('engine auto-verify: process identity unavailable');
-    writeVerify({ sha: currentSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${currentSha}.verify.log`), at: new Date().toISOString(), pid: spawned.pid, pid_start: identity.start, host: hostname(), token, ...(retry ? { retries: (retry.retries ?? 0) + 1 } : {}) });
+    writeVerify({ sha: currentSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${currentSha}.verify.log`), at: new Date().toISOString(), attempt, checkout: join(verifyRoot(), currentSha, attempt), pid: spawned.pid, pid_start: identity.start, host: hostname(), token, ...(retry ? { retries: (retry.retries ?? 0) + 1 } : {}) });
     spawned.unref();
     return { sha: currentSha, base, started: true };
   } catch (error) { return { sha: currentSha, started: false, error: error instanceof Error ? error.message : String(error) }; }
