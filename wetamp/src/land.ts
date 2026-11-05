@@ -24,7 +24,7 @@ export {
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { control, coord, repoScope, runScope, same } from './coord';
+import { control, coord, same } from './coord';
 import type { Controller, DeliveryReauthorization, Identity } from './coord';
 import { home } from './config';
 import { INTEGRATION_RECLAIM_TIMEOUT_MS, IntegrationError, publish, sync } from './integration';
@@ -53,11 +53,6 @@ export function waitForReclaim(run: string, d = reclaimWait(), deadline = d.now(
 }
 
 // prettier-ignore
-export function retryAdvancedFence(retry: boolean, captured: readonly number[], current: () => readonly number[], attempt: () => void, refresh: () => void): void {
-  try { attempt(); } catch (error) { if (error instanceof IntegrationError && error.code === 'reclaim_pending') throw error; if (!retry || !current().some((generation, index) => generation > (captured[index] ?? 0))) throw error; refresh(); }
-}
-
-// prettier-ignore
 export function reclaimAdmission<T>(run: string, action: () => T, d = reclaimWait()): T {
   const deadline = d.now() + INTEGRATION_RECLAIM_TIMEOUT_MS, wait = (): void => { waitForReclaim(run, d, deadline); }; wait();
   try { return action(); } catch (error) { if (!(error instanceof IntegrationError && error.code === 'reclaim_pending')) throw error; wait(); return action(); }
@@ -75,12 +70,16 @@ export function deliveryAuthorized(
   authorization: DeliveryAuthorization,
   archonRunId: string
 ): boolean {
+  const valid = (controller: Controller): boolean =>
+    typeof controller.client === 'string' &&
+    controller.client.length > 0 &&
+    Number.isSafeInteger(controller.pid) &&
+    Number.isSafeInteger(controller.generation) &&
+    controller.generation > 0;
   return (
     same(who, authorization.run) &&
-    same(who, authorization.repo) &&
-    [authorization.run, authorization.repo].every(
-      controller => Number.isSafeInteger(controller.generation) && controller.generation > 0
-    ) &&
+    valid(authorization.run) &&
+    valid(authorization.repo) &&
     process.env.WORKFLOW_ID === archonRunId
   );
 }
@@ -214,7 +213,7 @@ const emit = (name: string, value: unknown, write = true): void => {
   process.stdout.write(JSON.stringify(value));
 };
 
-export const authorized = (retry = true) => {
+export const authorized = () => {
   const runId = process.env.INPUTS_RUN;
   if (!runId) throw new Error('integration: missing run id');
   const ledger = loadLedger(runId);
@@ -236,13 +235,8 @@ export const authorized = (retry = true) => {
     throw new Error('integration: authorization/run mismatch');
   // prettier-ignore
   const fence = (): void => {
-    retryAdvancedFence(retry, [authorization.run.generation, authorization.repo.generation],
-      () => [coord().owner(runScope(ledger)).generation, coord().owner(repoScope(ledger.repo)).generation],
-      () => { coord().mutate(repoScope(ledger.repo), who, () => {
-        if (reclaimPending(runId, reclaimJournal())) throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
-        control(ledger, () => undefined, who, authorization.run.generation);
-      }, authorization.repo.generation); },
-      () => { authorized(false).fence(); });
+    if (reclaimPending(runId, reclaimJournal())) throw new IntegrationError('reclaim_pending', 'reclaim authorization is still pending');
+    control(ledger, () => undefined, who, authorization.run.generation);
   };
   return { ledger, fence };
 };

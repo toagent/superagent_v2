@@ -166,11 +166,8 @@ test('1: two actual processes race for one scope under flock; exactly one owner 
   expect(s.c.owner(s.scope).generation).toBe(2);
 });
 
-test('reauthorize requires both owners and stale records remain fenced', () => {
-  let oldOffline = false;
-  const s = setup(who =>
-    oldOffline && same(who, a) ? { state: 'offline' } : { state: 'online', activity: 'idle' }
-  );
+test('reauthorize requires the run owner, snapshots the repository contact, and fences stale runs', () => {
+  const s = setup(() => ({ state: 'online', activity: 'idle' }));
   const gen = join(s.root, 'gen'),
     run = { run_id: 'target', archon_run_id: 'engine', repo: s.repo, gen_dir: gen },
     runTarget = runScope(run),
@@ -178,28 +175,20 @@ test('reauthorize requires both owners and stale records remain fenced', () => {
   mkdirSync(gen);
   writeFileSync(join(gen, 'delivery-authorization.json'), '{"original":true}\n');
   s.c.claim(s.scope, a);
-  s.c.claim(runTarget, a);
-  expect(() => s.c.claimRun(runTarget, b)).toThrow('普通认领');
+  s.c.claim(runTarget, b);
+  expect(() => s.c.reauthorize(run, a)).toThrow('fencing');
   expect(existsSync(record)).toBe(false);
-  expect(s.c.owner(s.scope).owner).toEqual(a);
-  expect(s.c.owner(runTarget).owner).toEqual(a);
-  oldOffline = true;
-  expect(s.c.claimRun(runTarget, b)).toMatchObject({ controller: b, repository: b });
   const authorization = s.c.reauthorize(run, b);
   expect(JSON.parse(readFileSync(record, 'utf8'))).toEqual(authorization);
+  expect(authorization.repo).toMatchObject({ ...a, generation: 1 });
   const replay = () =>
-    s.c.mutate(
-      runTarget,
-      authorization.run,
-      () =>
-        s.c.mutate(s.scope, authorization.run, () => 'published', authorization.repo.generation),
-      authorization.run.generation
-    );
+    s.c.mutate(runTarget, authorization.run, () => 'published', authorization.run.generation);
   expect(replay()).toBe('published'); // Same-user copies of current identity + generations + leases are out of scope.
+  s.c.claim(s.scope, b, true, 'repository takeover');
+  expect(replay()).toBe('published');
   rmSync(join(s.sa, 'coord/leases'), { recursive: true });
   expect(replay).toThrow('fencing');
-  s.c.claim(s.scope, a, true, 'later takeover');
-  s.c.claim(runTarget, a, true, 'later takeover');
+  s.c.claim(runTarget, a, true, 'run takeover');
   expect(replay).toThrow('fencing');
 });
 test('claimRun takeover preserves an online repository owner atomically', () => {

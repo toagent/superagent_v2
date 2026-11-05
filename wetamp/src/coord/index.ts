@@ -654,19 +654,19 @@ export class Coordination {
     const genDir = run.gen_dir;
     if (!genDir || !/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(run.run_id))
       throw new Error('reauthorize: invalid run ledger');
-    return this.mutate(runScope(run), who, runController =>
-      this.mutate(repoScope(run.repo), who, repoController => {
-        const original = readFileSync(join(genDir, 'delivery-authorization.json'));
-        const authorization = {
-          run: runController,
-          repo: repoController,
-          original_sha256: createHash('sha256').update(original).digest('hex'),
-          at: new Date(this.d.now()).toISOString(),
-        };
-        this.save('authorizations', run.run_id, authorization);
-        return authorization;
-      })
-    );
+    return this.mutate(runScope(run), who, runController => {
+      const repository = this.owner(repoScope(run.repo));
+      if (!repository.owner) throw new Error('reauthorize: repository contact unavailable');
+      const original = readFileSync(join(genDir, 'delivery-authorization.json'));
+      const authorization = {
+        run: runController,
+        repo: { ...repository.owner, generation: repository.generation },
+        original_sha256: createHash('sha256').update(original).digest('hex'),
+        at: new Date(this.d.now()).toISOString(),
+      };
+      this.save('authorizations', run.run_id, authorization);
+      return authorization;
+    });
   }
   release(scope: Scope, who: Identity): void {
     this.mutate(scope, who, () => {

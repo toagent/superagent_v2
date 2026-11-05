@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   authorized,
@@ -9,7 +9,6 @@ import {
   landEvidence,
   reclaimAdmission,
   reclaimPublish,
-  retryAdvancedFence,
   runDeliveryEntry,
   waitForReclaim,
   type DeliveryReceipt,
@@ -61,31 +60,42 @@ test('reclaim admission waits through transfer, passes without a journal, and ti
   runDeliveryEntry(() => { throw new IntegrationError('lock_timeout', 'locked'); }, fixtureEnv({ ARTIFACTS_DIR: artifacts, INPUTS_OUTPUT: 'publish-lock' }));
   expect(await Bun.file(join(artifacts, 'publish-lock.json')).json()).toMatchObject({ status: 'rejected', reason: 'lock_timeout' });
 });
-// prettier-ignore
-test('generation fencing refreshes only for a newer owner and retries once', () => {
-  let attempts = 0, refreshes = 0;
-  const reject = () => { attempts++; throw new Error('stale'); };
-  retryAdvancedFence(true, [1, 1], () => [2, 1], reject, () => refreshes++);
-  expect([attempts, refreshes]).toEqual([1, 1]);
-  expect(() => retryAdvancedFence(true, [1], () => [2], () => { throw new IntegrationError('reclaim_pending', 'pending'); }, () => refreshes++)).toThrow('pending');
-  expect(refreshes).toBe(1);
-  const root = tmp(), art = join(root, 'artifacts/runs/r'); mkdirSync(art, { recursive: true });
-  writeFileSync(join(root, 'plan.json'), JSON.stringify({ deadline: '2099-01-01T00:00:00Z' })); writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'reclaim_pending' }));
-  const ledger = { repo: root, gen_dir: root, run_id: 'r', started_at: '2026-01-01T00:00:00Z' } as Ledger, run = { id: 'r', status: 'failed' as const, output_root: root, nodes: [{ nodeId: 'publish-m1', state: 'failed' }] };
-  const classified = classifyRun(ledger, run); expect(classified.state).toBe('held:reclaim_pending');
-  expect(holdOf(ledger, run, classified)).toBe('auto_recover'); expect(decisionQuestion(ledger, run, classified, 'auto_recover')).toContain('回收续授权尚未完成');
+test('reclaim pending is classified as auto-recoverable', () => {
+  const root = tmp(),
+    art = join(root, 'artifacts/runs/r');
+  mkdirSync(art, { recursive: true });
+  writeFileSync(join(root, 'plan.json'), JSON.stringify({ deadline: '2099-01-01T00:00:00Z' }));
+  writeFileSync(join(art, 'publish-m1.json'), JSON.stringify({ reason: 'reclaim_pending' }));
+  const ledger = {
+      repo: root,
+      gen_dir: root,
+      run_id: 'r',
+      started_at: '2026-01-01T00:00:00Z',
+    } as Ledger,
+    run = {
+      id: 'r',
+      status: 'failed' as const,
+      output_root: root,
+      nodes: [{ nodeId: 'publish-m1', state: 'failed' }],
+    };
+  const classified = classifyRun(ledger, run);
+  expect(classified.state).toBe('held:reclaim_pending');
+  expect(holdOf(ledger, run, classified)).toBe('auto_recover');
+  expect(decisionQuestion(ledger, run, classified, 'auto_recover')).toContain('回收续授权尚未完成');
 });
 
+// Non-fake delivery authorization: identity is run-scoped; the repository snapshot is provenance.
 // prettier-ignore
-test('real authorization reload admits reauthorization and a newer generation', () => {
+test('real delivery authorization follows run ownership while repository ownership changes', () => {
   const saved = { ...process.env }, root = tmp(), home = join(root, 'home'), repo = gitRepo(root), gen = join(root, 'gen'), run = { run_id: 'r', archon_run_id: 'engine', repo, gen_dir: gen } as RunRef;
   try {
     Object.assign(process.env, fixtureEnv({ SUPERAGENT_HOME: home, ARCHON_HOME: join(home, 'archon'), SUPERAGENT_ROLE: '', INPUTS_RUN: 'r', WORKFLOW_ID: 'engine' })); mkdirSync(join(home, 'runs'), { recursive: true }); mkdirSync(gen);
-    const a: Identity = { client: 'codex', session_id: 'a', host: 'local', pid: 1, pid_start: '1' }, c = coord(), repoA = c.claim(repoScope(repo), a).controller, runA = c.claim(runScope(run), a).controller;
-    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({ ...run, plan: 'p', branch: 'b', workflow: 'w', console: 'c', started_at: 'now', transcript: 't', log: 'l' })); writeFileSync(join(gen, 'delivery-authorization.json'), JSON.stringify({ run: runA, repo: repoA }));
-    const staleFence = authorized().fence, b = { ...a, session_id: 'b' }; c.claim(repoScope(repo), b, true, 'test takeover'); c.claim(runScope(run), b, true, 'test takeover'); c.reauthorize(run, b); staleFence();
-    mkdirSync(join(home, 'reclaim'), { recursive: true }); const journal = join(home, 'reclaim/journal.json'); writeFileSync(journal, JSON.stringify([{ run: 'r', state: 'transferred' }])); let now = 0;
-    expect(reclaimPublish('r', () => 'published', () => authorized().fence(), { read: () => JSON.parse(readFileSync(journal, 'utf8')), now: () => now, sleep: ms => { now += ms; writeFileSync(journal, JSON.stringify([{ run: 'r', state: 'reauthorized' }])); } })).toBe('published'); expect(now).toBe(15_000);
+    const initiator: Identity = { client: 'codex', session_id: 'run', host: 'local', pid: 1, pid_start: '1' }, repoOwner = { ...initiator, client: 'claude', session_id: 'repo' }, next = { ...initiator, session_id: 'next' }, laterRepoOwner = { ...repoOwner, session_id: 'later-repo' }, c = coord(), repoController = c.claim(repoScope(repo), repoOwner).controller, runController = c.claim(runScope(run), initiator).controller, authorization = join(gen, 'delivery-authorization.json');
+    writeFileSync(join(home, 'runs/r.json'), JSON.stringify({ ...run, plan: 'p', branch: 'b', workflow: 'w', console: 'c', started_at: 'now', transcript: 't', log: 'l' })); writeFileSync(authorization, JSON.stringify({ run: runController, repo: repoController }));
+    const staleFence = authorized().fence; expect(staleFence).not.toThrow();
+    writeFileSync(authorization, JSON.stringify({ run: repoController, repo: repoController })); expect(() => authorized().fence()).toThrow('fencing'); writeFileSync(authorization, JSON.stringify({ run: runController, repo: repoController }));
+    c.claim(runScope(run), next, true, 'run takeover'); expect(staleFence).toThrow('fencing'); c.reauthorize(run, next); expect(() => authorized().fence()).not.toThrow();
+    c.claim(repoScope(repo), laterRepoOwner, true, 'repository takeover'); expect(() => authorized().fence()).not.toThrow();
   } finally { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); }
 });
 
