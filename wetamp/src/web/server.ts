@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { home, WETAMP, writeAtomic } from '../config';
+import { home, loadTiers, WETAMP, writeAtomic } from '../config';
+import type { RelayQuotaCache, RelayQuotaPool } from '../relay-quota';
 import { residentHash } from '../generate';
 import { ownerLabel } from '../coord';
 import { lock } from '../archon';
@@ -176,6 +177,41 @@ export function consoleProgramArguments(): string[] {
   return existsSync(join(jail, 'installed')) ? [join(jail, 'ai-jail'), ...args] : args;
 }
 /** Panel data is a projection of cockpit, never a separate collector. */
+function quotaOverview() {
+  try {
+    const root = process.env.SUPERAGENT_HOME;
+    if (!root) return null;
+    const q = JSON.parse(readFileSync(join(root, 'relay-quota.json'), 'utf8')) as RelayQuotaCache;
+    if (!Number.isFinite(q.at)) return null;
+    const number = (value: unknown): number | null =>
+      typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const pool = (p?: RelayQuotaPool) => {
+      const level = p?.level;
+      return {
+        today_usd: number(p?.today?.cost),
+        five_hour_pct: number(p?.five_hour?.remaining_pct),
+        seven_day_pct: number(p?.seven_day?.remaining_pct),
+        accounts_available: number(p?.accounts_available),
+        accounts_total: number(p?.accounts_total),
+        level: level === 'ok' || level === 'low' || level === 'exhausted' ? level : null,
+      };
+    };
+    const limits = loadTiers().routing.budget;
+    return {
+      at: new Date(q.at).toISOString(),
+      stale: Date.now() - q.at > 30 * 60e3,
+      claude: {
+        ...pool(q.claude),
+        today_usd: number(q.claude?.today?.cost ?? q.claude_daily_usd),
+        daily_usd: limits.claude_daily_usd,
+        medium_usd: limits.claude_medium_usd,
+      },
+      codex: { ...pool(q.codex), warning_usd: limits.codex_warning_usd },
+    };
+  } catch {
+    return null;
+  }
+}
 export function overview(s: Snapshot) {
   const now = Date.parse(s.at),
     c = cockpit(s, now),
@@ -199,6 +235,7 @@ export function overview(s: Snapshot) {
       failed: '失败',
     })[v] ?? (v.startsWith('held:') ? '挂起' : '—');
   return {
+    quota: quotaOverview(),
     at: new Date(now).toLocaleTimeString('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',

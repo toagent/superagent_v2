@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmp } from './helpers';
 import {
@@ -17,6 +17,7 @@ import type { Ledger } from '../src/cli';
 import type { RunView } from '../src/archon';
 import { archonJson } from '../src/archon';
 import { etaInput } from '../src/board/eta';
+import { loadTiers } from '../src/config';
 import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/workflow-event';
 
 const keys = [
@@ -49,6 +50,51 @@ const session = (id: string, total = 40): UsageSession => ({
   cacheWrite: 0,
   total,
   sessions: 1,
+});
+test('overview projects relay quota thresholds, stale state and missing cache', () => {
+  const { root } = setup(),
+    cache = join(root, 'relay-quota.json'),
+    limits = loadTiers().routing.budget;
+  const value = {
+    at: Date.now(),
+    claude: {
+      today: { cost: 12 },
+      level: 'low',
+      accounts_available: 2,
+      accounts_total: 3,
+      five_hour: { remaining_pct: 40 },
+    },
+    codex: { seven_day: { remaining_pct: 70 } },
+  };
+  writeFileSync(cache, JSON.stringify(value));
+  const snapshot: Snapshot = { at, rows: [], summary: {} };
+  expect(overview(snapshot).quota).toEqual({
+    at: new Date(value.at).toISOString(),
+    stale: false,
+    claude: {
+      today_usd: 12,
+      daily_usd: limits.claude_daily_usd,
+      medium_usd: limits.claude_medium_usd,
+      five_hour_pct: 40,
+      seven_day_pct: null,
+      accounts_available: 2,
+      accounts_total: 3,
+      level: 'low',
+    },
+    codex: {
+      today_usd: null,
+      warning_usd: limits.codex_warning_usd,
+      five_hour_pct: null,
+      seven_day_pct: 70,
+      accounts_available: null,
+      accounts_total: null,
+      level: null,
+    },
+  });
+  writeFileSync(cache, JSON.stringify({ ...value, at: Date.now() - 30 * 60e3 - 1 }));
+  expect(overview(snapshot).quota?.stale).toBe(true);
+  unlinkSync(cache);
+  expect(overview(snapshot).quota).toBeNull();
 });
 const metadata = (id: string) => ({
   node: { id, kind: 'agent', source: { kind: 'inline' } },

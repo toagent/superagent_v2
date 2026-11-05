@@ -11,7 +11,13 @@ export function refreshBudgetQuota(): void {
   if (budget().unknown) console.error('预算状态未知');
 }
 // prettier-ignore
-interface Pool { today?: { cost?: number }; level?: string; accounts_available?: number; accounts_total?: number; five_hour?: { remaining_pct?: number }; seven_day?: { remaining_pct?: number } }
+export interface RelayQuotaPool { today?: { cost?: number }; level?: string; accounts_available?: number; accounts_total?: number; five_hour?: { remaining_pct?: number }; seven_day?: { remaining_pct?: number } }
+export interface RelayQuotaCache {
+  at: number;
+  claude_daily_usd?: number;
+  claude?: RelayQuotaPool;
+  codex?: RelayQuotaPool;
+}
 const unknown = (why: string) => ({ quota: `中转余量：未知（${why}）` });
 const numeric = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 // prettier-ignore
@@ -36,10 +42,10 @@ export function relayQuota(dir?: string, stage: 'start' | 'end' = 'start',
       if (p.status !== 0) result = unknown(p.status === 28 || p.signal === 'SIGTERM' ? 'timeout' : 'network');
       else if (code !== '200') result = unknown(/^\d{3}$/.test(code) ? code : 'network');
       else {
-        const data = JSON.parse(body.slice(0, -4)) as { platforms?: Record<string, Pool> }; const pools = [data.platforms?.anthropic, data.platforms?.openai];
+        const data = JSON.parse(body.slice(0, -4)) as { platforms?: Record<string, RelayQuotaPool> }; const pools = [data.platforms?.anthropic, data.platforms?.openai];
         const [claude, codex] = pools.map(p => p?.today?.cost);
         const limits = loadTiers().routing.budget;
-        try { if (numeric(claude) && process.env.SUPERAGENT_HOME) writeAtomic(join(process.env.SUPERAGENT_HOME, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: claude })); } catch { /* Cache write failures remain advisory. */ }
+        try { if (process.env.SUPERAGENT_HOME) writeAtomic(join(process.env.SUPERAGENT_HOME, 'relay-quota.json'), JSON.stringify({ at: Date.now(), ...(numeric(claude) ? { claude_daily_usd: claude } : {}), claude: pools[0], codex: pools[1] } satisfies RelayQuotaCache)); } catch { /* Cache write failures remain advisory. */ }
         const alerts = [
           numeric(claude) && (claude >= limits.claude_daily_usd ? '⛔ 今日应停用 Claude' : claude >= limits.claude_medium_usd ? 'Claude 中等' : ''),
           numeric(codex) && codex >= limits.codex_warning_usd && `⚠️ Codex 超 $${String(limits.codex_warning_usd)}`,
