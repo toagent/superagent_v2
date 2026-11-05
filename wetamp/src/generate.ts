@@ -30,7 +30,7 @@ import {
   type RecoveryEvidence,
 } from '../templates/.archon/scripts/sa-check';
 import { archon, tail, QUERY_TIMEOUT_MS } from './archon';
-import { caller, cleanEngine, coord, repoScope, runScope } from './coord';
+import { caller, cleanEngine, coord, repoScope, runScope, type Controller } from './coord';
 import { integrationNodeTimeout } from './integration';
 import {
   WETAMP,
@@ -1648,6 +1648,23 @@ export interface Gen {
   engine_commit: string;
 }
 
+export function deliveryControllers(
+  run: string,
+  repo: string
+): {
+  run: Controller;
+  repo: Controller;
+} {
+  const c = coord(),
+    who = caller(),
+    repository = c.owner(repoScope(repo));
+  if (!repository.owner) throw new Error('delivery authorization requires a repository contact');
+  return {
+    run: c.admit(runScope({ run_id: run, repo }), who),
+    repo: { ...repository.owner, generation: repository.generation },
+  };
+}
+
 /** 写 gen 目录、提交一次、`archon validate workflows`；校验失败抛错。 */
 export function generate(
   plan: Plan,
@@ -1721,8 +1738,7 @@ export function generate(
     writeFileSync(
       join(dir, 'delivery-authorization.json'),
       JSON.stringify({
-        run: coord().admit(runScope({ run_id: run, repo: plan.repo }), caller()),
-        repo: coord().admit(repoScope(plan.repo), caller()),
+        ...deliveryControllers(run, plan.repo),
         sync_generation: 0,
         target_tip: delivery.head,
       })

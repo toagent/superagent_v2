@@ -1092,6 +1092,17 @@ function isolated(s: ReturnType<typeof setup>): void {
     SA_COORD_ADMISSION: '',
   });
 }
+test('delivery authorization snapshots a foreign repository contact without transferring it', () => {
+  const s = setup(),
+    actor = caller();
+  isolated(s);
+  s.c.claim(s.scope, b);
+  s.c.claim(runScope({ run_id: 'delivery', repo: s.repo }), actor);
+  const authorization = req('../src/generate.ts').deliveryControllers('delivery', s.repo);
+  expect(authorization.run).toMatchObject(actor);
+  expect(authorization.repo).toMatchObject(b);
+  expect(s.c.owner(s.scope).owner).toMatchObject(b);
+});
 test('R1-01/06: actual hooks allow cd and nested-shell writes across owners', async () => {
   const s = setup(),
     other = gitRepo(tmp());
