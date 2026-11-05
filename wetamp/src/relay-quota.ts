@@ -12,12 +12,8 @@ export function refreshBudgetQuota(): void {
 }
 // prettier-ignore
 export interface RelayQuotaPool { today?: { cost?: number }; level?: string; accounts_available?: number; accounts_total?: number; five_hour?: { remaining_pct?: number }; seven_day?: { remaining_pct?: number } }
-export interface RelayQuotaCache {
-  at: number;
-  claude_daily_usd?: number;
-  claude?: RelayQuotaPool;
-  codex?: RelayQuotaPool;
-}
+// prettier-ignore
+export interface RelayQuotaCache { at: number; claude_daily_usd?: number; claude?: RelayQuotaPool; codex?: RelayQuotaPool }
 const unknown = (why: string) => ({ quota: `中转余量：未知（${why}）` });
 const numeric = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 // prettier-ignore

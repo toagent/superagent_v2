@@ -177,14 +177,14 @@ export function consoleProgramArguments(): string[] {
   return existsSync(join(jail, 'installed')) ? [join(jail, 'ai-jail'), ...args] : args;
 }
 /** Panel data is a projection of cockpit, never a separate collector. */
+// prettier-ignore
 function quotaOverview() {
   try {
     const root = process.env.SUPERAGENT_HOME;
     if (!root) return null;
     const q = JSON.parse(readFileSync(join(root, 'relay-quota.json'), 'utf8')) as RelayQuotaCache;
     if (!Number.isFinite(q.at)) return null;
-    const number = (value: unknown): number | null =>
-      typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
     const pool = (p?: RelayQuotaPool) => {
       const level = p?.level;
       return {
@@ -200,17 +200,10 @@ function quotaOverview() {
     return {
       at: new Date(q.at).toISOString(),
       stale: Date.now() - q.at > 30 * 60e3,
-      claude: {
-        ...pool(q.claude),
-        today_usd: number(q.claude?.today?.cost ?? q.claude_daily_usd),
-        daily_usd: limits.claude_daily_usd,
-        medium_usd: limits.claude_medium_usd,
-      },
+      claude: { ...pool(q.claude), today_usd: number(q.claude?.today?.cost ?? q.claude_daily_usd), daily_usd: limits.claude_daily_usd, medium_usd: limits.claude_medium_usd },
       codex: { ...pool(q.codex), warning_usd: limits.codex_warning_usd },
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 export function overview(s: Snapshot) {
   const now = Date.parse(s.at),
