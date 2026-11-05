@@ -5555,11 +5555,28 @@ export function heartbeatEngineExitCode(
   return resolved && resolved !== started ? ENGINE_CHANGED : 0;
 }
 
+const drain = (stream: NodeJS.WriteStream): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const failed = (error: Error): void => {
+      reject(error);
+    };
+    stream.once('error', failed);
+    stream.end(() => {
+      stream.off('error', failed);
+      resolve();
+    });
+  });
+
+export async function exitCli(code: number): Promise<never> {
+  await Promise.allSettled([drain(process.stdout), drain(process.stderr)]);
+  process.exit(code);
+}
+
 // Keep this module synchronous: land loads operator evidence lazily via require().
 async function runCli(): Promise<void> {
   try {
     const argv = process.argv.slice(2);
-    if (argv[0] === 'export') process.exit((await import('./export')).exportCli(argv));
+    if (argv[0] === 'export') return await exitCli((await import('./export')).exportCli(argv));
     // board（带 ink/react 依赖）与 job/jobs 是异步动词：在这里分流，其余动词启动时不加载 React。
     // 参数非法时 verb 取不到，交给 main 报用法
     const verb = ((): string | undefined => {
@@ -5586,15 +5603,15 @@ async function runCli(): Promise<void> {
       ].includes(verb ?? '')
     )
       assertEngineAccess(argv);
-    if (verb === 'board') process.exit(await (await import('./board/index')).board(argv));
-    if (verb === 'usage') process.exit(await usageCli(argv));
-    if (verb === 'heartbeat') process.exit(await heartbeatCli(argv));
-    if (verb === 'ask') process.exit(await askCli(argv));
-    if (verb === 'notify') process.exit(await notifyCli(argv));
-    if (verb === 'ntfy') process.exit(ntfyCli(argv));
+    if (verb === 'board') return await exitCli(await (await import('./board/index')).board(argv));
+    if (verb === 'usage') return await exitCli(await usageCli(argv));
+    if (verb === 'heartbeat') return await exitCli(await heartbeatCli(argv));
+    if (verb === 'ask') return await exitCli(await askCli(argv));
+    if (verb === 'notify') return await exitCli(await notifyCli(argv));
+    if (verb === 'ntfy') return await exitCli(ntfyCli(argv));
     if (verb === 'supervise-tick') {
       const parsed = parseArgs(argv);
-      process.exit(
+      return await exitCli(
         await superviseTickCli(undefined, undefined, {
           schedule: parsed.flags.schedule,
           runs: parsed.flags.runs,
@@ -5603,8 +5620,8 @@ async function runCli(): Promise<void> {
       );
     }
     if (verb === 'console' || verb === 'web')
-      process.exit(await (await import('./web/server')).webCli(argv));
-    if (verb === 'job' || verb === 'jobs') process.exit(await jobCli(argv));
+      return await exitCli(await (await import('./web/server')).webCli(argv));
+    if (verb === 'job' || verb === 'jobs') return await exitCli(await jobCli(argv));
     if (verb === 'rollover') {
       const parsed = parseArgs(argv),
         command = parsed._[1],
@@ -5619,12 +5636,12 @@ async function runCli(): Promise<void> {
       if (parsed.flags.json) print(result.value);
       // prettier-ignore
       else console.log(typeof result.value === 'string' ? result.value : Array.isArray(result.value) ? result.value.map(v => JSON.stringify(v)).join('\n') : JSON.stringify(result.value));
-      process.exit(result.exit);
+      return await exitCli(result.exit);
     }
-    process.exit(main(argv));
+    return await exitCli(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);
-    process.exit(1);
+    return await exitCli(1);
   }
 }
 // Let Bun finish evaluating the entry module before land can require it back.
