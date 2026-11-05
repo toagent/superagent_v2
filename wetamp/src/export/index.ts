@@ -19,6 +19,8 @@ interface Attempt { attempt_id: string; raw_status: string | null; started_at: s
 type RecordItem = Record<string, unknown> & { source_kind: SourceKind; source_id: string; repo_id: string | null; selection_reasons: string[] };
 interface RunRow { id: string; status: string; started_at: string | null; completed_at: string | null; last_activity_at: string | null; output_root?: string | null; metadata?: string | Record<string, unknown> | null }
 interface Check { gate: 'coder' | 'acceptance' | 'review'; check_id: string; name: string; command: string | null; exit_code: number | null; passed: boolean | null; status: 'passed' | 'failed' | 'unknown' | 'not_run' | 'degraded'; evidence_ids: string[] }
+interface CompletedNode { run_id: string; step_name: string; occurred_at: string }
+interface ArtifactRead { availability: 'available' | 'missing' | 'unreadable' | 'not_applicable'; bytes?: string; value?: Record<string, unknown> }
 
 const LIMIT_RECORDS = 10_000;
 const LIMIT_BYTES = 64 * 1024 * 1024;
@@ -92,18 +94,25 @@ function baseRecord(kind: SourceKind, id: string, repoId: string | null, observe
   return record;
 }
 
-function readRuns(ids: string[]): { rows: Map<string, RunRow>; error?: string } {
+function readRuns(ids: string[]): { rows: Map<string, RunRow>; completed: CompletedNode[]; error?: string } {
   const path = join(home().archon, 'archon.db');
-  if (!existsSync(path)) return { rows: new Map(), error: 'archon.db 不存在，无法读取执行状态。' };
+  if (!existsSync(path)) return { rows: new Map(), completed: [], error: 'archon.db 不存在，无法读取执行状态。' };
   try {
     const db = new Database(path, { readonly: true });
     try {
-      if (!ids.length) return { rows: new Map() };
+      if (!ids.length) return { rows: new Map(), completed: [] };
       const unique = [...new Set(ids)];
       const rows = db.query<RunRow, string[]>(`SELECT * FROM remote_agent_workflow_runs WHERE id IN (${unique.map(() => '?').join(',')})`).all(...unique);
-      return { rows: new Map(rows.map(row => [row.id, row])) };
+      let completed: CompletedNode[] = [];
+      try {
+        completed = db.query<{ workflow_run_id: string; step_name: string; created_at: string }, string[]>(`SELECT workflow_run_id, step_name, created_at FROM remote_agent_workflow_events WHERE workflow_run_id IN (${unique.map(() => '?').join(',')}) AND event_type = 'node_completed' AND step_name IS NOT NULL ORDER BY event_order, created_at`).all(...unique).flatMap(row => {
+          const occurred_at = utc(row.created_at);
+          return occurred_at ? [{ run_id: row.workflow_run_id, step_name: row.step_name, occurred_at }] : [];
+        });
+      } catch { /* Older or synthetic stores may not have durable node events. */ }
+      return { rows: new Map(rows.map(row => [row.id, row])), completed };
     } finally { db.close(); }
-  } catch { return { rows: new Map(), error: 'archon.db 不可读，无法读取执行状态。' }; }
+  } catch { return { rows: new Map(), completed: [], error: 'archon.db 不可读，无法读取执行状态。' }; }
 }
 
 function readIntakes(): { tasks: Task[]; bad: number } {
@@ -117,44 +126,108 @@ function readIntakes(): { tasks: Task[]; bad: number } {
   return { tasks, bad };
 }
 
-function safeJson(root: string, name: string): Record<string, unknown> | undefined {
-  if (basename(name) !== name || !existsSync(root)) return;
+function artifact(root: string, name: string, applicable = true): ArtifactRead {
+  if (!applicable) return { availability: 'not_applicable' };
+  if (basename(name) !== name || !existsSync(root)) return { availability: 'missing' };
   try {
-    const base = realpathSync(root), path = realpathSync(join(base, name));
-    if (!path.startsWith(base + sep)) return;
-    return object(JSON.parse(readFileSync(path, 'utf8')));
-  } catch { return; }
+    const base = realpathSync(root), candidate = join(base, name);
+    if (!existsSync(candidate)) return { availability: 'missing' };
+    const path = realpathSync(candidate);
+    if (!path.startsWith(base + sep)) return { availability: 'unreadable' };
+    const bytes = readFileSync(path, 'utf8'), parsed = JSON.parse(bytes) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { availability: 'unreadable' };
+    return { availability: 'available', bytes, value: parsed as Record<string, unknown> };
+  } catch { return { availability: 'unreadable' }; }
 }
 
-function packageFacts(ledger: Ledger, row: RunRow | undefined, pkg: Plan['packages'][number]) {
+function packageFacts(ledger: Ledger, rows: RunRow[], completed: CompletedNode[], pkg: Plan['packages'][number], errors: ErrorItem[], repoId: string) {
   const definitions: Check[] = pkg.accept.map((check, index) => ({ gate: 'acceptance', check_id: `acceptance-${String(index)}`, name: check.cmd, command: check.cmd, exit_code: null, passed: null, status: 'not_run', evidence_ids: [] }));
-  const evidence: Record<string, unknown>[] = [], checks = [...definitions], insights: Record<string, unknown>[] = [];
-  const root = row?.output_root ? join(row.output_root, 'artifacts', 'runs', row.id) : '';
-  const allowed = root && [ledger.repo, home().sa].some(value => { try { const base = realpathSync(value), path = realpathSync(root); return path === base || path.startsWith(base + sep); } catch { return false; } });
-  if (!allowed) return { checks, evidence, insights };
-  const add = (gate: Check['gate'], values: unknown[], prefix: string): void => { values.forEach((raw, index) => {
+  const evidence: Record<string, unknown>[] = [], execution_evidence: Record<string, unknown>[] = [], checks = [...definitions], insights: Record<string, unknown>[] = [];
+  const occurred = (runId: string, node: string): string | null => completed.filter(item => item.run_id === runId && (item.step_name === node || item.step_name.endsWith(`.${node}`))).at(-1)?.occurred_at ?? null;
+  const add = (gate: Check['gate'], values: unknown[], prefix: string, evidenceId: string): void => { values.forEach((raw, index) => {
     const value = object(raw), definition = object(value.check);
     const command = typeof value.cmd === 'string' ? value.cmd : typeof definition.cmd === 'string' ? definition.cmd : null;
     const exit = typeof value.exit === 'number' && Number.isInteger(value.exit) ? value.exit : null;
     const id = `${prefix}-${String(index)}`, pass = exit === null ? null : exit === 0;
-    const item: Check = { gate, check_id: id, name: command ?? id, command, exit_code: exit, passed: pass, status: pass === null ? 'unknown' : pass ? 'passed' : 'failed', evidence_ids: [id] };
+    const item: Check = { gate, check_id: id, name: command ?? id, command, exit_code: exit, passed: pass, status: pass === null ? 'unknown' : pass ? 'passed' : 'failed', evidence_ids: [evidenceId] };
     const existing = gate === 'acceptance' && command ? checks.findIndex(check => check.gate === gate && check.command === command) : -1;
     if (existing >= 0) checks.splice(existing, 1, item); else checks.push(item);
-    evidence.push({ id, kind: 'check', locator: `run/${ledger.run_id}/package/${pkg.id}/${gate}/${id}`, uri: null, availability: 'available', occurred_at: null });
   }); };
-  const coder = safeJson(root, `verify-${pkg.id}.coder.json`); add('coder', Array.isArray(coder?.quick_checks) ? coder.quick_checks : [], 'coder');
-  const accepted = safeJson(root, `settle-${pkg.id}.json`) ?? safeJson(root, `verify-${pkg.id}.json`); add('acceptance', Array.isArray(accepted?.command_results) ? accepted.command_results : [], 'acceptance');
-  const gate = readdirSync(root).filter(name => new RegExp(`^gate-${(pkg.milestone ?? 'm1').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-r\\d+\\.json$`).test(name)).sort().at(-1);
-  const review = gate ? safeJson(root, gate) : undefined;
-  if (review && (review.reviewed === true || review.grade === 'DEGRADED_PASS')) {
-    const degraded = review.grade === 'DEGRADED_PASS';
-    checks.push({ gate: 'review', check_id: 'review', name: 'review', command: null, exit_code: null, passed: null, status: degraded ? 'degraded' : 'unknown', evidence_ids: ['review'] });
-    evidence.push({ id: 'review', kind: 'check', locator: `run/${ledger.run_id}/package/${pkg.id}/review/review`, uri: null, availability: 'available', occurred_at: null });
+  const addArtifact = (row: RunRow, source: 'agent_reported' | 'engine_verified' | 'engine_integrated', name: string, read: ArtifactRead, node: string, payload: Record<string, unknown> | null): string => {
+    const id = `${source}-${row.id}-${name}`, missing_reason = read.availability === 'available' ? null : read.availability;
+    execution_evidence.push({ id, source, artifact_path: name, sha256: read.bytes === undefined ? null : sha(read.bytes), occurred_at: occurred(row.id, node), run_id: ledger.run_id, package_id: pkg.id, attempt_id: row.id, availability: read.availability, missing_reason, report: source === 'agent_reported' ? payload : null, integration: source === 'engine_integrated' ? payload : null });
+    evidence.push({ id, kind: source === 'engine_integrated' && payload?.commit ? 'commit' : 'artifact', locator: `run/${ledger.run_id}/package/${pkg.id}/artifact/${name}`, uri: null, availability: read.availability === 'available' ? 'available' : read.availability === 'missing' ? 'missing' : 'unknown', occurred_at: occurred(row.id, node) });
+    if (read.availability === 'unreadable') errors.push({ code: 'SOURCE_UNREADABLE', source_kind: 'package', repo_id: repoId, source_id: JSON.stringify([ledger.run_id, pkg.id]), message: `package 固定产物 ${name} 不可读或格式不符。`, retryable: true });
+    return id;
+  };
+  for (const row of rows) {
+    const root = row.output_root ? join(row.output_root, 'artifacts', 'runs', row.id) : '';
+    const allowed = root && [ledger.repo, home().sa].some(value => { try { const base = realpathSync(value), path = realpathSync(root); return path === base || path.startsWith(base + sep); } catch { return false; } });
+    if (!allowed) {
+      const unavailable: ArtifactRead = { availability: root ? 'unreadable' : 'missing' };
+      addArtifact(row, 'agent_reported', `verify-${pkg.id}.coder.json`, unavailable, `code-${pkg.id}`, null);
+      addArtifact(row, 'agent_reported', `settle-${pkg.id}.coder.json`, { availability: 'not_applicable' }, `repair-${pkg.id}`, null);
+      addArtifact(row, 'engine_verified', `verify-${pkg.id}.json`, unavailable, `verify-${pkg.id}`, null);
+      addArtifact(row, 'engine_integrated', `publish-${pkg.milestone ?? 'm1'}.json`, ledger.delivery ? unavailable : { availability: 'not_applicable' }, `publish-${pkg.milestone ?? 'm1'}`, null);
+      continue;
+    }
+    const coderArtifacts = [
+      [`verify-${pkg.id}.coder.json`, `code-${pkg.id}`, true],
+      [
+        `settle-${pkg.id}.coder.json`,
+        `repair-${pkg.id}`,
+        completed.some(
+          item =>
+            item.run_id === row.id &&
+            (item.step_name === `repair-${pkg.id}` ||
+              item.step_name.endsWith(`.repair-${pkg.id}`))
+        ),
+      ],
+    ] as const;
+    for (const [name, node, applicable] of coderArtifacts) {
+      const read = artifact(root, name, applicable), value = read.value;
+      const strings = (field: string): string[] | null => Array.isArray(value?.[field]) && value[field].every(item => typeof item === 'string') ? value[field] : null;
+      const deviations = Array.isArray(value?.deviations) && value.deviations.every(item => typeof object(item).path === 'string' && typeof object(item).why === 'string') ? value.deviations.map(item => ({ path: object(item).path, why: object(item).why })) : null;
+      const needs = Array.isArray(value?.needs) && value.needs.every(item => typeof object(item).cap === 'string' && typeof object(item).why === 'string' && typeof object(item).minimal_ask === 'string') ? value.needs.map(item => ({ cap: object(item).cap, why: object(item).why, minimal_ask: object(item).minimal_ask })) : null;
+      const blockers = strings('blockers'), changedFiles = strings('changed_files');
+      const quickChecks = Array.isArray(value?.quick_checks) && value.quick_checks.every(item => typeof object(item).cmd === 'string' && typeof object(item).exit === 'number' && Number.isInteger(object(item).exit)) ? value.quick_checks : null;
+      let report: Record<string, unknown> | null = null;
+      if (read.availability === 'available' && ['done', 'blocked', 'partial'].includes(String(value?.status)) && typeof value?.notes === 'string' && blockers && changedFiles && deviations && needs && quickChecks) report = { status: value.status, notes: value.notes, blockers, deviations, needs, error_class: typeof value.error_class === 'string' || value.error_class === null ? value.error_class : null, changed_file_count: changedFiles.length };
+      else if (read.availability === 'available') read.availability = 'unreadable';
+      const id = addArtifact(row, 'agent_reported', name, read, node, report);
+      if (report && quickChecks) add('coder', quickChecks, `${row.id}-${node}-coder`, id);
+    }
+    const settleName = `settle-${pkg.id}.json`, settle = artifact(root, settleName), verifyName = `verify-${pkg.id}.json`, verify = settle.availability === 'missing' ? artifact(root, verifyName) : { availability: 'not_applicable' } as ArtifactRead;
+    const acceptedName = settle.availability === 'missing' ? verifyName : settleName, accepted = settle.availability === 'missing' ? verify : settle;
+    if (accepted.availability === 'available' && !Array.isArray(accepted.value?.command_results)) accepted.availability = 'unreadable';
+    const acceptedId = addArtifact(row, 'engine_verified', acceptedName, accepted, acceptedName.startsWith('settle-') ? `settle-${pkg.id}` : `verify-${pkg.id}`, null);
+    if (accepted.availability === 'available') {
+      add('acceptance', Array.isArray(accepted.value?.command_results) ? accepted.value.command_results : [], `${row.id}-acceptance`, acceptedId);
+      for (const value of Array.isArray(accepted.value?.insights) ? accepted.value.insights : []) {
+        const item = object(value); if (['lesson', 'caution', 'knowledge', 'decision'].includes(String(item.kind)) && typeof item.content === 'string') insights.push({ kind: item.kind, content: item.content.slice(0, 2048), origin: ['human', 'agent', 'system'].includes(String(item.origin)) ? item.origin : 'unknown', assertion: 'reported', evidence_ids: [acceptedId] });
+      }
+    }
+    const milestone = pkg.milestone ?? 'm1', publishName = `publish-${milestone}.json`, publishApplicable = !!ledger.delivery;
+    const published = artifact(root, publishName, publishApplicable), receipt = object(published.value?.receipt), source = published.value ?? {};
+    let integration: Record<string, unknown> | null = null;
+    if (published.availability === 'available') {
+      const status = typeof source.status === 'string' ? source.status : typeof receipt.status === 'string' ? receipt.status : null;
+      const target_tip = typeof source.target_tip === 'string' ? source.target_tip : typeof receipt.target_tip === 'string' ? receipt.target_tip : null;
+      const commit = typeof source.integrated === 'string' ? source.integrated : typeof receipt.integrated === 'string' ? receipt.integrated : null;
+      if (status) integration = { status, target_tip, commit }; else published.availability = 'unreadable';
+    }
+    addArtifact(row, 'engine_integrated', publishName, published, `publish-${milestone}`, integration);
+    let files: string[] = [];
+    try { files = readdirSync(root); } catch { /* The fixed reads above already record availability. */ }
+    const gate = files.filter(name => new RegExp(`^gate-${milestone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-r\\d+\\.json$`).test(name)).sort().at(-1);
+    const review = gate ? artifact(root, gate) : undefined;
+    if (gate && review?.value && (review.value.reviewed === true || review.value.grade === 'DEGRADED_PASS')) {
+      const degraded = review.value.grade === 'DEGRADED_PASS';
+      checks.push({ gate: 'review', check_id: `review-${row.id}`, name: 'review', command: null, exit_code: null, passed: null, status: degraded ? 'degraded' : 'unknown', evidence_ids: ['review'] });
+      evidence.push({ id: 'review', kind: 'check', locator: `run/${ledger.run_id}/package/${pkg.id}/review/review`, uri: null, availability: 'available', occurred_at: occurred(row.id, gate.replace(/\.json$/, '')) });
+    }
   }
-  for (const value of Array.isArray(accepted?.insights) ? accepted.insights : []) {
-    const item = object(value); if (['lesson', 'caution', 'knowledge', 'decision'].includes(String(item.kind)) && typeof item.content === 'string') insights.push({ kind: item.kind, content: item.content.slice(0, 2048), origin: ['human', 'agent', 'system'].includes(String(item.origin)) ? item.origin : 'unknown', assertion: 'reported', evidence_ids: ['source'] });
-  }
-  return { checks, evidence, insights };
+  return { checks, evidence, insights, execution_evidence };
 }
 
 function usageOf(row: RunRow | undefined) {
@@ -240,10 +313,12 @@ export function buildExport(argv: string[], now = new Date()): { exit: number; o
     run.revision = revision(run); records.push(run);
     for (const pkg of plan.packages) {
       const id = JSON.stringify([ledger.run_id, pkg.id]), pkgRaw = raw === 'pending' ? 'pending' : null;
-      const facts = packageFacts(ledger, execution.rows.get(current?.attempt_id ?? ''), pkg);
+      const attemptRows = archonRunIds(ledger).flatMap(attemptId => execution.rows.get(attemptId) ?? []);
+      const facts = packageFacts(ledger, attemptRows, execution.completed, pkg, errors, repoId);
       const item = baseRecord('package', id, repoId, observed, pkgRaw, created, null, null, null, ['parent_selected'], {
         parent: ref(repoId, 'run', ledger.run_id), title: pkg.title, goal: pkg.goal, checks: facts.checks, insights: facts.insights,
         evidence: [{ id: 'source', kind: 'source_record', locator: `package/${id}`, uri: null, availability: 'available', occurred_at: null }, ...facts.evidence],
+        execution_evidence: facts.execution_evidence,
         omissions: omissions(['result', 'usage', ...(facts.insights.length ? [] : ['insights'])], 'not_recorded'),
       });
       item.revision = revision(item); records.push(item);
@@ -283,6 +358,11 @@ export function buildExport(argv: string[], now = new Date()): { exit: number; o
   const runEmitted = records.filter(record => record.source_kind === 'run' || record.source_kind === 'package').length;
   const output: Record<string, unknown> = {
     schema_version: 1, source_instance: input.source, source_version: gitHead(),
+    artifact_retention: {
+      scope: ['verify-<package>.coder.json', 'settle-<package>.coder.json', 'verify-<package>.json', 'settle-<package>.json', 'publish-<milestone>.json'],
+      policy: 'conditional', guaranteed_for_ms: null,
+      conditions: ['固定产物仅在对应 run output_root 仍存在且可读时可导出。', 'gc 不按年龄删除固定产物；只清理 artifact root 内的 probe-* 与 .trash。'],
+    },
     scope: { scope_id: `scope-${sha(JSON.stringify([[...selected].sort(), includesUnassigned]))}`, selection: input.all ? 'all' : 'repos', repos: [...repoById.values()].sort((a, b) => a.repo_id.localeCompare(b.repo_id)).map(({ repo_id, label }) => ({ repo_id, label })), includes_unassigned: includesUnassigned },
     since: new Date(input.since).toISOString(), until: new Date(input.until).toISOString(), timezone: input.timezone,
     read_started_at: readStarted, observed_at: observed, consistency: 'per_record', status: 'partial',

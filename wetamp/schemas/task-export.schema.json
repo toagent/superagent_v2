@@ -23,6 +23,9 @@
     "schema_version": {
       "const": 1
     },
+    "artifact_retention": {
+      "$ref": "#/$defs/artifactRetention"
+    },
     "source_instance": {
       "type": "string",
       "minLength": 1
@@ -867,6 +870,100 @@
         }
       }
     },
+    "artifactRetention": {
+      "type": "object",
+      "required": [
+        "scope",
+        "policy",
+        "guaranteed_for_ms",
+        "conditions"
+      ],
+      "properties": {
+        "scope": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "policy": { "const": "conditional" },
+        "guaranteed_for_ms": { "type": "null" },
+        "conditions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      }
+    },
+    "agentReport": {
+      "type": "object",
+      "required": [
+        "status",
+        "notes",
+        "blockers",
+        "deviations",
+        "needs",
+        "error_class",
+        "changed_file_count"
+      ],
+      "properties": {
+        "status": { "enum": ["done", "blocked", "partial"] },
+        "notes": { "type": "string" },
+        "blockers": { "type": "array", "items": { "type": "string" } },
+        "deviations": { "type": "array", "items": { "type": "object" } },
+        "needs": { "type": "array", "items": { "type": "object" } },
+        "error_class": { "type": ["string", "null"] },
+        "changed_file_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "integrationReceipt": {
+      "type": "object",
+      "required": ["status", "target_tip", "commit"],
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "target_tip": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "executionEvidence": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "artifact_path",
+        "sha256",
+        "occurred_at",
+        "run_id",
+        "package_id",
+        "attempt_id",
+        "availability",
+        "missing_reason",
+        "report",
+        "integration"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["agent_reported", "engine_verified", "engine_integrated"] },
+        "artifact_path": { "type": "string", "pattern": "^[^/]+\\.json$" },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "occurred_at": { "type": ["string", "null"], "format": "date-time", "pattern": "Z$" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "package_id": { "type": "string", "minLength": 1 },
+        "attempt_id": { "type": "string", "minLength": 1 },
+        "availability": { "enum": ["available", "missing", "unreadable", "not_applicable"] },
+        "missing_reason": { "enum": ["missing", "unreadable", "not_applicable", null] },
+        "report": {
+          "anyOf": [
+            { "$ref": "#/$defs/agentReport" },
+            { "type": "null" }
+          ]
+        },
+        "integration": {
+          "anyOf": [
+            { "$ref": "#/$defs/integrationReceipt" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
     "evidence": {
       "type": "object",
       "required": [
@@ -1181,6 +1278,12 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/evidence"
+          }
+        },
+        "execution_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/executionEvidence"
           }
         },
         "omissions": {

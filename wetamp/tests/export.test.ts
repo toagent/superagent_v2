@@ -16,7 +16,7 @@ afterAll(() => {
   for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;
 });
 
-type Output = { status: string; scope: { scope_id: string }; coverage: Record<string, { scanned: number | null; emitted: number }>; records: Record<string, unknown>[]; errors: { code: string; source_kind: string | null }[]; since: string; until: string };
+type Output = { status: string; scope: { scope_id: string }; artifact_retention: Record<string, unknown>; coverage: Record<string, { scanned: number | null; emitted: number }>; records: Record<string, unknown>[]; errors: { code: string; source_kind: string | null }[]; since: string; until: string };
 let root = '', repo = '', jobs = '';
 const run = (...args: string[]) => {
   const result = Bun.spawnSync(args, { stdout: 'pipe', stderr: 'pipe' });
@@ -67,6 +67,7 @@ beforeEach(() => {
   });
   const db = new Database(join(archon, 'archon.db'));
   db.run('CREATE TABLE remote_agent_workflow_runs (id TEXT PRIMARY KEY,status TEXT,started_at TEXT,completed_at TEXT,last_activity_at TEXT,output_root TEXT,metadata TEXT)');
+  db.run('CREATE TABLE remote_agent_workflow_events (workflow_run_id TEXT,event_order INTEGER,event_type TEXT,step_name TEXT,created_at TEXT)');
   db.run("INSERT INTO remote_agent_workflow_runs VALUES ('a1','failed','2026-11-01T21:00:00Z','2026-11-02T01:00:00Z','2026-11-02T01:00:00Z',NULL,NULL)");
   db.run("INSERT INTO remote_agent_workflow_runs VALUES ('a2','completed','2026-11-03T02:00:00Z','2026-11-03T03:00:00Z','2026-11-03T03:00:00Z',NULL,NULL)");
   db.close();
@@ -180,17 +181,32 @@ test('原始 intake 保留取消项、跨仓同 ID 与显式执行依赖关系�
 });
 
 test('plan 定义、coder、acceptance 与 degraded review 分开，且只读固定产物字段', () => {
-  const planPath = join(root, 'home', 'gen', 'r1', 'plan.json'), plan = JSON.parse(readFileSync(planPath, 'utf8'));
+  const planPath = join(root, 'home', 'gen', 'r1', 'plan.json'), plan = JSON.parse(readFileSync(planPath, 'utf8')), ledgerPath = join(root, 'home', 'runs', 'r1.json'), ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'));
   plan.packages[0].accept = [{ cmd: 'bun test' }]; plan.packages[1].accept = [{ cmd: 'bun lint' }]; writeJson(planPath, plan);
+  ledger.delivery = { repo, branch: 'main' }; writeJson(ledgerPath, ledger);
   const outputRoot = join(root, 'home', 'workspace'), artifacts = join(outputRoot, 'artifacts', 'runs', 'a2'); mkdirSync(artifacts, { recursive: true });
-  const db = new Database(join(root, 'home', 'archon', 'archon.db')); db.run('UPDATE remote_agent_workflow_runs SET output_root=? WHERE id=?', [outputRoot, 'a2']); db.close();
-  writeJson(join(artifacts, 'verify-p1.coder.json'), { quick_checks: [{ cmd: 'bun test', exit: 0 }], token: 'LEAK-ME', artifact: '../../outside' });
+  const db = new Database(join(root, 'home', 'archon', 'archon.db')); db.run('UPDATE remote_agent_workflow_runs SET output_root=? WHERE id=?', [outputRoot, 'a2']);
+  for (const [order, node, at] of [[1, 'code-p1', '2026-11-03T02:10:00Z'], [2, 'repair-p1', '2026-11-03T02:20:00Z'], [3, 'settle-p1', '2026-11-03T02:30:00Z'], [4, 'publish-m1', '2026-11-03T02:40:00Z']] as const) db.run("INSERT INTO remote_agent_workflow_events VALUES ('a2',?,'node_completed',?,?)", [order, node, at]);
+  db.close();
+  writeJson(join(artifacts, 'verify-p1.coder.json'), { status: 'done', notes: '已交付证据导出。', blockers: [], deviations: [], needs: [], changed_files: ['src/a.ts'], quick_checks: [{ cmd: 'bun test', exit: 0 }], error_class: null, token: 'LEAK-ME', artifact: '../../outside' });
+  writeJson(join(artifacts, 'settle-p1.coder.json'), { status: 'done', notes: '', blockers: [], deviations: [], needs: [], changed_files: [], quick_checks: [], error_class: null });
   writeJson(join(artifacts, 'settle-p1.json'), { command_results: [{ check: { cmd: 'bun test' }, exit: 1 }], insights: [{ kind: 'caution', content: '保留实测失败。', origin: 'agent' }] });
+  writeJson(join(artifacts, 'publish-m1.json'), { status: 'published', receipt: { status: 'published', target_tip: 'a'.repeat(40), integrated: 'b'.repeat(40) } });
+  writeFileSync(join(artifacts, 'settle-p2.json'), '{');
   writeJson(join(artifacts, 'gate-m1-r1.json'), { grade: 'DEGRADED_PASS', verdict: 'pass' });
   const { output } = exportAt(), p1 = output.records.find(item => item.source_id === '["r1","p1"]')!, p2 = output.records.find(item => item.source_id === '["r1","p2"]')!;
   expect((p1.checks as Record<string, unknown>[]).map(item => [item.gate, item.status, item.passed])).toEqual([['acceptance', 'failed', false], ['coder', 'passed', true], ['review', 'degraded', null]]);
   expect(p2.checks).toContainEqual(expect.objectContaining({ gate: 'acceptance', command: 'bun lint', status: 'not_run', passed: null }));
   expect(p1.insights).toEqual([expect.objectContaining({ kind: 'caution', assertion: 'reported' })]);
+  const proof = p1.execution_evidence as Record<string, unknown>[];
+  const coderProof = proof.find(item => item.artifact_path === 'verify-p1.coder.json' && item.attempt_id === 'a2')!;
+  expect(proof.find(item => item.artifact_path === 'verify-p1.coder.json' && item.attempt_id === 'a1')).toMatchObject({ availability: 'missing', missing_reason: 'missing', occurred_at: null });
+  expect(coderProof).toMatchObject({ source: 'agent_reported', occurred_at: '2026-11-03T02:10:00.000Z', attempt_id: 'a2', report: { notes: '已交付证据导出。', changed_file_count: 1 } });
+  expect(coderProof.sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(proof.find(item => item.artifact_path === 'settle-p1.json')).toMatchObject({ source: 'engine_verified', occurred_at: '2026-11-03T02:30:00.000Z' });
+  expect(proof.find(item => item.artifact_path === 'publish-m1.json' && item.attempt_id === 'a2')).toMatchObject({ source: 'engine_integrated', integration: { status: 'published', target_tip: 'a'.repeat(40), commit: 'b'.repeat(40) } });
+  expect((p2.execution_evidence as Record<string, unknown>[]).find(item => item.artifact_path === 'settle-p2.json')).toMatchObject({ availability: 'unreadable', missing_reason: 'unreadable' });
+  expect(output.artifact_retention).toMatchObject({ policy: 'conditional', guaranteed_for_ms: null });
   expect(JSON.stringify(output)).not.toContain('LEAK-ME'); expect(validate(output), JSON.stringify(validate.errors)).toBe(true);
 });
 
