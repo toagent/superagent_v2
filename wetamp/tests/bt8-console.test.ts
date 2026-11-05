@@ -462,7 +462,8 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   const releases: (() => void)[] = [];
   const demand = createDemandSnapshot(async () => {
     const load = ++loads;
-    await new Promise<void>(resolve => { releases.push(resolve); });
+    if (load === 1) await new Promise<void>(resolve => { releases.push(resolve); });
+    else await Bun.sleep(2000);
     return { summary: {}, rows: [], at: `fresh-${String(load)}` };
   }, () => { refreshes++; }, 5000, () => now);
   const forward = Object.assign(async () => new Response('native'), { preconnect: () => {} });
@@ -484,11 +485,12 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   await serve(request('/sa/data?t=fixture'));
   expect(loads).toBe(1);
   now = 6000;
-  await Promise.all([demand.update(), demand.update(), demand.update()]);
+  const started = performance.now();
+  const stale = await serve(request('/sa/data?t=fixture'));
   expect(loads).toBe(2);
-  expect(demand.snapshot().at).toBe('fresh-1');
-  releases.shift()!();
-  await Bun.sleep(0);
+  expect(await stale.json()).toEqual({ at: 'fresh-1' });
+  expect(performance.now() - started).toBeLessThan(200);
+  await Bun.sleep(2100);
   expect(demand.snapshot().at).toBe('fresh-2');
   expect(refreshes).toBe(2);
 });

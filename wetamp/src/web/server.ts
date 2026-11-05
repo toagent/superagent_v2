@@ -431,6 +431,64 @@ export function createDemandSnapshot(
     },
   };
 }
+
+type WorkerReply = { ready: true } | { id: number; snapshot?: string; error?: string };
+export function createWorkerSnapshotLoader(
+  fallback = createLoader(),
+  spawn = () => new Worker(new URL('./snapshot-worker.ts', import.meta.url).href)
+): ReturnType<typeof createLoader> {
+  let worker: Worker | undefined;
+  let ready = false;
+  let next = 0;
+  const pending = new Map<
+    number,
+    { limit: number; resolve: (snapshot: Snapshot) => void; reject: (error: Error) => void }
+  >();
+  const start = (): Worker => {
+    const active = spawn();
+    active.onmessage = (event: MessageEvent<WorkerReply>) => {
+      if ('ready' in event.data) {
+        ready = true;
+        for (const [id, request] of pending) active.postMessage({ id, limit: request.limit });
+        return;
+      }
+      const request = pending.get(event.data.id);
+      if (!request) return;
+      pending.delete(event.data.id);
+      if (event.data.snapshot) request.resolve(JSON.parse(event.data.snapshot) as Snapshot);
+      else request.reject(new Error(event.data.error ?? 'snapshot worker failed'));
+    };
+    active.onerror = event => {
+      event.preventDefault();
+      const requests = [...pending.values()];
+      pending.clear();
+      active.terminate();
+      if (worker === active) {
+        worker = undefined;
+        ready = false;
+      }
+      console.error(`snapshot worker failed: ${event.message}; falling back to main thread`);
+      for (const request of requests) fallback(request.limit).then(request.resolve, request.reject);
+    };
+    return active;
+  };
+  process.once('exit', () => worker?.terminate());
+  return limit =>
+    new Promise<Snapshot>((resolve, reject) => {
+      const id = ++next;
+      pending.set(id, { limit, resolve, reject });
+      try {
+        const active = (worker ??= start());
+        if (ready) active.postMessage({ id, limit });
+      } catch (error) {
+        pending.delete(id);
+        console.error(
+          `snapshot worker failed: ${(error as Error).message}; falling back to main thread`
+        );
+        fallback(limit).then(resolve, reject);
+      }
+    });
+}
 // prettier-ignore
 async function serve(): Promise<void> {
   mkdirSync(home().sa, { recursive: true });
@@ -443,8 +501,14 @@ async function serve(): Promise<void> {
   let server: ReturnType<typeof Bun.serve> | undefined;
   const token = randomBytes(32).toString('hex'),
     hash = residentHash(),
-    load = createLoader();
+    load = createWorkerSnapshotLoader();
   const demand = createDemandSnapshot(load);
+  let projected: { snapshot: Snapshot; value: ReturnType<typeof overview> } | undefined;
+  const getOverview = () => {
+    const snapshot = demand.snapshot();
+    if (projected?.snapshot !== snapshot) projected = { snapshot, value: overview(snapshot) };
+    return projected.value;
+  };
   const cleanup = (): void => {
     if (existsSync(socket)) unlinkSync(socket);
     if (webState()?.pid === process.pid) unlinkSync(stateFile());
@@ -456,7 +520,7 @@ async function serve(): Promise<void> {
     const { startObserver } = await import('./archon');
     await startObserver(socket);
     const port = Number(process.env.SA_CONSOLE_PORT ?? 39890);
-    const consoleHandler = handler(port, token, () => overview(demand.snapshot()), 'http://localhost', fetch, socket, () => demand.snapshot(), demand.update);
+    const consoleHandler = handler(port, token, getOverview, 'http://localhost', fetch, socket, () => demand.snapshot(), demand.update);
     server = Bun.serve({
       hostname: '127.0.0.1',
       port,
