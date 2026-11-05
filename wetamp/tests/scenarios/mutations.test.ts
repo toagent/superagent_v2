@@ -46,8 +46,8 @@ const mutations: Mutation[] = [
     name: 'entry rejects',
     expectedError: 'integration: authorization/run mismatch',
     also: [
-      "import { control, coord, repoScope, runScope, same } from './coord';",
-      "import { caller, control, coord, repoScope, runScope, same } from './coord';",
+      "import { control, coord, same } from './coord';",
+      "import { caller, control, coord, same } from './coord';",
     ],
   },
   {
