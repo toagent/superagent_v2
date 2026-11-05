@@ -35,6 +35,20 @@
         "cmd": "cd wetamp && bun test --timeout 300000 tests/generate.test.ts",
         "timeout_s": 900
       }
+    },
+    {
+      "when": [
+        "wetamp/src/generate.ts",
+        "wetamp/src/land.ts",
+        "wetamp/templates/.archon/scripts/env-precheck.ts",
+        "wetamp/templates/.archon/scripts/sa-check.ts",
+        "wetamp/templates/.archon/scripts/sa-context.ts",
+        "wetamp/tests/scenarios/mutations.test.ts"
+      ],
+      "check": {
+        "cmd": "cd wetamp && bun test --timeout 600000 tests/scenarios/mutations.test.ts",
+        "timeout_s": 900
+      }
     }
   ],
   "required_scope": [
