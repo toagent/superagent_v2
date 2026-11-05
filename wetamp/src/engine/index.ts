@@ -40,7 +40,7 @@ export interface EngineReceipt {
   bootstrap_evidence?: string;
 }
 // prettier-ignore
-export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; attempt?: string; checkout?: string; pid?: number; pid_start?: string; ppid?: number; process_pgid?: number; pgid?: number; pgid_start?: string; host?: string; token?: string; signal?: NodeJS.Signals; error?: string; failure_kind?: 'infrastructure' | 'regression'; reported?: boolean; retries?: number; }
+export interface EngineVerifyRecord { sha: string; base: string; status: 'running' | 'passed' | 'failed' | 'superseded'; files: string[]; failed_files: string[]; log: string; at: string; attempt?: string; checkout?: string; pid?: number; pid_start?: string; ppid?: number; pgid?: number; pgid_start?: string; host?: string; token?: string; signal?: NodeJS.Signals; error?: string; failure_kind?: 'infrastructure' | 'regression'; reported?: boolean; retries?: number; }
 
 const root = (): string => join(home().sa, 'engine');
 const receiptsDir = (): string => join(root(), 'receipts');
@@ -371,15 +371,6 @@ export function executeVerifyTests(worktree: string, args: string[], report: str
 // prettier-ignore
 export interface VerifyDependencies { prepare?: (worktree: string, sha: string, log: string, timeoutMs: number) => void; execute?: typeof executeVerifyTests; cleanup?: (worktree: string) => void; inspect?: typeof inspectProcess; groupAlive?: (pgid: number) => boolean | 'unknown'; }
 
-const processGroup = (pid: number): number | undefined => {
-  const result = Bun.spawnSync(['ps', '-o', 'pgid=', '-p', String(pid)], {
-    stdout: 'pipe',
-    stderr: 'ignore',
-  });
-  if (result.exitCode !== 0) return;
-  const value = Number(result.stdout.toString().trim());
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-};
 const defaultGroupAlive = (pgid: number): boolean | 'unknown' => {
   try {
     process.kill(-pgid, 0);
@@ -503,35 +494,12 @@ const beginVerify = (
       pid: process.pid,
       pid_start: identity.start,
       ppid: process.ppid,
-      process_pgid: processGroup(process.pid),
       host: hostname(),
     };
   writeVerify(record);
   return record;
 };
 
-const installVerifySignalHandlers = (record: EngineVerifyRecord): (() => void) => {
-  const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const,
-    handlers = signals.map((signal, index) => {
-      const handler = (): never => {
-        const current = verifyRecord(record.sha);
-        if (current && current.attempt === record.attempt)
-          writeVerify({
-            ...current,
-            signal,
-            ppid: process.ppid,
-            process_pgid: processGroup(process.pid),
-            at: new Date().toISOString(),
-          });
-        process.exit(128 + [15, 2, 1][index]);
-      };
-      process.on(signal, handler);
-      return [signal, handler] as const;
-    });
-  return () => {
-    for (const [signal, handler] of handlers) process.off(signal, handler);
-  };
-};
 // prettier-ignore
 export function runVerify(inputSha: string, inputBase: string, dependencies: VerifyDependencies = {}): EngineVerifyRecord {
   if (!/^[0-9a-f]{7,40}$/i.test(inputSha) || !/^[0-9a-f]{7,40}$/i.test(inputBase))
@@ -543,7 +511,6 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
     timeoutMs = 60 * 60_000,
     running = beginVerify(sha, base, log, dependencies),
     worktree = running.checkout ?? join(verifyRoot(), sha, running.attempt ?? 'legacy'),
-    removeSignalHandlers = installVerifySignalHandlers(running),
     execute = dependencies.execute ?? executeVerifyTests;
   let result = running,
     prepared = false,
@@ -600,7 +567,6 @@ export function runVerify(inputSha: string, inputBase: string, dependencies: Ver
       result.status = 'failed';
       result.error = `cleanup: ${error instanceof Error ? error.message : String(error)}`;
     }
-    removeSignalHandlers();
   }
   writeVerify(result);
   return result;

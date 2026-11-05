@@ -40,7 +40,9 @@ const projection = (f: ReturnType<typeof fixture>, patch: Partial<EngineVerifyRe
 test('each verify attempt gets an independent checkout and append-only history', () => {
   const f = fixture(),
     prepared: string[] = [],
-    cleaned: string[] = [];
+    cleaned: string[] = [],
+    signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const,
+    listeners = signals.map(signal => process.listenerCount(signal));
   const dependencies = {
     // prettier-ignore
     prepare: (path: string) => {
@@ -52,7 +54,7 @@ test('each verify attempt gets an independent checkout and append-only history',
       cleaned.push(path);
       rmSync(path, { recursive: true, force: true });
     },
-    execute: (_path: string, _args: string[], report: string) => (writeFileSync(report, '<testsuites><testsuite tests="0"/></testsuites>'), { exit: 0, duration_ms: 1 }),
+    execute: (_path: string, _args: string[], report: string) => (expect(signals.map(signal => process.listenerCount(signal))).toEqual(listeners), writeFileSync(report, '<testsuites><testsuite tests="0"/></testsuites>'), { exit: 0, duration_ms: 1 }),
   };
   const first = runVerify(f.sha, f.base, dependencies),
     second = runVerify(f.sha, f.base, dependencies);
@@ -60,6 +62,7 @@ test('each verify attempt gets an independent checkout and append-only history',
   expect(new Set(prepared).size).toBe(2);
   expect(cleaned).toEqual(prepared);
   expect(prepared.every(path => !existsSync(path))).toBe(true);
+  expect(signals.map(signal => process.listenerCount(signal))).toEqual(listeners);
   const attempts = readFileSync(join(f.promotions, `${f.sha}.verify.attempts.jsonl`), 'utf8')
     .trim()
     .split('\n')
