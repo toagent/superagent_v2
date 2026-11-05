@@ -1,19 +1,41 @@
-# 持续输入：显式 typed CLI 首片
+# 持续输入与原生会话接入
 
-元帅解释自然语言，再提交结构化动作；本模块不调用模型、不分类关键词、
-不启动或取消 run。新增 Task 不会删除或抢占旧 Task。原生终端 hook 捕获已登记主检出的输入并恢复有界指针，不解释自然语言。
+intake 持久化原生会话输入、Task 合同与 run 绑定。元帅解释自然语言并提交 typed actions；
+模块本身不调用模型、不匹配关键词、不启动或取消 run。捕获输入与执行动作分离，因此重试不会
+把未确认派发冒充为已受理。
 
-## 最短用法
+## 原生 hooks
 
-在明确的项目内生成 `payload.json`（数据文件放 scratch/run 目录，不提交）：
+`install-hooks` 把受管 intake handlers 合并到 Claude Code 和 Codex 的
+`UserPromptSubmit`、`SessionStart`，保留其他原生设置与 hooks。安装由操作者从干净且已提交的
+checkout 执行。
+
+只捕获满足以下条件的会话：
+
+- repo 是 canonical realpath 的 git 主检出；
+- source 是原生客户端名，session 是原生 session id；
+- 当前 session 已显式关联该 repo 的 Task owner；
+- 不是 worktree、派生编码、评审、worker 或 twin 会话。
+
+`UserPromptSubmit` 保存输入；`SessionStart` 只恢复有界 context。hook 输出包含 input key、
+当前 brief、owner 和 pending 指针，不包含原始 prompt。绑定缺失或含糊时返回 advisory，不借用
+其他 owner。捕获不派发、不取消、不审批。
+
+Codex 用原生 turn id 去重；Claude 每次 hook invocation 生成独立 id。持久化失败会提示并允许
+原 prompt 继续。compact 后，commander session 可从已验证的原生 transcript 路径取得有界
+resume card；派生 session 不生成。
+
+## 输入与动作
+
+`receive` 只持久化输入，`apply` 接收输入并原子应用 actions：
 
 ```json
 {
   "input": {
     "source": "codex",
     "session": "session-id",
-    "message": "stable-message-id",
-    "text": "本条项目需求",
+    "message": "turn-id",
+    "text": "项目需求",
     "repo": "/absolute/project/path",
     "actor": "operator",
     "owner": "commander"
@@ -21,136 +43,76 @@
   "actions": [
     {
       "kind": "create",
-      "ref": "a",
-      "brief": "问题、价值、为什么现在、结果、不变量",
+      "ref": "task",
+      "brief": "问题、价值、时机、结果与不变量",
       "acceptance": "验收",
-      "group": "g"
-    },
-    {
-      "kind": "amend",
-      "task": "$a",
-      "expected_revision": 1,
-      "brief": "更新后的完整合同",
-      "acceptance": "新验收",
-      "group": "g"
-    },
-    { "kind": "clarify", "fragment": "另一个片段需要确定目标" }
+      "group": "delivery"
+    }
   ]
 }
 ```
 
-```sh
+```bash
 superagent intake receive /scratch/payload.json
 superagent intake apply /scratch/payload.json
 superagent intake list --repo /absolute/project/path
-superagent intake show task-… --repo /absolute/project/path
-superagent intake input codex session-id stable-message-id --repo /absolute/project/path
-superagent intake context 8192 --repo /absolute/project/path
-superagent intake resume 8192 --repo /absolute/project/path
+superagent intake show task-id --repo /absolute/project/path
+superagent intake input codex session-id turn-id --repo /absolute/project/path
 ```
 
-`receive` 可单独持久接收待解释输入，`apply` 也会接收输入。相同 source/session/message
-与相同 payload 返回原回执；改变输入或已解释 actions 会报冲突。不同 message 的相同
-文字是新输入。`apply` 有 pending/rejected 动作时退出 3，已受理的独立动作仍保留。
-`input` 只按精确身份读取一条输入及其 actions/结果；`show` 读取单个完整 Task。
-数据唯一事实源位于 `$SUPERAGENT_HOME/intake/<repo-sha256>/state.json`。
-state 损坏或版本不支持会报错，不重建为空。锁忙可用同一输入重试。
+相同 source、session、message 与 payload 返回原回执；身份相同但内容不同会报冲突。不同 turn
+中的相同文字是不同输入。`apply` 有 pending 或 rejected 动作时退出 3，已受理的独立 group
+仍保留。state 位于 `$SUPERAGENT_HOME/intake/<repo-sha256>/state.json`；损坏或 schema 不支持
+时明确失败，不重建为空。短锁忙可用同一 payload 重试。
 
-## 动作合同
+动作合同：
 
-- `create`：`ref/brief/acceptance`，可选 `parent/dependencies`；引用须存在且同 repo/actor/owner。
-- `amend`：`task/expected_revision/brief/acceptance`，可选 `dependencies`；CAS 失败保留 rejected 动作。
-- `clarify`：`fragment`，保留待澄清片段，不阻断独立动作。后续解释用新 message 提交，旧回执保持原样。
-- `launch`：`task/expected_revision/launch_id/plan/digest`，只记意图，立即视为 `dispatch_unknown`。
-- `bind`：`task/launch_id/run_id/plan/digest`，记录原 owner 确认的引擎受理回执；不允许一个 run 绑定多个 Task/revision。
-- `question`：`task/expected_revision/id/run_id/gate/prompt`，run 必须已绑定该 revision。
-- `answer`：`task/question/value`，只保存回答；旧问题仍关联原 revision/run/gate，一问不能被不同消息重复回答。
-- `cancel`：`task/expected_revision`，只记显式取消意图，绝不宣称 run 已取消。
+- `create`：创建 Task；可声明 parent、dependencies 和 requirements；
+- `amend`：以 expected_revision 做 CAS，保存完整修订；
+- `clarify`：保留待澄清片段，不阻断独立 group；
+- `launch`：保存 plan、digest 和 launch_id，初始状态是 `dispatch_unknown`；
+- `bind`：由原 owner 把引擎受理的 run 绑定到 launch；
+- `question` / `answer`：保存与 Task revision、run、gate 绑定的问题和回答；
+- `cancel`：只保存显式取消意图，不宣称 run 已取消。
 
-同句最多 64 动作。共享 `group` 的动作一起提交或一起回滚/等待澄清；`$ref` 只在
-同组内引用先创建的 Task。replace 使用同组 create + 显式 cancel，不删除旧历史。
-任务依赖不能跨 scope、引用未知 Task 或形成环。amend 保留旧合同与 run 绑定。
+共享 group 的动作一起提交或一起回滚。`$ref` 只能引用同组先创建的 Task。依赖不得跨
+repo、actor、owner，也不能形成环。amend 保留以前的 revision 和 run binding。
 
-## 引擎边界与恢复
+## 义务与完成投影
 
-输入、预分配的确定性 TaskID、actions、Task 与结果在同一个短锁下原子替换。
-进程在 rename 前退出不产生 Task，rename 后退出则重试返回已存结果，不重新 create。
-恢复无需重新解释；`resume` 是有界视图，不是引擎 resume，也不会重发未知 launch。
-context 默认 8192 字节（原生 hook 为 4096），允许 128..65536；元数据或最小指针装不下时报错。
+Task 可声明 `requirements: [{id,text}]`。amend 未传 requirements 时继承；传入时必须保留
+既有 id 与原文，只能追加。范围缩减需要创建准确合同并为原 Task 保存取消意图。
 
-派发/取消/回答 gate 由元帅通过既有 `run/cancel/decide` 和 COORD owner/handoff 执行。
-intake 的 repo/actor/owner 是需求关联标签，不是另一个授权层。
-保存回答不等于批准 gate，保存 cancel 不等于取消；context 保留问题及回答记录指针。
-未知派发须先由原 owner 对账，再 bind；本片不自动对账、取消回执或清除待澄清历史。
-`plan/digest` 使用真实冻结 plan 路径与 SHA-256，不回写冻结 plan。
-`request_ref` 以测量 owner 兼容字段接入为后续工作，本片只显式绑定 Task/revision/run。
+launch 可以保存 requirement map，把 Task requirement id 映射到冻结 plan 的 package 与
+requirement id。每个 binding 中源和目标唯一，bind 不能更改映射。
 
-`show` 只读取既有引擎 ledger 与 deliveryDecision：同 repo、同 plan/digest、当前 revision、
-run completed 且所有有效 decision 有证据与 verified requirement，并按当前 revision 的明确映射
-覆盖全部义务、所有直接及间接 children 均 verified 才投影 `verified`。
-旧版成功、证据缺失/不明、取消意图未对账均为 `unknown`。Task 不复制 Run 状态机。
-未承诺全终端自动捕获、线上效果或端到端 exactly-once 派发；不新增模型调用或依赖。
+`show` 只在以下事实同时成立时投影 verified：repo、plan、digest 与当前 revision 一致；run
+completed；DeliveryDecision 有真实 evidence；映射覆盖全部义务；全部直接和间接 child 均
+verified。部分覆盖、取消意图、缺映射或证据 unknown 都不能证明完成。Task 不复制 Run 状态机。
 
-聚焦验证：`rtk proxy bun test --cwd wetamp ./tests/intake.test.ts`；
-静态检查：`rtk proxy bun x --no-install tsc --noEmit -p wetamp/tsconfig.json`。
+## 有界恢复与 backlog
 
-## 追加义务与真实覆盖
-
-`create/amend` 可带 `requirements: [{"id":"A","text":"用户义务原文"}]`。
-数组非空且 ID 唯一；amend 不传则继承，传入须保留旧 ID 及其原文，只能追加。
-澄清可更新 brief/acceptance；范围缩减须显式新建任务并记录原任务取消意图，
-不允许静默改写义务。旧数据继续可读、可执行，无明确义务/映射时完成度为 unknown。
-
-`launch` 可带非空子集映射：
-
-```json
-{ "requirement_map": [{ "task_requirement_id": "A", "package": "pkg", "requirement_id": "req" }] }
-```
-
-每个 binding 内源 ID 和目标 package/id 唯一；源必须属于当前 revision。
-`bind` 不接受改映射。当前 revision 多个完成 run 的有效 DeliveryDecision 可按义务 ID
-并集，但只接受真实冻结 plan 中存在且证据匹配的目标。部分覆盖、旧 revision、
-不明证据不能证明完整交付；children 的取消意图不解除父子阻断。
-
-## 完整有界遍历与进度
-
-保留 `tasks/inputs/truncated`，新增 `coverage/next`。coverage.tasks/inputs 分别给出
-固定读取上界内的 eligible `total`、本页 `shown`、尚未遍历 `remaining`、上界后的 `later`；
-inputs 只注入未解释记录，以及 pending/rejected 动作仍指向未撤销 Task 的记录；已解释完毕或
-只指向已撤销 Task 的记录仍可用 `input` 查询，并计入 `coverage.inputs.omitted`。Claude Code
-harness 的完整 `<task-notification>` 元素也只保留在历史中，不作为用户输入注入。
-`coverage.obligations` 是当前 revision 未撤销 Task 的义务数，`coverage.total_obligations`
-包含已撤销 Task 的义务，`coverage.cancelled` 是当前 revision 已撤销的 Task 数。context 的
-`tasks` 只遍历未撤销 Task；已撤销 Task 仍可通过 backlog/show 查询。过大条目降为 id/key 短指针，
-使用 show/input 查询正文。每页 JSON 严格受字节预算限制。
-
-```sh
+```bash
 superagent intake context 4096 --repo /absolute/project/path
 superagent intake context 4096 '<next>' --repo /absolute/project/path
+superagent intake resume 4096 --repo /absolute/project/path
 superagent intake backlog --repo /absolute/project/path
-superagent intake backlog task-parent --repo /absolute/project/path
 ```
 
-重复消费 `next` 直到 null，再处理 `later`：重新开始一次遍历。游标绑定 repo、现有
-append-only 数组上界与绝对位置；持续追加不重启遍历，条目正文仍是当前 revision。
-历史缩短/重排或无效游标会明确报错；页末不能冒称最新全体任务已完成。
-没有未撤销 Task 时，原生 hook 不注入 Task 正文，只保留 backlog 历史指针。
+context 返回 tasks、inputs、coverage、next 与 truncated。游标绑定 repo、读取上界和绝对位置；
+持续追加不会重启当前遍历。条目过大时降为 id/key 指针，用 show 或 input 读取正文。游标失效、
+历史缩短或元数据无法放入最小预算时明确报错。
 
-`backlog` 是同一 Intake 的只读进度投影，不额外持久化或调用模型；包含全部 Task、
-父子关系、当前义务/覆盖 ID、completion 与 unknown 原因、questions、取消历史、show 指针。
-摘要的 `obligations` 只统计当前 revision 未撤销 Task，`total_obligations` 包含已撤销 Task；
-任务自身的当前撤销意图优先显示为 `cancelled_intent`，不被子任务的 unknown 状态覆盖。
-可按父任务查看其整个子树。原生 hook 要求读完 continuation 后判断范围/生成进度，
-进度以 backlog 为准；status-only 继续提交 `actions: []`，不缩小旧需求集合。
+backlog 是同一 state 的只读进度投影，包含 Task 树、当前义务、覆盖 id、completion、unknown
+原因、questions、取消记录和 show 指针。它不额外持久化，也不调用模型。status-only 输入用
+`actions: []` 消费，不缩小既有需求。
 
-## ntfy 人工决策
+## 引擎与决策边界
 
-`supervise-tick` 从当前引擎 gate 和 COORD/故障切换状态生成具名决策，持久化后发布到
-ntfy。回答先校验签名、期限与一次性 nonce，再保存 durable intent；下一次持有
-`supervise.lock` 的 tick 复核当前 owner generation 并应用。决定已变化时回执为
-`rejected`，且不修改 asks。ntfy 或网络不可用时保持挂起，CLI 仍可处理。
+派发、取消和 gate 决定由 commander 使用 run、cancel、decide 与 COORD owner/handoff 完成。
+intake 中的 repo、actor、owner 是关联标签，不是授权层。保存 answer 不等于批准 gate，保存
+cancel 不等于取消 run；`dispatch_unknown` 必须由原 owner 对账后 bind。
 
-普通决策提供具名选项；红线批准必须经过两段式确认。令牌与签名密钥只从 0600 文件
-读取，不进入状态文件、命令行或错误。`report.human_decisions`、board 与 ntfy 发布从
-同一当前引擎 gate 描述派生，历史 asks 仍保留。本地 console 只保留看板、memory panel
-和 Archon observer，不承担决策投递或回答。
+`supervise-tick` 从当前 gate 和 COORD 状态生成签名决策，持久化 intent 后再由持锁 tick 复核
+owner generation 并应用。决定已变化时拒绝 intent。ntfy 或网络不可用时保持挂起，CLI 仍可
+处理；凭据只从权限受限文件读取，不进入状态、参数或错误。

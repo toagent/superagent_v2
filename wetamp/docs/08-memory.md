@@ -1,56 +1,52 @@
 # 经验资格与反思回执
 
-memory 保存 episode、候选、反馈及去重记录。helpful/harmful/votes 仅供候选排序，
-不授权 stable，也不回写历史 status。只有已完成且全部正式验收为 true 的运行可计 helpful；
-失败、取消、验收未知不算成功证明。旧冻结上下文与事件保持原样。
+memory 保存 episode、候选、反馈、publication 与去重记录。helpful、harmful 和 votes 只用于
+候选排序，不授权 stable，也不改写 run 状态。只有完成且全部正式验收为 true 的运行可以提供
+正向证据；失败、取消、缺证据和验收 unknown 都不能证明成功。
 
-普通交付无需共享 home 或 agent-evolution 数据库；publication 缺失或拒用时为 unavailable，
-不阻断交付，也不回退到 trial、legacy stable 或 votes。候选检索仍供受限反思使用。
+普通交付不依赖共享 home 或 agent-evolution 数据库。publication 缺失、过期或校验失败时记为
+unavailable，不阻断交付，也不降级使用未经资格确认的候选。
 
-## 显式发布与冻结消费
+## 发布
 
-可信本地控制面执行 `superagent memory publish`，仅调用固定安装位置的 agent-evolution
-`verify`、`export`、再次 `verify` 和 `snapshot-recall`，资格仍由该 owner 判断。
-版本、fingerprint、checksum 或 audit_count 不一致则拒绝，失败不替换旧 publication。
-成功后原子发布原 export schema 到 `$SUPERAGENT_HOME/memory/publication.json`，
-目录 0700、文件 0600。无任意 JSON 导入或自证 publisher 字段；同账户管理员属于可信边界，
-这些权限不隔离同账户管理员。可删除 publication 撤回，或由既有 rollback 后重新 publish。
+可信 controller 显式运行 memory publish。发布器只调用固定安装位置的 agent-evolution
+`verify`、`export`、再次 `verify` 和 `snapshot-recall`。schema、fingerprint、checksum 或
+audit count 不一致时拒绝，现有 publication 保持不变。
 
-新 run 仅从一次固定 publication 副本通过 owner 的 `snapshot-recall` 选择，运行面不读资格 DB。
-scope 为 `project:<realpath plan.repo>`，domain 为 engineering；不猜旧 namespace。
-query 为完整 goal 与 requirements 文本，超过 2000 字符明确 unavailable，不用正则分类或截断。
-owner 校验 schema、checksum、fingerprint、7 天新鲜度、scope、shareable 与 expiry；
-每包最多 5 条、12000 bytes。私有项目和 `SUPERAGENT_MEMORY=off` 禁用。
-`gen/learning.json` 固定版本、hash、条目与 ID，`engine.json.lessons` 保存 ID 映射。
-将军、修复与军师真实 manifest 的 learning 字段按 execution.packages 消费同一冻结选择。
-适用/排除条件、有效期和证据引用作为 data-only 数据保留，不赋予工具、权限或原则；
-语义适用性仍由执行者判断。后续 publish 或撤回不会重写旧 run；旧 run 缺文件兼容为空。
+成功后原子写入 `$SUPERAGENT_HOME/memory/publication.json`；目录权限 0700，文件权限 0600。
+不接受任意 JSON 导入或由候选自证 publisher。撤回时删除 publication，恢复后重新发布。
 
-旧库 fingerprint 漂移必须拒用，不能改 fingerprint 或历史 assessment 恢复资格。
-先备份历史，再由控制面建独立新库，使用仍可核验的原证据重新 evaluate、独立双评审、promote。
-缺原证据的条目留历史，不晋升。verify 仅证明完整性与当前资格版本，不重新证明事实语义；
-隔离夹具通过不代表旧库经验已重评，unknown 仍为 unknown。
+## Run 消费
+
+每个 run 启动时从一次固定 publication 副本选择经验，运行面不读取资格数据库。scope 是
+`project:<realpath plan.repo>`，domain 是 engineering。query 使用完整 goal 与 requirements；
+超过上限时明确 unavailable，不截断后猜语义。
+
+controller 校验 schema、checksum、fingerprint、新鲜度、scope、shareable 与 expiry。每包选择
+数量和字节数有界，结果冻结到 `gen/learning.json`，`engine.json.lessons` 保存 ID 映射。
+编码、修复与评审 manifest 消费同一选择。经验是 data-only：适用条件、排除条件、期限和证据
+不能授予工具、权限或原则。publication 后续变化不重写在途 run。
 
 ## 反思
 
-控制面可显式运行 `superagent memory propose <run> '<request-json>'`，接线已有 trial 候选。
-request 字段为 `lesson`、`package`、`sha256`、`shareable:true`、`keywords`、`positive`、`negative`、`expires_at`；
-后三组检索关键词/正反探针及有效期遵循既有 owner schema。只接受候选引用该 run、
-tier 为 project 且 scope 精确等于 repo realpath；claim/适用与排除条件来自已有候选，不接受替换文本。
-原件仅为该终态 run 的 `verify-<package>.json`，位于项目或 SUPERAGENT_HOME 内，
-拒绝 symlink、逃逸、私密路径、缺失/不可解析/过大文件及 hash 不一致，不输出原文。
-sha256 由原件字节重算，与控制面预期值核对；相应 code/repair 只有一次调用且
-引擎事件含 invocation/attempt、provider 及 provider-resolved 实际模型才接受，requested/pinned 不算身份。
-重试身份歧义明确拒绝；不从候选自报作者或模型名字推断身份。
-原始字节与 provenance 冻结在 `memory/evidence/<task>/`，原件 0400；proposal 引用冻结原件。
-随后仅调用现有 `propose → evaluate`，返回 candidate、hash、实际模型与证据路径；
-prepared 仅表示待审，不是合格或晋升。两份真实独立回执及 promote 仍由可信控制面经统一队列负责。
-失败返回 unavailable，不改变主 run、旧 stable、指纹或用户记忆，不自动派评审。
+controller 可显式运行 memory propose，为终态 run 生成候选。request 指定 lesson、package、
+证据 sha256、shareable、keywords、positive、negative 与 expires_at。候选必须精确引用该 run、
+project scope 和已有 claim；不能替换证据中的作者、模型或事实。
 
-复用 job exec 的队列、内存准入、执行收据和既有 token 预算；无新 worker 平台。
-普通首次成功可跳过，按 project/tag/category/signature 去重，记录过的尝试不自动重派。
-追加 reflection 回执区分 queued、running、produced、rejected、failed、interrupted；
-reflected 仅在模型成功返回后写入，空/非法输出为 rejected 而非候选。
-崩溃后残留 queued/running 是未完成回执，不猜测活 owner、不把它当成功、不自动重试。
-旧 reflected 标记继续读取且不回写。每日预留 9216，已知实际用量保留超额，未知 usage
-明确为 null 且保留预留预算；模型调用仍登记在现有 jobs 用量链中。
+唯一证据原件是该 run 的 package verify JSON，且必须位于项目或 `SUPERAGENT_HOME` 内。
+系统拒绝 symlink、路径逃逸、隐私路径、缺失、不可解析、过大和 hash 不符；不会输出原文。
+原件字节与 provenance 冻结到 `memory/evidence/<task>/`，proposal 只引用冻结副本。
+
+模型身份来自引擎 invocation、attempt、provider 与 resolved model，不信任 requested model 或
+候选自报。重试身份不明确时拒绝。propose 与 evaluate 产出的 prepared 仅表示待审；晋升仍需
+可信控制面的独立证据与评审。
+
+反思复用 `job exec` 的队列、内存准入、usage 与执行回执。状态区分 queued、running、
+produced、rejected、failed、interrupted；只有合法模型输出才记 reflected。崩溃后残留的
+queued/running 保持未完成，不猜 owner、不自动重派。未知 usage 保持 null，并保留预算预留。
+
+## 完整性与恢复
+
+fingerprint 漂移时拒绝消费，不通过修改 fingerprint 或 assessment 恢复资格。需要重建时先保存
+可审计数据，再由 controller 建独立数据库，使用仍可核验的原始证据重新 evaluate、评审和
+promote。缺原证据的条目只保留为历史数据。verify 证明结构完整性和当前资格，不重新证明事实。

@@ -26,11 +26,3 @@
 `wetamp/tests/efficiency-constitution.test.ts` 的对应一致性测试。
 测试必须消费类型、原因注册表或生成结果，不用源码关键字搜索代替行为断言。
 测试不调用真实 provider，不联网；失败不得通过放宽闭集或改成跳过掩盖。
-
-## 当前验证 notes（2026-10-14）
-
-budget_floor 仅为 budgetUsage 的加权观测下限，不是准入或停机门槛。
-预算超限应只产生 advisory；完整处置入口未导出，对应行为断言暂为 test.todo。
-classify/holdOf 不读取 plan；human 签收声明由生成器绑定并验证。
-内部 probe 没有注入接口，故障归因断言暂为 test.todo，不修改产品行为。
-未运行完整 fake 引擎链路；不把生成耗时当作引擎开销，不设置未经实测的上限。
