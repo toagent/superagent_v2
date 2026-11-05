@@ -83,7 +83,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round <n>] [--author-model <model> --review-reason <reason> [--dual]] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round <n>] [--author-model <model> --review-reason <reason>] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
 export const SIMPLIFIED_CHINESE_REQUIREMENT =
   '所有自然语言输出一律简体中文：交回结果的 notes/blockers/needs、评审发现与理由、git 提交说明、给元帅或用户的消息；代码、命令、路径、标识符、错误原文、JSON 键名与枚举值保持原样。';
 export const RECENT_MS = 3_600_000;
@@ -501,10 +501,10 @@ export async function jobCli(
   const reviewRound = Number(a.flags.round ?? 1);
   if (authors.length && !reviewReason)
     throw new Error('job: review requires --review-reason <用户原话或白名单命中说明>; 默认不评审（法无禁止皆可为）');
-  if (authors.length && card && !a.flags.dual && readJobs().jobs.some(j =>
+  if (authors.length && card && readJobs().jobs.some(j =>
     j.card === resolve(card) && (j.review_round ?? j.execution?.round ?? 1) === reviewRound &&
     (j.review_reason !== undefined || j.execution?.role === 'review') && ['queued', 'running', 'done'].includes(j.state)))
-    throw new Error('job: this --card and --round already has a review; use --dual with --review-reason to override');
+    throw new Error('job: this --card and --round already has a review');
   refreshBudgetQuota();
   let execution: Job['execution'];
   if (isTier(role)) {

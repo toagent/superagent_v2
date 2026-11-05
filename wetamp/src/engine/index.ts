@@ -27,6 +27,8 @@ import { caller, coord, repoScope } from '../coord';
 
 export const ENGINE_PROTOCOL_VERSION = 1;
 export const POST_PROMOTION_VERIFY_SHARD_COUNT = 24;
+export const ENGINE_ACTION_USAGE =
+  'promote <sha> [--bootstrap-evidence <path>] | verify <sha> --base <base-sha> | probe [G1|G2] | rollback | status | continuation <run> | hold <on|off|status> | adopt <run> <sha>';
 
 export interface EngineReceipt {
   sha: string;
@@ -832,42 +834,6 @@ export function adoptEngineSnapshot(
   }
 }
 
-export interface LegacyGateResult {
-  ok: boolean;
-  count: number;
-  runs: { run_id: string; status: string; path?: string; reason?: string }[];
-}
-
-export function gateLegacyRuns(): LegacyGateResult {
-  const runs: LegacyGateResult['runs'] = [];
-  for (const path of ledgerPaths()) {
-    let ledger: EngineLedger;
-    try {
-      ledger = readEngineLedger(path);
-    } catch (error) {
-      runs.push({
-        run_id: basename(path, '.json'),
-        status: 'unknown',
-        path,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-      continue;
-    }
-    if (ledger.engine_snapshot || ledger.rejected === ledger.archon_run_id) continue;
-    try {
-      const run = getRun(ledger.archon_run_id, ledger.repo);
-      if (run.status !== 'completed') runs.push({ run_id: ledger.run_id, status: run.status });
-    } catch (error) {
-      runs.push({
-        run_id: ledger.run_id,
-        status: 'unknown',
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return { ok: runs.length === 0, count: runs.length, runs };
-}
-
 export function engineStatus(): Record<string, unknown> {
   const current = currentEngineSnapshot();
   const counts: Record<string, Record<string, number>> = {};
@@ -952,15 +918,12 @@ export function engineCommand(args: string[]): unknown {
     throw new Error('usage: superagent engine hold <on|off|status>');
   }
   if (action === 'adopt') return adoptEngineSnapshot(sha ?? '', args[2] ?? '');
-  if (action === 'gate-legacy') return gateLegacyRuns();
   if (action === 'probe') {
     const level = sha ?? 'G1';
     if (level !== 'G1' && level !== 'G2') throw new Error('usage: superagent engine probe [G1|G2]');
     return runProbe(level);
   }
-  throw new Error(
-    'usage: superagent engine promote <sha> [--bootstrap-evidence <path>] | verify <sha> --base <base-sha> | probe [G1|G2] | rollback | status | continuation <run> | hold <on|off|status> | adopt <run> <sha> | gate-legacy'
-  );
+  throw new Error(`usage: superagent engine ${ENGINE_ACTION_USAGE}`);
 }
 
 export interface AutoPromoteDependencies {

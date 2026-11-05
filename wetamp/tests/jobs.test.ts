@@ -506,7 +506,7 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     ...extra,
   ];
   // prettier-ignore
-  test('review jobs require a reason and reject duplicate card rounds unless dual', async () => {
+  test('review jobs require a reason and reject duplicate card rounds', async () => {
     const card = join(tmp(), 'review.md');
     writeFileSync(card, 'review target');
     const args = ['job', 'exec', '--title', 'review', '--card', card, '--round', '2', '--author-model', 'author', '--', 'true'];
@@ -518,9 +518,7 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     const duplicate = run([...args.slice(0, -2), '--review-reason', '用户要求', '--', 'true']);
     expect(await duplicate.exited).toBe(1);
     expect(await new Response(duplicate.stderr as ReadableStream).text()).toContain('already has a review');
-    const dual = run([...args.slice(0, -2), '--review-reason', '用户要求双审', '--dual', '--', 'true']);
-    expect(await dual.exited).toBe(0);
-    expect(readJobs().jobs.filter(j => j.card === card)).toHaveLength(2);
+    expect(readJobs().jobs.filter(j => j.card === card)).toHaveLength(1);
   });
   const setClaudeDown = (): void => {
     const now = new Date();

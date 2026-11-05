@@ -461,7 +461,6 @@ describe('quick', () => {
             'tests/**',
             '--risk',
             'G2',
-            '--review',
             '--review-reason',
             '命中风险白名单',
             '--json',
@@ -517,7 +516,6 @@ describe('quick', () => {
       '120',
       '--console',
       'codex',
-      '--review',
       '--review-reason',
       '用户明确要求',
     ];
@@ -543,9 +541,9 @@ describe('quick', () => {
           '--accept-timeout'
         );
       expect(() => quickPlan(parseArgs([...args, '--console', 'other']))).toThrow('--console');
-      expect(() =>
-        quickPlan(parseArgs(args.filter(x => !['--review-reason', '用户明确要求'].includes(x))))
-      ).toThrow('--review-reason');
+      expect(() => quickPlan(parseArgs([...args, '--review-reason', ' ']))).toThrow(
+        '--review-reason'
+      );
       writeFileSync(card, ' ');
       expect(() => quickPlan(parseArgs(args))).toThrow('non-empty');
       expect(() => quickPlan(parseArgs([...args, '--card', join(root, 'missing')]))).toThrow();
@@ -1932,20 +1930,6 @@ describe('verbs (archon stub)', () => {
       reason: 'superseded',
     });
   });
-  // prettier-ignore
-  test('wait-on requires ownership, persists its dependency, and takeover returns responsibilities', () => {
-    const s = stub([run('failed')]), c = coordModule.coord(), who = coordModule.caller();
-    writeFileSync(ledgerPath('sa2'), JSON.stringify({ ...s.ledger, run_id: 'sa2', archon_run_id: 'r2' }));
-    c.claim(coordModule.runScope(loadLedger('sa2')), who);
-    expect(captured(() => main(['wait-on', 'sa1', '--on', 'sa2', '--reason', 'dependency'])).code).toBe(0);
-    expect(loadLedger('sa1').waiting_on).toMatchObject({ run: 'sa2', reason: 'dependency' });
-    const old = { ...who, session_id: 'old', pid: 2 ** 22, pid_start: 'gone' };
-    c.claim(coordModule.runScope(s.ledger), old, true, 'fixture');
-    expect(() => main(['wait-on', 'sa1', '--on', 'sa2'])).toThrow('current run owner');
-    writeFileSync(join(s.root, 'home', 'heartbeat.json'), JSON.stringify({ marshals: [{ owner: old, waiting: [{ id: 'sa1' }] }] }));
-    const claimed = JSON.parse(captured(() => main(['claim', 'sa1', '--takeover', '--reason', '用户授权'])).out);
-    expect(claimed.responsibilities).toEqual([{ id: 'sa1' }]);
-  });
   test('cancel without reason records unstated and rejects labels outside the closed set', () => {
     stub([run('running')]);
     expect(() => main(['cancel', 'sa1', '--reason', 'invented_label'])).toThrow(
@@ -2789,7 +2773,6 @@ describe('brief / land (archon stub)', () => {
     expect(() => main(['land', 'sa1', '--apply'])).toThrow(
       'legacy delivery removed; run is terminal'
     );
-    expect(() => main(['accept', 'sa1'])).toThrow('legacy delivery removed; run is terminal');
     withArtifacts('running', {});
     expect(captured(() => main(['land', 'sa1'])).code).toBe(1);
   });

@@ -11,6 +11,8 @@ import { Intake, type Task } from '../intake';
 import type { Plan } from '../plan';
 
 type SourceKind = 'run' | 'package' | 'job' | 'intake';
+export const EXPORT_USAGE =
+  'usage: superagent export --source-instance <v> --since <v> --until <v> --timezone <v> (--repo <v>...|--all-repos) --json';
 type State = 'pending' | 'running' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 interface ErrorItem { code: string; source_kind: SourceKind | null; repo_id: string | null; source_id: string | null; message: string; retryable: boolean }
 interface Attempt { attempt_id: string; raw_status: string | null; started_at: string | null; ended_at: string | null }

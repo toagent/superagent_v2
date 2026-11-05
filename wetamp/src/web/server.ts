@@ -571,7 +571,5 @@ export async function webCli(argv: string[]): Promise<number> {
     console.log(url);
     return 0;
   }
-  throw new Error(
-    'usage: superagent console start|stop|status|url [--open] (web is a compatibility alias)'
-  );
+  throw new Error('usage: superagent console start|stop|status|url [--open]');
 }

@@ -30,6 +30,7 @@ import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schema
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import {
   captureDelivery,
@@ -190,6 +191,7 @@ import {
   autoPromote,
   autoVerify,
   currentEngineSnapshot,
+  ENGINE_ACTION_USAGE,
   engineCommand,
   fixedEngineSnapshot,
   runEngineSnapshot,
@@ -268,7 +270,6 @@ export const OPTIONS = {
   'lint-override': { type: 'string' },
   'allow-overlap': { type: 'string' },
   adopt: { type: 'string' },
-  on: { type: 'string' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
   environment: { type: 'string', multiple: true },
@@ -276,14 +277,11 @@ export const OPTIONS = {
   accept: { type: 'string', multiple: true },
   scope: { type: 'string', multiple: true },
   risk: { type: 'string' },
-  review: { type: 'boolean' },
   'review-reason': { type: 'string' },
-  dual: { type: 'boolean' },
   'review-whitelist': { type: 'boolean' },
   'no-cache': { type: 'boolean' },
   base: { type: 'string' },
   worktree: { type: 'string' },
-  'task-kind': { type: 'string' },
   mode: { type: 'string' },
   repo: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
@@ -293,7 +291,7 @@ export const OPTIONS = {
   interval: { type: 'string' },
   watch: { type: 'boolean' },
   limit: { type: 'string' },
-  json: { type: 'boolean' }, // 输出本来就是 JSON；接受以兼容 superagent v1 调用方
+  json: { type: 'boolean' }, // board/models/status/brief/wait 等命令的机器可读输出开关
   full: { type: 'boolean' },
   'by-engine': { type: 'string' },
   'baseline-days': { type: 'string' },
@@ -340,10 +338,6 @@ interface Args {
 /** 严格模式：未知参数直接报错，不静默忽略。 */
 export function parseArgs(argv: string[]): Args {
   const { values, positionals } = parse({ args: argv, options: OPTIONS, allowPositionals: true });
-  if (values['task-kind'] !== undefined)
-    throw new Error(
-      'job is a support operation; use quick for coding, or land --apply for an accepted run'
-    );
   return { _: positionals, flags: values };
 }
 
@@ -363,7 +357,6 @@ type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrate
 // prettier-ignore
 interface PackageHistory { elapsed_ms: number; failed_rounds: number; first_failure?: { node: string; reason: string; at: string; evidence: string } }
 export interface Ledger {
-  waiting_on?: { run: string; reason?: string; since: string };
   rejected?: string;
   gc?: GcAction[];
   allow_overlap?: string;
@@ -1567,8 +1560,8 @@ export function quickPlan(a: Args): string {
   if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2')
     throw new Error('quick --risk must be G0|G1|G2');
   const reviewReason = a.flags['review-reason']?.trim();
-  if (a.flags.review && !reviewReason)
-    throw new Error('quick --review requires --review-reason <用户原话或白名单命中说明>');
+  if (a.flags['review-reason'] !== undefined && !reviewReason)
+    throw new Error('quick --review-reason requires a non-empty <用户原话或白名单命中说明>');
   const git = (...args: string[]): string => {
     const p = Bun.spawnSync(['git', ...args], {
       cwd: a.flags.repo ?? process.cwd(),
@@ -1604,7 +1597,7 @@ export function quickPlan(a: Args): string {
           timeout_s: acceptTimeout,
           cache: !a.flags['no-cache'],
         })),
-        ...(a.flags.review ? { review: true, review_reason: reviewReason } : {}),
+        ...(reviewReason ? { review: true, review_reason: reviewReason } : {}),
       },
     ],
   };
@@ -4385,73 +4378,86 @@ export function report(engine?: { commit: string; baselineDays: number }): Recor
 type OptionName = keyof typeof OPTIONS;
 interface CommandUsage {
   command: string;
+  audience: 'agent' | 'operator';
   positionals?: string;
   flags: readonly OptionName[];
+  operatorFlags?: readonly OptionName[];
 }
 
-// task-kind is globally parsed only to preserve its targeted compatibility error.
 // prettier-ignore
-export const CLI_GLOBAL_OPTIONS = ['help', 'json', 'task-kind'] as const satisfies readonly OptionName[];
+export const CLI_GLOBAL_OPTIONS = ['help', 'json'] as const satisfies readonly OptionName[];
 // prettier-ignore
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
-  { command: 'reclaim', flags: ['json'] },
-  { command: 'owner', positionals: '[path|run]', flags: [] },
-  { command: 'claim', positionals: '[path|run]', flags: ['takeover', 'reason'] },
-  { command: 'reauthorize', positionals: '<run>', flags: [] },
-  { command: 'release', positionals: '[path|run]', flags: [] },
-  { command: 'handoff', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
-  { command: 'inbox', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note', 'wait', 'timeout'] },
-  { command: 'plan', positionals: 'check <file>', flags: ['lint-override'] },
-  { command: 'run', positionals: '<plan.json>', flags: ['fake', 'lint-override', 'allow-overlap', 'adopt'] },
-  { command: 'quick', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
-  { command: 'wait', positionals: '<run>...', flags: ['timeout'] },
-  { command: 'wait-on', positionals: '<run>', flags: ['on', 'reason'] },
-  { command: 'status', flags: [] },
-  { command: 'brief', flags: [] },
-  { command: 'land', positionals: '<run>', flags: ['apply'] },
-  { command: 'resume', positionals: '<run>', flags: ['reconciled'] },
-  { command: 'cancel', positionals: '<run>', flags: ['reason'] },
-  { command: 'recover', positionals: '<run>', flags: ['evidence', 'reconciled'] },
-  { command: 'abandon', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
-  { command: 'decide', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
-  { command: 'ask', positionals: '[status <id>|answer <id> <option>]', flags: ['source', 'spec', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
-  { command: 'notify', flags: ['id', 'title', 'body', 'priority'] },
-  { command: 'ntfy', positionals: 'pause|resume|status', flags: [] },
-  { command: 'accept', positionals: '<run>', flags: ['pkg'] },
-  { command: 'report', flags: ['full', 'since', 'by-engine', 'baseline-days', 'review-whitelist'] },
-  { command: 'memory', positionals: '[propose|publish]', flags: ['dry-run'] },
-  { command: 'quota', flags: [] },
-  { command: 'usage', flags: ['since', 'repo', 'refresh'] },
-  { command: 'console', positionals: 'start|stop|status|url', flags: ['open'] },
-  { command: 'gc', flags: ['dry-run'] },
-  { command: 'scratch-clean', flags: ['session', 'dry-run'] },
-  { command: 'supervise-tick', flags: ['schedule', 'runs', 'no-global'] },
-  { command: 'maintenance-tick', flags: [] },
-  { command: 'engine', positionals: 'promote <sha> | verify <sha> --base <base-sha> | probe [G1|G2] | rollback | status | adopt <run> <sha> | gate-legacy', flags: ['bootstrap-evidence', 'base'] },
-  { command: 'health', flags: ['cwd', 'verbose'] },
-  { command: 'heartbeat', flags: ['watch', 'cwd', 'all'] },
-  { command: 'board', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
-  { command: 'models', flags: ['mode'] },
-  { command: 'job exec', positionals: '[-- <cmd...>]', flags: ['title', 'request-ref', 'card', 'prompt-file', 'output', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'review-reason', 'dual', 'worktree', 'base'] },
-  { command: 'job clean', positionals: '<id>', flags: [] },
-  { command: 'jobs', flags: ['all'] },
-  { command: 'rollover', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
+  { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
+  { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt'], operatorFlags: ['fake', 'lint-override'] },
+  { command: 'plan', audience: 'agent', positionals: 'check <file>', flags: [], operatorFlags: ['lint-override'] },
+  { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
+  { command: 'status', audience: 'agent', positionals: '<run>', flags: [] },
+  { command: 'brief', audience: 'agent', positionals: '<run>', flags: [] },
+  { command: 'land', audience: 'agent', positionals: '<run>', flags: ['apply'] },
+  { command: 'resume', audience: 'agent', positionals: '<run>', flags: ['reconciled'] },
+  { command: 'recover', audience: 'agent', positionals: '<run>', flags: ['evidence', 'reconciled'] },
+  { command: 'cancel', audience: 'agent', positionals: '<run>', flags: ['reason'] },
+  { command: 'abandon', audience: 'agent', positionals: '<run>...', flags: ['mine', 'status', 'before', 'reason'] },
+  { command: 'decide', audience: 'agent', positionals: '<run> approve|reject|retry', flags: ['pkg', 'hint', 'all-held'] },
+  { command: 'owner', audience: 'agent', positionals: '[path|run]', flags: [] },
+  { command: 'claim', audience: 'agent', positionals: '[path|run]', flags: ['takeover', 'reason'] },
+  { command: 'release', audience: 'agent', positionals: '[path|run]', flags: [] },
+  { command: 'handoff', audience: 'agent', flags: ['to', 'kind', 'title', 'body-file', 'evidence', 'severity'] },
+  { command: 'inbox', audience: 'agent', positionals: '[accepted|rejected|done]', flags: ['all', 'ack', 'note', 'wait', 'timeout'] },
+  { command: 'ask', audience: 'agent', positionals: '[status <id>|answer <id> <option>]', flags: ['source', 'spec', 'title', 'body', 'option', 'risk', 'expires-at', 'default-on-expiry', 'callback', 'recommend', 'why'] },
+  { command: 'notify', audience: 'agent', flags: ['id', 'title', 'body', 'priority'] },
+  { command: 'job exec', audience: 'agent', positionals: '[-- <cmd...>]', flags: ['title', 'request-ref', 'card', 'prompt-file', 'output', 'log', 'role', 'mode', 'risk', 'round', 'author-model', 'review-reason', 'worktree', 'base'] },
+  { command: 'jobs', audience: 'agent', flags: ['all'] },
+  { command: 'models', audience: 'agent', flags: ['mode'] },
+  { command: 'report', audience: 'agent', flags: ['full', 'since'], operatorFlags: ['by-engine', 'baseline-days', 'review-whitelist'] },
+  { command: 'quota', audience: 'agent', flags: [] },
+  { command: 'health', audience: 'agent', flags: ['cwd', 'verbose'] },
+  { command: 'rollover', audience: 'agent', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
+  { command: 'intake', audience: 'agent', positionals: INTAKE_USAGE.slice('intake '.length), flags: ['repo'] },
+  { command: 'reclaim', audience: 'operator', flags: ['json'] },
+  { command: 'reauthorize', audience: 'operator', positionals: '<run>', flags: [] },
+  { command: 'ntfy', audience: 'operator', positionals: 'pause|resume|status', flags: [] },
+  { command: 'memory', audience: 'operator', positionals: '[propose|publish]', flags: ['dry-run'] },
+  { command: 'usage', audience: 'operator', flags: ['since', 'repo', 'refresh'] },
+  { command: 'console', audience: 'operator', positionals: 'start|stop|status|url', flags: ['open'] },
+  { command: 'gc', audience: 'operator', flags: ['dry-run'] },
+  { command: 'scratch-clean', audience: 'operator', flags: ['session', 'dry-run'] },
+  { command: 'supervise-tick', audience: 'operator', flags: ['schedule', 'runs', 'no-global'] },
+  { command: 'maintenance-tick', audience: 'operator', flags: [] },
+  { command: 'engine', audience: 'operator', positionals: ENGINE_ACTION_USAGE, flags: ['bootstrap-evidence', 'base'] },
+  { command: 'heartbeat', audience: 'operator', flags: ['watch', 'cwd', 'all'] },
+  { command: 'board', audience: 'operator', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
+  { command: 'job clean', audience: 'operator', positionals: '<id>', flags: [] },
+  { command: 'export', audience: 'operator', flags: [] },
 ];
 
 const optionUsage = (name: OptionName): string => {
   const option = OPTIONS[name];
-  const value = option.type === 'string' ? ` <${name}>${'multiple' in option ? '...' : ''}` : '';
+  const value = option.type === 'string' ? ` <v>${'multiple' in option ? '...' : ''}` : '';
   return ` [--${name}${value}]`;
 };
-export const USAGE = [
-  'usage: superagent <command> [options]',
-  '  export --source-instance <id> --since <RFC3339> --until <RFC3339> --timezone <IANA> (--repo <path>...|--all-repos) --json',
-  ...CLI_COMMAND_USAGE.map(
-    ({ command, positionals, flags }) =>
-      `  ${command}${positionals ? ` ${positionals}` : ''}${flags.map(optionUsage).join('')}`
-  ),
-  '  global: [--help] [--json] (--task-kind is rejected)',
-].join('\n');
+const loadExport = createRequire(import.meta.url);
+const usageLine = (entry: CommandUsage, all: boolean): string => {
+  if (entry.command === 'export') {
+    const { EXPORT_USAGE } = loadExport('./export') as typeof import('./export');
+    return `  ${EXPORT_USAGE.replace(/^usage: superagent /, '')}`;
+  }
+  const flags = all ? [...entry.flags, ...(entry.operatorFlags ?? [])] : entry.flags;
+  return `  ${entry.command}${entry.positionals ? ` ${entry.positionals}` : ''}${flags.map(optionUsage).join('')}`;
+};
+const renderUsage = (all: boolean): string =>
+  [
+    'usage: superagent <command> [options]',
+    ...CLI_COMMAND_USAGE.filter(command => all || command.audience === 'agent').map(command =>
+      usageLine(command, all)
+    ),
+    '  输出均为 JSON；退出码：0 完成 1 失败 2 取消 3 待决策 4 运行中 5 别名漂移 64 用法错误 75 暂拒可重试',
+    '  运维命令：superagent --help --all',
+    `  agent 文档：${join(WETAMP, 'docs/agent.md')}`,
+  ].join('\n');
+export const USAGE = renderUsage(false);
+export const allUsage = (): string => renderUsage(true);
 
 function tickOutput(
   mode: TickMode = {},
@@ -4682,10 +4688,7 @@ export function main(argv: string[]): number {
   }
   const [verb, target] = a._;
   if (a.flags.help || verb === 'help') {
-    console.log(
-      USAGE +
-        `\ncontinuous intake: ${INTAKE_USAGE} [arguments] [--repo path]; context|resume [bytes] [cursor]; backlog [parent-task]`
-    );
+    console.log(a.flags.all ? allUsage() : USAGE);
     return 0;
   }
   if (
@@ -4905,26 +4908,6 @@ export function main(argv: string[]): number {
       return startRun(need(target, 'run <plan.json>'), a);
     case 'quick':
       return startRun(quickPlan(a), a);
-    case 'wait-on': {
-      const l = ledger(true),
-        on = need(a.flags.on, 'wait-on <run> --on <run2>'),
-        awaited = coord().resolveRun(on),
-        who = caller();
-      if (!awaited) throw new Error(`wait-on: unknown run ${on}`);
-      if (!same(coord().owner(runScope(l)).owner, who))
-        throw new Error('wait-on: only the current run owner may mark a wait');
-      return controlled(l, () => {
-        updateLedger(l, current => {
-          current.waiting_on = {
-            run: awaited.run_id,
-            ...(a.flags.reason?.trim() ? { reason: a.flags.reason.trim() } : {}),
-            since: new Date().toISOString(),
-          };
-        });
-        print({ run: l.run_id, waiting_on: l.waiting_on });
-        return 0;
-      });
-    }
     case 'wait': {
       const t = Number(a.flags.timeout ?? 3000);
       if (!Number.isFinite(t) || t <= 0) {
@@ -5120,10 +5103,6 @@ export function main(argv: string[]): number {
       };
       return historical ? display() : controlled(l, display);
     }
-    case 'accept': {
-      ledger();
-      throw new Error('legacy delivery removed; run is terminal');
-    }
     case 'gc':
       print({ gc: gc(a.flags['dry-run']) });
       return 0;
@@ -5148,9 +5127,7 @@ export function main(argv: string[]): number {
         ...(a.flags.base ? ['--base', a.flags.base] : []),
       ]);
       print(result);
-      return ['gate-legacy', 'probe'].includes(a._[1] ?? '') && !(result as { ok?: boolean }).ok
-        ? 1
-        : 0;
+      return a._[1] === 'probe' && !(result as { ok?: boolean }).ok ? 1 : 0;
     }
     case 'report': {
       if (a.flags['review-whitelist']) {

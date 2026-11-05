@@ -46,7 +46,6 @@ import {
 } from '../cli';
 
 export interface BoardRow {
-  waiting_on?: Ledger['waiting_on'];
   humanDecision?: Decision;
   askReason?: ReturnType<typeof holdOf>;
   nativeState?: RunView['status'];
@@ -215,7 +214,6 @@ export function rowOf(
     /* Missing outcome provides no reason. */
   }
   return {
-    ...(l.waiting_on ? { waiting_on: l.waiting_on } : {}),
     humanDecision:
       c.state === 'abandoned'
         ? undefined

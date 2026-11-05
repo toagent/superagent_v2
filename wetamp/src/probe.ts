@@ -147,7 +147,7 @@ export function runProbe(level: ProbeLevel, shimOverride?: string): ProbeEvidenc
         accept,
         '--risk',
         level,
-        ...(level === 'G2' ? ['--review'] : []),
+        ...(level === 'G2' ? ['--review-reason', 'engine probe G2'] : []),
         '--json',
       ]),
       launch = lastJson(launched.stdout?.toString() ?? ''),

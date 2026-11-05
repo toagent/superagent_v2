@@ -104,7 +104,7 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const key = `unknown\0${cwd}`, found = groups.get(key), value = found ?? { owner: 'unknown' as const, owner_key: 'unknown' as const, cwd, project: basename(cwd), running: [], waiting: [], line: '无人负责' };
     value.waiting.push(item); groups.set(key, value); unowned++;
   };
-  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id)), rows = new Map(snapshot.rows.map(row => [row.run_id, row]));
+  const projected = new Map(cockpit.runs.map(run => [run.id, run])), active = new Set(cockpit.active.map(run => run.id));
   for (const row of snapshot.rows) {
     if (row.archon_id && adopted.has(row.archon_id)) continue;
     if (['completed', 'cancelled', 'abandoned'].includes(row.state)) continue;
@@ -123,12 +123,6 @@ export function heartbeat(snapshot: Snapshot, cockpit: Cockpit, now: number, pre
     const marshal = group(owner, row.repo);
     if (!marshal) continue;
     const run = projected.get(row.run_id), nodes = row.activeNodes?.length ? row.activeNodes : [{ id: row.nodes.current ?? '', role: row.nodes.currentRole, model: row.model }];
-    const dependency = row.waiting_on && rows.get(row.waiting_on.run);
-    if (row.waiting_on && dependency && ![0, 1, 2].includes(dependency.exit ?? -1)) {
-      const label = `等待 ${row.waiting_on.run.slice(0, 12)}${row.waiting_on.reason ? `：${row.waiting_on.reason}` : ''}`;
-      marshal.waiting.push({ id: row.run_id, kind: 'run', since: row.waiting_on.since, what: run?.stage ?? row.state, code: 'waiting_on', waiting_for: label, waited_s: age(row.waiting_on.since, now) ?? 0, actionable: false });
-      continue;
-    }
     if (row.state === 'running' && active.has(row.run_id)) for (const node of nodes) marshal.running.push({
       id: row.run_id, kind: 'run', title: row.engine?.title ?? '任务标题未知', stage: run?.stage ?? row.state,
       ...(node.id ? { node: node.id } : {}), coder: node.role === 'coder', role: roleTag(node.role, node.model), model: node.model, state: row.state,

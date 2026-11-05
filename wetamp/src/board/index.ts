@@ -10,7 +10,7 @@ import { webState, webUrl } from '../web/server';
 import { requestUsageRefresh } from '../usage';
 import { residentHash } from '../generate';
 
-const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval s] [--limit n]';
+const USAGE = 'usage: superagent board [run] [--once] [--json] [--interval <v>] [--limit <v>]';
 
 const positive = (v: string | undefined, dflt: number, name: string): number => {
   const n = v === undefined ? dflt : Number(v);

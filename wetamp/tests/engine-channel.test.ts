@@ -15,7 +15,6 @@ import {
   assertEngineAccess,
   continuationOnCurrent,
   engineStatus,
-  gateLegacyRuns,
   runningEngineSnapshot,
   type EngineReceipt,
 } from '../src/engine';
@@ -189,47 +188,6 @@ test('served runs remain scoped across promotion rejection and rollback', () => 
   delete process.env.SA_SERVED_RUN;
   for (const run of ['running', 'paused', 'crashed'])
     expect(() => assertEngineAccess(['resume', run])).not.toThrow();
-});
-
-test('legacy gate counts every executable or unknown run and excludes completed and rejected', () => {
-  const { sa } = engineHome();
-  const statuses = {
-    online: 'running',
-    pending: 'pending',
-    ownerUnknown: 'running',
-    failed: 'failed',
-    paused: 'paused',
-    cancelled: 'cancelled',
-    completed: 'completed',
-  } as const;
-  for (const run of [...Object.keys(statuses), 'unknown']) ledger(sa, run);
-  ledger(sa, 'rejected', { rejected: true });
-  writeFileSync(join(sa, 'runs', 'broken.json'), '{');
-  writeFileSync(join(sa, 'runs', 'identityless.json'), '{}');
-  query = spyOn(archon, 'getRun').mockImplementation(id => {
-    const name = id.slice('archon-'.length) as keyof typeof statuses;
-    if (name === ('unknown' as keyof typeof statuses)) throw new Error('state unavailable');
-    return { id, status: statuses[name] };
-  });
-
-  expect(gateLegacyRuns()).toMatchObject({
-    ok: false,
-    count: 9,
-    runs: expect.arrayContaining([
-      { run_id: 'cancelled', status: 'cancelled' },
-      expect.objectContaining({ run_id: 'unknown', status: 'unknown' }),
-      expect.objectContaining({
-        run_id: 'broken',
-        status: 'unknown',
-        path: join(sa, 'runs', 'broken.json'),
-      }),
-      expect.objectContaining({
-        run_id: 'identityless',
-        status: 'unknown',
-        path: join(sa, 'runs', 'identityless.json'),
-      }),
-    ]),
-  });
 });
 
 test('snapshot gc keeps current, previous and recoverable references, then collects completed history', () => {

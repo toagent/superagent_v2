@@ -141,7 +141,6 @@ export function detailOf(l: Ledger, row: BoardRow): Detail {
   if (row.state.startsWith('held:'))
     d.next = [
       `superagent decide ${l.run_id} approve|reject|retry [--pkg id]`,
-      `superagent accept ${l.run_id}`,
       `superagent recover ${l.run_id}`,
     ];
   return d;
