@@ -272,6 +272,7 @@ export const OPTIONS = {
   'lint-override': { type: 'string' },
   'allow-overlap': { type: 'string' },
   adopt: { type: 'string' },
+  fresh: { type: 'boolean' },
   goal: { type: 'string' },
   'accept-timeout': { type: 'string' },
   environment: { type: 'string', multiple: true },
@@ -1637,6 +1638,40 @@ function checkedPlan(planPath: string, override?: string) {
   return { plan: rules.plan, plan_lint, rules_added: rules.added };
 }
 
+export interface AdoptCandidate {
+  run_id: string;
+  started_at: string;
+  state: string;
+  commits_ahead: number;
+}
+const packageIdentity = (plan: Plan): string => {
+  const pkg = plan.packages[0];
+  return plan.packages.length === 1 && pkg.id === 'quick' && typeof pkg.notes === 'string'
+    ? `quick:${createHash('sha256').update(pkg.notes).digest('hex')}`
+    : JSON.stringify(plan.packages.map(({ id, title }) => [id, title]));
+};
+
+/** Two hours comes from E7's observed cancel-and-redispatch window. Any unreadable evidence fails open. */
+// prettier-ignore
+export function adoptCandidates(plan: Plan, now = Date.now()): AdoptCandidate[] {
+  const identity = packageIdentity(plan);
+  return ledgers().flatMap(previous => {
+    try {
+      if ('error' in previous || repoScope(previous.repo).id !== repoScope(plan.repo).id) return [];
+      const age = now - Date.parse(previous.started_at), oldPlan = planOf(previous),
+        run = getRun(previous.archon_run_id, previous.repo), state = classify(run).state;
+      if (!Number.isFinite(age) || age < 0 || age > 2 * 60 * 60e3 || packageIdentity(oldPlan) !== identity ||
+        (!['cancelled', 'failed'].includes(state) && !state.startsWith('held:')) || !run.working_path ||
+        !statSync(run.working_path, { throwIfNoEntry: false })?.isDirectory()) return [];
+      const count = Bun.spawnSync(['git', '-C', run.working_path, 'rev-list', '--count', `${oldPlan.base_ref}..${previous.branch}`],
+        { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
+      const commits_ahead = count.exitCode === 0 ? Number(count.stdout.toString().trim()) : 0;
+      return Number.isSafeInteger(commits_ahead) && commits_ahead > 0
+        ? [{ run_id: previous.run_id, started_at: previous.started_at, state, commits_ahead }] : [];
+    } catch { return []; }
+  }).sort((a, b) => b.started_at.localeCompare(a.started_at)).slice(0, 1);
+}
+
 // prettier-ignore
 export function runMemoryAdmission(probe: () => MemoryReading = memoryReading):
   { ok: true; memory: MemoryReading } | { ok: false; memory: MemoryReading; exit: typeof EXIT_ADMISSION; reason: 'admission_busy'; detail: string } {
@@ -1655,12 +1690,24 @@ function startRun(planPath: string, a: Args): number {
   let release: (() => void) | undefined;
   let mode: 'controller' | 'worker' | 'unknown' = 'unknown';
   let plan_lint: ReturnType<typeof lintPlan> | undefined;
+  let adopt_candidates: AdoptCandidate[] = [];
   try {
     mode = installMode();
     preflight();
     const rulesChecked = checkedPlan(planPath, a.flags['lint-override']),
       plan = rulesChecked.plan,
       adoptId = a.flags.adopt?.trim();
+    adopt_candidates = adoptCandidates(plan);
+    const candidate = adopt_candidates[0];
+    if (adopt_candidates.length) {
+      const command = candidate.state.startsWith('held:')
+        ? `superagent resume ${candidate.run_id}；或 superagent run ${planPath} --adopt ${candidate.run_id}`
+        : `superagent run ${planPath} --adopt ${candidate.run_id}`;
+      rulesChecked.plan_lint.warnings.push(
+        a.flags.fresh ? `fresh 明确放弃续跑：${candidate.run_id}` : `adopt_candidate：${command}`
+      );
+      if (!a.flags.fresh && !adoptId) rulesChecked.plan_lint.rejected = true;
+    }
     const health = refreshClaudeHealth().health,
       admissionHealth = claudeAdmission(plan.mode, health);
     if (!admissionHealth.ok) {
@@ -1971,6 +2018,7 @@ function startRun(planPath: string, a: Args): number {
           default_contact,
           overlap_warnings,
           plan_lint,
+          adopt_candidates,
           ...(recent_failures.length ? { recent_failures } : {}),
           ...quota,
         });
@@ -1984,6 +2032,7 @@ function startRun(planPath: string, a: Args): number {
       phase,
       mode,
       plan_lint,
+      adopt_candidates,
       reason: redact((e as Error).message),
     };
     mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });

@@ -38,6 +38,7 @@ import type { RunView } from '../src/archon';
 import {
   classify,
   classifyRun,
+  adoptCandidates,
   decisionQuestion,
   EXIT,
   EXIT_ALIAS_DRIFT,
@@ -371,6 +372,36 @@ test('plan precheck blocking ignores lint override', () => {
   expect(result.exitCode).not.toBe(0);
   expect(result.stderr.toString()).toContain('base_ref 不存在 missing.test.ts');
   expect(s.calls()).toEqual([]);
+});
+// prettier-ignore
+test('recent matching coded run requires adopt unless fresh is explicit', () => {
+  const s = stub([run('failed')]), repo = gitRepo(s.root);
+  process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+  writeFileSync(join(repo, 'base'), 'base');
+  sh('git add base && git -c user.name=t -c user.email=t@l commit -qm base', repo);
+  const base = sh('git rev-parse HEAD', repo).trim();
+  sh('git switch -qc sa/sa1', repo);
+  writeFileSync(join(repo, 'coded'), 'coded');
+  sh('git add coded && git -c user.name=t -c user.email=t@l commit -qm coded', repo);
+  const path = fixturePlan(s.root, repo, p => {
+    p.base_ref = base;
+    p.packages = [{ ...(p.packages as object[])[0], id: 'quick', title: 'card.md', notes: 'card' }];
+  });
+  mkdirSync(s.ledger.gen_dir, { recursive: true });
+  writeFileSync(join(s.ledger.gen_dir, 'plan.json'), readFileSync(path));
+  Object.assign(s.ledger, { plan: path, repo, branch: 'sa/sa1', started_at: new Date().toISOString() });
+  writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+  writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed', { working_path: repo })));
+  expect(adoptCandidates(loadPlan(path))).toMatchObject([{ run_id: 'sa1', commits_ahead: 1 }]);
+  s.ledger.branch = 'main'; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]);
+  s.ledger.branch = 'sa/sa1'; s.ledger.started_at = new Date(Date.now() - 2 * 60 * 60e3 - 1).toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]);
+  s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('completed', { working_path: repo }))); expect(adoptCandidates(loadPlan(path))).toEqual([]);
+  delete (s.ledger as Partial<Ledger>).started_at; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]); s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed', { working_path: repo })));
+  const rejected = captured(() => main(['run', path, '--fake']));
+  expect(JSON.parse(rejected.out)).toMatchObject({ plan_lint: { rejected: true }, adopt_candidates: [{ run_id: 'sa1' }] });
+  const fresh = captured(() => main(['run', path, '--fake', '--fresh', '--allow-overlap', 'fixture']));
+  expect(fresh.code, fresh.out).toBe(0);
+  expect(captured(() => main(['run', path, '--fake', '--adopt', 'sa1', '--allow-overlap', 'fixture'])).code).toBe(0);
 });
 
 describe('quick', () => {
