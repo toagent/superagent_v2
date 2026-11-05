@@ -52,7 +52,7 @@ const decide = (input: Omit<DecisionInput, 'reviewRounds'> & { reviewRounds?: nu
 const disposition = (...args: Parameters<typeof rawDisposition>) =>
   rawDisposition(args[0], args[1], args[2], args[3], args[4], args[5] ?? MAX_ROUNDS);
 
-test('FALSE_HANDBACK uses terminal attempt metadata and structured provider tool calls', () => {
+test('FALSE_HANDBACK uses terminal attempt metadata and structured provider activity', () => {
   const coder = JSON.stringify({ status: 'partial', error_class: 'task', needs: [] });
   const terminal = (durationMs: number) => ({
     event_type: 'node_completed',
@@ -64,8 +64,17 @@ test('FALSE_HANDBACK uses terminal attempt metadata and structured provider tool
     step_name: 'code-a',
     data: { attemptId: 'attempt-1', event: { type: 'tool_call', toolCallId: 't', name: 'Read' } },
   } as const;
+  const taskId = 'command:th:1',
+    taskType = 'command_execution',
+    description = 'rg x',
+    event = { type: 'subtask', taskId, taskType, description, status: 'started' } as const,
+    subtask = (attemptId: string) => ({ ...tool, data: { attemptId, event } });
   expect(falseHandbackEvidence([terminal(10_600)], coder)).toBe('events:code-a:0');
   expect(falseHandbackEvidence([tool, terminal(22_800)], coder)).toBeUndefined();
+  expect(falseHandbackEvidence([subtask('attempt-1'), terminal(22_800)], coder)).toBeUndefined();
+  expect(falseHandbackEvidence([subtask('attempt-2'), terminal(22_800)], coder)).toBe(
+    'events:code-a:1'
+  );
   expect(falseHandbackEvidence([terminal(120_000)], coder)).toBeUndefined();
   expect(
     falseHandbackEvidence([terminal(10_600)], JSON.stringify({ status: 'done', needs: [] }))

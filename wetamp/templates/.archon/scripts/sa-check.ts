@@ -2691,7 +2691,7 @@ export function falseHandbackEvidence(events: RunEvent[], raw: string): string |
       event.event_type === 'provider_event' &&
       event.step_name === node &&
       event.data?.attemptId === attempt &&
-      event.data.event?.type === 'tool_call'
+      (event.data.event?.type === 'tool_call' || event.data.event?.type === 'subtask')
   );
   return toolCalls.length === 0 ? `events:${node}:${String(terminal.index)}` : undefined;
 }
