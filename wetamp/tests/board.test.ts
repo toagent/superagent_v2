@@ -586,10 +586,30 @@ describe('data rows', () => {
       undefined,
       () => statuses
     );
+    const limited = await load(2);
     // prettier-ignore
-    expect((await load(2)).rows.map(r => r.run_id).sort()).toEqual(['bad', 'done-19', 'done-20', 'live']);
-    expect(callLines()[0]).toContain('a-done-20,a-done-19,a-live');
-    expect(callLines()[0]).not.toContain('a-done-18');
+    expect(limited.rows.map(r => r.run_id).sort()).toEqual(['bad', 'done-19', 'done-20', 'live']);
+    expect(limited.summary).toMatchObject({ runs: 23, 'state:completed': 21, 'state:running': 1 });
+    expect(calls()).toBe(1);
+    expect(callLines()[0]).toContain('a-done-20');
+    expect(callLines()[0]).toContain('a-done-18');
+    expect(callLines()[0]).toContain('a-live');
+  });
+
+  test('gate evidence mtime invalidates the full-summary cache', async () => {
+    const output = join(root, 'output'),
+      art = join(output, 'artifacts', 'runs', 'a-done');
+    ledger('done', { status: 'completed', output_root: output });
+    mkdirSync(art, { recursive: true });
+    const load = createLoader(),
+      before = await load(1);
+    writeFileSync(
+      join(art, 'gate-m1-r1.json'),
+      JSON.stringify({ decision: { kind: 'debt', reason: null, evidence: [], debt: ['later'] } })
+    );
+    const after = await load(1);
+    expect(before.summary.debt).toBe(0);
+    expect(after.summary.debt).toBe(1);
   });
 });
 

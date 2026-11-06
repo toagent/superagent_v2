@@ -40,6 +40,7 @@ import {
   loadLedger,
   summarize,
   evidenceJson,
+  evidenceGates,
   decisionOf,
   type Ledger,
   type Pair,
@@ -542,21 +543,18 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       }
     }
     mark('owners_presence');
-    const uncached = visibleIds.filter(({ id }) => !reusable.has(id));
     let queried = new Map<string, RunView | Error>();
-    const queryEntries = uncached.flatMap(({ id }) => { const ledger = ledgers.get(id); return typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
-    const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
-    if (uncached.length && firstLedger) {
+    const queryEntries = ids.flatMap(({ id }) => { const ledger = visible.has(id) ? ledgers.get(id) : initialLedgers.get(id); return reusable.has(id) || typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
+    const firstLedger = [...initialLedgers.values()].find((l): l is Ledger => typeof l !== 'string');
+    if (queryEntries.length && firstLedger) {
       if (first || !process.env.SA_ARCHON_BIN) {
         try {
           const batch = await getRunsAsync(queryEntries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
-          for (const { id } of uncached) {
-            const l = ledgers.get(id);
-            if (typeof l !== 'string' && l !== undefined)
-              queried.set(
-                id,
-                batch.get(l.archon_run_id) ?? new RunQueryError('not_found', l.archon_run_id)
-              );
+          for (const { id, ledger } of queryEntries) {
+            queried.set(
+              id,
+              batch.get(ledger.archon_run_id) ?? new RunQueryError('not_found', ledger.archon_run_id)
+            );
           }
         } catch {
           queried = await queryRuns(queryEntries, timeoutMs, signal);
@@ -567,6 +565,14 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     }
     mark('query_runs');
     first = false;
+    for (const { id, mtimeMs } of ids) {
+      if (visible.has(id) || reusable.has(id)) continue;
+      const ledger = initialLedgers.get(id), run = queried.get(id);
+      if (typeof ledger !== 'string' && ledger && run && !(run instanceof Error)) {
+        cache.set(id, { run, mtimeMs });
+        ledgerCache.set(id, ledger);
+      }
+    }
     terminal = 0;
     const results = visibleIds.map(({ id, mtimeMs }) => {
       const l = ledgers.get(id);
@@ -602,7 +608,6 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         pending.set(key, (pending.get(key) ?? 0) + 1);
       }
     const rows: BoardRow[] = [];
-    const pairs: Pair[] = [];
     const bad: string[] = [];
     for (const r of results) {
       if (r.row) {
@@ -611,7 +616,6 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         continue;
       }
       const { l } = r;
-      pairs.push({ ledger: l, run: r.run ?? r.err });
       if (!r.run) {
         rows.push(
           unreadableRow(l.run_id, tail(r.err.message, 200), l, r.err instanceof RunQueryError)
@@ -654,20 +658,37 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         rowCache.set(l.run_id, row);
     }
     mark('rows');
-    const pairIds = pairs.map(pair => pair.ledger.run_id).sort().join('\0');
-    const summaryKey = visibleIds.map(({ id, mtimeMs }) => `${id}:${String(mtimeMs)}`).sort().join('\0');
+    const fullPairs = ids.flatMap(({ id }) => {
+      const ledger = ledgers.get(id) ?? initialLedgers.get(id);
+      if (typeof ledger === 'string' || !ledger) return [];
+      return [{ ledger, run: cache.get(id)?.run ?? queried.get(id) ?? new RunQueryError('not_found', ledger.archon_run_id) }];
+    });
+    const pairIds = fullPairs.map(pair => pair.ledger.run_id).sort().join('\0');
+    const gateKey = fullPairs.flatMap(({ ledger, run }) => {
+      if (run instanceof Error) return [];
+      try {
+        const art = artifactsOf(run);
+        return evidenceGates(ledger, art).map(file => `${ledger.run_id}:${file}:${String(statSync(join(art, file), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`);
+      } catch {
+        return [`${ledger.run_id}:gate_unreadable`];
+      }
+    });
+    const summaryKey = [...ids.map(({ id, mtimeMs }) => `${id}:${String(mtimeMs)}`), ...gateKey, `closures:${String(statSync(join(home().sa, 'debt', 'closures.jsonl'), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`].sort().join('\0');
     const activeRuns = results.some(r => 'run' in r && r.run && ACTIVITY.has(r.run.status));
-    const s = summaryCache?.ids === pairIds && (summaryCache.key === summaryKey || activeRuns)
+    const s = summaryCache?.ids === pairIds && summaryCache.key === summaryKey
       ? summaryCache.value
-      : summarize(pairs);
+      : summarize(fullPairs);
     mark('summarize');
     // prettier-ignore
     const activity = loadActivity(now, signal, results.flatMap(r => 'l' in r && r.run && ACTIVITY.has(r.run.status) ? [{ run_id: r.l.run_id, cwd: r.l.repo, controller: owners.get(r.l.run_id)?.owner ?? null }] : []));
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
-    s.runs = results.length;
-    s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];
-    if (summaryCache?.ids !== pairIds || summaryCache.key === summaryKey || !activeRuns)
-      summaryCache = { ids: pairIds, key: summaryKey, value: s };
+    s.runs = ids.length;
+    const ledgerBad = ids.flatMap(({ id }) => {
+      const error = initialLedgers.get(id);
+      return typeof error === 'string' ? [`${id}: ${error}`] : [];
+    });
+    s.unreadable = [...new Set([...ledgerBad, ...bad, ...(s.unreadable as string[])])];
+    summaryCache = { ids: pairIds, key: summaryKey, value: s };
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
     let asks: Snapshot['asks'];
     try {
