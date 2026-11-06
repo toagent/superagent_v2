@@ -1163,6 +1163,7 @@ test('summarize, report and the board share one summary', async () => {
     agent_ran_acceptance,
     slow_nodes,
     jobs,
+    retro_coverage,
     recorded_blockers,
     human_decisions,
     delivery,
@@ -1206,6 +1207,7 @@ test('summarize, report and the board share one summary', async () => {
     phase_coverage: { queue_ms: '0/0', prepare_ms: '0/0', exec_ms: '0/0' },
   });
   expect(repo_missing).toEqual([]);
+  expect(retro_coverage).toEqual({ with_retro: 0, terminal: 2 });
   expect(interventions).toMatchObject({ by_run: { g: 'unknown', f: 'unknown' }, unknown: 2 });
   expect(usage).toMatchObject({ total: { calls: 0, coverage: '0/0', input: 'unknown' } });
   expect(expected).toMatchObject({
