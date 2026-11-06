@@ -457,10 +457,12 @@ export function createDemandSnapshot(
   let timer: Promise<void> | undefined;
   const active = (): boolean => viewedAt !== undefined && now() - viewedAt <= 15_000;
   const arm = (): void => {
-    if (timer || !active()) return;
-    timer = wait(250).then(() => {
+    if (timer || pending || loadedAt === undefined || !active()) return;
+    timer = wait(Math.max(0, freshMs - (now() - loadedAt))).then(() => {
       timer = undefined;
-      if (active()) void reload().catch(logFailure);
+      if (!active()) return;
+      if (loadedAt !== undefined && now() - loadedAt >= freshMs) void reload().catch(logFailure);
+      else arm();
     });
   };
   const logFailure = (e: unknown): void => {
@@ -468,7 +470,7 @@ export function createDemandSnapshot(
   };
   const reload = (): Promise<void> =>
     (pending ??= (async () => {
-      snapshot = await load(Number.MAX_SAFE_INTEGER);
+      snapshot = await load(200);
       loadedAt = now();
       refresh();
     })().finally(() => {
@@ -481,21 +483,30 @@ export function createDemandSnapshot(
     update: () => {
       viewedAt = now();
       if (loadedAt === undefined) return reload();
-      if (now() - loadedAt > freshMs) void reload().catch(logFailure);
+      if (now() - loadedAt >= freshMs) void reload().catch(logFailure);
       else arm();
       return Promise.resolve();
     },
   };
 }
 
-type WorkerReply = { ready: true } | { id: number; snapshot?: string; error?: string };
+type WorkerReply =
+  | { ready: true }
+  | { id: number; snapshot?: string; error?: string; load_ms?: number; rss?: number };
 export function createWorkerSnapshotLoader(
   fallback = createLoader(),
-  spawn = () => new Worker(new URL('./snapshot-worker.ts', import.meta.url).href)
+  spawn = () => new Worker(new URL('./snapshot-worker.ts', import.meta.url).href),
+  options: {
+    maxRssBytes?: number;
+    maxRounds?: number;
+    onSample?: (sample: { load_ms: number; rss: number }) => void;
+  } = {}
 ): ReturnType<typeof createLoader> {
   let worker: Worker | undefined;
   let ready = false;
   let next = 0;
+  let rounds = 0;
+  let recycle = false;
   const pending = new Map<
     number,
     { limit: number; resolve: (snapshot: Snapshot) => void; reject: (error: Error) => void }
@@ -511,8 +522,22 @@ export function createWorkerSnapshotLoader(
       const request = pending.get(event.data.id);
       if (!request) return;
       pending.delete(event.data.id);
+      const sample = { load_ms: event.data.load_ms ?? 0, rss: event.data.rss ?? 0 };
+      options.onSample?.(sample);
+      recycle ||=
+        ++rounds >= (options.maxRounds ?? 500) ||
+        sample.rss > (options.maxRssBytes ?? 1536 * 1024 * 1024);
       if (event.data.snapshot) request.resolve(JSON.parse(event.data.snapshot) as Snapshot);
       else request.reject(new Error(event.data.error ?? 'snapshot worker failed'));
+      if (recycle && pending.size === 0) {
+        console.log(
+          `snapshot worker recycled: rounds=${String(rounds)} rss_mb=${(sample.rss / 1024 / 1024).toFixed(1)} load_ms=${sample.load_ms.toFixed(1)}`
+        );
+        active.terminate();
+        if (worker === active) worker = undefined;
+        ready = recycle = false;
+        rounds = 0;
+      }
     };
     active.onerror = event => {
       event.preventDefault();

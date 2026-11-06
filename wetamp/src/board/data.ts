@@ -491,12 +491,13 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : ledgerReader(id)] as const; }));
     mark('ledgers');
     let terminal = 0;
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
     const statuses = statusesOf();
     const visibleIds = statuses ? ids.filter(({ id }) => {
       const ledger = initialLedgers.get(id);
       if (typeof ledger === 'string' || !ledger) return true;
       const status = statuses.get(ledger.archon_run_id);
-      return !status || !FINAL.has(status) || terminal++ < limit;
+      return !status || !FINAL.has(status) || clock(ledger.started_at) >= today.getTime() || terminal++ < limit;
     }) : ids;
     const visible = new Set(visibleIds.map(({ id }) => id));
     mark('statuses');

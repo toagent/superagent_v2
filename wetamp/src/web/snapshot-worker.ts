@@ -11,10 +11,21 @@ const load = createLoader();
 self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
   const { id, limit } = event.data;
   void (async () => {
+    const started = performance.now();
     try {
-      self.postMessage({ id, snapshot: JSON.stringify(await load(limit)) });
+      self.postMessage({
+        id,
+        snapshot: JSON.stringify(await load(limit)),
+        load_ms: performance.now() - started,
+        rss: process.memoryUsage().rss,
+      });
     } catch (error) {
-      self.postMessage({ id, error: (error as Error).message });
+      self.postMessage({
+        id,
+        error: (error as Error).message,
+        load_ms: performance.now() - started,
+        rss: process.memoryUsage().rss,
+      });
     }
   })();
 };
