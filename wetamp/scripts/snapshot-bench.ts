@@ -47,8 +47,9 @@ for (let second = 0; second < soak; second++) {
   if (second + 1 < soak) await Bun.sleep(1000);
 }
 if (checkTotals) {
-  const limited = demand.snapshot().summary,
-    full = (await createLoader()(Number.MAX_SAFE_INTEGER)).summary,
+  const totals = createLoader(),
+    limited = (await totals(200)).summary,
+    full = (await totals(Number.MAX_SAFE_INTEGER)).summary,
     debt = debtMetrics(debtSnapshot()),
     differing = Object.keys(full).filter(
       key => JSON.stringify(limited[key]) !== JSON.stringify(full[key])

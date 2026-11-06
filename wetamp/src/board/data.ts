@@ -466,6 +466,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   const rowCache = new Map<string, BoardRow>();
   const ledgerCache = new Map<string, Ledger>();
   const ledgerReadCache = new Map<string, { mtimeMs: number; value: Ledger | string }>();
+  const gateKeyCache = new Map<string, { dirMtime: number; value: string }>();
   const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
   let coordMessagesCache: { stamp: number; value: Message[] } | undefined;
@@ -496,7 +497,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     const visibleIds = statuses ? ids.filter(({ id }) => {
       const ledger = initialLedgers.get(id);
       if (typeof ledger === 'string' || !ledger) return true;
-      const status = statuses.get(ledger.archon_run_id);
+      const status = statuses.get(ledger.archon_run_id) ?? cache.get(id)?.run.status;
       return !status || !FINAL.has(status) || clock(ledger.started_at) >= today.getTime() || terminal++ < limit;
     }) : ids;
     const visible = new Set(visibleIds.map(({ id }) => id));
@@ -545,16 +546,21 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     mark('owners_presence');
     let queried = new Map<string, RunView | Error>();
     const queryEntries = ids.flatMap(({ id }) => { const ledger = visible.has(id) ? ledgers.get(id) : initialLedgers.get(id); return reusable.has(id) || typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
+    for (const { id } of queryEntries) gateKeyCache.delete(id);
     const firstLedger = [...initialLedgers.values()].find((l): l is Ledger => typeof l !== 'string');
     if (queryEntries.length && firstLedger) {
       if (first || !process.env.SA_ARCHON_BIN) {
         try {
-          const batch = await getRunsAsync(queryEntries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
-          for (const { id, ledger } of queryEntries) {
-            queried.set(
-              id,
-              batch.get(ledger.archon_run_id) ?? new RunQueryError('not_found', ledger.archon_run_id)
-            );
+          const size = process.env.SA_ARCHON_BIN ? queryEntries.length : 100;
+          for (let offset = 0; offset < queryEntries.length; offset += size) {
+            const entries = queryEntries.slice(offset, offset + size);
+            const batch = await getRunsAsync(entries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
+            for (const { id, ledger } of entries) {
+              queried.set(
+                id,
+                batch.get(ledger.archon_run_id) ?? new RunQueryError('not_found', ledger.archon_run_id)
+              );
+            }
           }
         } catch {
           queried = await queryRuns(queryEntries, timeoutMs, signal);
@@ -569,7 +575,9 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       if (visible.has(id) || reusable.has(id)) continue;
       const ledger = initialLedgers.get(id), run = queried.get(id);
       if (typeof ledger !== 'string' && ledger && run && !(run instanceof Error)) {
-        cache.set(id, { run, mtimeMs });
+        // prettier-ignore
+        const compact = { id: run.id, status: run.status, output_root: run.output_root, started_at: run.started_at, completed_at: run.completed_at, last_activity_at: run.last_activity_at, metadata: run.metadata, nodes: run.nodes } as RunView;
+        cache.set(id, { run: compact, mtimeMs });
         ledgerCache.set(id, ledger);
       }
     }
@@ -663,17 +671,24 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       if (typeof ledger === 'string' || !ledger) return [];
       return [{ ledger, run: cache.get(id)?.run ?? queried.get(id) ?? new RunQueryError('not_found', ledger.archon_run_id) }];
     });
-    const pairIds = fullPairs.map(pair => pair.ledger.run_id).sort().join('\0');
+    const pairIds = fullPairs.map(pair => pair.ledger.run_id).join('\0');
     const gateKey = fullPairs.flatMap(({ ledger, run }) => {
       if (run instanceof Error) return [];
       try {
         const art = artifactsOf(run);
-        return evidenceGates(ledger, art).map(file => `${ledger.run_id}:${file}:${String(statSync(join(art, file), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`);
+        const dirMtime = statSync(art, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+        const cached = gateKeyCache.get(ledger.run_id);
+        if (cached?.dirMtime === dirMtime && !ACTIVITY.has(run.status)) return [cached.value];
+        const value = evidenceGates(ledger, art).map(file => `${ledger.run_id}:${file}:${String(statSync(join(art, file), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`).join(',');
+        gateKeyCache.set(ledger.run_id, { dirMtime, value });
+        return [value];
       } catch {
-        return [`${ledger.run_id}:gate_unreadable`];
+        const value = `${ledger.run_id}:gate_unreadable`;
+        gateKeyCache.set(ledger.run_id, { dirMtime: 0, value });
+        return [value];
       }
     });
-    const summaryKey = [...ids.map(({ id, mtimeMs }) => `${id}:${String(mtimeMs)}`), ...gateKey, `closures:${String(statSync(join(home().sa, 'debt', 'closures.jsonl'), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`].sort().join('\0');
+    const summaryKey = [...ids.map(({ id, mtimeMs }) => `${id}:${String(mtimeMs)}`), ...gateKey, `closures:${String(statSync(join(home().sa, 'debt', 'closures.jsonl'), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`].join('\0');
     const activeRuns = results.some(r => 'run' in r && r.run && ACTIVITY.has(r.run.status));
     const s = summaryCache?.ids === pairIds && summaryCache.key === summaryKey
       ? summaryCache.value
