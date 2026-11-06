@@ -459,13 +459,14 @@ test('HF5c status exposes legacy ownership when launchd is absent, including orp
 // prettier-ignore
 test('console snapshots are demand-only, authorized, and coalesce concurrent readers', async () => {
   let loads = 0, refreshes = 0, now = 0;
-  const releases: (() => void)[] = [];
+  const releases: (() => void)[] = [], sleeps: { ms: number; release: () => void }[] = [];
   const demand = createDemandSnapshot(async () => {
     const load = ++loads;
     if (load === 1) await new Promise<void>(resolve => { releases.push(resolve); });
     else await new Promise<void>(resolve => { releases.push(resolve); });
     return { summary: {}, rows: [], at: `fresh-${String(load)}` };
-  }, () => { refreshes++; }, undefined, () => now);
+  }, () => { refreshes++; }, undefined, () => now,
+  ms => new Promise<void>(resolve => { sleeps.push({ ms, release: resolve }); }));
   const forward = Object.assign(async () => new Response('native'), { preconnect: () => {} });
   const serve = handler(39890, 'fixture', () => ({ at: demand.snapshot().at }),
     'http://localhost', forward, undefined, demand.snapshot, demand.update);
@@ -482,23 +483,21 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   expect(await (await first).json()).toEqual({ at: 'fresh-1' });
   await second;
   expect(refreshes).toBe(1);
-  await serve(request('/sa/data?t=fixture'));
-  expect(loads).toBe(1);
+  expect(sleeps[0]?.ms).toBe(250);
   expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
-  now = 2000;
-  await serve(request('/sa/data?t=fixture'));
-  expect(loads).toBe(1);
-  now = 2100;
-  const started = performance.now();
-  const stale = await serve(request('/sa/data?t=fixture'));
+  now = 250;
+  sleeps.shift()!.release();
+  await Bun.sleep(0);
   expect(loads).toBe(2);
-  expect(await stale.json()).toEqual({ at: 'fresh-1' });
-  expect(performance.now() - started).toBeLessThan(200);
   releases.shift()!();
   await Bun.sleep(0);
   expect(demand.snapshot().at).toBe('fresh-2');
-  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.100Z');
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.250Z');
   expect(refreshes).toBe(2);
+  now = 15_001;
+  sleeps.shift()!.release();
+  await Bun.sleep(0);
+  expect(loads).toBe(2);
 });
 
 test('console snapshot propagates initial failure and retries a failed background refresh', async () => {
@@ -511,7 +510,8 @@ test('console snapshot propagates initial failure and retries a failed backgroun
     },
     () => {},
     undefined,
-    () => now
+    () => now,
+    () => new Promise(() => {})
   );
   await expect(demand.update()).rejects.toThrow('fixture');
   expect(demand.snapshotAt()).toBeUndefined();

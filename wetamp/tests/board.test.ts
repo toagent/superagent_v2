@@ -379,7 +379,7 @@ describe('data rows', () => {
       expect(second.rows.find(r => r.run_id === 'done')?.engine?.title).toBe('任务标题未知');
       expect(second.rows.find(r => r.run_id === 'live')).not.toBe(firstLive);
       expect(second.rows.find(r => r.run_id === 'live')?.elapsed_s).toBe(120);
-      expect(second.summary).not.toBe(first.summary); // active rows prevent summary reuse
+      expect(second.summary).toBe(first.summary); // active row timing changes do not invalidate slow statistics
 
       writeFileSync(
         join(stubDir, 'get-a-live.json'),
@@ -398,7 +398,7 @@ describe('data rows', () => {
     }
   });
 
-  test('stable failed rows and summaries are reused, excluded from activity, and refresh on revision change', async () => {
+  test('stable failed rows refresh on revision change without rebuilding slow summaries', async () => {
     ledger('failed', { status: 'failed' });
     let revision = 'r1';
     const load = createLoader(
@@ -418,7 +418,7 @@ describe('data rows', () => {
     const changed = await load(50);
     expect(callLines().at(-1)).toBe('workflow get a-failed --verbose --json');
     expect(changed.rows[0]).not.toBe(stable.rows[0]);
-    expect(changed.summary).not.toBe(stable.summary);
+    expect(changed.summary).toBe(stable.summary);
     expect(changed.activity?.runs).toEqual([]);
   });
 

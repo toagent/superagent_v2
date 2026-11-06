@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToString } from 'ink';
@@ -76,5 +76,35 @@ test('job records reuse unchanged parses and only active jobs probe their owner'
   } finally {
     if (saved === undefined) delete process.env.SUPERAGENT_HOME;
     else process.env.SUPERAGENT_HOME = saved;
+  }
+});
+
+test('activity discovery reuses ps and remote results within their TTLs', async () => {
+  const root = tmp(),
+    home = join(root, 'home'),
+    bin = join(root, 'twin'),
+    seen: string[] = [];
+  const saved = { home: process.env.SUPERAGENT_HOME, twin: process.env.TWIN_AGENT_QUEUE_CLIENT };
+  mkdirSync(home, { recursive: true });
+  writeFileSync(bin, '#!/bin/sh\necho "[]"\n');
+  chmodSync(bin, 0o755);
+  const spawn = Bun.spawn;
+  try {
+    process.env.SUPERAGENT_HOME = home;
+    process.env.TWIN_AGENT_QUEUE_CLIENT = bin;
+    Bun.spawn = ((cmd, options) => {
+      if (Array.isArray(cmd) && (cmd[0] === 'ps' || cmd[0] === bin)) seen.push(cmd[0]);
+      return spawn(cmd, options);
+    }) as typeof Bun.spawn;
+    await loadActivity(Date.now());
+    await loadActivity(Date.now());
+    expect(seen).toEqual(['ps', bin]);
+  } finally {
+    Bun.spawn = spawn;
+    for (const [key, value] of Object.entries(saved)) {
+      const name = key === 'home' ? 'SUPERAGENT_HOME' : 'TWIN_AGENT_QUEUE_CLIENT';
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });

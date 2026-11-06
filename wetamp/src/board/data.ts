@@ -463,9 +463,19 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   const ledgerCache = new Map<string, Ledger>();
   const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
-  let summaryCache: { ids: string; value: Record<string, unknown> } | undefined;
+  let summaryCache: { ids: string; key: string; value: Record<string, unknown> } | undefined;
+  let slowCache: { ids: string; key: string; reflection?: Snapshot['reflection']; eta: Record<string, Estimate> } | undefined;
+  const presenceCache = new Map<string, { at: number; value: Presence }>();
   let first = true;
   return async limit => {
+    const profile = process.env.SA_BOARD_PROFILE === '1';
+    const timings: Record<string, number> = {};
+    let checkpoint = performance.now();
+    const mark = (stage: string): void => {
+      const next = performance.now();
+      timings[stage] = Math.round((next - checkpoint) * 10) / 10;
+      checkpoint = next;
+    };
     const now = Date.now();
     const ids = ledgerIds()
       // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
@@ -476,6 +486,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
     // prettier-ignore
     const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : ledgerReader(id)] as const; }));
+    mark('ledgers');
     let terminal = 0;
     const statuses = statusesOf();
     const visibleIds = statuses ? ids.filter(({ id }) => {
@@ -485,23 +496,24 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       return !status || !FINAL.has(status) || terminal++ < limit;
     }) : ids;
     const visible = new Set(visibleIds.map(({ id }) => id));
+    mark('statuses');
     const archonIds = [...initialLedgers.entries()].flatMap(([id, l]) => !visible.has(id) || typeof l === 'string' || FINAL.has(cache.get(id)?.run.status ?? 'pending') ? [] : [l.archon_run_id]);
     let revisions: Map<string, string> | null = null;
     try { revisions = revisionsOf(archonIds); } catch { /* Revision cache unavailable: keep mutable runs live. */ }
+    mark('revisions');
     // prettier-ignore
     const reusable = new Map(ids.flatMap(({ id, mtimeMs }) => { const hit = cache.get(id), archonId = ledgerCache.get(id)?.archon_run_id, revision = archonId ? revisions?.get(archonId) : undefined; return hit?.mtimeMs === mtimeMs && (FINAL.has(hit.run.status) || (!!hit.revision && hit.revision === revision)) ? [[id, hit] as const] : []; }));
     // A mutable run may rewrite its ledger while preserving mtime, so only reusable rows keep the saved parse.
     const ledgers = new Map(visibleIds.map(({ id }) => { const hit = cache.get(id); return [id, reusable.has(id) || !hit || FINAL.has(hit.run.status) ? (initialLedgers.get(id) ?? ledgerReader(id)) : ledgerReader(id)] as const; }));
     const scopes = new Map<string, ReturnType<typeof runScope>>();
     const owners = new Map<string, Omit<NonNullable<BoardRow['coordination']>, 'pending'>>();
-    const presenceCache = new Map<string, Presence>();
     const validLedgers = [...ledgers.values()].filter((l): l is Ledger => typeof l !== 'string');
     const coordinator = new Coordination({ runs: id => id ? validLedgers.filter(l => l.run_id === id) : validLedgers, presence: who => {
       const key = JSON.stringify([who.host ?? null, who.pid, who.pid_start ?? null]);
       const hit = presenceCache.get(key);
-      if (hit) return hit;
+      if (hit && now - hit.at < 10_000) return hit.value;
       const value = probe(who);
-      presenceCache.set(key, value);
+      presenceCache.set(key, { at: now, value });
       return value;
     } });
     const findOwner = ownerOf ?? (l => coordinator.owner(runScope(l)));
@@ -526,6 +538,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         });
       }
     }
+    mark('owners_presence');
     const uncached = visibleIds.filter(({ id }) => !reusable.has(id));
     let queried = new Map<string, RunView | Error>();
     const queryEntries = uncached.flatMap(({ id }) => { const ledger = ledgers.get(id); return typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
@@ -549,6 +562,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         queried = await queryRuns(queryEntries, timeoutMs, signal);
       }
     }
+    mark('query_runs');
     first = false;
     terminal = 0;
     const results = visibleIds.map(({ id, mtimeMs }) => {
@@ -586,7 +600,6 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     const rows: BoardRow[] = [];
     const pairs: Pair[] = [];
     const bad: string[] = [];
-    let reusedRows = 0;
     for (const r of results) {
       if (r.row) {
         rows.push(r.row);
@@ -614,7 +627,6 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
           : saved;
         rowCache.set(l.run_id, row);
         rows.push(row);
-        reusedRows++;
         continue;
       }
       const row = safeRowOf(
@@ -637,16 +649,21 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       )
         rowCache.set(l.run_id, row);
     }
-    const pairIds = pairs.map(p => p.ledger.run_id).sort().join('\0');
-    const s = reusedRows === pairs.length && rows.length === pairs.length && summaryCache?.ids === pairIds
+    mark('rows');
+    const pairIds = pairs.map(pair => pair.ledger.run_id).sort().join('\0');
+    const summaryKey = visibleIds.map(({ id, mtimeMs }) => `${id}:${String(mtimeMs)}`).sort().join('\0');
+    const activeRuns = results.some(r => 'run' in r && r.run && ACTIVITY.has(r.run.status));
+    const s = summaryCache?.ids === pairIds && (summaryCache.key === summaryKey || activeRuns)
       ? summaryCache.value
       : summarize(pairs);
+    mark('summarize');
     // prettier-ignore
     const activity = loadActivity(now, signal, results.flatMap(r => 'l' in r && r.run && ACTIVITY.has(r.run.status) ? [{ run_id: r.l.run_id, cwd: r.l.repo, controller: owners.get(r.l.run_id)?.owner ?? null }] : []));
     // 读不出的 ledger 不进 summarize（没有可计的 ledger），但计入 runs 与 unreadable，口径与 report 的“单列不吞错”一致
     s.runs = results.length;
     s.unreadable = [...new Set([...bad, ...(s.unreadable as string[])])];
-    summaryCache = { ids: pairIds, value: s };
+    if (summaryCache?.ids !== pairIds || summaryCache.key === summaryKey || !activeRuns)
+      summaryCache = { ids: pairIds, key: summaryKey, value: s };
     rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
     let asks: Snapshot['asks'];
     try {
@@ -654,14 +671,24 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     } catch {
       /* Missing asks is not proof of a decision. */
     }
-    let reflection: Snapshot['reflection'];
-    try {
-      reflection = memoryData(now).reflection;
-    } catch {
-      /* Missing memory remains unknown. */
+    if (slowCache?.ids !== pairIds || (slowCache.key !== summaryKey && !activeRuns)) {
+      let reflection: Snapshot['reflection'];
+      try {
+        reflection = memoryData(now).reflection;
+      } catch {
+        /* Missing memory remains unknown. */
+      }
+      slowCache = { ids: pairIds, key: summaryKey, reflection, eta: readEta() };
     }
-    return {
-      reflection,
+    mark('memory');
+    const activityValue = await activity;
+    mark('load_activity');
+    const usage = readUsage();
+    mark('usage');
+    const eta = slowCache.eta;
+    mark('eta');
+    const value = {
+      reflection: slowCache.reflection,
       heavy_queue: readHeavyQueue(),
       heartbeat_ms: statSync(join(home().sa, 'supervise-tick.log'), { throwIfNoEntry: false })
         ?.mtimeMs,
@@ -670,10 +697,13 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       summary: s,
       rows,
       at: new Date(now).toISOString(),
-      activity: await activity,
-      usage: readUsage(),
-      eta: readEta(),
+      activity: activityValue,
+      usage,
+      eta,
     };
+    mark('other');
+    if (profile) console.error(JSON.stringify({ type: 'board_profile', ...timings }));
+    return value;
   };
 }
 

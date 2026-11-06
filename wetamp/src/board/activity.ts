@@ -57,6 +57,40 @@ const CWD_MAX = 24;
 // twin-agent-remote 的 state_of：其余（finished/failed/cancelled/abandoned/unknown）不算活动
 const REMOTE_ACTIVE = new Set(['running', 'queued', 'preparing', 'cancelling']);
 const jobCache = new Map<string, { mtimeMs: number; size: number; value: Job | string }>();
+interface SourceCache<T> {
+  at: number;
+  value?: T;
+  pending?: Promise<T>;
+}
+const scanCache = new Map<string, SourceCache<Procs>>();
+const remoteCache = new Map<string, SourceCache<Remote[]>>();
+
+async function staleSource<T>(
+  cache: Map<string, SourceCache<T>>,
+  key: string,
+  ttl: number,
+  load: () => Promise<T>
+): Promise<T> {
+  const entry = cache.get(key) ?? { at: 0 };
+  cache.set(key, entry);
+  if (entry.value === undefined) {
+    entry.pending ??= load().then(value => ((entry.value = value), (entry.at = Date.now()), value));
+    try {
+      return await entry.pending;
+    } finally {
+      entry.pending = undefined;
+    }
+  }
+  const stale = entry.value;
+  if (Date.now() - entry.at >= ttl && !entry.pending)
+    entry.pending = load()
+      .then(value => ((entry.value = value), (entry.at = Date.now()), value))
+      .catch(() => stale)
+      .finally(() => {
+        entry.pending = undefined;
+      });
+  return entry.value;
+}
 
 // prettier-ignore
 function cachedJobs(): { jobs: Job[]; bad: string[] } {
@@ -402,17 +436,42 @@ export async function loadActivity(
   } catch (e) {
     note('tiers', e); // 只影响角色推断：显式角色照常
   }
-  const [act, remote] = await Promise.all([
-    scan(now, jobs, pools, signal, runs).catch((e: unknown): Procs => {
-      note('procs', e);
-      return {
-        jobs: attach(new Map(), [], jobs, [], [], pools).jobs,
-        procs: [],
-        terms: [],
-        runs: runs.map(r => ({ run_id: r.run_id, cwd: r.cwd, owner: null, inferred: false })),
-      };
-    }),
-    remoteOf(signal).catch(() => []), // 远端不可达不是看板的问题：静默省略
+  const [cached, remote] = await Promise.all([
+    staleSource(scanCache, home().sa, 5000, () => scan(now, jobs, pools, signal, runs)).catch(
+      (e: unknown): Procs => {
+        note('procs', e);
+        return {
+          jobs: attach(new Map(), [], jobs, [], [], pools).jobs,
+          procs: [],
+          terms: [],
+          runs: runs.map(r => ({ run_id: r.run_id, cwd: r.cwd, owner: null, inferred: false })),
+        };
+      }
+    ),
+    staleSource(
+      remoteCache,
+      `${home().sa}\0${process.env.TWIN_AGENT_QUEUE_CLIENT ?? 'default'}`,
+      30_000,
+      () => remoteOf(signal)
+    ).catch(() => []), // 远端不可达不是看板的问题：静默省略
   ]);
+  const oldJobs = new Map(cached.jobs.map(job => [job.id, job]));
+  const fallback = new Map(
+    attach(new Map(), [], jobs, [], [], pools).jobs.map(job => [job.id, job])
+  );
+  const oldRuns = new Map(cached.runs?.map(run => [run.run_id, run]) ?? []);
+  const act: Procs = {
+    ...cached,
+    jobs: jobs.map(job => {
+      const prior = oldJobs.get(job.id) ?? fallback.get(job.id);
+      if (!prior) throw new Error(`job ${job.id}: missing cached activity projection`);
+      return { ...prior, ...job };
+    }),
+    runs: runs.map(run => ({
+      ...run,
+      owner: oldRuns.get(run.run_id)?.owner ?? null,
+      inferred: oldRuns.get(run.run_id)?.inferred ?? false,
+    })),
+  };
   return { ...act, remote, notes, jobHistory };
 }

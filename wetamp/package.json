@@ -22,6 +22,7 @@
     "generate:node-contracts": "bun scripts/generate-node-contracts.ts",
     "check:node-contracts": "bun scripts/generate-node-contracts.ts --check",
     "test": "./scripts/test.sh",
+    "snapshot-bench": "bun scripts/snapshot-bench.ts",
     "type-check": "tsc --noEmit --incremental false -p tsconfig.json",
     "generate:plan-types": "bun scripts/generate-plan-schema.ts",
     "check:plan-types": "bun scripts/generate-plan-schema.ts --check"

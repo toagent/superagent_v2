@@ -435,7 +435,8 @@ export function createDemandSnapshot(
   load = createLoader(),
   refresh = requestUsageRefresh,
   freshMs = 2000,
-  now = Date.now
+  now = Date.now,
+  wait: (ms: number) => Promise<unknown> = Bun.sleep
 ): {
   snapshot: () => Snapshot;
   snapshotAt: () => string | undefined;
@@ -444,6 +445,19 @@ export function createDemandSnapshot(
   let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() };
   let pending: Promise<void> | undefined;
   let loadedAt: number | undefined;
+  let viewedAt: number | undefined;
+  let timer: Promise<void> | undefined;
+  const active = (): boolean => viewedAt !== undefined && now() - viewedAt <= 15_000;
+  const arm = (): void => {
+    if (timer || !active()) return;
+    timer = wait(250).then(() => {
+      timer = undefined;
+      if (active()) void reload().catch(logFailure);
+    });
+  };
+  const logFailure = (e: unknown): void => {
+    console.error(`console snapshot refresh failed: ${(e as Error).message}`);
+  };
   const reload = (): Promise<void> =>
     (pending ??= (async () => {
       snapshot = await load(Number.MAX_SAFE_INTEGER);
@@ -451,16 +465,16 @@ export function createDemandSnapshot(
       refresh();
     })().finally(() => {
       pending = undefined;
+      arm();
     }));
   return {
     snapshot: () => snapshot,
     snapshotAt: () => (loadedAt === undefined ? undefined : new Date(loadedAt).toISOString()),
     update: () => {
+      viewedAt = now();
       if (loadedAt === undefined) return reload();
-      if (now() - loadedAt > freshMs)
-        void reload().catch((e: unknown) => {
-          console.error(`console snapshot refresh failed: ${(e as Error).message}`);
-        });
+      if (now() - loadedAt > freshMs) void reload().catch(logFailure);
+      else arm();
       return Promise.resolve();
     },
   };
