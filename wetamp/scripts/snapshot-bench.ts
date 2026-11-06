@@ -6,6 +6,9 @@ import {
   handler,
   webOverview,
 } from '../src/web/server';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const number = (name: string, fallback: number): number => {
   const at = process.argv.indexOf(name),
@@ -19,7 +22,59 @@ const soak = number('--soak', 5),
   breakdown = process.argv.includes('--breakdown'),
   checkTotals = process.argv.includes('--check-totals'),
   viewerCpu = process.argv.includes('--viewer-cpu') ? number('--viewer-cpu', Infinity) : 0,
-  maxCpu = number('--max-cpu', Infinity);
+  maxCpu = number('--max-cpu', Infinity),
+  coldStart = process.argv.includes('--cold-start'),
+  coldChild = process.argv.includes('--cold-child');
+
+const mb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
+
+if (coldStart) {
+  const started = performance.now();
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      '--no-env-file',
+      '--preload',
+      join(import.meta.dir, '../src/web/archon.ts'),
+      import.meta.path,
+      '--cold-child',
+    ],
+    { stdout: 'pipe', stderr: 'pipe' }
+  );
+  const stdout = new Response(child.stdout).text(),
+    stderr = new Response(child.stderr).text();
+  let peak = 0;
+  for (;;) {
+    const sample = Bun.spawnSync(['ps', '-o', 'rss=', '-p', String(child.pid)]);
+    if (sample.exitCode !== 0) break;
+    const rss = Number(sample.stdout.toString().trim()) * 1024;
+    if (Number.isFinite(rss)) peak = Math.max(peak, rss);
+    await Bun.sleep(200);
+  }
+  const [code, out, err] = await Promise.all([child.exited, stdout, stderr]);
+  if (code !== 0) throw new Error(`cold-start child exit ${String(code)}: ${err || out}`);
+  const ready = JSON.parse(out.trim().split('\n').at(-1) ?? '{}') as { rss?: number };
+  peak = Math.max(peak, ready.rss ?? 0);
+  const elapsedMs = performance.now() - started;
+  console.log(
+    JSON.stringify({
+      type: 'cold_start',
+      peak_rss_mb: mb(peak),
+      end_rss_mb: mb(ready.rss ?? 0),
+      elapsed_ms: Math.round(elapsedMs),
+    })
+  );
+  process.exit(mb(peak) > maxRssMb || elapsedMs > 60_000 ? 1 : 0);
+}
+
+if (coldChild) {
+  const dir = mkdtempSync(join(tmpdir(), 'superagent-cold-start-'));
+  process.once('exit', () => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const { startObserver } = await import('../src/web/archon');
+  await startObserver(join(dir, 'archon.sock'));
+}
 
 const samples: number[] = [];
 const loadSamples: number[] = [];
@@ -52,6 +107,10 @@ const load = createWorkerSnapshotLoader(createLoader(), undefined, {
 });
 const demand = createDemandSnapshot(load);
 await demand.update();
+if (coldChild) {
+  console.log(JSON.stringify({ type: 'cold_start_ready', rss: process.memoryUsage().rss }));
+  process.exit(0);
+}
 if (viewerCpu > 0) {
   recording = true;
   let projected:
@@ -140,8 +199,7 @@ const sorted = [...samples].sort((a, b) => a - b);
 const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0;
 const percentile = (values: number[]): number =>
   [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1] ?? 0;
-const endRss = process.memoryUsage().rss,
-  mb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
+const endRss = process.memoryUsage().rss;
 console.log(
   JSON.stringify({
     samples: samples.length,

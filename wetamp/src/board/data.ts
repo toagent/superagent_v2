@@ -418,6 +418,7 @@ const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
 const ACTIVITY = new Set<RunView['status']>(['running', 'paused']);
 export const QUERY_TIMEOUT_MS = 10_000;
 const QUERY_CONCURRENCY = 8;
+const INITIAL_QUERY_BATCH = 20;
 
 async function queryRuns(
   entries: { id: string; ledger: Ledger }[],
@@ -552,7 +553,9 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     if (queryEntries.length && firstLedger) {
       if (first || !process.env.SA_ARCHON_BIN) {
         try {
-          const size = process.env.SA_ARCHON_BIN ? queryEntries.length : 100;
+          // Event-bearing run projections dominate cold-start memory; release each small batch
+          // before asking Archon for the next one. Test CLI stubs remain a single invocation.
+          const size = process.env.SA_ARCHON_BIN ? queryEntries.length : INITIAL_QUERY_BATCH;
           for (let offset = 0; offset < queryEntries.length; offset += size) {
             const entries = queryEntries.slice(offset, offset + size);
             const batch = await getRunsAsync(entries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
