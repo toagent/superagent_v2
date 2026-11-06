@@ -142,7 +142,10 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
         }
       }
     } catch {
-      unreadableStartedAt.push(run instanceof Error ? undefined : (run.started_at ?? undefined));
+      // 引擎库查不到投影的历史 run 仍有 ledger 记录的提交时刻；只有两者都缺才视为「可能是今天」。
+      unreadableStartedAt.push(
+        (run instanceof Error ? undefined : run.started_at) ?? ledger.started_at
+      );
     }
   }
   const { closures, bad, badAt } = readClosures(closuresFile);

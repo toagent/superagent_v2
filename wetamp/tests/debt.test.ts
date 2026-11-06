@@ -82,6 +82,15 @@ test('unreadable evidence preserves totals and only obscures a relevant daily me
   const current = debt.debtMetrics(debt.debtSnapshot([readable, missing('today', new Date().toISOString())], closures));
   // prettier-ignore
   expect(current).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 'unknown', debt_closed_today: 0 });
+  // A run the engine database no longer knows still carries its ledger submission time.
+  // prettier-ignore
+  const orphan: debt.DebtSource = { ledger: { run_id: 'gone', archon_run_id: 'gone', repo, started_at: '2020-01-01T00:00:00Z' }, run: new Error('not_found') };
+  // prettier-ignore
+  expect(debt.debtMetrics(debt.debtSnapshot([readable, orphan], closures))).toMatchObject({ debt_unreadable: 1, debt_new_today: 1 });
+  // prettier-ignore
+  const undated: debt.DebtSource = { ledger: { run_id: 'undated', archon_run_id: 'undated', repo }, run: new Error('not_found') };
+  // prettier-ignore
+  expect(debt.debtMetrics(debt.debtSnapshot([readable, undated], closures))).toMatchObject({ debt_new_today: 'unknown' });
 });
 
 test('CLI lists and explicitly closes debt; plan precheck warns for an unknown ID', () => {
