@@ -79,6 +79,17 @@ export function requirementCoverage(l: Ledger, run: Parameters<typeof artifactsO
     })
   );
 }
+export const retroCoverage = (pairs: Pair[]): { with_retro: number; terminal: number } => {
+  const terminal = pairs.filter(
+    ({ ledger, run }) =>
+      !(run instanceof Error) &&
+      (ledger.rejected !== undefined || ['completed', 'failed', 'cancelled'].includes(run.status))
+  );
+  return {
+    with_retro: terminal.filter(({ ledger }) => !!ledger.retro).length,
+    terminal: terminal.length,
+  };
+};
 export interface Event {
   workflow_run_id?: string;
   created_at?: string;
@@ -130,6 +141,7 @@ export function reportSummary(report: Record<string, unknown>): Record<string, u
     ...Object.fromEntries(Object.entries(report).filter(([, v]) => typeof v === 'number' || typeof v === 'string')),
     delivery: report.delivery, undelivered: report.undelivered,
     metrics: report.metrics, cancellations: report.cancellations, interventions,
+    retro_coverage: report.retro_coverage,
     consolidation: report.consolidation, token_value: report.token_value,
     demands: { denominator: demands.denominator, completed: demands.completed, elapsed: demands.elapsed, unknown_runs: (demands.unknown_runs as unknown[]).length, by_request: demands.by_request, unattributed: demands.unattributed },
     usage: Object.fromEntries(['total', 'investment', 'supplemental', 'learning', 'window'].map(k => [k, usage[k]])),
@@ -796,6 +808,7 @@ export function buildReport(
         }
       : {}),
     ...deliveryStats(pairs),
+    retro_coverage: retroCoverage(pairs),
     repo_missing,
     requirements: Object.fromEntries(
       pairs.map(({ ledger, run }) => [

@@ -57,7 +57,7 @@ export { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './l
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
-import { lintPlan, memoryData, memoryTick } from './memory';
+import { lintPlan, memoryData, memoryTick, privateProject } from './memory';
 import { reconcileReflection } from './memory-reflect';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
@@ -334,6 +334,8 @@ export const OPTIONS = {
   recommend: { type: 'string' },
   why: { type: 'string' },
   priority: { type: 'string' },
+  effect: { type: 'string', multiple: true },
+  improve: { type: 'string', multiple: true },
 } as const;
 interface Args {
   _: string[];
@@ -429,6 +431,96 @@ export interface Ledger {
   auto_recover_paused?: string;
   /** 启动进程没写成 ledger、由 tick 按启动意图对账补写的时间。 */
   reconciled_at?: string;
+  retro_required?: true;
+  retro?: Retro;
+  retro_history?: Retro[];
+}
+
+export interface Retro {
+  at: string;
+  by: Controller;
+  effect: string[];
+  improve: string[];
+  revision: number;
+}
+
+const retroItems = (values: string[] | undefined, name: string): string[] => {
+  const items = values?.map(value => value.trim()) ?? [];
+  if (items.length < 1 || items.length > 3) throw new Error(`--${name} requires 1-3 entries`);
+  if (items.some(value => !value)) throw new Error(`--${name} entries must not be empty`);
+  return items;
+};
+export function validateRetro(effect: string[] | undefined, improve: string[] | undefined) {
+  const normalized = {
+      effect: retroItems(effect, 'effect'),
+      improve: retroItems(improve, 'improve'),
+    },
+    length = [...normalized.effect, ...normalized.improve].reduce(
+      (n, value) => n + Array.from(value).length,
+      0
+    );
+  if (length > 200) throw new Error(`retro exceeds 200 characters by ${String(length - 200)}`);
+  return normalized;
+}
+export function applyRetro(
+  ledger: Ledger,
+  values: Pick<Retro, 'effect' | 'improve'>,
+  by: Controller,
+  terminal: boolean,
+  at = new Date().toISOString()
+): void {
+  if (!terminal) throw new Error(`retro: run ${ledger.run_id} is not terminal`);
+  const previous = ledger.retro;
+  if (previous) ledger.retro_history = [...(ledger.retro_history ?? []), previous].slice(-5);
+  ledger.retro = { at, by, ...values, revision: (previous?.revision ?? 0) + 1 };
+}
+export function retroHints(repo: string): { run_id: string; improve: string }[] {
+  if (privateProject(repo)) return [];
+  let canonical: string;
+  try {
+    canonical = canonicalRepo(repo);
+  } catch {
+    return [];
+  }
+  const recent = ledgers()
+    .flatMap(value => {
+      if ('error' in value || privateProject(value.repo)) return [];
+      const retro = value.retro;
+      if (!retro) return [];
+      try {
+        return canonicalRepo(value.repo) === canonical ? [{ run_id: value.run_id, retro }] : [];
+      } catch {
+        return [];
+      }
+    })
+    .sort((a, b) => b.retro.at.localeCompare(a.retro.at))
+    .slice(0, 5);
+  const seen = new Set<string>(),
+    hints: { run_id: string; improve: string }[] = [];
+  for (const ledger of recent)
+    for (const improve of ledger.retro.improve)
+      if (!seen.has(improve) && hints.length < 3) {
+        seen.add(improve);
+        hints.push({ run_id: ledger.run_id, improve });
+      }
+  return hints;
+}
+
+function retroCommand(l: Ledger, effect?: string[], improve?: string[], by?: Controller): number {
+  if (effect === undefined && improve === undefined) {
+    print(l.retro ?? null);
+    return 0;
+  }
+  const values = validateRetro(effect, improve),
+    run = getRun(l.archon_run_id, l.repo);
+  const terminal = !!l.rejected || ['completed', 'failed', 'cancelled'].includes(run.status);
+  if (!terminal) throw new Error(`retro: run ${l.run_id} is not terminal (${run.status})`);
+  if (!by) throw new Error('retro: controller identity missing');
+  updateLedger(l, current => {
+    applyRetro(current, values, by, terminal);
+  });
+  print(l.retro);
+  return 0;
 }
 
 // prettier-ignore
@@ -1974,6 +2066,7 @@ function startRun(planPath: string, a: Args): number {
           transcript: '',
           log: '',
           intervention_events: [],
+          retro_required: true,
           launcher: launcher(home().sa),
           controller,
         };
@@ -2027,6 +2120,7 @@ function startRun(planPath: string, a: Args): number {
           plan_lint,
           adopt_candidates,
           ...(recent_failures.length ? { recent_failures } : {}),
+          retro_hints: retroHints(plan.repo),
           ...quota,
         });
         return 0;
@@ -2724,7 +2818,15 @@ function brief(l: Ledger, json = false, suffix: string[] = []): number {
       l.auto_retries?.length ?? 0
     )}`
   );
-  console.log([...lines.slice(0, Math.max(0, 20 - suffix.length)), ...suffix].join('\n'));
+  const ending = [
+    ...(l.retro
+      ? [
+          `retro: ${l.retro.effect.join('；')} / ${l.retro.improve.join('；')} (r${String(l.retro.revision)})`,
+        ]
+      : []),
+    ...suffix,
+  ];
+  console.log([...lines.slice(0, Math.max(0, 20 - ending.length)), ...ending].join('\n'));
   return c.exit;
 }
 
@@ -4452,6 +4554,7 @@ export const CLI_GLOBAL_OPTIONS = ['help', 'json'] as const satisfies readonly O
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt', 'fresh'], operatorFlags: ['fake', 'lint-override'] },
+  { command: 'retro', audience: 'agent', positionals: '<run>', flags: ['effect', 'improve'] },
   { command: 'plan', audience: 'agent', positionals: 'check <file>', flags: [], operatorFlags: ['lint-override'] },
   { command: 'debt', audience: 'agent', positionals: 'list|close <id>...', flags: ['repo', 'open', 'reason'] },
   { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
@@ -5002,6 +5105,13 @@ export function main(argv: string[]): number {
       return startRun(need(target, 'run <plan.json>'), a);
     case 'quick':
       return startRun(quickPlan(a), a);
+    case 'retro': {
+      const writing = a.flags.effect !== undefined || a.flags.improve !== undefined,
+        l = ledger(writing);
+      return writing
+        ? control(l, controller => retroCommand(l, a.flags.effect, a.flags.improve, controller))
+        : retroCommand(l);
+    }
     case 'wait': {
       const t = Number(a.flags.timeout ?? 3000);
       if (!Number.isFinite(t) || t <= 0) {

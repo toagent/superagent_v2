@@ -1,4 +1,11 @@
-import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  createReadStream,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join, relative, sep } from 'node:path';
@@ -68,22 +75,63 @@ export function responsibilityList(
         ? responsibilities(heartbeat, m.owner)
         : []
     );
+    const retro = existsSync(join(root, 'runs'))
+      ? readdirSync(join(root, 'runs')).flatMap(file => {
+          try {
+            const ledger = JSON.parse(readFileSync(join(root, 'runs', file), 'utf8')) as {
+              run_id?: string;
+              started_at?: string;
+              controller?: { session_id?: string };
+              retro_required?: boolean;
+              retro?: unknown;
+            };
+            return ledger.retro_required &&
+              !ledger.retro &&
+              ledger.controller?.session_id === sessionId &&
+              ledger.run_id
+              ? [
+                  {
+                    id: ledger.run_id,
+                    kind: 'run' as const,
+                    since: ledger.started_at,
+                    what: 'run 终态',
+                    code: 'retro_pending',
+                    waiting_for: '待复盘',
+                    waited_s: 0,
+                    next: `superagent retro ${ledger.run_id} --effect … --improve …`,
+                  },
+                ]
+              : [];
+          } catch {
+            return [];
+          }
+        })
+      : [];
     let states: Map<string, string | Error>;
     try {
-      states = readStates(items.filter(item => item.kind === 'run'));
+      states = readStates([...items.filter(item => item.kind === 'run'), ...retro]);
     } catch (error) {
       states = new Map(items.map(item => [item.id, error as Error]));
     }
-    return items.flatMap(item => {
-      if (item.kind !== 'run') return [item];
-      const state = states.get(item.id) ?? new Error('run status missing');
-      if (state instanceof Error)
-        return [{ ...item, waiting_for: `${item.waiting_for}（状态未确认）` }];
-      if (['completed', 'cancelled', 'abandoned'].includes(state)) return [];
-      return ['running', 'pending'].includes(state) && item.code !== 'coordination_pending'
-        ? []
-        : [item];
-    });
+    return [
+      ...items.flatMap(item => {
+        if (item.kind !== 'run') return [item];
+        const state = states.get(item.id) ?? new Error('run status missing');
+        if (state instanceof Error)
+          return [{ ...item, waiting_for: `${item.waiting_for}（状态未确认）` }];
+        if (['completed', 'cancelled', 'abandoned'].includes(state)) return [];
+        return ['running', 'pending'].includes(state) && item.code !== 'coordination_pending'
+          ? []
+          : [item];
+      }),
+      ...retro.filter(item => {
+        const state = states.get(item.id);
+        return (
+          typeof state === 'string' &&
+          ['completed', 'cancelled', 'abandoned', 'failed'].includes(state)
+        );
+      }),
+    ];
   } catch {
     return [];
   }

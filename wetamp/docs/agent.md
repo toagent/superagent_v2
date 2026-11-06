@@ -19,12 +19,16 @@ superagent run <plan.json>
 superagent wait <run> --timeout <seconds>
 superagent brief <run>
 superagent land <run> --apply
+superagent retro <run> --effect "<本次效果>" --improve "<下次改进>"
 ```
 
 `run` 创建隔离 worktree 后立即返回。`wait` 阻塞到终态、挂起或超时；超时返回运行中，
 再次等待即可。接手时先用 `brief` 读取有界摘要，需要完整投影再用
 `superagent status <run>`。`land --apply` 在目标锁内以目标分支实时 tip 组合验收并本地集成，
 不 push；目标历史重写、脏检出或无法安全组合时拒绝。
+
+run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 1–3 条，可重复传入；
+全部条目去除首尾空白后合计不超过 200 个 Unicode 字符。重复提交会修订并保留最近 5 版历史。
 
 已有 run 因范围批准需要后续包时，修订 plan 后使用
 `superagent run <plan.json> --adopt <run>`，保留可验证的交付链。

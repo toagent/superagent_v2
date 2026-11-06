@@ -67,6 +67,7 @@ export interface Episode {
   asks: { hold: string; status: string }[];
   dispositions: { at: string; reason: string; action: string; ok: boolean }[];
   signals: ReturnType<typeof cockpitSignals>;
+  retro?: NonNullable<Ledger['retro']>;
 }
 const field = z.string().max(240);
 export const lessonSchema = z
@@ -758,6 +759,7 @@ export function foldEpisode(
     id: l.run_id,
     at: new Date(now).toISOString(),
     source: 'run',
+    ...(l.retro ? { retro: l.retro } : {}),
     status: run.status,
     packages: plan.packages.map(p => ({
       id: p.id,
