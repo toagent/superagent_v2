@@ -1655,15 +1655,21 @@ const packageIdentity = (plan: Plan): string => {
 // prettier-ignore
 export function adoptCandidates(plan: Plan, now = Date.now()): AdoptCandidate[] {
   const identity = packageIdentity(plan);
+  let statuses: ReturnType<typeof runStatuses>;
+  try { statuses = runStatuses(); } catch { return []; }
+  if (!statuses) return [];
   return ledgers().flatMap(previous => {
     try {
       if ('error' in previous || repoScope(previous.repo).id !== repoScope(plan.repo).id) return [];
       const age = now - Date.parse(previous.started_at), oldPlan = planOf(previous),
-        run = getRun(previous.archon_run_id, previous.repo), state = classify(run).state;
+        status = statuses.get(previous.archon_run_id),
+        state = previous.state === 'failed' ? 'failed' : status === 'paused' ? 'held:paused' : status,
+        listed = Bun.spawnSync(['git', '-C', previous.repo, 'worktree', 'list', '--porcelain', '-z'],
+          { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }),
+        worktree = listed.exitCode === 0 ? targetCheckout(listed.stdout.toString(), previous.branch) : undefined;
       if (!Number.isFinite(age) || age < 0 || age > 2 * 60 * 60e3 || packageIdentity(oldPlan) !== identity ||
-        (!['cancelled', 'failed'].includes(state) && !state.startsWith('held:')) || !run.working_path ||
-        !statSync(run.working_path, { throwIfNoEntry: false })?.isDirectory()) return [];
-      const count = Bun.spawnSync(['git', '-C', run.working_path, 'rev-list', '--count', `${oldPlan.base_ref}..${previous.branch}`],
+        !state || !['cancelled', 'failed', 'held:paused'].includes(state) || !worktree) return [];
+      const count = Bun.spawnSync(['git', '-C', worktree, 'rev-list', '--count', `${oldPlan.base_ref}..${previous.branch}`],
         { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS });
       const commits_ahead = count.exitCode === 0 ? Number(count.stdout.toString().trim()) : 0;
       return Number.isSafeInteger(commits_ahead) && commits_ahead > 0
@@ -4443,7 +4449,7 @@ export const CLI_GLOBAL_OPTIONS = ['help', 'json'] as const satisfies readonly O
 // prettier-ignore
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
-  { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt'], operatorFlags: ['fake', 'lint-override'] },
+  { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt', 'fresh'], operatorFlags: ['fake', 'lint-override'] },
   { command: 'plan', audience: 'agent', positionals: 'check <file>', flags: [], operatorFlags: ['lint-override'] },
   { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
   { command: 'status', audience: 'agent', positionals: '<run>', flags: [] },

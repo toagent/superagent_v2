@@ -391,12 +391,14 @@ test('recent matching coded run requires adopt unless fresh is explicit', () => 
   writeFileSync(join(s.ledger.gen_dir, 'plan.json'), readFileSync(path));
   Object.assign(s.ledger, { plan: path, repo, branch: 'sa/sa1', started_at: new Date().toISOString() });
   writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
-  writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed', { working_path: repo })));
+  const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
+  db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
+  db.run('insert into remote_agent_workflow_runs values (?, ?)', [s.ledger.archon_run_id, 'failed']);
   expect(adoptCandidates(loadPlan(path))).toMatchObject([{ run_id: 'sa1', commits_ahead: 1 }]);
   s.ledger.branch = 'main'; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]);
   s.ledger.branch = 'sa/sa1'; s.ledger.started_at = new Date(Date.now() - 2 * 60 * 60e3 - 1).toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]);
-  s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('completed', { working_path: repo }))); expect(adoptCandidates(loadPlan(path))).toEqual([]);
-  delete (s.ledger as Partial<Ledger>).started_at; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]); s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(run('failed', { working_path: repo })));
+  s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); db.run('update remote_agent_workflow_runs set status=?', ['completed']); expect(adoptCandidates(loadPlan(path))).toEqual([]);
+  delete (s.ledger as Partial<Ledger>).started_at; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]); s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); db.run('update remote_agent_workflow_runs set status=?', ['failed']); db.close();
   const rejected = captured(() => main(['run', path, '--fake']));
   expect(JSON.parse(rejected.out)).toMatchObject({ plan_lint: { rejected: true }, adopt_candidates: [{ run_id: 'sa1' }] });
   const fresh = captured(() => main(['run', path, '--fake', '--fresh', '--allow-overlap', 'fixture']));
