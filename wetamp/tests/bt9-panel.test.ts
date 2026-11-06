@@ -56,8 +56,8 @@ test('overview projects relay quota thresholds, stale state and missing cache', 
   const { root } = setup(), cache = join(root, 'relay-quota.json'), limits = loadTiers().routing.budget;
   const value = { at: Date.now(), claude: { today: { cost: 12 }, level: 'low', accounts_available: 2, accounts_total: 3, five_hour: { remaining_pct: 40 } }, codex: { seven_day: { remaining_pct: 70 } } };
   writeFileSync(cache, JSON.stringify(value));
-  const snapshot: Snapshot = { at, rows: [], summary: { debt_open: 4, debt_new_today: 2, debt_closed_today: 1 } };
-  expect(overview(snapshot).metrics).toMatchObject({ debt: 4, debt_open: 4, debt_new_today: 2, debt_closed_today: 1 });
+  const snapshot: Snapshot = { at, rows: [], summary: { debt_open: 4, debt_unreadable: 7, debt_bad_closure_lines: 1, debt_new_today: 2, debt_closed_today: 1 } };
+  expect(overview(snapshot).metrics).toMatchObject({ debt: 4, debt_open: 4, debt_unreadable: 7, debt_bad_closure_lines: 1, debt_new_today: 2, debt_closed_today: 1 });
   expect(overview(snapshot).quota).toEqual({ at: new Date(value.at).toISOString(), stale: false, claude: { today_usd: 12, daily_usd: limits.claude_daily_usd, medium_usd: limits.claude_medium_usd, five_hour_pct: 40, seven_day_pct: null, accounts_available: 2, accounts_total: 3, level: 'low' }, codex: { today_usd: null, warning_usd: limits.codex_warning_usd, five_hour_pct: null, seven_day_pct: 70, accounts_available: null, accounts_total: null, level: null } });
   writeFileSync(cache, JSON.stringify({ ...value, at: Date.now() - 30 * 60e3 - 1 }));
   expect(overview(snapshot).quota?.stale).toBe(true);

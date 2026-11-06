@@ -9,14 +9,14 @@ import { home } from './config';
 interface DebtLedger { run_id: string; archon_run_id: string; repo: string; started_at?: string }
 export interface DebtSource {
   ledger: DebtLedger;
-  run: Pick<RunView, 'id' | 'output_root' | 'completed_at'> | Error;
+  run: Pick<RunView, 'id' | 'output_root' | 'started_at' | 'completed_at'> | Error;
 }
 // prettier-ignore
 export interface DebtClosure { id: string; repo: string; at: string; by: 'run' | 'operator'; reason: string; run?: string }
 // prettier-ignore
 export interface DebtRecord { id: string; repo: string; run: string; text: string; opened_at: string; status: 'open' | 'closed'; closed_at?: string }
 // prettier-ignore
-export interface DebtSnapshot { debts: DebtRecord[]; bad_closure_lines: number; unreadable: number }
+export interface DebtSnapshot { debts: DebtRecord[]; bad_closure_lines: number; bad_closure_at: (string | undefined)[]; unreadable: number; unreadable_started_at: (string | undefined)[] }
 
 const canonicalCache = new Map<string, string>();
 export function canonicalRepo(repo: string): string {
@@ -41,13 +41,17 @@ const closurePath = (): string => join(home().sa, 'debt', 'closures.jsonl');
 export function readClosures(path = closurePath()): {
   closures: DebtClosure[];
   bad: number;
+  badAt: (string | undefined)[];
 } {
-  if (!existsSync(path)) return { closures: [], bad: 0 };
-  const closures: DebtClosure[] = [];
+  if (!existsSync(path)) return { closures: [], bad: 0, badAt: [] };
+  const closures: DebtClosure[] = [],
+    badAt: (string | undefined)[] = [];
   let bad = 0;
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/).filter(Boolean)) {
+    let at: string | undefined;
     try {
       const value = JSON.parse(line) as Partial<DebtClosure>;
+      at = typeof value.at === 'string' ? value.at : undefined;
       if (
         typeof value.id !== 'string' ||
         typeof value.repo !== 'string' ||
@@ -59,9 +63,10 @@ export function readClosures(path = closurePath()): {
       closures.push(value as DebtClosure);
     } catch {
       bad++;
+      badAt.push(at);
     }
   }
-  return { closures, bad };
+  return { closures, bad, badAt };
 }
 
 function loadSources(): { sources: DebtSource[]; unreadable: number } {
@@ -97,7 +102,8 @@ function loadSources(): { sources: DebtSource[]; unreadable: number } {
 export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath()): DebtSnapshot {
   const loaded = input ? { sources: input, unreadable: 0 } : loadSources();
   const records = new Map<string, DebtRecord>();
-  let unreadable = loaded.unreadable;
+  // prettier-ignore
+  const unreadableStartedAt = Array.from({ length: loaded.unreadable }, (): string | undefined => undefined);
   for (const { ledger, run } of loaded.sources) {
     try {
       if (run instanceof Error || !run.output_root) throw run instanceof Error ? run : new Error();
@@ -136,10 +142,10 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
         }
       }
     } catch {
-      unreadable++;
+      unreadableStartedAt.push(run instanceof Error ? undefined : (run.started_at ?? undefined));
     }
   }
-  const { closures, bad } = readClosures(closuresFile);
+  const { closures, bad, badAt } = readClosures(closuresFile);
   for (const closure of closures) {
     const debt = records.get(closure.id);
     if (debt?.status === 'open')
@@ -148,7 +154,9 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
   return {
     debts: [...records.values()].sort((a, b) => a.opened_at.localeCompare(b.opened_at)),
     bad_closure_lines: bad,
-    unreadable,
+    bad_closure_at: badAt,
+    unreadable: unreadableStartedAt.length,
+    unreadable_started_at: unreadableStartedAt,
   };
 }
 
@@ -212,24 +220,23 @@ export function debtMetrics(
   snapshot: DebtSnapshot,
   now = Date.now()
 ): Record<string, number | 'unknown'> {
-  if (snapshot.unreadable || snapshot.bad_closure_lines)
-    return {
-      debt: 'unknown',
-      debt_open: 'unknown',
-      debt_new_today: 'unknown',
-      debt_closed_today: 'unknown',
-    };
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   const today = (at?: string): boolean =>
     !!at && Date.parse(at) >= start.getTime() && Date.parse(at) <= now;
   const open = snapshot.debts.filter(debt => debt.status === 'open').length;
+  const uncertainToday = (dates: (string | undefined)[]): boolean =>
+    dates.some(at => !at || !Number.isFinite(Date.parse(at)) || today(at));
   return {
     debt: open,
     debt_open: open,
-    debt_new_today: snapshot.debts.filter(debt => today(debt.opened_at)).length,
-    debt_closed_today: new Set(
-      snapshot.debts.filter(debt => today(debt.closed_at)).map(debt => debt.id)
-    ).size,
+    debt_unreadable: snapshot.unreadable,
+    debt_bad_closure_lines: snapshot.bad_closure_lines,
+    debt_new_today: uncertainToday(snapshot.unreadable_started_at)
+      ? 'unknown'
+      : snapshot.debts.filter(debt => today(debt.opened_at)).length,
+    debt_closed_today: uncertainToday(snapshot.bad_closure_at)
+      ? 'unknown'
+      : new Set(snapshot.debts.filter(debt => today(debt.closed_at)).map(debt => debt.id)).size,
   };
 }

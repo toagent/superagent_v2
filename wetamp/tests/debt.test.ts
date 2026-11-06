@@ -61,8 +61,27 @@ test('stable IDs deduplicate linked worktrees; integrated closure is idempotent 
   const closed = debt.debtSnapshot(sources, closures);
   // prettier-ignore
   expect(debt.debtMetrics(closed)).toMatchObject({ debt: 0, debt_open: 0, debt_new_today: 1, debt_closed_today: 1 });
+  writeFileSync(closures, readFileSync(closures, 'utf8') + '{"at":"2020-01-01T00:00:00Z"}\n');
+  // prettier-ignore
+  expect(debt.debtMetrics(debt.debtSnapshot(sources, closures))).toMatchObject({ debt_open: 0, debt_closed_today: 1, debt_bad_closure_lines: 1 });
   writeFileSync(closures, readFileSync(closures, 'utf8') + 'bad line\n');
-  expect(debt.debtMetrics(debt.debtSnapshot(sources, closures)).debt_open).toBe('unknown');
+  // prettier-ignore
+  expect(debt.debtMetrics(debt.debtSnapshot(sources, closures))).toMatchObject({ debt_open: 0, debt_new_today: 1, debt_closed_today: 'unknown', debt_bad_closure_lines: 2 });
+});
+
+test('unreadable evidence preserves totals and only obscures a relevant daily metric', () => {
+  // prettier-ignore
+  const repo = gitRepo(tmp()), output = tmp(), closures = join(tmp(), 'closures.jsonl'), readable = source(repo, output, 'readable', 'debt');
+  // prettier-ignore
+  const missing = (id: string, started_at?: string): debt.DebtSource => ({ ledger: { run_id: id, archon_run_id: id, repo }, run: { id, output_root: join(output, id), started_at } });
+  // prettier-ignore
+  const historical = debt.debtMetrics(debt.debtSnapshot([readable, missing('old', '2020-01-01T00:00:00Z')], closures));
+  // prettier-ignore
+  expect(historical).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 1, debt_closed_today: 0 });
+  // prettier-ignore
+  const current = debt.debtMetrics(debt.debtSnapshot([readable, missing('today', new Date().toISOString())], closures));
+  // prettier-ignore
+  expect(current).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 'unknown', debt_closed_today: 0 });
 });
 
 test('CLI lists and explicitly closes debt; plan precheck warns for an unknown ID', () => {
