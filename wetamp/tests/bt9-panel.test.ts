@@ -393,6 +393,8 @@ test('2 runs, 1 job, pending/superseded and all four token roles render the shar
     d = overview(s),
     html = panel(d);
   expect(d).toMatchObject({
+    snapshot_at: at,
+    served_at: expect.any(String),
     at: '12:00',
     running: 2,
     metrics: {

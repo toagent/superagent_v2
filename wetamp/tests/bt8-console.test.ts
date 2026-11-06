@@ -463,9 +463,9 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   const demand = createDemandSnapshot(async () => {
     const load = ++loads;
     if (load === 1) await new Promise<void>(resolve => { releases.push(resolve); });
-    else await Bun.sleep(2000);
+    else await new Promise<void>(resolve => { releases.push(resolve); });
     return { summary: {}, rows: [], at: `fresh-${String(load)}` };
-  }, () => { refreshes++; }, 5000, () => now);
+  }, () => { refreshes++; }, undefined, () => now);
   const forward = Object.assign(async () => new Response('native'), { preconnect: () => {} });
   const serve = handler(39890, 'fixture', () => ({ at: demand.snapshot().at }),
     'http://localhost', forward, undefined, demand.snapshot, demand.update);
@@ -484,14 +484,20 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   expect(refreshes).toBe(1);
   await serve(request('/sa/data?t=fixture'));
   expect(loads).toBe(1);
-  now = 6000;
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
+  now = 2000;
+  await serve(request('/sa/data?t=fixture'));
+  expect(loads).toBe(1);
+  now = 2100;
   const started = performance.now();
   const stale = await serve(request('/sa/data?t=fixture'));
   expect(loads).toBe(2);
   expect(await stale.json()).toEqual({ at: 'fresh-1' });
   expect(performance.now() - started).toBeLessThan(200);
-  await Bun.sleep(2100);
+  releases.shift()!();
+  await Bun.sleep(0);
   expect(demand.snapshot().at).toBe('fresh-2');
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.100Z');
   expect(refreshes).toBe(2);
 });
 
@@ -504,16 +510,20 @@ test('console snapshot propagates initial failure and retries a failed backgroun
       return { summary: {}, rows: [], at: `recovered-${String(loads)}` };
     },
     () => {},
-    5000,
+    undefined,
     () => now
   );
   await expect(demand.update()).rejects.toThrow('fixture');
+  expect(demand.snapshotAt()).toBeUndefined();
   await demand.update();
-  now = 6000;
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
+  now = 2100;
   await expect(demand.update()).resolves.toBeUndefined();
   await Bun.sleep(0);
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
   await demand.update();
   await Bun.sleep(0);
   expect(loads).toBe(4);
   expect(demand.snapshot().at).toBe('recovered-4');
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.100Z');
 });

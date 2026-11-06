@@ -205,7 +205,7 @@ function quotaOverview() {
     };
   } catch { return null; }
 }
-export function overview(s: Snapshot) {
+export function overview(s: Snapshot, snapshotAt = s.at, servedAt = new Date().toISOString()) {
   const now = Date.parse(s.at),
     c = cockpit(s, now),
     day = new Date(now).toLocaleDateString('sv-SE');
@@ -228,6 +228,8 @@ export function overview(s: Snapshot) {
       failed: '失败',
     })[v] ?? (v.startsWith('held:') ? '挂起' : '—');
   return {
+    snapshot_at: snapshotAt,
+    served_at: servedAt,
     quota: quotaOverview(),
     at: new Date(now).toLocaleTimeString('zh-CN', {
       hour: '2-digit',
@@ -432,10 +434,11 @@ export async function ensureWebDist(hash = residentHash()): Promise<void> {
 export function createDemandSnapshot(
   load = createLoader(),
   refresh = requestUsageRefresh,
-  freshMs = 5000,
+  freshMs = 2000,
   now = Date.now
 ): {
   snapshot: () => Snapshot;
+  snapshotAt: () => string | undefined;
   update: () => Promise<void>;
 } {
   let snapshot: Snapshot = { summary: {}, rows: [], at: new Date().toISOString() };
@@ -451,9 +454,10 @@ export function createDemandSnapshot(
     }));
   return {
     snapshot: () => snapshot,
+    snapshotAt: () => (loadedAt === undefined ? undefined : new Date(loadedAt).toISOString()),
     update: () => {
       if (loadedAt === undefined) return reload();
-      if (now() - loadedAt >= freshMs)
+      if (now() - loadedAt > freshMs)
         void reload().catch((e: unknown) => {
           console.error(`console snapshot refresh failed: ${(e as Error).message}`);
         });
@@ -536,8 +540,9 @@ async function serve(): Promise<void> {
   let projected: { snapshot: Snapshot; value: ReturnType<typeof overview> } | undefined;
   const getOverview = () => {
     const snapshot = demand.snapshot();
-    if (projected?.snapshot !== snapshot) projected = { snapshot, value: overview(snapshot) };
-    return projected.value;
+    if (projected?.snapshot !== snapshot)
+      projected = { snapshot, value: overview(snapshot, demand.snapshotAt()) };
+    return { ...projected.value, served_at: new Date().toISOString() };
   };
   const cleanup = (): void => {
     if (existsSync(socket)) unlinkSync(socket);
