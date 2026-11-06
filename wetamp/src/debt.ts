@@ -6,17 +6,17 @@ import { getRun, runProjections, type RunView } from './archon';
 import { home } from './config';
 
 // prettier-ignore
-interface DebtLedger { run_id: string; archon_run_id: string; repo: string; started_at?: string }
+interface DebtLedger { run_id: string; archon_run_id: string; repo: string; started_at?: string; rejected?: string }
 export interface DebtSource {
   ledger: DebtLedger;
-  run: Pick<RunView, 'id' | 'output_root' | 'started_at' | 'completed_at'> | Error;
+  run: Pick<RunView, 'id' | 'status' | 'output_root' | 'started_at' | 'completed_at'> | Error;
 }
 // prettier-ignore
 export interface DebtClosure { id: string; repo: string; at: string; by: 'run' | 'operator'; reason: string; run?: string }
 // prettier-ignore
 export interface DebtRecord { id: string; repo: string; run: string; text: string; opened_at: string; status: 'open' | 'closed'; closed_at?: string }
 // prettier-ignore
-export interface DebtSnapshot { debts: DebtRecord[]; bad_closure_lines: number; bad_closure_at: (string | undefined)[]; unreadable: number; unreadable_started_at: (string | undefined)[] }
+export interface DebtSnapshot { debts: DebtRecord[]; bad_closure_lines: number; bad_closure_at: (string | undefined)[]; unreadable: number; unreadable_started_at: (string | undefined)[]; unreadable_sources: { run_id: string; started_at?: string; reason: string }[] }
 
 const canonicalCache = new Map<string, string>();
 export function canonicalRepo(repo: string): string {
@@ -69,10 +69,15 @@ export function readClosures(path = closurePath()): {
   return { closures, bad, badAt };
 }
 
-function loadSources(): { sources: DebtSource[]; unreadable: number } {
+function loadSources(): {
+  sources: DebtSource[];
+  unreadable: number;
+  unreadable_sources: DebtSnapshot['unreadable_sources'];
+} {
   const dir = join(home().sa, 'runs');
-  if (!existsSync(dir)) return { sources: [], unreadable: 0 };
+  if (!existsSync(dir)) return { sources: [], unreadable: 0, unreadable_sources: [] };
   const ledgers: DebtLedger[] = [];
+  const unreadable_sources: DebtSnapshot['unreadable_sources'] = [];
   let unreadable = 0;
   for (const file of readdirSync(dir).filter(name => name.endsWith('.json'))) {
     try {
@@ -82,11 +87,13 @@ function loadSources(): { sources: DebtSource[]; unreadable: number } {
       ledgers.push(value);
     } catch {
       unreadable++;
+      unreadable_sources.push({ run_id: file, reason: 'ledger_unreadable' });
     }
   }
   const projections = runProjections(ledgers.map(l => l.archon_run_id));
   return {
     unreadable,
+    unreadable_sources,
     sources: ledgers.map(ledger => {
       try {
         const run =
@@ -100,16 +107,32 @@ function loadSources(): { sources: DebtSource[]; unreadable: number } {
 }
 
 export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath()): DebtSnapshot {
-  const loaded = input ? { sources: input, unreadable: 0 } : loadSources();
+  const loaded = input ? { sources: input, unreadable: 0, unreadable_sources: [] } : loadSources();
   const records = new Map<string, DebtRecord>();
   // prettier-ignore
   const unreadableStartedAt = Array.from({ length: loaded.unreadable }, (): string | undefined => undefined);
+  const unreadableSources: DebtSnapshot['unreadable_sources'] = [...loaded.unreadable_sources];
   for (const { ledger, run } of loaded.sources) {
+    const startedAt = (run instanceof Error ? undefined : run.started_at) ?? ledger.started_at;
+    const bad = (reason: string): void => {
+      unreadableStartedAt.push(startedAt);
+      unreadableSources.push({ run_id: ledger.run_id, started_at: startedAt, reason });
+    };
+    if (run instanceof Error) {
+      if (ledger.rejected !== ledger.archon_run_id) bad('projection_failed');
+      continue;
+    }
+    const terminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+    if (!run.output_root) {
+      if (terminal) bad('missing_output_root');
+      continue;
+    }
     try {
-      if (run instanceof Error || !run.output_root) throw run instanceof Error ? run : new Error();
-      const repo = canonicalRepo(ledger.repo),
-        art = join(run.output_root, 'artifacts', 'runs', run.id);
-      if (!existsSync(art)) throw new Error('missing artifacts');
+      const art = join(run.output_root, 'artifacts', 'runs', run.id);
+      if (!existsSync(art)) {
+        if (terminal) bad('missing_artifacts');
+        continue;
+      }
       const latest = new Map<string, { file: string; round: number }>();
       for (const file of readdirSync(art)) {
         const match = /^gate-(.+)-r(\d+)\.json$/.exec(file);
@@ -117,6 +140,13 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
         const round = Number(match[2]),
           previous = latest.get(match[1]);
         if (!previous || round > previous.round) latest.set(match[1], { file, round });
+      }
+      if (!latest.size) continue;
+      let repo: string;
+      try {
+        repo = canonicalRepo(ledger.repo);
+      } catch {
+        continue;
       }
       for (const { file } of latest.values()) {
         const path = join(art, file),
@@ -142,10 +172,7 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
         }
       }
     } catch {
-      // 引擎库查不到投影的历史 run 仍有 ledger 记录的提交时刻；只有两者都缺才视为「可能是今天」。
-      unreadableStartedAt.push(
-        (run instanceof Error ? undefined : run.started_at) ?? ledger.started_at
-      );
+      bad('gate_unreadable');
     }
   }
   const { closures, bad, badAt } = readClosures(closuresFile);
@@ -160,6 +187,7 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
     bad_closure_at: badAt,
     unreadable: unreadableStartedAt.length,
     unreadable_started_at: unreadableStartedAt,
+    unreadable_sources: unreadableSources,
   };
 }
 

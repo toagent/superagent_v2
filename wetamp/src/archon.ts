@@ -204,7 +204,7 @@ export function runProjections(ids: string[]): Map<string, RunView> | null {
   try {
     const rows = db
       .query<RunView, string[]>(
-        `SELECT id, status, working_path, output_root FROM remote_agent_workflow_runs
+        `SELECT id, status, working_path, output_root, started_at, completed_at FROM remote_agent_workflow_runs
          WHERE id IN (${requested.map(() => '?').join(',')})`
       )
       .all(...requested);

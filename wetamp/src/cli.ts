@@ -296,6 +296,7 @@ export const OPTIONS = {
   watch: { type: 'boolean' },
   limit: { type: 'string' },
   json: { type: 'boolean' }, // board/models/status/brief/wait 等命令的机器可读输出开关
+  diagnose: { type: 'boolean' },
   full: { type: 'boolean' },
   'by-engine': { type: 'string' },
   'baseline-days': { type: 'string' },
@@ -4610,7 +4611,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt', 'fresh'], operatorFlags: ['fake', 'lint-override'] },
   { command: 'retro', audience: 'agent', positionals: '<run>', flags: ['effect', 'improve'] },
   { command: 'plan', audience: 'agent', positionals: 'check <file>', flags: [], operatorFlags: ['lint-override'] },
-  { command: 'debt', audience: 'agent', positionals: 'list|close <id>...', flags: ['repo', 'open', 'reason'] },
+  { command: 'debt', audience: 'agent', positionals: 'list|close <id>...', flags: ['repo', 'open', 'reason', 'diagnose'] },
   { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
   { command: 'status', audience: 'agent', positionals: '<run>', flags: [] },
   { command: 'brief', audience: 'agent', positionals: '<run>', flags: [] },
@@ -4969,6 +4970,8 @@ export function main(argv: string[]): number {
         else
           for (const debt of debts)
             console.log(`${debt.id}\t${debt.status}\t${debt.repo}\t${debt.text}`);
+        if (a.flags.diagnose)
+          for (const source of snapshot.unreadable_sources) console.error(JSON.stringify(source));
         if (snapshot.unreadable || snapshot.bad_closure_lines)
           console.error(
             `debt: skipped unreadable=${String(snapshot.unreadable)} bad_closure_lines=${String(snapshot.bad_closure_lines)}`
@@ -4983,7 +4986,7 @@ export function main(argv: string[]): number {
         return 0;
       }
       throw new Error(
-        'usage: superagent debt list [--repo <path>] [--open] [--json] | debt close <id>... --reason <text>'
+        'usage: superagent debt list [--repo <path>] [--open] [--json] [--diagnose] | debt close <id>... --reason <text>'
       );
     }
     case 'reclaim':

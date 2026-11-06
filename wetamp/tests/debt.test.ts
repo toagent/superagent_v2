@@ -22,7 +22,7 @@ const source = (repo: string, output: string, run: string, text: string): debt.D
   writeFileSync(join(art, 'gate-m1-r1.json'), JSON.stringify({ decision: { debt: [text] } }));
   return {
     ledger: { run_id: run, archon_run_id: run, repo },
-    run: { id: run, output_root: output },
+    run: { id: run, status: 'completed', output_root: output },
   };
 };
 
@@ -73,24 +73,44 @@ test('unreadable evidence preserves totals and only obscures a relevant daily me
   // prettier-ignore
   const repo = gitRepo(tmp()), output = tmp(), closures = join(tmp(), 'closures.jsonl'), readable = source(repo, output, 'readable', 'debt');
   // prettier-ignore
-  const missing = (id: string, started_at?: string): debt.DebtSource => ({ ledger: { run_id: id, archon_run_id: id, repo }, run: { id, output_root: join(output, id), started_at } });
+  const missing = (id: string, status: 'running' | 'completed', started_at?: string): debt.DebtSource => ({ ledger: { run_id: id, archon_run_id: id, repo }, run: { id, status, output_root: join(output, id), started_at } });
   // prettier-ignore
-  const historical = debt.debtMetrics(debt.debtSnapshot([readable, missing('old', '2020-01-01T00:00:00Z')], closures));
+  const historical = debt.debtMetrics(debt.debtSnapshot([readable, missing('old', 'completed', '2020-01-01T00:00:00Z')], closures));
   // prettier-ignore
   expect(historical).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 1, debt_closed_today: 0 });
   // prettier-ignore
-  const current = debt.debtMetrics(debt.debtSnapshot([readable, missing('today', new Date().toISOString())], closures));
+  const broken = missing('today', 'completed', new Date().toISOString()), brokenArt = join(output, 'today/artifacts/runs/today');
+  mkdirSync(brokenArt, { recursive: true });
+  writeFileSync(join(brokenArt, 'gate-m1-r1.json'), '{');
+  const current = debt.debtMetrics(debt.debtSnapshot([readable, broken], closures));
   // prettier-ignore
   expect(current).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 'unknown', debt_closed_today: 0 });
+  // A current in-flight run without gate evidence has no debt yet.
+  expect(
+    debt.debtMetrics(
+      debt.debtSnapshot([readable, missing('live', 'running', new Date().toISOString())], closures)
+    )
+  ).toMatchObject({ debt_unreadable: 0, debt_new_today: 1 });
+  const empty = missing('empty', 'completed', new Date().toISOString());
+  empty.ledger.repo = join(output, 'deleted');
+  mkdirSync(join(output, 'empty/artifacts/runs/empty'), { recursive: true });
+  writeFileSync(
+    join(output, 'empty/artifacts/runs/empty/gate-m1-r1.json'),
+    JSON.stringify({ decision: { debt: ['ignored'] } })
+  );
+  expect(debt.debtMetrics(debt.debtSnapshot([readable, empty], closures))).toMatchObject({
+    debt_unreadable: 0,
+    debt_new_today: 1,
+  });
   // A run the engine database no longer knows still carries its ledger submission time.
   // prettier-ignore
   const orphan: debt.DebtSource = { ledger: { run_id: 'gone', archon_run_id: 'gone', repo, started_at: '2020-01-01T00:00:00Z' }, run: new Error('not_found') };
   // prettier-ignore
   expect(debt.debtMetrics(debt.debtSnapshot([readable, orphan], closures))).toMatchObject({ debt_unreadable: 1, debt_new_today: 1 });
   // prettier-ignore
-  const undated: debt.DebtSource = { ledger: { run_id: 'undated', archon_run_id: 'undated', repo }, run: new Error('not_found') };
+  const undated: debt.DebtSource = { ledger: { run_id: 'undated', archon_run_id: 'undated', repo, rejected: 'undated' }, run: new Error('not_found') };
   // prettier-ignore
-  expect(debt.debtMetrics(debt.debtSnapshot([readable, undated], closures))).toMatchObject({ debt_new_today: 'unknown' });
+  expect(debt.debtMetrics(debt.debtSnapshot([readable, undated], closures))).toMatchObject({ debt_unreadable: 0, debt_new_today: 1 });
 });
 
 test('CLI lists and explicitly closes debt; plan precheck warns for an unknown ID', () => {
