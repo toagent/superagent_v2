@@ -181,13 +181,8 @@ import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
-import {
-  buildReport,
-  consolidationMetrics,
-  reportSummary,
-  retroCoverage,
-  reviewWhitelistReport,
-} from './report';
+// prettier-ignore
+import { buildReport, consolidationMetrics, reportSummary, retroCoverage, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
