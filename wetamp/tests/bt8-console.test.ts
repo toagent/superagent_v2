@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import {
   createDemandSnapshot,
+  createWorkerSnapshotLoader,
   consoleEnv,
   consoleProgramArguments,
   consoleStatus,
@@ -483,21 +484,75 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   expect(await (await first).json()).toEqual({ at: 'fresh-1' });
   await second;
   expect(refreshes).toBe(1);
-  expect(sleeps[0]?.ms).toBe(250);
+  expect(sleeps[0]?.ms).toBe(2000);
   expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
-  now = 250;
+  now = 1999;
+  sleeps.shift()!.release();
+  await Bun.sleep(0);
+  expect(loads).toBe(1);
+  expect(sleeps[0]?.ms).toBe(1);
+  now = 2000;
   sleeps.shift()!.release();
   await Bun.sleep(0);
   expect(loads).toBe(2);
+  expect(demand.snapshot().at).toBe('fresh-1');
   releases.shift()!();
   await Bun.sleep(0);
   expect(demand.snapshot().at).toBe('fresh-2');
-  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.250Z');
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.000Z');
   expect(refreshes).toBe(2);
   now = 15_001;
   sleeps.shift()!.release();
   await Bun.sleep(0);
   expect(loads).toBe(2);
+});
+
+test('snapshot worker recycles while idle and the next load uses a fresh worker', async () => {
+  const workers: {
+    onmessage: ((event: MessageEvent) => void) | null;
+    onerror: null;
+    terminated: boolean;
+    postMessage: (message: { id: number }) => void;
+    terminate: () => void;
+  }[] = [];
+  const spawn = () => {
+    const worker = {
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      onerror: null,
+      terminated: false,
+      postMessage(message: { id: number }) {
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: {
+              id: message.id,
+              snapshot: {
+                summary: {},
+                rows: [],
+                at: `worker-${String(workers.length)}`,
+              },
+              load_ms: 4,
+              rss: 8,
+            },
+          } as MessageEvent)
+        );
+      },
+      terminate() {
+        this.terminated = true;
+      },
+    };
+    workers.push(worker);
+    queueMicrotask(() => worker.onmessage?.({ data: { ready: true } } as MessageEvent));
+    return worker;
+  };
+  const load = createWorkerSnapshotLoader(
+    async () => ({ summary: {}, rows: [], at: 'fallback' }),
+    spawn as unknown as () => Worker,
+    { maxRounds: 1 }
+  );
+  expect((await load(200)).at).toBe('worker-1');
+  expect(workers[0]?.terminated).toBe(true);
+  expect((await load(200)).at).toBe('worker-2');
+  expect(workers).toHaveLength(2);
 });
 
 test('console snapshot propagates initial failure and retries a failed background refresh', async () => {

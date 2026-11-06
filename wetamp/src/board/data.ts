@@ -456,7 +456,7 @@ async function queryRuns(
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger, statusesOf: () => Map<string, RunView['status']> | null = runStatuses): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger, statusesOf: () => Map<string, RunView['status']> | null = runStatuses, onProfile?: (timings: Record<string, number>) => void): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -464,14 +464,17 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   const cache = new Map<string, { run: RunView; mtimeMs: number; revision?: string }>();
   const rowCache = new Map<string, BoardRow>();
   const ledgerCache = new Map<string, Ledger>();
+  const ledgerReadCache = new Map<string, { mtimeMs: number; value: Ledger | string }>();
   const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
+  let coordMessagesCache: { stamp: number; value: Message[] } | undefined;
+  let ledgerListCache: { stamp: number; ids: { id: string; mtimeMs: number }[] } | undefined;
   let summaryCache: { ids: string; key: string; value: Record<string, unknown> } | undefined;
   let slowCache: { ids: string; key: string; reflection?: Snapshot['reflection']; eta: Record<string, Estimate> } | undefined;
   const presenceCache = new Map<string, { at: number; value: Presence }>();
   let first = true;
   return async limit => {
-    const profile = process.env.SA_BOARD_PROFILE === '1';
+    const profile = onProfile !== undefined || process.env.SA_BOARD_PROFILE === '1';
     const timings: Record<string, number> = {};
     let checkpoint = performance.now();
     const mark = (stage: string): void => {
@@ -480,23 +483,20 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       checkpoint = next;
     };
     const now = Date.now();
-    const ids = ledgerIds()
-      // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
-      .map(id => ({
-        id,
-        mtimeMs: statSync(ledgerPath(id), { throwIfNoEntry: false })?.mtimeMs ?? 0,
-      }))
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const names = ledgerIds(), ledgerStamp = statSync(join(home().sa, 'runs'), { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    // 小目录完整核验；大目录以原子 ledger 写入会更新的目录 mtime 作失效信号。
+    const ids = names.length > 200 && ledgerReader === readLedger && ledgerListCache?.stamp === ledgerStamp ? ledgerListCache.ids : names.map(id => ({ id, mtimeMs: statSync(ledgerPath(id), { throwIfNoEntry: false })?.mtimeMs ?? 0 })).sort((a, b) => b.mtimeMs - a.mtimeMs); ledgerListCache = { stamp: ledgerStamp, ids };
     // prettier-ignore
-    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : ledgerReader(id)] as const; }));
+    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const saved = ledgerReadCache.get(id), value = saved?.mtimeMs === mtimeMs ? saved.value : ledgerReader(id); ledgerReadCache.set(id, { mtimeMs, value }); return [id, value] as const; }));
     mark('ledgers');
     let terminal = 0;
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
     const statuses = statusesOf();
     const visibleIds = statuses ? ids.filter(({ id }) => {
       const ledger = initialLedgers.get(id);
       if (typeof ledger === 'string' || !ledger) return true;
       const status = statuses.get(ledger.archon_run_id);
-      return !status || !FINAL.has(status) || terminal++ < limit;
+      return !status || !FINAL.has(status) || clock(ledger.started_at) >= today.getTime() || terminal++ < limit;
     }) : ids;
     const visible = new Set(visibleIds.map(({ id }) => id));
     mark('statuses');
@@ -547,7 +547,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     const queryEntries = uncached.flatMap(({ id }) => { const ledger = ledgers.get(id); return typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
     const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
     if (uncached.length && firstLedger) {
-      if (first) {
+      if (first || !process.env.SA_ARCHON_BIN) {
         try {
           const batch = await getRunsAsync(queryEntries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
           for (const { id } of uncached) {
@@ -590,7 +590,8 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         return hit ? { l, run: hit.run, stale: true, err } : { l, err };
       }
     }).filter(r => statuses !== null || !r.run || !FINAL.has(r.run.status) || terminal++ < limit);
-    const coordMessages = coordinator.messages();
+    const stamp = statSync(join(home().sa, 'coord', 'inbox'), { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    const coordMessages = coordMessagesCache?.stamp === stamp ? coordMessagesCache.value : coordinator.messages(); coordMessagesCache = { stamp, value: coordMessages };
     const pending = new Map<string, number>();
     for (const message of coordMessages)
       if (
@@ -705,7 +706,11 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       eta,
     };
     mark('other');
-    if (profile) console.error(JSON.stringify({ type: 'board_profile', ...timings }));
+    if (profile) {
+      onProfile?.(timings);
+      if (process.env.SA_BOARD_PROFILE === '1')
+        console.error(JSON.stringify({ type: 'board_profile', ...timings }));
+    }
     return value;
   };
 }

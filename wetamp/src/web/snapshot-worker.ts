@@ -6,15 +6,39 @@ interface WorkerScope {
 }
 declare const self: WorkerScope;
 
-const load = createLoader();
+let profile: Record<string, number> = {};
+const load = createLoader(
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  timings => {
+    profile = timings;
+  }
+);
 
 self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
   const { id, limit } = event.data;
   void (async () => {
+    const started = performance.now();
     try {
-      self.postMessage({ id, snapshot: JSON.stringify(await load(limit)) });
+      const snapshot = await load(limit);
+      self.postMessage({
+        id,
+        snapshot,
+        load_ms: performance.now() - started,
+        rss: process.memoryUsage().rss,
+        profile,
+      });
     } catch (error) {
-      self.postMessage({ id, error: (error as Error).message });
+      self.postMessage({
+        id,
+        error: (error as Error).message,
+        load_ms: performance.now() - started,
+        rss: process.memoryUsage().rss,
+      });
     }
   })();
 };

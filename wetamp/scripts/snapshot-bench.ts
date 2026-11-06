@@ -1,20 +1,65 @@
 import { createLoader } from '../src/board/data';
+import { createDemandSnapshot, createWorkerSnapshotLoader } from '../src/web/server';
 
-const at = process.argv.indexOf('--max-ms');
-const maxMs = at < 0 ? Infinity : Number(process.argv[at + 1]);
-if (!(maxMs > 0)) throw new Error('--max-ms must be a positive number');
+const number = (name: string, fallback: number): number => {
+  const at = process.argv.indexOf(name),
+    value = at < 0 ? fallback : Number(process.argv[at + 1]);
+  if (!(value > 0)) throw new Error(`${name} must be a positive number`);
+  return value;
+};
+const soak = number('--soak', 5),
+  maxRssMb = number('--max-rss-mb', Infinity),
+  maxP95Ms = number('--max-p95-ms', number('--max-ms', Infinity)),
+  breakdown = process.argv.includes('--breakdown');
 
-const load = createLoader();
-await load(Number.MAX_SAFE_INTEGER);
 const samples: number[] = [];
-for (let i = 1; i <= 5; i++) {
-  const started = performance.now();
-  await load(Number.MAX_SAFE_INTEGER);
-  const ms = Math.round((performance.now() - started) * 10) / 10;
-  samples.push(ms);
-  console.log(JSON.stringify({ sample: i, ms }));
+const stages = new Map<string, number[]>();
+let peakRss = process.memoryUsage().rss,
+  recording = false;
+const load = createWorkerSnapshotLoader(createLoader(), undefined, {
+  onSample: sample => {
+    if (!recording) return;
+    samples.push(sample.round_ms);
+    peakRss = Math.max(peakRss, sample.rss);
+    if (breakdown) {
+      for (const [stage, ms] of Object.entries(sample.profile ?? {})) {
+        const values = stages.get(stage) ?? [];
+        values.push(ms);
+        stages.set(stage, values);
+      }
+      console.log(
+        JSON.stringify({
+          type: 'snapshot_breakdown',
+          round_ms: sample.round_ms,
+          stages: sample.profile ?? {},
+        })
+      );
+    }
+  },
+});
+const demand = createDemandSnapshot(load);
+await demand.update();
+recording = true;
+for (let second = 0; second < soak; second++) {
+  await demand.update();
+  if (second + 1 < soak) await Bun.sleep(1000);
 }
 const sorted = [...samples].sort((a, b) => a - b);
-const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1];
-console.log(JSON.stringify({ p95_ms: p95, max_ms: Number.isFinite(maxMs) ? maxMs : null }));
-if (p95 > maxMs) process.exitCode = 1;
+const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0;
+const percentile = (values: number[]): number =>
+  [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1] ?? 0;
+const endRss = process.memoryUsage().rss,
+  mb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
+console.log(
+  JSON.stringify({
+    samples: samples.length,
+    peak_rss_mb: mb(peakRss),
+    end_rss_mb: mb(endRss),
+    p95_ms: Math.round(p95 * 10) / 10,
+    ...(breakdown
+      ? { breakdown_p95_ms: Object.fromEntries([...stages].map(([k, v]) => [k, percentile(v)])) }
+      : {}),
+  })
+);
+if (mb(peakRss) > maxRssMb || p95 > maxP95Ms) process.exitCode = 1;
+process.exit(process.exitCode ?? 0);

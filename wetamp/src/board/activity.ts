@@ -57,6 +57,7 @@ const CWD_MAX = 24;
 // twin-agent-remote 的 state_of：其余（finished/failed/cancelled/abandoned/unknown）不算活动
 const REMOTE_ACTIVE = new Set(['running', 'queued', 'preparing', 'cancelling']);
 const jobCache = new Map<string, { mtimeMs: number; size: number; value: Job | string }>();
+let jobSnapshot: { root: string; stamp?: number; jobs: Job[]; bad: string[] } | undefined;
 interface SourceCache<T> {
   at: number;
   value?: T;
@@ -94,32 +95,35 @@ async function staleSource<T>(
 
 // prettier-ignore
 function cachedJobs(): { jobs: Job[]; bad: string[] } {
-  const root = join(home().sa, 'jobs'), jobs: Job[] = [], bad: string[] = [];
+  const root = join(home().sa, 'jobs'), jobs: Job[] = [], bad: string[] = [], stamp = statSync(root, { throwIfNoEntry: false })?.mtimeMs;
+  const project = (j: Job): Job => ['queued', 'running'].includes(j.state) && !alive(j.wrapper_pid) && (j.pid === 0 || !alive(j.pid)) ? { ...j, state: 'lost' } : j;
   let files: string[];
   try { files = readdirSync(root).filter(f => f.endsWith('.json')); } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { jobs, bad };
     throw e;
   }
+  if (files.length > 200 && jobSnapshot?.root === root && jobSnapshot.stamp === stamp) return { jobs: jobSnapshot.jobs.map(project), bad: jobSnapshot.bad };
   for (const file of jobCache.keys()) if (file.startsWith(root + sep) && !files.includes(basename(file))) jobCache.delete(file);
   for (const name of files) {
     const file = join(root, name);
-    const { mtimeMs, size } = statSync(file);
     let entry = jobCache.get(file);
-    if (entry?.mtimeMs !== mtimeMs || entry.size !== size) {
-      try {
-        const value = JSON.parse(readFileSync(file, 'utf8')) as Job;
-        if (typeof value.state !== 'string' || typeof value.started_at !== 'string') throw new Error('not a job record');
-        entry = { mtimeMs, size, value };
-      } catch (e) { entry = { mtimeMs, size, value: `${name}: ${(e as Error).message}` }; }
-      jobCache.set(file, entry);
+    if (files.length <= 200 || !entry || typeof entry.value === 'string' || ['queued', 'running'].includes(entry.value.state)) {
+      const { mtimeMs, size } = statSync(file);
+      if (entry?.mtimeMs !== mtimeMs || entry.size !== size) {
+        try {
+          const value = JSON.parse(readFileSync(file, 'utf8')) as Job;
+          if (typeof value.state !== 'string' || typeof value.started_at !== 'string') throw new Error('not a job record');
+          entry = { mtimeMs, size, value };
+        } catch (e) { entry = { mtimeMs, size, value: `${name}: ${(e as Error).message}` }; }
+        jobCache.set(file, entry);
+      }
     }
     if (typeof entry.value === 'string') bad.push(entry.value);
-    else {
-      const j = entry.value;
-      jobs.push(['queued', 'running'].includes(j.state) && !alive(j.wrapper_pid) && (j.pid === 0 || !alive(j.pid)) ? { ...j, state: 'lost' } : j);
-    }
+    else jobs.push(entry.value);
   }
-  return { jobs: jobs.sort((a, b) => b.started_at.localeCompare(a.started_at)), bad };
+  jobs.sort((a, b) => b.started_at.localeCompare(a.started_at));
+  jobSnapshot = { root, stamp, jobs, bad };
+  return { jobs: jobs.map(project), bad };
 }
 
 /** 跑一个短命令取 stdout；超时或 abort 杀整个进程组（ssh 之类可能有孙进程握着管道）。非零退出由调用方判断。 */
