@@ -1190,7 +1190,7 @@ function reviewCheckpoints(l: Ledger, run: RunView): Carried['reviews'] {
   return reviews;
 }
 
-function deliveryBase(l: Ledger): string | undefined {
+export function deliveryBase(l: Ledger): string | undefined {
   let current = l;
   const seen = new Set<string>();
   for (;;) {
@@ -1214,6 +1214,16 @@ function deliveryBase(l: Ledger): string | undefined {
     } catch {
       return undefined;
     }
+  }
+}
+
+function planDeliveryBase(plan: Plan): string | undefined {
+  const match = /^(?:refs\/heads\/)?sa\/(.+)$/.exec(plan.base_ref);
+  if (!match) return undefined;
+  try {
+    return deliveryBase(loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]));
+  } catch {
+    return undefined;
   }
 }
 
@@ -2011,7 +2021,8 @@ function startRun(planPath: string, a: Args): number {
           continuation,
           delivery,
           engine.path,
-          routing
+          routing,
+          adopted ? undefined : planDeliveryBase(plan)
         );
         freezePlanRules(plan, gen.dir);
         const branch = adopted?.ledger.branch ?? `sa/${run}`;

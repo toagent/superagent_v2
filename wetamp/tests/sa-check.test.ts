@@ -5004,7 +5004,7 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     const reviewedHead = sh('git rev-parse HEAD', repo).trim();
     writeFileSync(join(repo, 'policy.test.ts'), 'test only\n');
     sh('git add . && git -c user.name=t -c user.email=t@l commit -qm test', repo);
-    const check = (reviewBase: string) => runScript(repo, { kind: 'accept', plan, policy, pkgs: 'a', scope_pkgs: 'a', tag: 'diff-m1-r1', base: deliveryBase, scope_base: deliveryBase, review_base: reviewBase, risk: 'G1' }).out;
+    const check = (reviewBase: string) => runScript(repo, { kind: 'accept', plan, policy, pkgs: 'a', scope_pkgs: 'a', tag: 'diff-m1-r1', base: deliveryBase, scope_base: deliveryBase, target_tip: reviewedHead, review_base: reviewBase, risk: 'G1' }).out;
     expect(check(deliveryBase)).toMatchObject({ review_required: true, risk: 'G2' });
     expect(check(reviewedHead)).toMatchObject({ review_required: false, risk: 'G1' });
   });

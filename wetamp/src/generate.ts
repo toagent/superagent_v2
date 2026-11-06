@@ -194,7 +194,8 @@ export function buildWorkflow(
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget,
   engineSnapshot?: string,
-  state: RouteState = routeState(tiers, plan.mode, now)
+  state: RouteState = routeState(tiers, plan.mode, now),
+  deliveryBase?: string
 ): Node {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
@@ -958,6 +959,7 @@ export function buildWorkflow(
     const reviewBase =
       checkpoint?.gate.reviewed_head ??
       carried?.deliveryBase ??
+      deliveryBase ??
       ref.required(syncReadyHandle, 'target_tip');
     // prettier-ignore
     const checkpointAtoms = checkpoint ? [['head', checkpoint.gate.reviewed_head], ['diff_hash', checkpoint.gate.reviewed_diff_hash],
@@ -1684,7 +1686,8 @@ export function generate(
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget,
   engineSnapshot?: string,
-  routingState?: RouteState
+  routingState?: RouteState,
+  deliveryBase?: string
 ): Gen {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   const engine_commit = cleanEngine();
@@ -1725,7 +1728,8 @@ export function generate(
     carried,
     delivery,
     engineSnapshot,
-    state
+    state,
+    deliveryBase
   );
   assertGeneratedWorkflow(definition, !ms.some(m => m.human));
   const wfDir = join(dir, '.archon', 'workflows', workflow);

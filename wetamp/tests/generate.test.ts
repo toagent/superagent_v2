@@ -630,6 +630,28 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
       .filter(n => n.with?.kind === 'accept')
       .every(n => n.with?.review_base === 'a'.repeat(40))
   ).toBeTrue();
+  const chained = nodesOf(
+    buildWorkflow(
+      p,
+      milestones(p),
+      'chained',
+      '/GEN',
+      false,
+      NOW,
+      loadTiers(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      start
+    )
+  );
+  expect(
+    chained.filter(n => n.with?.kind === 'accept').every(n => n.with?.review_base === start)
+  ).toBeTrue();
+  expect(chained.find(n => n.id === 'baseline-ruler-core')?.with?.skip).not.toBe(
+    'candidate_carried'
+  );
   const coded = nodesOf(
     buildWorkflow(p, milestones(p), 'coded', '/GEN', false, NOW, loadTiers(), {
       from: 'old',
