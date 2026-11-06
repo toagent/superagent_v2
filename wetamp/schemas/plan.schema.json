@@ -80,6 +80,14 @@
             "minLength": 1,
             "maxLength": 2000
           },
+          "closes_debt": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{12}$"
+            }
+          },
           "scope": {
             "type": "object",
             "additionalProperties": false,

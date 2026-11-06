@@ -33,7 +33,7 @@ const view = (active: CockpitRun[] = [], needs: CockpitRun[] = []): Cockpit => (
   tokens: '99K',
   roleTokens: [],
   tokenRows: null,
-  metrics: { completed: 0, decided: 0, firstPass: 0, firstPass_unknown: 0, asks: 0, unreadable_rows: 0, debt: 0 },
+  metrics: { completed: 0, decided: 0, firstPass: 0, firstPass_unknown: 0, asks: 0, unreadable_rows: 0, debt: 0, debt_open: 0, debt_new_today: 0, debt_closed_today: 0 },
 });
 // prettier-ignore
 const pulse = (lines: string[] = [], reclaim = 0, unowned = 0, unreadable = 0): Heartbeat => ({ at: '2026-10-11T00:00:00Z', reclaim_pending: reclaim, unowned, unreadable, marshals:

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { GENERATED_OUTPUT_PATHS, type Plan } from './plan';
 import { reasonOf } from './reasons';
+import { debtSnapshot } from './debt';
 
 const REPEAT_FAILURE_REASONS = new Set([
   'scope_violation',
@@ -166,6 +167,14 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
   const blocking: string[] = [], info: string[] = [], tree = new Set((git(repo, 'ls-tree', '-r', '--name-only', plan.base_ref) ?? '').split(/\r?\n/).filter(Boolean));
   const tests = [...tree].filter(path => /^wetamp\/(?:scripts|tests)\/[^/]+\.test\.ts$/.test(path) && existsSync(join(repo, path)));
   const consumers = new Map<string, string[]>();
+  let knownDebts: Set<string> | null = null;
+  if (plan.packages.some(pkg => pkg.closes_debt?.length)) {
+    try {
+      const snapshot = debtSnapshot();
+      if (!snapshot.unreadable && !snapshot.bad_closure_lines)
+        knownDebts = new Set(snapshot.debts.map(debt => debt.id));
+    } catch { /* Missing debt evidence is a lint warning below, never a plan rejection. */ }
+  }
   for (const test of tests) for (const imported of importedModules(test, readFileSync(join(repo, test), 'utf8')))
     consumers.set(imported, [...(consumers.get(imported) ?? []), test]);
   const generators = engineRepo ? readdirSync(scriptsDir).filter(name => /^generate-.*\.ts$/.test(name)).flatMap(name => {
@@ -186,6 +195,13 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
   for (const pkg of plan.packages) {
     const write = pkg.scope.write, commands = pkg.accept.map(check => check.cmd);
     const prefix = `[${pkg.id}] `;
+    if (pkg.closes_debt?.length) {
+      if (knownDebts === null) info.push(`${prefix}closes_debt 未核验：债台账证据不可读`);
+      else {
+        const missing = pkg.closes_debt.filter(id => !knownDebts.has(id));
+        if (missing.length) info.push(`${prefix}closes_debt 不存在：${missing.join(', ')}`);
+      }
+    }
     if (pkg.review === true && !pkg.review_reason?.trim())
       info.push(`${prefix}review:true 已忽略：评审只由白名单命中或用户原话触发`);
     if (pkg.risk !== 'G0' && pkg.accept.every(check => staticAcceptance(check.cmd)))

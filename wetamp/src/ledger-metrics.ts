@@ -253,5 +253,8 @@ export function metricsOf(rows: readonly BoardRow[], summary: Record<string, unk
     firstPass_unknown: achieved.filter(r => !r.engine || r.engine.firstPass === 'unknown').length,
     asks: unreadableToday || readable.some(r => !r.engine) ? 'unknown' : readable.reduce((n,r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(clock(d.at))).length ?? 0), 0),
     unreadable_rows: unreadableRows.length,
-    debt: typeof summary.debt === 'number' ? summary.debt : 'unknown' };
+    debt: typeof summary.debt_open === 'number' ? summary.debt_open : 'unknown',
+    debt_open: typeof summary.debt_open === 'number' ? summary.debt_open : 'unknown',
+    debt_new_today: typeof summary.debt_new_today === 'number' ? summary.debt_new_today : 'unknown',
+    debt_closed_today: typeof summary.debt_closed_today === 'number' ? summary.debt_closed_today : 'unknown' };
 }

@@ -32,6 +32,7 @@ import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
+import { canonicalRepo, closeDebts, debtMetrics, debtSnapshot } from './debt';
 import {
   captureDelivery,
   checkoutChanges,
@@ -4376,6 +4377,7 @@ export function summarize(pairs: Pair[], includeConsolidation = true): Record<st
   const summary = {
     runs: pairs.length,
     ...Object.fromEntries(Object.entries(n).sort()),
+    ...debtMetrics(debtSnapshot(pairs)),
     unreadable,
   };
   if (!includeConsolidation) return summary;
@@ -4451,6 +4453,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt', 'fresh'], operatorFlags: ['fake', 'lint-override'] },
   { command: 'plan', audience: 'agent', positionals: 'check <file>', flags: [], operatorFlags: ['lint-override'] },
+  { command: 'debt', audience: 'agent', positionals: 'list|close <id>...', flags: ['repo', 'open', 'reason'] },
   { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
   { command: 'status', audience: 'agent', positionals: '<run>', flags: [] },
   { command: 'brief', audience: 'agent', positionals: '<run>', flags: [] },
@@ -4795,6 +4798,37 @@ export function main(argv: string[]): number {
       return code;
     });
   switch (verb) {
+    case 'debt': {
+      const action = need(target, 'debt list|close');
+      if (action === 'list') {
+        const snapshot = debtSnapshot();
+        let debts = snapshot.debts;
+        if (a.flags.repo) {
+          const repo = canonicalRepo(resolve(a.flags.repo));
+          debts = debts.filter(debt => debt.repo === repo);
+        }
+        if (a.flags.open) debts = debts.filter(debt => debt.status === 'open');
+        if (a.flags.json) print(debts);
+        else
+          for (const debt of debts)
+            console.log(`${debt.id}\t${debt.status}\t${debt.repo}\t${debt.text}`);
+        if (snapshot.unreadable || snapshot.bad_closure_lines)
+          console.error(
+            `debt: skipped unreadable=${String(snapshot.unreadable)} bad_closure_lines=${String(snapshot.bad_closure_lines)}`
+          );
+        return 0;
+      }
+      if (action === 'close') {
+        const ids = a._.slice(2);
+        if (!ids.length || !a.flags.reason?.trim())
+          throw new Error('usage: superagent debt close <id>... --reason <text>');
+        print(closeDebts(ids, a.flags.reason));
+        return 0;
+      }
+      throw new Error(
+        'usage: superagent debt list [--repo <path>] [--open] [--json] | debt close <id>... --reason <text>'
+      );
+    }
     case 'reclaim':
       print(reclaimOnce());
       return 0;

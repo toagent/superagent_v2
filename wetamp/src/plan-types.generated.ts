@@ -86,6 +86,7 @@ export interface Plan {
     id: string;
     title: string;
     goal: string;
+    closes_debt?: string[];
     scope: {
       /**
        * @minItems 1

@@ -313,6 +313,8 @@ export function buildWorkflow(
       `process.stdout.write(new Uint8Array(stdout));`,
       `process.stderr.write(new Uint8Array(stderr));`,
       `if (exitCode !== 0) process.exit(exitCode);`,
+      `const { closePlannedDebts } = await import(${JSON.stringify(join(engineWetamp, 'src/debt.ts'))});`,
+      `closePlannedDebts(${JSON.stringify(planPath)}, '${run}', '${milestone}');`,
     ].join('\n');
   if (delivery && (!run || /[^0-9a-f-]/.test(run))) throw new Error('delivery: invalid run id');
   let after: Node = { depends_on: ['environment'] };

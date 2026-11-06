@@ -64,7 +64,7 @@ const row = (id: string, state = 'running', current = 'review-m1-r2'): BoardRow 
 });
 const snapshot = (rows: BoardRow[] = []): Snapshot => ({
   rows,
-  summary: { debt: 22 },
+  summary: { debt_open: 22, debt_new_today: 3, debt_closed_today: 2 },
   at: iso(),
   heartbeat_ms: now - 12000,
   usage: {
@@ -134,6 +134,9 @@ test('local-day achievement, first-pass run count, ask actions across run days a
     asks: 1,
     unreadable_rows: 0,
     debt: 22,
+    debt_open: 22,
+    debt_new_today: 3,
+    debt_closed_today: 2,
   });
 });
 test('midnight is local, future starts and missing endings never enter today counts', () => {

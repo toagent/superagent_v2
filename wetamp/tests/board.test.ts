@@ -1114,6 +1114,7 @@ test('summarize, report and the board share one summary', async () => {
     join(art, 'gate-m1-r1.json'),
     JSON.stringify({ decision: { kind: 'debt', reason: null, evidence: [], debt: ['d1'] } })
   );
+  mkdirSync(join(out, 'artifacts', 'runs', 'a-f'), { recursive: true });
   const g = ledger(
     'g',
     {
@@ -1140,6 +1141,7 @@ test('summarize, report and the board share one summary', async () => {
     {
       status: 'failed',
       completed_at: new Date(Date.now() - 1000).toISOString(),
+      output_root: out,
       nodes: [{ nodeId: 'verify-a', state: 'failed' }],
     },
     { started_at: '2026-10-12T00:00:00.000Z' }
@@ -1210,6 +1212,9 @@ test('summarize, report and the board share one summary', async () => {
     runs: 2,
     first_pass: 1,
     debt: 1,
+    debt_open: 1,
+    debt_new_today: 1,
+    debt_closed_today: 0,
     'failed:verify': 1,
     recoveries: 1,
   });
