@@ -295,7 +295,7 @@ async function exec(
     if (f.input && !statSync(f.input).isFile()) throw new Error('job: prompt-file must be a file');
     // Snapshot registered input before checkout/admission; never depend on native shell env visibility.
     const input = f.input ? new Blob([
-      `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\n`, readFileSync(f.input),
+      `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\njobs 列表中 ${job.id} 即你本身。\n\n`, readFileSync(f.input),
     ]) : f.execution && job.card ? new Blob([
       `Registered job input: ${JSON.stringify({ id: job.id, card: job.card, request_ref: job.request_ref ?? null })}\n\n`,
       readFileSync(job.card),
@@ -379,6 +379,7 @@ async function exec(
             ? process.env.SUPERAGENT_ROLE
             : job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE ?? '',
           SA_JOB_ID: job.id,
+          SUPERAGENT_JOB_ID: job.id,
           SA_JOB_CARD: job.card ?? '',
           SA_JOB_REQUEST_REF: job.request_ref ?? '',
           ARCHON_PROVIDER_OUTCOME: outcomePath ?? '',
@@ -471,12 +472,15 @@ export async function jobCli(
   if (a._[0] === 'jobs' && a._.length === 1 && !cmd.length) {
     const now = Date.now();
     const { jobs, bad } = readJobs();
-    const shown = (a.flags.all ? jobs : jobs.filter(j => recent(j, now))).map(j => projectJob(j, jobs, now));
+    const shown = (a.flags.all ? jobs : jobs.filter(j => recent(j, now))).map(j => ({
+      ...projectJob(j, jobs, now),
+      ...(j.id === process.env.SUPERAGENT_JOB_ID ? { self: true } : {}),
+    }));
     if (a.flags.json) console.log(JSON.stringify({ jobs: shown, bad }, null, 2));
     else
       for (const j of shown)
         console.log(
-          `${j.id} ${j.stalled ? 'stalled' : j.state}${j.eta ? ` eta ${new Date(j.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
+          `${j.id}${j.self ? ' (本作业)' : ''} ${j.stalled ? 'stalled' : j.state}${j.eta ? ` eta ${new Date(j.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
         );
     for (const b of bad) console.error(`jobs: unreadable ${b}`);
     return bad.length ? 1 : 0;

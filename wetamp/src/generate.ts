@@ -130,6 +130,7 @@ const REVIEW_IDLE_MS = 15 * 60 * 1000;
 export interface Carried {
   from: string;
   packages: string[];
+  deliveryBase?: string;
   freshDirectory?: boolean;
   evidence?: Record<string, string>;
   coded?: string[];
@@ -193,7 +194,8 @@ export function buildWorkflow(
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget,
   engineSnapshot?: string,
-  state: RouteState = routeState(tiers, plan.mode, now)
+  state: RouteState = routeState(tiers, plan.mode, now),
+  deliveryBase?: string
 ): Node {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
@@ -915,6 +917,7 @@ export function buildWorkflow(
         pkgs: ids,
         scope_pkgs,
         scope_base: scopeBase,
+        review_base: carried.deliveryBase ?? ref.required(syncReadyHandle, 'target_tip'),
         risk: m.risk,
         milestone: m.id,
         target_tip: ref.required(syncReadyHandle, 'target_tip'),
@@ -953,6 +956,11 @@ export function buildWorkflow(
     const rawCheckpoint = carried?.reviews?.[m.id];
     // prettier-ignore
     const checkpoint = rawCheckpoint?.gate.decision && ['advance', 'debt'].includes(rawCheckpoint.gate.decision.kind) ? rawCheckpoint : undefined;
+    const reviewBase =
+      checkpoint?.gate.reviewed_head ??
+      carried?.deliveryBase ??
+      deliveryBase ??
+      ref.required(syncReadyHandle, 'target_tip');
     // prettier-ignore
     const checkpointAtoms = checkpoint ? [['head', checkpoint.gate.reviewed_head], ['diff_hash', checkpoint.gate.reviewed_diff_hash],
       ['contract_hash', checkpoint.check.contract_hash]] as const : [];
@@ -1045,6 +1053,7 @@ export function buildWorkflow(
         scope_pkgs,
         base,
         scope_base: scopeBase,
+        review_base: reviewBase,
         delta_base: ref.required(previousHandle, 'head'),
         ...(p.max_net_lines === undefined
           ? {}
@@ -1251,6 +1260,7 @@ export function buildWorkflow(
             scope_pkgs,
             base,
             scope_base: scopeBase,
+            review_base: reviewBase,
             target_tip: ref.required(reviewSyncReadyHandle, 'target_tip'),
             sync_generation: ref.required(reviewSyncReadyHandle, 'generation'),
             risk: m.risk,
@@ -1676,7 +1686,8 @@ export function generate(
   carried?: Carried,
   delivery?: import('./land').DeliveryTarget,
   engineSnapshot?: string,
-  routingState?: RouteState
+  routingState?: RouteState,
+  deliveryBase?: string
 ): Gen {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   const engine_commit = cleanEngine();
@@ -1717,7 +1728,8 @@ export function generate(
     carried,
     delivery,
     engineSnapshot,
-    state
+    state,
+    deliveryBase
   );
   assertGeneratedWorkflow(definition, !ms.some(m => m.human));
   const wfDir = join(dir, '.archon', 'workflows', workflow);

@@ -4993,6 +4993,23 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
   });
 
   // prettier-ignore
+  test('review risk spans prior continuation commits but skips a qualified reviewed head', () => {
+    const root = tmp(), repo = gitRepo(root), plan = join(root, 'plan.json'), policy = join(root, 'policy.json');
+    const deliveryBase = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(plan, JSON.stringify({ packages: [{ id: 'a', scope: { write: ['**'] }, accept: [{ cmd: 'true', timeout_s: 5 }] }] }));
+    writeFileSync(policy, JSON.stringify({ effort: snapshotPolicy(loadTiers()).effort, risk_paths: ['**/auth/**'], code_extensions: ['.ts'], exempt_paths: [], budget_floor: {} }));
+    mkdirSync(join(repo, 'src/auth'), { recursive: true });
+    writeFileSync(join(repo, 'src/auth/policy.ts'), 'export const allowed = true;\n');
+    sh('git add . && git -c user.name=t -c user.email=t@l commit -qm risk', repo);
+    const reviewedHead = sh('git rev-parse HEAD', repo).trim();
+    writeFileSync(join(repo, 'policy.test.ts'), 'test only\n');
+    sh('git add . && git -c user.name=t -c user.email=t@l commit -qm test', repo);
+    const check = (reviewBase: string) => runScript(repo, { kind: 'accept', plan, policy, pkgs: 'a', scope_pkgs: 'a', tag: 'diff-m1-r1', base: deliveryBase, scope_base: deliveryBase, target_tip: reviewedHead, review_base: reviewBase, risk: 'G1' }).out;
+    expect(check(deliveryBase)).toMatchObject({ review_required: true, risk: 'G2' });
+    expect(check(reviewedHead)).toMatchObject({ review_required: false, risk: 'G1' });
+  });
+
+  // prettier-ignore
   test('F-20/F-13: scope violations repair, recover, honor exemptions, and fail final acceptance', () => {
     const root = tmp();
     const repo = gitRepo(root);

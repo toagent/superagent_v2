@@ -176,7 +176,7 @@ import {
   refreshClaudeHealth,
 } from './claude-health';
 import { launchAgent, orcaBin, type AgentLaunch } from './orca';
-import { engineHash, generate, newRunId, type ReviewCheckpoint } from './generate';
+import { engineHash, generate, newRunId, type Carried, type ReviewCheckpoint } from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
@@ -1176,6 +1176,58 @@ export const recoveryOutputHashes = (
   }
 };
 
+function reviewCheckpoints(l: Ledger, run: RunView): Carried['reviews'] {
+  if (!run.working_path) return {};
+  const reviews: NonNullable<Carried['reviews']> = {},
+    art = artifactsOf(run),
+    head = gitHead(run.working_path),
+    hashes = recoveryOutputHashes(run.id, l.repo);
+  for (const file of evidenceGates(l, art)) {
+    const admitted = recoveryReviewCheckpoint(l, art, file, head, hashes);
+    if (admitted?.reason)
+      console.warn(JSON.stringify({ code: 'superagent.checkpoint_rejected', ...admitted }));
+    if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
+  }
+  return reviews;
+}
+
+export function deliveryBase(l: Ledger): string | undefined {
+  let current = l;
+  const seen = new Set<string>();
+  for (;;) {
+    const base = planOf(current).base_ref,
+      match = /^(?:refs\/heads\/)?sa\/(.+)$/.exec(base);
+    if (!match) {
+      const resolved = Bun.spawnSync(
+        ['git', '-C', l.repo, 'rev-parse', '--verify', `${base}^{commit}`],
+        {
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: QUERY_TIMEOUT_MS,
+        }
+      );
+      return resolved.exitCode === 0 ? resolved.stdout.toString().trim() : undefined;
+    }
+    if (seen.has(match[1])) return undefined;
+    seen.add(match[1]);
+    try {
+      current = loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function planDeliveryBase(plan: Plan): string | undefined {
+  const match = /^(?:refs\/heads\/)?sa\/(.+)$/.exec(plan.base_ref);
+  if (!match) return undefined;
+  try {
+    return deliveryBase(loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
   l: Ledger,
@@ -1385,16 +1437,7 @@ function recoverRun(
             }
           })
           .map(p => p.id);
-        const reviews: Partial<Record<string, ReviewCheckpoint>> = {};
-        // prettier-ignore
-        if (run.working_path) {
-          const art = artifactsOf(run), head = gitHead(run.working_path), hashes = recoveryOutputHashes(run.id, l.repo);
-          for (const file of evidenceGates(l, art)) {
-            const admitted = recoveryReviewCheckpoint(l, art, file, head, hashes);
-            if (admitted?.reason) console.warn(JSON.stringify({ code: 'superagent.checkpoint_rejected', ...admitted }));
-            if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
-          }
-        }
+        const reviews = reviewCheckpoints(l, run);
         const gen = generate(
           plan,
           l.run_id,
@@ -1407,6 +1450,7 @@ function recoverRun(
             evidence: carriedEvidence,
             coded,
             reviews,
+            deliveryBase: deliveryBase(l),
             ...(recovery
               ? {
                   recovery: {
@@ -1962,15 +2006,24 @@ function startRun(planPath: string, a: Args): number {
         }
         phase = 'engine';
         const engine = runEngineSnapshot();
+        const continuation: Carried | undefined = adopted
+          ? {
+              from: adopted.run.id,
+              packages: [],
+              reviews: reviewCheckpoints(adopted.ledger, adopted.run),
+              deliveryBase: deliveryBase(adopted.ledger),
+            }
+          : undefined;
         const gen = generate(
           plan,
           run,
           a.flags.fake ?? false,
           undefined,
-          undefined,
+          continuation,
           delivery,
           engine.path,
-          routing
+          routing,
+          adopted ? undefined : planDeliveryBase(plan)
         );
         freezePlanRules(plan, gen.dir);
         const branch = adopted?.ledger.branch ?? `sa/${run}`;

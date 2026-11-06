@@ -39,6 +39,7 @@ import {
   classify,
   classifyRun,
   adoptCandidates,
+  deliveryBase,
   decisionQuestion,
   EXIT,
   EXIT_ALIAS_DRIFT,
@@ -75,8 +76,17 @@ const req = createRequire(import.meta.url);
 const generatorModule = req('../src/generate.ts') as typeof import('../src/generate');
 const realGenerate = generate;
 const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof generate> => {
-  const [plan, run, fake = false, previousHash, carried, delivery, engineSnapshot, routingState] =
-    args;
+  const [
+    plan,
+    run,
+    fake = false,
+    previousHash,
+    carried,
+    delivery,
+    engineSnapshot,
+    routingState,
+    deliveryBase,
+  ] = args;
   const dir = join(process.env.SUPERAGENT_HOME!, 'gen', run);
   const workflow = `sa-${run}`;
   const archon = join(dir, '.archon');
@@ -100,7 +110,8 @@ const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof g
         carried,
         delivery,
         engineSnapshot,
-        routingState
+        routingState,
+        deliveryBase
       )
     )
   );
@@ -404,6 +415,31 @@ test('recent matching coded run requires adopt unless fresh is explicit', () => 
   const fresh = captured(() => main(['run', path, '--fake', '--fresh', '--allow-overlap', 'fixture']));
   expect(fresh.code, fresh.out).toBe(0);
   expect(captured(() => main(['run', path, '--fake', '--adopt', 'sa1', '--allow-overlap', 'fixture'])).code).toBe(0);
+});
+
+// prettier-ignore
+test('sa base_ref follows the ledger chain into fresh run review wiring and rejects invalid chains', () => {
+  const s = stub([]), repo = featureRepo(s.root), base = sh('git rev-parse HEAD', repo).trim();
+  process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+  const prior = (id: string, base_ref: string): Ledger => {
+    const gen_dir = join(s.root, `gen-${id}`), ledger = { ...s.ledger, run_id: id, repo, branch: `sa/${id}`, gen_dir };
+    mkdirSync(gen_dir, { recursive: true });
+    fixturePlan(gen_dir, repo, p => { p.base_ref = base_ref; });
+    writeFileSync(ledgerPath(id), JSON.stringify(ledger));
+    sh(`git branch sa/${id} '${base}'`, repo);
+    return ledger;
+  };
+  const oldest = prior('oldest', base), previous = prior('previous', 'sa/oldest');
+  let wired: string | undefined;
+  fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation((...args) => { wired = args[8]; return fastGenerate(...args); }));
+  const plan = fixturePlan(s.root, repo, p => { p.base_ref = 'sa/previous'; });
+  expect(captured(() => main(['run', plan, '--fake', '--fresh', '--allow-overlap', 'fixture'])).code).toBe(0);
+  expect(wired).toBe(base);
+  expect(deliveryBase(previous)).toBe(base);
+  fixturePlan(oldest.gen_dir, repo, p => { p.base_ref = 'sa/previous'; });
+  expect(deliveryBase(previous)).toBeUndefined();
+  fixturePlan(previous.gen_dir, repo, p => { p.base_ref = 'sa/missing'; });
+  expect(deliveryBase(previous)).toBeUndefined();
 });
 
 describe('quick', () => {
