@@ -452,14 +452,15 @@ const retroItems = (values: string[] | undefined, name: string): string[] => {
 };
 export function validateRetro(effect: string[] | undefined, improve: string[] | undefined) {
   const normalized = {
-      effect: retroItems(effect, 'effect'),
-      improve: retroItems(improve, 'improve'),
-    },
-    length = [...normalized.effect, ...normalized.improve].reduce(
-      (n, value) => n + Array.from(value).length,
-      0
-    );
-  if (length > 200) throw new Error(`retro exceeds 200 characters by ${String(length - 200)}`);
+    effect: retroItems(effect, 'effect'),
+    improve: retroItems(improve, 'improve'),
+  };
+  // User rule (2026-11-06): pros and cons are each limited to 200 Unicode code points.
+  for (const name of ['effect', 'improve'] as const) {
+    const length = normalized[name].reduce((n, value) => n + Array.from(value).length, 0);
+    if (length > 200)
+      throw new Error(`--${name} exceeds 200 characters by ${String(length - 200)}`);
+  }
   return normalized;
 }
 export function applyRetro(

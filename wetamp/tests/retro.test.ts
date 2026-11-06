@@ -45,8 +45,13 @@ test('retro validates entry count, empty values, and Unicode code-point limit', 
   });
   expect(() => validateRetro(['a', 'b', 'c', 'd'], ['x'])).toThrow('1-3');
   expect(() => validateRetro([''], ['x'])).toThrow('must not be empty');
-  expect(validateRetro(['你'.repeat(199)], ['好']).effect[0]).toHaveLength(199);
-  expect(() => validateRetro(['你'.repeat(200)], ['好'])).toThrow('by 1');
+  expect(validateRetro(['你'.repeat(200)], ['好'.repeat(200)]).effect[0]).toHaveLength(200);
+  expect(() => validateRetro(['你'.repeat(201)], ['好'])).toThrow(
+    '--effect exceeds 200 characters by 1'
+  );
+  expect(() => validateRetro(['你'], ['好'.repeat(100), '好'.repeat(101)])).toThrow(
+    '--improve exceeds 200 characters by 1'
+  );
 });
 
 test('retro revision keeps five prior versions and derived roles cannot write', () => {
