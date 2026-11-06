@@ -441,7 +441,7 @@ export async function loadActivity(
     note('tiers', e); // 只影响角色推断：显式角色照常
   }
   const [cached, remote] = await Promise.all([
-    staleSource(scanCache, home().sa, 5000, () => scan(now, jobs, pools, signal, runs)).catch(
+    staleSource(scanCache, home().sa, 15_000, () => scan(now, jobs, pools, signal, runs)).catch(
       (e: unknown): Procs => {
         note('procs', e);
         return {

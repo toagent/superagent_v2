@@ -172,8 +172,21 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
         row.total += p.total;
         row.models[model] = (row.models[model] ?? 0) + p.total;
       }
+  const byRun = new Map<string, NonNullable<typeof c>['sessions']>(),
+    byJob = new Map<string, NonNullable<typeof c>['sessions']>();
+  for (const session of c?.sessions ?? []) {
+    for (const [id, index] of [
+      [session.owner?.run_id, byRun],
+      [session.owner?.job_id, byJob],
+    ] as const)
+      if (id) {
+        const sessions = index.get(id);
+        if (sessions) sessions.push(session);
+        else index.set(id, [session]);
+      }
+  }
   const runTokens = (id: string, field: 'run_id' | 'job_id' = 'run_id'): string => {
-    const xs = c?.sessions.filter(x => x.owner?.[field] === id) ?? [];
+    const xs = (field === 'run_id' ? byRun : byJob).get(id) ?? [];
     return c?.status === 'ok' && xs.length
       ? fmtTokens(xs.reduce((n, x) => n + x.total, 0))
       : '未知';
@@ -223,9 +236,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       role: ['completed', 'failed', 'cancelled'].includes(r.state)
         ? roleTag(
             'coder',
-            r.coderModel ??
-              c?.sessions.find(x => x.owner?.run_id === r.run_id && x.owner.role === 'general')
-                ?.model
+            r.coderModel ?? byRun.get(r.run_id)?.find(x => x.owner?.role === 'general')?.model
           )
         : roleTag(r.nodes.currentRole, r.model),
       round: r.engine?.round
@@ -319,7 +330,8 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     });
   }
   const anomalies: string[] = [],
-    seen = new Set<string>();
+    seen = new Set<string>(),
+    messages = new Map(s.coordMessages?.map(message => [message.id, message]));
   const needs = Object.entries(s.asks ?? {}).flatMap(([key, ask]) => {
     if (!['pending', 'unknown'].includes(ask.status)) return [];
     const unresolved = (): [] => {
@@ -328,7 +340,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
     };
     if (key.startsWith('coord:')) {
       const parts = /^coord:([^:]+)(?::(\d+):(\d+))?$/.exec(key);
-      const m = s.coordMessages?.find(m => m.id === parts?.[1]);
+      const m = parts?.[1] ? messages.get(parts[1]) : undefined;
       if (!m || !parts) return unresolved();
       if (m.type || ['accepted', 'done', 'rejected'].includes(m.state)) return [];
       if (m.ask && !['pending', 'unknown'].includes(m.ask.status)) return [];

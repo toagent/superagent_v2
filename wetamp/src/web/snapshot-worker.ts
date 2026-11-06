@@ -1,4 +1,5 @@
 import { createLoader } from '../board/data';
+import { overview, type WebSnapshot } from './server';
 
 interface WorkerScope {
   onmessage: ((event: MessageEvent<{ id: number; limit: number }>) => void) | null;
@@ -25,9 +26,15 @@ self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
     const started = performance.now();
     try {
       const snapshot = await load(limit);
+      const compact: WebSnapshot = {
+        at: snapshot.at,
+        summary: {},
+        rows: [],
+        web: overview(snapshot),
+      };
       self.postMessage({
         id,
-        snapshot,
+        snapshot: compact,
         load_ms: performance.now() - started,
         rss: process.memoryUsage().rss,
         profile,

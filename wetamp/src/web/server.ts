@@ -284,6 +284,13 @@ export function overview(s: Snapshot, snapshotAt = s.at, servedAt = new Date().t
     })),
   };
 }
+export type WebSnapshot = Snapshot & { web?: ReturnType<typeof overview> };
+export const webOverview = (s: Snapshot, snapshotAt?: string): ReturnType<typeof overview> => {
+  const prepared = (s as WebSnapshot).web;
+  return prepared
+    ? { ...prepared, snapshot_at: snapshotAt ?? prepared.snapshot_at }
+    : overview(s, snapshotAt);
+};
 export const html = (s: string | number): string =>
   String(s).replace(
     /[&<>"']/g,
@@ -320,7 +327,8 @@ export function handler(
   forward: typeof fetch = fetch,
   unix?: string,
   snapshot: () => Snapshot = () => ({ at: new Date().toISOString(), summary: {}, rows: [] }),
-  update: () => Promise<void> = () => Promise.resolve()
+  update: () => Promise<void> = () => Promise.resolve(),
+  memorySnapshot: () => Promise<Snapshot> = () => Promise.resolve(snapshot())
 ): (r: Request) => Promise<Response> {
   return async r => {
     const headers: Record<string, string> = {
@@ -357,7 +365,7 @@ export function handler(
       try {
         const all = url.searchParams.get('filter') === 'all';
         return respond(
-          memoryPanel(memoryOverview(snapshot(), undefined, all), all),
+          memoryPanel(memoryOverview(await memorySnapshot(), undefined, all), all),
           200,
           'text/html'
         );
@@ -442,7 +450,7 @@ export async function ensureWebDist(hash = residentHash()): Promise<void> {
 export function createDemandSnapshot(
   load = createLoader(),
   refresh = requestUsageRefresh,
-  freshMs = 2000,
+  freshMs = 2200,
   now = Date.now,
   wait: (ms: number) => Promise<unknown> = Bun.sleep
 ): {
@@ -454,6 +462,7 @@ export function createDemandSnapshot(
   let pending: Promise<void> | undefined;
   let loadedAt: number | undefined;
   let viewedAt: number | undefined;
+  let refreshedAt: number | undefined;
   let timer: Promise<void> | undefined;
   const active = (): boolean => viewedAt !== undefined && now() - viewedAt <= 15_000;
   const arm = (): void => {
@@ -472,7 +481,10 @@ export function createDemandSnapshot(
     (pending ??= (async () => {
       snapshot = await load(200);
       loadedAt = now();
-      refresh();
+      if (refreshedAt === undefined || loadedAt - refreshedAt >= 300_000) {
+        refresh();
+        refreshedAt = loadedAt;
+      }
     })().finally(() => {
       pending = undefined;
       arm();
@@ -609,13 +621,14 @@ async function serve(): Promise<void> {
   let server: ReturnType<typeof Bun.serve> | undefined;
   const token = randomBytes(32).toString('hex'),
     hash = residentHash(),
-    load = createWorkerSnapshotLoader();
+    load = createWorkerSnapshotLoader(),
+    memoryLoad = createLoader();
   const demand = createDemandSnapshot(load);
   let projected: { snapshot: Snapshot; value: ReturnType<typeof overview> } | undefined;
   const getOverview = () => {
     const snapshot = demand.snapshot();
     if (projected?.snapshot !== snapshot)
-      projected = { snapshot, value: overview(snapshot, demand.snapshotAt()) };
+      projected = { snapshot, value: webOverview(snapshot, demand.snapshotAt()) };
     return { ...projected.value, served_at: new Date().toISOString() };
   };
   const cleanup = (): void => {
@@ -629,7 +642,7 @@ async function serve(): Promise<void> {
     const { startObserver } = await import('./archon');
     await startObserver(socket);
     const port = Number(process.env.SA_CONSOLE_PORT ?? 39890);
-    const consoleHandler = handler(port, token, getOverview, 'http://localhost', fetch, socket, () => demand.snapshot(), demand.update);
+    const consoleHandler = handler(port, token, getOverview, 'http://localhost', fetch, socket, () => demand.snapshot(), demand.update, () => memoryLoad(200));
     server = Bun.serve({
       hostname: '127.0.0.1',
       port,

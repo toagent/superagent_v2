@@ -484,14 +484,14 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   expect(await (await first).json()).toEqual({ at: 'fresh-1' });
   await second;
   expect(refreshes).toBe(1);
-  expect(sleeps[0]?.ms).toBe(2000);
+  expect(sleeps[0]?.ms).toBe(2200);
   expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
-  now = 1999;
+  now = 2199;
   sleeps.shift()!.release();
   await Bun.sleep(0);
   expect(loads).toBe(1);
   expect(sleeps[0]?.ms).toBe(1);
-  now = 2000;
+  now = 2200;
   sleeps.shift()!.release();
   await Bun.sleep(0);
   expect(loads).toBe(2);
@@ -499,8 +499,8 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
   releases.shift()!();
   await Bun.sleep(0);
   expect(demand.snapshot().at).toBe('fresh-2');
-  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.000Z');
-  expect(refreshes).toBe(2);
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.200Z');
+  expect(refreshes).toBe(1);
   now = 15_001;
   sleeps.shift()!.release();
   await Bun.sleep(0);
@@ -572,7 +572,7 @@ test('console snapshot propagates initial failure and retries a failed backgroun
   expect(demand.snapshotAt()).toBeUndefined();
   await demand.update();
   expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
-  now = 2100;
+  now = 2300;
   await expect(demand.update()).resolves.toBeUndefined();
   await Bun.sleep(0);
   expect(demand.snapshotAt()).toBe('1970-01-01T00:00:00.000Z');
@@ -580,5 +580,5 @@ test('console snapshot propagates initial failure and retries a failed backgroun
   await Bun.sleep(0);
   expect(loads).toBe(4);
   expect(demand.snapshot().at).toBe('recovered-4');
-  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.100Z');
+  expect(demand.snapshotAt()).toBe('1970-01-01T00:00:02.300Z');
 });

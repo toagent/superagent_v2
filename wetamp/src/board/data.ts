@@ -473,6 +473,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   let ledgerListCache: { stamp: number; ids: { id: string; mtimeMs: number }[] } | undefined;
   let summaryCache: { ids: string; key: string; value: Record<string, unknown> } | undefined;
   let slowCache: { ids: string; key: string; reflection?: Snapshot['reflection']; eta: Record<string, Estimate> } | undefined;
+  let usageCache: { mtimeMs: number; value: UsageCache } | undefined;
   const presenceCache = new Map<string, { at: number; value: Presence }>();
   let first = true;
   return async limit => {
@@ -638,9 +639,10 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
           (pending.get(`run:${scope.id}`) ?? 0) + (pending.get(`repo:${scope.repo}`) ?? 0);
       const saved = reusable.has(l.run_id) ? rowCache.get(l.run_id) : undefined;
       if (saved) {
-        const row = saved.coordination && saved.coordination.pending !== pendingCount
+        let row = saved.coordination && saved.coordination.pending !== pendingCount
           ? { ...saved, coordination: { ...saved.coordination, pending: pendingCount } }
           : saved;
+        if (row.span?.ended_ms === null) row = { ...row, elapsed_s: elapsedAt(row, now) };
         rowCache.set(l.run_id, row);
         rows.push(row);
         continue;
@@ -658,11 +660,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
           bad
         );
       rows.push(row);
-      if (
-        (FINAL.has(r.run.status) || r.run.status === 'failed') &&
-        !r.stale &&
-        row.state !== 'unreadable'
-      )
+      if (!r.stale && row.state !== 'unreadable')
         rowCache.set(l.run_id, row);
     }
     mark('rows');
@@ -678,7 +676,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         const art = artifactsOf(run);
         const dirMtime = statSync(art, { throwIfNoEntry: false })?.mtimeMs ?? 0;
         const cached = gateKeyCache.get(ledger.run_id);
-        if (cached?.dirMtime === dirMtime && !ACTIVITY.has(run.status)) return [cached.value];
+        if (cached?.dirMtime === dirMtime) return [cached.value];
         const value = evidenceGates(ledger, art).map(file => `${ledger.run_id}:${file}:${String(statSync(join(art, file), { throwIfNoEntry: false })?.mtimeMs ?? 0)}`).join(',');
         gateKeyCache.set(ledger.run_id, { dirMtime, value });
         return [value];
@@ -723,7 +721,9 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     mark('memory');
     const activityValue = await activity;
     mark('load_activity');
-    const usage = readUsage();
+    const usageMtime = statSync(join(home().sa, 'usage', 'cache.json'), { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    const usage = usageCache?.mtimeMs === usageMtime ? usageCache.value : readUsage();
+    usageCache = { mtimeMs: usageMtime, value: usage };
     mark('usage');
     const eta = slowCache.eta;
     mark('eta');

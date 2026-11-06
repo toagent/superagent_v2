@@ -1,6 +1,11 @@
 import { createLoader } from '../src/board/data';
 import { debtMetrics, debtSnapshot } from '../src/debt';
-import { createDemandSnapshot, createWorkerSnapshotLoader } from '../src/web/server';
+import {
+  createDemandSnapshot,
+  createWorkerSnapshotLoader,
+  handler,
+  webOverview,
+} from '../src/web/server';
 
 const number = (name: string, fallback: number): number => {
   const at = process.argv.indexOf(name),
@@ -12,9 +17,13 @@ const soak = number('--soak', 5),
   maxRssMb = number('--max-rss-mb', Infinity),
   maxP95Ms = number('--max-p95-ms', number('--max-ms', Infinity)),
   breakdown = process.argv.includes('--breakdown'),
-  checkTotals = process.argv.includes('--check-totals');
+  checkTotals = process.argv.includes('--check-totals'),
+  viewerCpu = process.argv.includes('--viewer-cpu') ? number('--viewer-cpu', Infinity) : 0,
+  maxCpu = number('--max-cpu', Infinity);
 
 const samples: number[] = [];
+const loadSamples: number[] = [];
+const serializationSamples: number[] = [];
 const stages = new Map<string, number[]>();
 let peakRss = process.memoryUsage().rss,
   recording = false;
@@ -22,6 +31,8 @@ const load = createWorkerSnapshotLoader(createLoader(), undefined, {
   onSample: sample => {
     if (!recording) return;
     samples.push(sample.round_ms);
+    loadSamples.push(sample.load_ms);
+    serializationSamples.push(Math.max(0, sample.round_ms - sample.load_ms));
     peakRss = Math.max(peakRss, sample.rss);
     if (breakdown) {
       for (const [stage, ms] of Object.entries(sample.profile ?? {})) {
@@ -41,6 +52,68 @@ const load = createWorkerSnapshotLoader(createLoader(), undefined, {
 });
 const demand = createDemandSnapshot(load);
 await demand.update();
+if (viewerCpu > 0) {
+  recording = true;
+  let projected:
+    | { snapshot: ReturnType<typeof demand.snapshot>; value: ReturnType<typeof webOverview> }
+    | undefined;
+  const get = (): ReturnType<typeof webOverview> => {
+    const snapshot = demand.snapshot();
+    if (projected?.snapshot !== snapshot)
+      projected = { snapshot, value: webOverview(snapshot, demand.snapshotAt()) };
+    return { ...projected.value, served_at: new Date().toISOString() };
+  };
+  let serveRequest: (request: Request) => Promise<Response> = () =>
+    Promise.reject(new Error('viewer server not ready'));
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: request => serveRequest(request),
+  });
+  const port = server.port;
+  if (port === undefined) throw new Error('viewer server did not bind');
+  serveRequest = handler(
+    port,
+    'bench',
+    get,
+    'http://localhost',
+    fetch,
+    undefined,
+    demand.snapshot,
+    demand.update
+  );
+  const started = performance.now(),
+    cpuStarted = process.cpuUsage(),
+    httpSamples: number[] = [];
+  let requests = 0;
+  while (performance.now() - started < viewerCpu * 1000) {
+    const requestStarted = performance.now();
+    const response = await fetch(`http://127.0.0.1:${String(port)}/sa/data?t=bench`);
+    await response.arrayBuffer();
+    if (!response.ok) throw new Error(`viewer request failed: ${String(response.status)}`);
+    httpSamples.push(performance.now() - requestStarted);
+    requests++;
+    const remaining = viewerCpu * 1000 - (performance.now() - started);
+    if (remaining > 0) await Bun.sleep(Math.min(1500, remaining));
+  }
+  const elapsedMs = performance.now() - started,
+    cpu = process.cpuUsage(cpuStarted),
+    cpuPct = ((cpu.user + cpu.system) / 1000 / elapsedMs) * 100,
+    total = (values: number[]): number => values.reduce((sum, value) => sum + value, 0);
+  await server.stop(true);
+  console.log(
+    JSON.stringify({
+      type: 'viewer_cpu',
+      seconds: Math.round((elapsedMs / 1000) * 10) / 10,
+      requests,
+      cpu_pct: Math.round(cpuPct * 10) / 10,
+      loader_ms: Math.round(total(loadSamples) * 10) / 10,
+      serialization_ms: Math.round(total(serializationSamples) * 10) / 10,
+      http_ms: Math.round(total(httpSamples) * 10) / 10,
+    })
+  );
+  process.exit(cpuPct > maxCpu ? 1 : 0);
+}
 recording = true;
 for (let second = 0; second < soak; second++) {
   await demand.update();
