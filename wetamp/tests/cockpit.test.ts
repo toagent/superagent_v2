@@ -132,6 +132,7 @@ test('local-day achievement, first-pass run count, ask actions across run days a
     firstPass: 1,
     firstPass_unknown: 0,
     asks: 1,
+    unreadable_rows: 0,
     debt: 22,
   });
 });

@@ -313,7 +313,7 @@ export function rowOf(
             land.head,
             `refs/heads/${plan.base_ref.replace(/^origin\//, '')}`,
           ],
-          { cwd: l.repo, timeout: 3000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }
+          { cwd: cwdOf(l), timeout: 3000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }
         ).status === 0
       );
     })(),
@@ -434,7 +434,10 @@ async function queryRuns(
         try {
           queried.set(
             entry.id,
-            await getRunAsync(entry.ledger.archon_run_id, entry.ledger.repo, { timeoutMs, signal })
+            await getRunAsync(entry.ledger.archon_run_id, cwdOf(entry.ledger), {
+              timeoutMs,
+              signal,
+            })
           );
         } catch (e) {
           queried.set(entry.id, e as Error);

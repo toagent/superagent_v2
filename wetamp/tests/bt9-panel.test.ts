@@ -404,6 +404,7 @@ test('2 runs, 1 job, pending/superseded and all four token roles render the shar
       debt: 'unknown',
       firstPass: 0,
       firstPass_unknown: 0,
+      unreadable_rows: 0,
     },
     needs: [
       {

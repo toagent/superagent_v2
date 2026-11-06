@@ -25,6 +25,7 @@ import {
   rowOf,
   snapshotOf,
   workflowRoles,
+  type BoardRow,
 } from '../src/board/data';
 import { detailOf, detailLines, redact } from '../src/board/detail';
 import { BucketedFrame, Frame } from '../src/board/App';
@@ -65,6 +66,7 @@ beforeEach(() => {
     bin,
     `#!/usr/bin/env bash
 echo "$*" >> "${stubDir}/calls"
+echo "$PWD|$*" >> "${stubDir}/cwd-calls"
 [ "$2" = runs ] && {
   [ -f "${stubDir}/fail-batch" ] && { echo "archon down" >&2; exit 1; }
   hang=$(find "${stubDir}" -name 'hang-*' -print -quit); [ -n "$hang" ] && { sleep 31.7 & child=$!; echo "$child" >> "${stubDir}/children"; wait "$child"; }
@@ -499,7 +501,11 @@ describe('data rows', () => {
 
   test('batch failure falls back per run with bounded concurrency and isolates one failure', async () => {
     for (let i = 0; i < 12; i++) {
-      ledger(`fallback-${String(i)}`, { status: 'running' });
+      ledger(
+        `fallback-${String(i)}`,
+        { status: 'running' },
+        i === 0 ? { repo: join(root, 'gone') } : {}
+      );
       writeFileSync(join(stubDir, `slow-a-fallback-${String(i)}`), '');
     }
     writeFileSync(join(stubDir, 'fail-a-fallback-3'), '');
@@ -516,6 +522,26 @@ describe('data rows', () => {
     }
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(8);
+    const fallback = readFileSync(join(stubDir, 'cwd-calls'), 'utf8')
+      .split('\n')
+      .find(line => line.includes('workflow get a-fallback-0'));
+    expect(fallback?.startsWith(`${WETAMP}|`)).toBe(true);
+  });
+
+  // prettier-ignore
+  test('metrics keep stale and old unreadable rows numeric but mark current unreadable rows unknown', () => {
+    const now = new Date('2026-11-06T12:00:00+08:00').getTime();
+    const at = (day: number, hour: number) => { const value = new Date(now); value.setDate(value.getDate() + day); value.setHours(hour, 0, 0, 0); return value.toISOString(); };
+    const done = {
+      run_id: 'done', state: 'completed', nativeState: 'completed', exit: 0, nodes: { done: 1, total: 1, current: null, currentRole: null },
+      started_at: at(0, 1), completed_at: at(0, 2), span: null, elapsed_s: 0, held: null,
+      recoveries: 0, auto_retries: 0, console: 'codex', repo: 'repo', branch: 'branch', evidence: '', plan: '', stale: true,
+      landed: true, interventions: 0, engine: { title: '', milestones: [], currentMilestone: null, states: [], firstPass: true, reason: '', dispositions: [] },
+    } as BoardRow;
+    const unreadable = (started_at: string) => ({ ...done, run_id: started_at, state: 'unreadable', nativeState: undefined, completed_at: undefined, started_at, stale: false, landed: undefined, interventions: undefined, engine: undefined });
+    expect(metricsOf([done, unreadable(at(-1, 1))], {}, now)).toMatchObject({ completed: 1, decided: 1, firstPass: 1, asks: 0, unreadable_rows: 1 });
+    expect(metricsOf([done, unreadable(at(0, 1))], {}, now)).toMatchObject({ completed: 'unknown', decided: 'unknown', firstPass: 'unknown', asks: 'unknown', unreadable_rows: 1 });
+    expect(metricsOf([done, unreadable('')], {}, now).completed).toBe('unknown');
   });
 
   test('a failed query keeps the previous run and marks the row stale; never-seen runs are unreadable', async () => {
