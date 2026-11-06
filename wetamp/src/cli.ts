@@ -55,7 +55,7 @@ import {
 } from './ledger';
 export { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './ledger';
 import type { Land } from '../templates/.archon/scripts/sa-check';
-import { confined, workflowRoles } from './board/workflow';
+import { confined, OUTSIDE, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryData, memoryTick, privateProject } from './memory';
 import { reconcileReflection } from './memory-reflect';
@@ -1178,17 +1178,25 @@ export const recoveryOutputHashes = (
 
 function reviewCheckpoints(l: Ledger, run: RunView): Carried['reviews'] {
   if (!run.working_path) return {};
-  const reviews: NonNullable<Carried['reviews']> = {},
-    art = artifactsOf(run),
-    head = gitHead(run.working_path),
-    hashes = recoveryOutputHashes(run.id, l.repo);
-  for (const file of evidenceGates(l, art)) {
-    const admitted = recoveryReviewCheckpoint(l, art, file, head, hashes);
-    if (admitted?.reason)
-      console.warn(JSON.stringify({ code: 'superagent.checkpoint_rejected', ...admitted }));
-    if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
+  try {
+    const reviews: NonNullable<Carried['reviews']> = {},
+      art = artifactsOf(run),
+      head = gitHead(run.working_path),
+      hashes = recoveryOutputHashes(run.id, l.repo);
+    for (const file of evidenceGates(l, art)) {
+      const admitted = recoveryReviewCheckpoint(l, art, file, head, hashes);
+      if (admitted?.reason)
+        console.warn(JSON.stringify({ code: 'superagent.checkpoint_rejected', ...admitted }));
+      if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
+    }
+    return reviews;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes(OUTSIDE)) throw error;
+    console.warn(
+      JSON.stringify({ code: 'superagent.checkpoint_rejected', reason: 'artifacts_outside' })
+    );
+    return {};
   }
-  return reviews;
 }
 
 export function deliveryBase(l: Ledger): string | undefined {
