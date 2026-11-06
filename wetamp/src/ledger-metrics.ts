@@ -255,6 +255,8 @@ export function metricsOf(rows: readonly BoardRow[], summary: Record<string, unk
     unreadable_rows: unreadableRows.length,
     debt: typeof summary.debt_open === 'number' ? summary.debt_open : 'unknown',
     debt_open: typeof summary.debt_open === 'number' ? summary.debt_open : 'unknown',
+    ...(typeof summary.debt_unreadable === 'number' ? { debt_unreadable: summary.debt_unreadable } : {}),
+    ...(typeof summary.debt_bad_closure_lines === 'number' ? { debt_bad_closure_lines: summary.debt_bad_closure_lines } : {}),
     debt_new_today: typeof summary.debt_new_today === 'number' ? summary.debt_new_today : 'unknown',
     debt_closed_today: typeof summary.debt_closed_today === 'number' ? summary.debt_closed_today : 'unknown' };
 }
