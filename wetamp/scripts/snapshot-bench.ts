@@ -9,25 +9,45 @@ const number = (name: string, fallback: number): number => {
 };
 const soak = number('--soak', 5),
   maxRssMb = number('--max-rss-mb', Infinity),
-  maxP95Ms = number('--max-p95-ms', number('--max-ms', Infinity));
+  maxP95Ms = number('--max-p95-ms', number('--max-ms', Infinity)),
+  breakdown = process.argv.includes('--breakdown');
 
 const samples: number[] = [];
-let peakRss = process.memoryUsage().rss;
+const stages = new Map<string, number[]>();
+let peakRss = process.memoryUsage().rss,
+  recording = false;
 const load = createWorkerSnapshotLoader(createLoader(), undefined, {
   onSample: sample => {
-    samples.push(sample.load_ms);
+    if (!recording) return;
+    samples.push(sample.round_ms);
     peakRss = Math.max(peakRss, sample.rss);
+    if (breakdown) {
+      for (const [stage, ms] of Object.entries(sample.profile ?? {})) {
+        const values = stages.get(stage) ?? [];
+        values.push(ms);
+        stages.set(stage, values);
+      }
+      console.log(
+        JSON.stringify({
+          type: 'snapshot_breakdown',
+          round_ms: sample.round_ms,
+          stages: sample.profile ?? {},
+        })
+      );
+    }
   },
 });
 const demand = createDemandSnapshot(load);
 await demand.update();
-samples.length = 0;
+recording = true;
 for (let second = 0; second < soak; second++) {
   await demand.update();
   if (second + 1 < soak) await Bun.sleep(1000);
 }
 const sorted = [...samples].sort((a, b) => a - b);
 const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0;
+const percentile = (values: number[]): number =>
+  [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1] ?? 0;
 const endRss = process.memoryUsage().rss,
   mb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
 console.log(
@@ -36,6 +56,9 @@ console.log(
     peak_rss_mb: mb(peakRss),
     end_rss_mb: mb(endRss),
     p95_ms: Math.round(p95 * 10) / 10,
+    ...(breakdown
+      ? { breakdown_p95_ms: Object.fromEntries([...stages].map(([k, v]) => [k, percentile(v)])) }
+      : {}),
   })
 );
 if (mb(peakRss) > maxRssMb || p95 > maxP95Ms) process.exitCode = 1;

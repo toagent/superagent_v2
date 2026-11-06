@@ -456,7 +456,7 @@ async function queryRuns(
  * unreadable 行。signal 中止时杀掉在途查询（board 退出时用）。
  */
 // prettier-ignore
-export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger, statusesOf: () => Map<string, RunView['status']> | null = runStatuses): (limit: number) => Promise<Snapshot> {
+export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => ReturnType<Coordination['owner']>, probe: (who: Identity) => Presence = who => presence(who, home().sa), revisionsOf: (ids: string[]) => Map<string, string> | null = reportRunRevisions, ledgerReader: (id: string) => Ledger | string = readLedger, statusesOf: () => Map<string, RunView['status']> | null = runStatuses, onProfile?: (timings: Record<string, number>) => void): (limit: number) => Promise<Snapshot> {
   const env = process.env.SA_BOARD_QUERY_TIMEOUT_MS;
   const timeoutMs = env === undefined ? QUERY_TIMEOUT_MS : Number(env);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -474,7 +474,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   const presenceCache = new Map<string, { at: number; value: Presence }>();
   let first = true;
   return async limit => {
-    const profile = process.env.SA_BOARD_PROFILE === '1';
+    const profile = onProfile !== undefined || process.env.SA_BOARD_PROFILE === '1';
     const timings: Record<string, number> = {};
     let checkpoint = performance.now();
     const mark = (stage: string): void => {
@@ -706,7 +706,11 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       eta,
     };
     mark('other');
-    if (profile) console.error(JSON.stringify({ type: 'board_profile', ...timings }));
+    if (profile) {
+      onProfile?.(timings);
+      if (process.env.SA_BOARD_PROFILE === '1')
+        console.error(JSON.stringify({ type: 'board_profile', ...timings }));
+    }
     return value;
   };
 }

@@ -525,11 +525,11 @@ test('snapshot worker recycles while idle and the next load uses a fresh worker'
           this.onmessage?.({
             data: {
               id: message.id,
-              snapshot: JSON.stringify({
+              snapshot: {
                 summary: {},
                 rows: [],
                 at: `worker-${String(workers.length)}`,
-              }),
+              },
               load_ms: 4,
               rss: 8,
             },

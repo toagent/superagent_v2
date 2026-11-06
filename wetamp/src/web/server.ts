@@ -492,14 +492,26 @@ export function createDemandSnapshot(
 
 type WorkerReply =
   | { ready: true }
-  | { id: number; snapshot?: string; error?: string; load_ms?: number; rss?: number };
+  | {
+      id: number;
+      snapshot?: Snapshot | string;
+      error?: string;
+      load_ms?: number;
+      rss?: number;
+      profile?: Record<string, number>;
+    };
 export function createWorkerSnapshotLoader(
   fallback = createLoader(),
   spawn = () => new Worker(new URL('./snapshot-worker.ts', import.meta.url).href),
   options: {
     maxRssBytes?: number;
     maxRounds?: number;
-    onSample?: (sample: { load_ms: number; rss: number }) => void;
+    onSample?: (sample: {
+      load_ms: number;
+      round_ms: number;
+      rss: number;
+      profile?: Record<string, number>;
+    }) => void;
   } = {}
 ): ReturnType<typeof createLoader> {
   let worker: Worker | undefined;
@@ -509,7 +521,12 @@ export function createWorkerSnapshotLoader(
   let recycle = false;
   const pending = new Map<
     number,
-    { limit: number; resolve: (snapshot: Snapshot) => void; reject: (error: Error) => void }
+    {
+      limit: number;
+      started: number;
+      resolve: (snapshot: Snapshot) => void;
+      reject: (error: Error) => void;
+    }
   >();
   const start = (): Worker => {
     const active = spawn();
@@ -522,12 +539,22 @@ export function createWorkerSnapshotLoader(
       const request = pending.get(event.data.id);
       if (!request) return;
       pending.delete(event.data.id);
-      const sample = { load_ms: event.data.load_ms ?? 0, rss: event.data.rss ?? 0 };
+      const sample = {
+        load_ms: event.data.load_ms ?? 0,
+        round_ms: performance.now() - request.started,
+        rss: event.data.rss ?? 0,
+        profile: event.data.profile,
+      };
       options.onSample?.(sample);
       recycle ||=
         ++rounds >= (options.maxRounds ?? 500) ||
         sample.rss > (options.maxRssBytes ?? 1536 * 1024 * 1024);
-      if (event.data.snapshot) request.resolve(JSON.parse(event.data.snapshot) as Snapshot);
+      if (event.data.snapshot)
+        request.resolve(
+          typeof event.data.snapshot === 'string'
+            ? (JSON.parse(event.data.snapshot) as Snapshot)
+            : event.data.snapshot
+        );
       else request.reject(new Error(event.data.error ?? 'snapshot worker failed'));
       if (recycle && pending.size === 0) {
         console.log(
@@ -557,7 +584,7 @@ export function createWorkerSnapshotLoader(
   return limit =>
     new Promise<Snapshot>((resolve, reject) => {
       const id = ++next;
-      pending.set(id, { limit, resolve, reject });
+      pending.set(id, { limit, started: performance.now(), resolve, reject });
       try {
         const active = (worker ??= start());
         if (ready) active.postMessage({ id, limit });
