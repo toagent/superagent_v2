@@ -7,6 +7,13 @@ interface WorkerScope {
 }
 declare const self: WorkerScope;
 
+// prettier-ignore
+const send = (message: unknown): void => {
+  if (process.send) process.send(message); else self.postMessage(message);
+};
+// prettier-ignore
+const receive = (handler: NonNullable<WorkerScope['onmessage']>): void => void (process.send ? process.on('message', message => { handler({ data: message } as MessageEvent<{ id: number; limit: number }>); }) : (self.onmessage = handler));
+
 let profile: Record<string, number> = {};
 const load = createLoader(
   undefined,
@@ -20,7 +27,7 @@ const load = createLoader(
   }
 );
 
-self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
+receive((event: MessageEvent<{ id: number; limit: number }>) => {
   const { id, limit } = event.data;
   void (async () => {
     const started = performance.now();
@@ -32,7 +39,7 @@ self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
         rows: [],
         web: overview(snapshot),
       };
-      self.postMessage({
+      send({
         id,
         snapshot: compact,
         load_ms: performance.now() - started,
@@ -40,7 +47,7 @@ self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
         profile,
       });
     } catch (error) {
-      self.postMessage({
+      send({
         id,
         error: (error as Error).message,
         load_ms: performance.now() - started,
@@ -48,5 +55,5 @@ self.onmessage = (event: MessageEvent<{ id: number; limit: number }>) => {
       });
     }
   })();
-};
-self.postMessage({ ready: true });
+});
+send({ ready: true });

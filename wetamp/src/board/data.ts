@@ -418,7 +418,7 @@ const FINAL = new Set<RunView['status']>(['completed', 'cancelled']);
 const ACTIVITY = new Set<RunView['status']>(['running', 'paused']);
 export const QUERY_TIMEOUT_MS = 10_000;
 const QUERY_CONCURRENCY = 8;
-const INITIAL_QUERY_BATCH = 20;
+const INITIAL_QUERY_BATCH = 8;
 
 async function queryRuns(
   entries: { id: string; ledger: Ledger }[],

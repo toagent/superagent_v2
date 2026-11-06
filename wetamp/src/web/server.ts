@@ -512,9 +512,43 @@ type WorkerReply =
       rss?: number;
       profile?: Record<string, number>;
     };
+type SnapshotWorker = Pick<Worker, 'onmessage' | 'onerror' | 'postMessage' | 'terminate'>;
+function spawnSnapshotWorker(): SnapshotWorker {
+  let terminated = false;
+  const child = Bun.spawn(
+    [process.execPath, '--no-env-file', join(WETAMP, 'src/web/snapshot-worker.ts')],
+    {
+      stdin: 'ignore',
+      stdout: 'ignore',
+      stderr: 'inherit',
+      ipc: (message: unknown) =>
+        (bridge.onmessage as ((event: MessageEvent) => void) | null)?.({
+          data: message,
+        } as MessageEvent),
+    }
+  );
+  const bridge: SnapshotWorker = {
+    onmessage: null,
+    onerror: null,
+    postMessage: message => {
+      child.send(message);
+    },
+    terminate: () => {
+      terminated = true;
+      child.kill();
+    },
+  };
+  void child.exited.then(code => {
+    if (!terminated)
+      (bridge.onerror as ((event: ErrorEvent) => void) | null)?.(
+        new ErrorEvent('error', { message: `snapshot subprocess exited ${String(code)}` })
+      );
+  });
+  return bridge;
+}
 export function createWorkerSnapshotLoader(
   fallback = createLoader(),
-  spawn = () => new Worker(new URL('./snapshot-worker.ts', import.meta.url).href),
+  spawn: () => SnapshotWorker = spawnSnapshotWorker,
   options: {
     maxRssBytes?: number;
     maxRounds?: number;
@@ -526,7 +560,7 @@ export function createWorkerSnapshotLoader(
     }) => void;
   } = {}
 ): ReturnType<typeof createLoader> {
-  let worker: Worker | undefined;
+  let worker: SnapshotWorker | undefined;
   let ready = false;
   let next = 0;
   let rounds = 0;
@@ -540,7 +574,7 @@ export function createWorkerSnapshotLoader(
       reject: (error: Error) => void;
     }
   >();
-  const start = (): Worker => {
+  const start = (): SnapshotWorker => {
     const active = spawn();
     active.onmessage = (event: MessageEvent<WorkerReply>) => {
       if ('ready' in event.data) {
