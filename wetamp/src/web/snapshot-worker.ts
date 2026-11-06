@@ -8,9 +8,7 @@ interface WorkerScope {
 declare const self: WorkerScope;
 
 // prettier-ignore
-const send = (message: unknown): void => {
-  if (process.send) process.send(message); else self.postMessage(message);
-};
+const send = process.send ? process.send.bind(process) : self.postMessage.bind(self);
 // prettier-ignore
 const receive = (handler: NonNullable<WorkerScope['onmessage']>): void => void (process.send ? process.on('message', message => { handler({ data: message } as MessageEvent<{ id: number; limit: number }>); }) : (self.onmessage = handler));
 
