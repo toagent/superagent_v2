@@ -62,6 +62,7 @@ export type StageKind =
   | 'other';
 export const stageKind = (nodeId: string | null | undefined): StageKind => {
   const kind = (nodeId ?? '').split('-')[0];
+  if (['integrate', 'publish', 'sync', 'resync', 'resolve'].includes(kind)) return 'land';
   return (
     [
       'code',
@@ -83,6 +84,7 @@ export function stages(r: BoardRow): string {
   if (r.state === 'completed') return '完成';
   if (r.state === 'cancelled') return '取消';
   if (r.state === 'failed') return '失败';
+  if (r.state === 'abandoned') return '放弃';
   const kind = stageKind(r.nodes.current);
   const round = /-r(\d+)$/.exec(r.nodes.current ?? '')?.[1] ?? String(r.engine?.round ?? 1);
   const ms = r.engine?.milestones ?? [],

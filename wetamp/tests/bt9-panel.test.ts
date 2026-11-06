@@ -448,9 +448,22 @@ test('panel local midnight, future rows, Chinese terminal states and unknown tok
   }));
   s.rows.push(
     { ...original, run_id: 'yesterday', started_at: '2026-10-09T15:59:59Z' },
-    { ...original, run_id: 'future', started_at: '2026-10-10T04:00:01Z' }
+    { ...original, run_id: 'future', started_at: '2026-10-10T04:00:01Z' },
+    ...['abandoned', 'pending', 'unreadable', 'target_dirty', 'new_state'].map(state => ({
+      ...original,
+      run_id: state,
+      state,
+    }))
   );
-  expect(overview(s).runs.map(r => r.state)).toEqual(['取消', '失败', '挂起']);
+  const states = Object.fromEntries(overview(s).runs.map(r => [r.id, r.state]));
+  expect(states).toMatchObject({
+    abandoned: '放弃',
+    pending: '启动中',
+    unreadable: '不可读',
+    target_dirty: '待处理',
+    new_state: 'new_state',
+  });
+  expect(Object.values(states)).not.toContain('—');
 });
 test('ended row keeps the actual coding model when current node is a script', () => {
   const { ledger, binding } = setup();

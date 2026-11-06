@@ -226,7 +226,15 @@ export function overview(s: Snapshot, snapshotAt = s.at, servedAt = new Date().t
       completed: '完成',
       cancelled: '取消',
       failed: '失败',
-    })[v] ?? (v.startsWith('held:') ? '挂起' : '—');
+      abandoned: '放弃',
+      pending: '启动中',
+      unreadable: '不可读',
+      target_dirty: '待处理',
+      target_checkout_changed: '待处理',
+      target_advanced: '待处理',
+      review_stale: '待处理',
+      sync_conflict: '待处理',
+    })[v] ?? (v.startsWith('held:') ? '挂起' : v);
   return {
     snapshot_at: snapshotAt,
     served_at: servedAt,

@@ -160,6 +160,7 @@ test('compact stage labels follow the current engine node', () => {
     completed: '完成',
     cancelled: '取消',
     failed: '失败',
+    abandoned: '放弃',
   })) {
     const terminal = row(state, state);
     terminal.nodes.current = null;
@@ -175,6 +176,11 @@ test('compact stage labels follow the current engine node', () => {
     ['verify-a', '验收'],
     ['repair-a', '修复'],
     ['fix-m1-r2', '修复'],
+    ['integrate-m1', '合入'],
+    ['publish-m1', '合入'],
+    ['sync-m1', '合入'],
+    ['resync-m1', '合入'],
+    ['resolve-m1', '合入'],
     ['environment', '准备'],
   ])
     expect(stages(row(node, 'running', node))).toBe(label);
