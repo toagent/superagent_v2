@@ -181,7 +181,13 @@ import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
-import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
+import {
+  buildReport,
+  consolidationMetrics,
+  reportSummary,
+  retroCoverage,
+  reviewWhitelistReport,
+} from './report';
 import { abandoned } from './ledger-metrics';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
@@ -4499,6 +4505,7 @@ export function summarize(pairs: Pair[], includeConsolidation = true): Record<st
   );
   return {
     ...summary,
+    retro_coverage: retroCoverage(pairs),
     consolidation: consolidationMetrics(
       pairs,
       titles.exitCode === 0 ? titles.stdout.toString().trim().split('\n').filter(Boolean) : null,

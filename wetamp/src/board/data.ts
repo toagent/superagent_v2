@@ -464,8 +464,11 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
   const cache = new Map<string, { run: RunView; mtimeMs: number; revision?: string }>();
   const rowCache = new Map<string, BoardRow>();
   const ledgerCache = new Map<string, Ledger>();
+  const ledgerReadCache = new Map<string, { mtimeMs: number; value: Ledger | string }>();
   const coordCache = new Map<string, { scope?: ReturnType<typeof runScope>; value: Omit<NonNullable<BoardRow['coordination']>, 'pending'> }>();
   const roles = new Map<string, Map<string, Role> | undefined>();
+  let coordMessagesCache: { stamp: number; value: Message[] } | undefined;
+  let ledgerListCache: { stamp: number; ids: { id: string; mtimeMs: number }[] } | undefined;
   let summaryCache: { ids: string; key: string; value: Record<string, unknown> } | undefined;
   let slowCache: { ids: string; key: string; reflection?: Snapshot['reflection']; eta: Record<string, Estimate> } | undefined;
   const presenceCache = new Map<string, { at: number; value: Presence }>();
@@ -480,15 +483,11 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
       checkpoint = next;
     };
     const now = Date.now();
-    const ids = ledgerIds()
-      // 读目录与 stat 之间被删的 ledger 排到最后，随后由 readLedger 报成 unreadable
-      .map(id => ({
-        id,
-        mtimeMs: statSync(ledgerPath(id), { throwIfNoEntry: false })?.mtimeMs ?? 0,
-      }))
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const names = ledgerIds(), ledgerStamp = statSync(join(home().sa, 'runs'), { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    // 小目录完整核验；大目录以原子 ledger 写入会更新的目录 mtime 作失效信号。
+    const ids = names.length > 200 && ledgerReader === readLedger && ledgerListCache?.stamp === ledgerStamp ? ledgerListCache.ids : names.map(id => ({ id, mtimeMs: statSync(ledgerPath(id), { throwIfNoEntry: false })?.mtimeMs ?? 0 })).sort((a, b) => b.mtimeMs - a.mtimeMs); ledgerListCache = { stamp: ledgerStamp, ids };
     // prettier-ignore
-    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const hit = cache.get(id), saved = ledgerCache.get(id); return [id, hit?.mtimeMs === mtimeMs && saved ? saved : ledgerReader(id)] as const; }));
+    const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const saved = ledgerReadCache.get(id), value = saved?.mtimeMs === mtimeMs ? saved.value : ledgerReader(id); ledgerReadCache.set(id, { mtimeMs, value }); return [id, value] as const; }));
     mark('ledgers');
     let terminal = 0;
     const today = new Date(now); today.setHours(0, 0, 0, 0);
@@ -548,7 +547,7 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     const queryEntries = uncached.flatMap(({ id }) => { const ledger = ledgers.get(id); return typeof ledger === 'string' || !ledger ? [] : [{ id, ledger }]; });
     const firstLedger = [...ledgers.values()].find((l): l is Ledger => typeof l !== 'string');
     if (uncached.length && firstLedger) {
-      if (first) {
+      if (first || !process.env.SA_ARCHON_BIN) {
         try {
           const batch = await getRunsAsync(queryEntries.map(entry => entry.ledger.archon_run_id), cwdOf(firstLedger), { timeoutMs, signal });
           for (const { id } of uncached) {
@@ -591,7 +590,8 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
         return hit ? { l, run: hit.run, stale: true, err } : { l, err };
       }
     }).filter(r => statuses !== null || !r.run || !FINAL.has(r.run.status) || terminal++ < limit);
-    const coordMessages = coordinator.messages();
+    const stamp = statSync(join(home().sa, 'coord', 'inbox'), { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    const coordMessages = coordMessagesCache?.stamp === stamp ? coordMessagesCache.value : coordinator.messages(); coordMessagesCache = { stamp, value: coordMessages };
     const pending = new Map<string, number>();
     for (const message of coordMessages)
       if (

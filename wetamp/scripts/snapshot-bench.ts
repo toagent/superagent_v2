@@ -20,6 +20,8 @@ const load = createWorkerSnapshotLoader(createLoader(), undefined, {
   },
 });
 const demand = createDemandSnapshot(load);
+await demand.update();
+samples.length = 0;
 for (let second = 0; second < soak; second++) {
   await demand.update();
   if (second + 1 < soak) await Bun.sleep(1000);
