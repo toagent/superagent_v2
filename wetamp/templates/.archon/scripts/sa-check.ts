@@ -1447,7 +1447,7 @@ async function acceptOnce(
   }
   const scopeStart = env('SCOPE_BASE');
   const changeBase = base ? packageChangeBase(scopeStart, base) : '';
-  const scope =
+  const fullScope =
     base && env('RISK')
       ? scopeRisk(
           changes(changeBase),
@@ -1456,6 +1456,16 @@ async function acceptOnce(
           env('RISK')
         )
       : { risk: env('RISK') || null, review_required: false, out_of_scope: [] };
+  const reviewScope =
+    base && env('RISK') && env('REVIEW_BASE') && env('REVIEW_BASE') !== changeBase
+      ? scopeRisk(
+          changes(env('REVIEW_BASE')),
+          covered.flatMap(k => k.scope.write),
+          policy(),
+          env('RISK')
+        )
+      : fullScope;
+  const scope = { ...reviewScope, out_of_scope: fullScope.out_of_scope };
   const ok = failed.length === 0 && !dirty;
   const reviewRounds = env('MILESTONE') || env('ARCHON') ? maxRounds() : undefined;
   // Generated diff artifact names are the engine's structured channel, not vendor prose.

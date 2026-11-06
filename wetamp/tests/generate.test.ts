@@ -618,11 +618,17 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
     buildWorkflow(p, milestones(p), 'adopted', '/GEN', false, NOW, loadTiers(), {
       from: 'old',
       packages: [p.packages[0].id],
+      deliveryBase: 'a'.repeat(40),
       evidence: { [p.packages[0].id]: evidence },
     })
   );
   expect(
     adopted.filter(n => n.with?.kind === 'accept').every(n => n.with?.scope_base === start)
+  ).toBeTrue();
+  expect(
+    adopted
+      .filter(n => n.with?.kind === 'accept')
+      .every(n => n.with?.review_base === 'a'.repeat(40))
   ).toBeTrue();
   const coded = nodesOf(
     buildWorkflow(p, milestones(p), 'coded', '/GEN', false, NOW, loadTiers(), {
@@ -881,6 +887,11 @@ describe('buildWorkflow', () => {
       })
     );
     const carried = nodes.find(n => n.id === 'carried-gate-m1')!;
+    expect(
+      nodes
+        .filter(n => n.with?.kind === 'accept' && n.with?.milestone === 'm1')
+        .every(n => n.with?.review_base === checkpoint.gate.reviewed_head)
+    ).toBeTrue();
     expect(carried.bash).toContain('$ARTIFACTS_DIR/gate-m1-r1.json');
     expect(carried.bash).not.toContain('$code-core.output');
     expect(carried.bash).toContain('/GEN/review-checkpoints/m1.json');
@@ -1193,6 +1204,7 @@ describe('buildWorkflow', () => {
         plan: planPath,
         base,
         scope_base: base,
+        review_base: base,
         delta_base: base,
         target_tip: base,
         sync_generation: '1',

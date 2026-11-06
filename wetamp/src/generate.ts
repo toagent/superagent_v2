@@ -130,6 +130,7 @@ const REVIEW_IDLE_MS = 15 * 60 * 1000;
 export interface Carried {
   from: string;
   packages: string[];
+  deliveryBase?: string;
   freshDirectory?: boolean;
   evidence?: Record<string, string>;
   coded?: string[];
@@ -915,6 +916,7 @@ export function buildWorkflow(
         pkgs: ids,
         scope_pkgs,
         scope_base: scopeBase,
+        review_base: carried.deliveryBase ?? ref.required(syncReadyHandle, 'target_tip'),
         risk: m.risk,
         milestone: m.id,
         target_tip: ref.required(syncReadyHandle, 'target_tip'),
@@ -953,6 +955,10 @@ export function buildWorkflow(
     const rawCheckpoint = carried?.reviews?.[m.id];
     // prettier-ignore
     const checkpoint = rawCheckpoint?.gate.decision && ['advance', 'debt'].includes(rawCheckpoint.gate.decision.kind) ? rawCheckpoint : undefined;
+    const reviewBase =
+      checkpoint?.gate.reviewed_head ??
+      carried?.deliveryBase ??
+      ref.required(syncReadyHandle, 'target_tip');
     // prettier-ignore
     const checkpointAtoms = checkpoint ? [['head', checkpoint.gate.reviewed_head], ['diff_hash', checkpoint.gate.reviewed_diff_hash],
       ['contract_hash', checkpoint.check.contract_hash]] as const : [];
@@ -1045,6 +1051,7 @@ export function buildWorkflow(
         scope_pkgs,
         base,
         scope_base: scopeBase,
+        review_base: reviewBase,
         delta_base: ref.required(previousHandle, 'head'),
         ...(p.max_net_lines === undefined
           ? {}
@@ -1251,6 +1258,7 @@ export function buildWorkflow(
             scope_pkgs,
             base,
             scope_base: scopeBase,
+            review_base: reviewBase,
             target_tip: ref.required(reviewSyncReadyHandle, 'target_tip'),
             sync_generation: ref.required(reviewSyncReadyHandle, 'generation'),
             risk: m.risk,

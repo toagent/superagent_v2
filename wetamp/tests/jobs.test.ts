@@ -291,7 +291,9 @@ describe('job registry', () => {
     for (const name of readdirSync(jobsDir)) utimesSync(join(jobsDir, name), 1, 1);
     const before = snapshot();
     for (const flags of ['', '--all']) {
-      const output = JSON.parse(sh(`bun src/cli.ts jobs --json ${flags}`, WETAMP));
+      const output = JSON.parse(
+        sh(`SUPERAGENT_JOB_ID=lost-readonly bun src/cli.ts jobs --json ${flags}`, WETAMP)
+      );
       expect(snapshot()).toEqual(before);
       if (flags) {
         expect(output.jobs.map((j: Job) => j.state).sort()).toEqual(['done', 'lost', 'lost']);
@@ -300,8 +302,12 @@ describe('job registry', () => {
         expect(output.jobs.map((j: Job) => j.id)).toEqual(['lost-readonly']);
         expect(output.jobs[0].state).toBe('lost');
         expect(output.jobs[0].ended_at).toBeUndefined();
+        expect(output.jobs[0].self).toBeTrue();
       }
     }
+    expect(sh('SUPERAGENT_JOB_ID=lost-readonly bun src/cli.ts jobs', WETAMP)).toContain(
+      'lost-readonly (本作业)'
+    );
     // Abort process/remote discovery; exercise the real board job filter without host I/O.
     const activity = await loadActivity(Date.now(), AbortSignal.abort());
     expect(activity.jobs.map(j => j.id)).toEqual(['lost-readonly']);
@@ -469,7 +475,7 @@ else {
   test('unset parent and no requested role explicitly suppress child .env role', async () => {
     const root = tmp(), child = join(tmp(), 'child');
     writeFileSync(join(root, '.env'), 'SUPERAGENT_ROLE=commander\n');
-    writeFileSync(child, 'console.log(JSON.stringify({ present: "SUPERAGENT_ROLE" in process.env, role: process.env.SUPERAGENT_ROLE }));');
+    writeFileSync(child, 'console.log(JSON.stringify({ present: "SUPERAGENT_ROLE" in process.env, role: process.env.SUPERAGENT_ROLE, job: process.env.SUPERAGENT_JOB_ID }));');
     const script = `import { jobCli } from ${JSON.stringify(join(WETAMP, 'src/jobs.ts'))};
 delete process.env.SUPERAGENT_ROLE;
 process.chdir(${JSON.stringify(root)});
@@ -479,7 +485,8 @@ process.exit(await jobCli(['job', 'exec', '--title', 'empty-role', '--', 'bun', 
     });
     const err = await new Response(p.stderr as ReadableStream).text();
     expect(await p.exited, err).toBe(0);
-    expect(JSON.parse(await new Response(p.stdout as ReadableStream).text())).toEqual({ present: true, role: '' });
+    const output = JSON.parse(await new Response(p.stdout as ReadableStream).text());
+    expect(output).toEqual({ present: true, role: '', job: readJobs().jobs[0].id });
   });
   // prettier-ignore
   const run = (args: string[], role = '', cwd = WETAMP, extraEnv = {}) =>
@@ -953,7 +960,10 @@ const input = await Bun.stdin.text(); console.log(JSON.stringify({ args: process
       ]);
       expect(exit, stderr).toBe(0);
       const received = JSON.parse(stdout);
-      expect(received.input).toBe(`${SIMPLIFIED_CHINESE_REQUIREMENT}\n\n${contents}`);
+      const id = readJobs().jobs.find(j => j.title === `auto-${role}`)!.id;
+      expect(received.input).toBe(
+        `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\njobs 列表中 ${id} 即你本身。\n\n${contents}`
+      );
       expect(readFileSync(join(WETAMP, 'templates/.archon/principles.md'), 'utf8')).toContain(
         `6. ${SIMPLIFIED_CHINESE_REQUIREMENT}`
       );
@@ -1003,7 +1013,10 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true,
     const failedError = await new Response(failed.stderr as ReadableStream).text();
     expect(await failed.exited, failedError).toBe(1);
     const captured = JSON.parse(readFileSync(capture, 'utf8'));
-    expect(captured.input).toBe(`${SIMPLIFIED_CHINESE_REQUIREMENT}\n\nclaude prompt`);
+    const id = readJobs().jobs.find(j => j.title === 'auto-claude')!.id;
+    expect(captured.input).toBe(
+      `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\njobs 列表中 ${id} 即你本身。\n\nclaude prompt`
+    );
     expect(JSON.stringify(captured.args)).not.toContain('claude prompt');
     expect(readFileSync(output, 'utf8')).toBe('overloaded\n');
     const healthPath = join(process.env.SUPERAGENT_HOME!, 'claude-health.json'),
