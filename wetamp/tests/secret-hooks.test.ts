@@ -18,7 +18,27 @@ test('shell commands are wrapped once for Claude and Codex', async () => {
     'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;'
   );
   const wrapped = claude.hookSpecificOutput.updatedInput.command;
-  expect(guard.decide(payload(wrapped), 'codex', env)).not.toHaveProperty('updatedInput');
+  expect(
+    guard.decide(payload(wrapped), 'codex', env)?.hookSpecificOutput?.updatedInput
+  ).toBeUndefined();
+  const codex = guard.decide(payload('echo ok'), 'codex', env);
+  expect(codex.hookSpecificOutput).toMatchObject({ permissionDecision: 'allow' });
+  expect(codex.hookSpecificOutput.updatedInput.command).toStartWith('exec > >(');
+  // A prefix that is not leading (comment, string) must not opt the command out.
+  const comment = `# exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;\necho ok`;
+  expect(
+    guard.decide(payload(comment), 'claude', env).hookSpecificOutput.updatedInput.command
+  ).toStartWith('exec > >(');
+});
+test('an uninstalled firewall stays inert instead of hiding output or blocking prompts', async () => {
+  await require('../hooks/redline.cjs').init();
+  const env = { ...process.env, HOME: tmp(), SA_SECRET_SCAN_MODULE: '' };
+  // prettier-ignore
+  const pre = guard.decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo ok' }, cwd: process.cwd() }, 'claude', env);
+  expect(pre?.hookSpecificOutput?.updatedInput).toBeUndefined();
+  expect(
+    guard.decide({ hook_event_name: 'UserPromptSubmit', prompt: 'hello' }, 'claude', env)
+  ).toBeNull();
 });
 test('derived sessions redact non-shell output and block secret prompts', () => {
   const env = { ...process.env, SUPERAGENT_ROLE: 'general', SA_SECRET_SCAN_MODULE: scanner() };

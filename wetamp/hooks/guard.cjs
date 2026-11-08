@@ -16,11 +16,16 @@ const redline = require('./redline.cjs');
 const { resolvePath, within, saHome } = redline;
 const REDACT_PREFIX = 'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;';
 
-const scanner = env =>
-  require(
-    env.SA_SECRET_SCAN_MODULE ||
-      path.join(env.HOME || require('node:os').homedir(), '.wetamp', 'jail', 'secret-scan.cjs')
-  );
+const jailFile = (env, name) =>
+  path.join(env.HOME || require('node:os').homedir(), '.wetamp', 'jail', name);
+const scannerPath = env => env.SA_SECRET_SCAN_MODULE || jailFile(env, 'secret-scan.cjs');
+const scanner = env => require(scannerPath(env));
+// The firewall is active only once install.sh has published both artifacts outside the jail.
+// Before that, wrapping commands or failing prompt scans would hide every output and block
+// every prompt; an uninstalled firewall stays inert instead (install is the activation step).
+const firewallInstalled = env =>
+  fs.existsSync(scannerPath(env)) &&
+  (Boolean(env.SA_SECRET_SCAN_MODULE) || fs.existsSync(jailFile(env, 'sa-redact.cjs')));
 const mapStrings = (value, transform) => {
   if (typeof value === 'string') return transform(value);
   if (Array.isArray(value)) return value.map(item => mapStrings(item, transform));
@@ -212,6 +217,7 @@ function decide(payload, client, env = process.env) {
   const derived = derivedBy(payload, client, env);
   if (event !== 'PreToolUse') {
     if (event === 'UserPromptSubmit') {
+      if (!firewallInstalled(env)) return null;
       const prompt = String(payload.prompt || '');
       let safe;
       try {
@@ -230,7 +236,7 @@ function decide(payload, client, env = process.env) {
     }
     if (!['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event)) return null;
     if (event === 'PostToolUse') {
-      if (shellText(name, input) !== undefined) return null;
+      if (shellText(name, input) !== undefined || !firewallInstalled(env)) return null;
       const next = scanned(payload.tool_response, env);
       if (JSON.stringify(next) === JSON.stringify(payload.tool_response)) return null;
       return client === 'claude'
@@ -264,14 +270,21 @@ function decide(payload, client, env = process.env) {
     onAdvisory: code => notices.add(code),
   });
   if (red) return deny(red, category);
-  if (text !== undefined) {
-    const wrapped = text.includes(REDACT_PREFIX) ? text : `${REDACT_PREFIX} ${text}`;
-    if (wrapped !== text) {
-      const updatedInput = { ...input, [Object.hasOwn(input, 'cmd') ? 'cmd' : 'command']: wrapped };
-      return client === 'claude'
-        ? { hookSpecificOutput: { hookEventName: event, updatedInput } }
-        : { decision: 'allow', updatedInput };
-    }
+  // Only a leading prefix counts as wrapped: a prefix inside a comment or string must not opt out.
+  if (text !== undefined && firewallInstalled(env) && !text.startsWith(REDACT_PREFIX)) {
+    const updatedInput = {
+      ...input,
+      [Object.hasOwn(input, 'cmd') ? 'cmd' : 'command']: `${REDACT_PREFIX} ${text}`,
+    };
+    // Codex accepts updatedInput only beside permissionDecision "allow"; local Codex already
+    // runs danger-full-access inside the outer jail, so this does not broaden its permissions.
+    return {
+      hookSpecificOutput: {
+        hookEventName: event,
+        ...(client === 'claude' ? {} : { permissionDecision: 'allow' }),
+        updatedInput,
+      },
+    };
   }
   const edit = microEdit.isEdit(client, name);
   const advisory = notices.size
