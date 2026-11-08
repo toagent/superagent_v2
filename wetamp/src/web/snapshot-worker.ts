@@ -1,16 +1,8 @@
 import { createLoader } from '../board/data';
 import { overview, type WebSnapshot } from './server';
 
-interface WorkerScope {
-  onmessage: ((event: MessageEvent<{ id: number; limit: number }>) => void) | null;
-  postMessage(message: unknown): void;
-}
-declare const self: WorkerScope;
-
-// prettier-ignore
-const send = process.send ? process.send.bind(process) : self.postMessage.bind(self);
-// prettier-ignore
-const receive = (handler: NonNullable<WorkerScope['onmessage']>): void => void (process.send ? process.on('message', message => { handler({ data: message } as MessageEvent<{ id: number; limit: number }>); }) : (self.onmessage = handler));
+if (!process.send) throw new Error('snapshot worker requires IPC');
+const send = process.send.bind(process);
 
 let profile: Record<string, number> = {};
 const load = createLoader(
@@ -25,8 +17,8 @@ const load = createLoader(
   }
 );
 
-receive((event: MessageEvent<{ id: number; limit: number }>) => {
-  const { id, limit } = event.data;
+process.on('message', (message: { id: number; limit: number }) => {
+  const { id, limit } = message;
   void (async () => {
     const started = performance.now();
     try {
