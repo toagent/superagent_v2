@@ -1,0 +1,13 @@
+# Sourced by the secret-firewall command prefix: route this shell's output through sa-redact
+# and, on exit, wait (bounded) until the redactor has flushed, because clients read output
+# as soon as the shell exits and process substitutions are not waitable in zsh.
+__sa_done="$(/usr/bin/mktemp -u /tmp/sa-done.XXXXXX)"
+exec 3>&1 4>&2
+exec > >(node "${SA_REDACT_CJS:-$HOME/.wetamp/jail/sa-redact.cjs}"; : >"$__sa_done") 2>&1
+__sa_finish() {
+  exec 1>&3 2>&4
+  __sa_i=0
+  while [ ! -e "$__sa_done" ] && [ "$__sa_i" -lt 500 ]; do sleep 0.01; __sa_i=$((__sa_i + 1)); done
+  /bin/rm -f "$__sa_done"
+}
+if [ -n "${ZSH_VERSION:-}" ]; then zshexit_functions+=(__sa_finish); else trap __sa_finish EXIT; fi

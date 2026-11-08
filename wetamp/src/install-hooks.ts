@@ -224,13 +224,16 @@ function diff(file: string, before: string, after: string): string {
 export function openCodeGuard(guard = V2_HOOKS + 'git-guardrail.cjs'): string {
   return `// superagent:managed:git-guardrail
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 const require = createRequire(import.meta.url);
-const REDACT_PREFIX = 'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;';
+// Same activation rule as guard.cjs: an uninstalled scanner leaves output untouched.
 const scan = value => {
-  const scanner = require(process.env.SA_SECRET_SCAN_MODULE || join(process.env.HOME || homedir(), '.wetamp/jail/secret-scan.cjs'));
+  const module = process.env.SA_SECRET_SCAN_MODULE || join(process.env.HOME || homedir(), '.wetamp/jail/secret-scan.cjs');
+  if (!existsSync(module)) return value;
+  const scanner = require(module);
   const visit = item => typeof item === 'string' ? scanner.scanText(item) : Array.isArray(item) ? item.map(visit) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).map(([key, child]) => [key, visit(child)])) : item;
   return visit(value);
 };
@@ -261,10 +264,11 @@ export const GitGuardrailPlugin = async (context = {}) => ({
       if (!context.client?.app?.log) throw new Error('Git guard advisory unavailable: log channel missing');
       await context.client.app.log({ body: { service: 'superagent', level: 'warn', message: notice.systemMessage } });
     }
-    if (typeof command === 'string' && !command.includes(REDACT_PREFIX)) {
-      const wrapped = REDACT_PREFIX + ' ' + command;
-      if (output?.args) output.args.command = wrapped;
-      else args.command = wrapped;
+    // guard.cjs owns the redaction wrapper; apply its rewrite instead of restating it here.
+    const updated = notice?.hookSpecificOutput?.updatedInput?.command;
+    if (typeof command === 'string' && typeof updated === 'string') {
+      if (output?.args) output.args.command = updated;
+      else args.command = updated;
     }
   },
   'tool.execute.after': async (_input, output) => { const next = scan(output); Object.assign(output, next); },

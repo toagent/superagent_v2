@@ -15,7 +15,7 @@ test('shell commands are wrapped once for Claude and Codex', async () => {
   const payload = (command: string) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: process.cwd() });
   const claude = guard.decide(payload('echo ok'), 'claude', env);
   expect(claude.hookSpecificOutput.updatedInput.command).toStartWith(
-    'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;'
+    '. ~/.wetamp/jail/sa-redact.sh;'
   );
   const wrapped = claude.hookSpecificOutput.updatedInput.command;
   expect(
@@ -23,12 +23,14 @@ test('shell commands are wrapped once for Claude and Codex', async () => {
   ).toBeUndefined();
   const codex = guard.decide(payload('echo ok'), 'codex', env);
   expect(codex.hookSpecificOutput).toMatchObject({ permissionDecision: 'allow' });
-  expect(codex.hookSpecificOutput.updatedInput.command).toStartWith('exec > >(');
+  expect(codex.hookSpecificOutput.updatedInput.command).toStartWith(
+    '. ~/.wetamp/jail/sa-redact.sh;'
+  );
   // A prefix that is not leading (comment, string) must not opt the command out.
-  const comment = `# exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;\necho ok`;
+  const comment = `# . ~/.wetamp/jail/sa-redact.sh;\necho ok`;
   expect(
     guard.decide(payload(comment), 'claude', env).hookSpecificOutput.updatedInput.command
-  ).toStartWith('exec > >(');
+  ).toStartWith('. ~/.wetamp/jail/sa-redact.sh;');
 });
 test('an uninstalled firewall stays inert instead of hiding output or blocking prompts', async () => {
   await require('../hooks/redline.cjs').init();

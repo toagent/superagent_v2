@@ -14,7 +14,9 @@ const { withState, once } = require('./hook-state.cjs');
 const dispatch = require('./dispatch-context.cjs');
 const redline = require('./redline.cjs');
 const { resolvePath, within, saHome } = redline;
-const REDACT_PREFIX = 'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;';
+// Sourcing (not a subshell) keeps cd and exit status; the helper waits for the redactor to flush
+// on exit, because clients read output as soon as the shell exits.
+const REDACT_PREFIX = '. ~/.wetamp/jail/sa-redact.sh;';
 
 const jailFile = (env, name) =>
   path.join(env.HOME || require('node:os').homedir(), '.wetamp', 'jail', name);
@@ -26,7 +28,7 @@ const scanner = env => require(scannerPath(env));
 const firewallInstalled = env =>
   fs.existsSync(scannerPath(env)) &&
   (Boolean(env.SA_SECRET_SCAN_MODULE) ||
-    (fs.existsSync(jailFile(env, 'sa-redact.cjs')) && fs.existsSync(jailFile(env, 'gitleaks.toml'))));
+    ['sa-redact.cjs', 'sa-redact.sh', 'gitleaks.toml'].every(name => fs.existsSync(jailFile(env, name))));
 const mapStrings = (value, transform) => {
   if (typeof value === 'string') return transform(value);
   if (Array.isArray(value)) return value.map(item => mapStrings(item, transform));

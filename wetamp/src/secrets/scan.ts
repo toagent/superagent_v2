@@ -26,14 +26,15 @@ export interface ManagedSecret {
 }
 // prettier-ignore
 export function managedSecrets(env: NodeJS.ProcessEnv = process.env): ManagedSecret[] {
+  // Keyed by value: several secrets share a source label, and a name-keyed map kept only the last one.
   const home = env.HOME ?? homedir(), names = read(join(home, '.wetamp', 'secrets.list')).split(/\r?\n/).filter(Boolean), values = new Map<string, string>();
-  for (const name of names) if (env[name]) values.set(name, env[name]);
-  for (const value of collectCredentialValues(env)) values.set('environment', value);
+  for (const value of collectCredentialValues(env)) values.set(value, 'environment');
+  for (const name of names) if (env[name]) values.set(env[name], name);
   let configured: string[] = [];
   try { const paths = JSON.parse(read(env.SA_SECRET_PATHS ?? join(home, '.wetamp', 'jail', 'secret-paths.json'))) as { client_auth?: string[] }; configured = (paths.client_auth ?? []).map(file => join(home, file)); } catch { /* absent list */ }
   const auth = env.SA_CLIENT_AUTH_FILES?.split(delimiter).filter(Boolean) ?? configured;
-  for (const file of auth) try { for (const value of strings(JSON.parse(read(file)))) values.set('client_auth', value); } catch { /* unreadable auth */ }
-  return [...values].filter(([, value]) => value.length >= 8).map(([name, value]) => ({ name, value }));
+  for (const file of auth) try { for (const value of strings(JSON.parse(read(file)))) if (!values.has(value)) values.set(value, 'client_auth'); } catch { /* unreadable auth */ }
+  return [...values].filter(([value]) => value.length >= 8).map(([value, name]) => ({ name, value }));
 }
 // prettier-ignore
 const encodings = (value: string): string[] => { const bytes = Buffer.from(value); return [bytes.toString('base64'), bytes.toString('base64url'), bytes.toString('hex'), encodeURIComponent(value)]; };

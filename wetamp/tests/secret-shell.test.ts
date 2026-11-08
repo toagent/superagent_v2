@@ -1,0 +1,41 @@
+import { expect, test } from 'bun:test';
+import { copyFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { buildSecrets } from '../src/secrets/build';
+import { tmp } from './helpers';
+
+// The shell is the subject: clients read output the moment the shell exits, so the sourced helper
+// must have flushed the redactor by then (an unwaited process substitution loses the output).
+test('sourced redactor flushes before shell exit and keeps cd and exit status', async () => {
+  const dir = tmp();
+  await buildSecrets(dir);
+  copyFileSync(join(import.meta.dir, '../secrets/gitleaks.toml'), join(dir, 'gitleaks.toml'));
+  const probe = `sfprobe${crypto.randomUUID().replaceAll('-', '')}`;
+  const encoded = Buffer.from(`${probe}\n`).toString('base64');
+  const second = `sfsecond${crypto.randomUUID().replaceAll('-', '')}`;
+  for (const shell of ['zsh', 'bash']) {
+    const result = Bun.spawnSync(
+      [
+        shell,
+        '-c',
+        `. ${join(import.meta.dir, '../secrets/sa-redact.sh')}; echo MARK $SA_PROBE_TOKEN $SA_SECOND_SECRET; printf '%s\\n' "$SA_PROBE_TOKEN" | base64; cd /tmp/..; pwd; (exit 3)`,
+      ],
+      {
+        env: {
+          ...process.env,
+          SA_PROBE_TOKEN: probe,
+          SA_SECOND_SECRET: second,
+          SA_REDACT_CJS: join(dir, 'sa-redact.cjs'),
+          SA_GITLEAKS_CONFIG: join(dir, 'gitleaks.toml'),
+        },
+      }
+    );
+    const out = result.stdout.toString();
+    expect(result.exitCode).toBe(3);
+    expect(out).toContain('MARK [REDACTED:');
+    expect(out).toContain('\n/\n');
+    expect(out).not.toContain(probe);
+    expect(out).not.toContain(second);
+    expect(out).not.toContain(encoded.trim());
+  }
+});
