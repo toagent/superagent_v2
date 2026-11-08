@@ -57,7 +57,7 @@ export { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './l
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, OUTSIDE, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
-import { lintPlan, memoryData, memoryTick, privateProject } from './memory';
+import { lintPlan, memoryTick, privateProject } from './memory';
 import { reconcileReflection } from './memory-reflect';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
@@ -85,7 +85,7 @@ import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
-import { heartbeat, heartbeatSummary, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type HeartbeatSummary, type TickRecord, type TickStage } from './heartbeat';
+import { heartbeat, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type TickRecord, type TickStage } from './heartbeat';
 import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
 import { scopeOverlaps } from './scope-overlap';
 export { scopeOverlaps } from './scope-overlap';
@@ -1596,29 +1596,6 @@ export function ntfyTickHealth(tick: NtfyTickRecord | undefined, now: number) {
   return { ok: messages.length === 0, messages };
 }
 
-const waitHeartbeat = (who: ReturnType<typeof caller>): HeartbeatSummary => {
-  const now = Date.now();
-  try {
-    const value = readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined;
-    if (!value) return { available: false, reason: 'heartbeat.json missing' };
-    const summary = heartbeatSummary(value, who, now);
-    if (!summary.available) return summary;
-    let tick: NtfyTickRecord | undefined;
-    try {
-      tick = readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined;
-    } catch {
-      /* reported as a missing tick */
-    }
-    const warnings = [...(summary.warnings ?? []), ...ntfyTickHealth(tick, now).messages];
-    return { ...summary, ...(warnings.length ? { warnings } : {}) };
-  } catch (error) {
-    return {
-      available: false,
-      reason: `heartbeat.json: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-};
-
 /** Observe engine state and inbox; continuation is an explicit engine action. */
 export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record<string, unknown> {
   const deadline = waitClock.now() + timeoutS * 1000;
@@ -1634,9 +1611,8 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     const left = (deadline - waitClock.now()) / 1000;
     if (c.exit !== EXIT.running) return summary(l, run, c);
     const general = generalAttention(l.run_id, identityKey(who), waitClock.now());
-    if (general)
-      return { ...summary(l, run, c), attention: general, heartbeat: waitHeartbeat(who) };
-    if (left <= 0) return { ...summary(l, run, c), timed_out: true, heartbeat: waitHeartbeat(who) };
+    if (general) return { ...summary(l, run, c), attention: general };
+    if (left <= 0) return { ...summary(l, run, c), timed_out: true };
     const notification = waitNotification(l.archon_run_id, l.repo, Math.min(left, 60));
     if (notification.kind !== 'attention') continue;
     const refreshedInbox = coord()
@@ -1652,7 +1628,6 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     return {
       ...summary(l, refreshed, refreshedClass),
       attention: notification.attention,
-      heartbeat: waitHeartbeat(who),
     };
   }
 }
@@ -4647,7 +4622,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'reclaim', audience: 'operator', flags: ['json'] },
   { command: 'reauthorize', audience: 'operator', positionals: '<run>', flags: [] },
   { command: 'ntfy', audience: 'operator', positionals: 'pause|resume|status', flags: [] },
-  { command: 'memory', audience: 'operator', positionals: '[propose|publish]', flags: ['dry-run'] },
+  { command: 'memory', audience: 'operator', positionals: 'propose|publish', flags: [] },
   { command: 'usage', audience: 'operator', flags: ['since', 'repo', 'refresh'] },
   { command: 'console', audience: 'operator', positionals: 'start|stop|status|url', flags: ['open'] },
   { command: 'gc', audience: 'operator', flags: ['dry-run'] },
@@ -5434,6 +5409,10 @@ export function main(argv: string[]): number {
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }
     case 'memory':
+      if (a.flags['dry-run']) {
+        console.error('usage: superagent memory propose <run> <request-json> | memory publish');
+        return EXIT_USAGE;
+      }
       if (a._[1] === 'propose') {
         const result = proposeLearning(
           loadLedger(need(a._[2], 'memory propose <run> <request-json>')),
@@ -5447,8 +5426,8 @@ export function main(argv: string[]): number {
         print(result);
         return result.status === 'available' ? 0 : 1;
       }
-      print(a.flags['dry-run'] ? memoryTick(loadAsks(), Date.now(), false, true) : memoryData());
-      return 0;
+      console.error('usage: superagent memory propose <run> <request-json> | memory publish');
+      return EXIT_USAGE;
     case 'health':
       return health(a.flags.cwd, a.flags.verbose);
     case 'heartbeat':

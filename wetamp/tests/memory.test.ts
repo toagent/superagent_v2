@@ -41,7 +41,7 @@ import {
   type Lesson,
 } from '../src/memory';
 import { curate, reconcileReflection, reflectOne, reflectionInput } from '../src/memory-reflect';
-import { artifactsOf, main, type Ledger } from '../src/cli';
+import { artifactsOf, EXIT_USAGE, main, type Ledger } from '../src/cli';
 import { type RunView } from '../src/archon';
 import { engineHash, generate } from '../src/generate';
 import { install, loadTiers, snapshotPolicy } from '../src/config';
@@ -1170,7 +1170,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     },
     testTimeout(15_000)
   );
-  test('read-only memory API reports ten recent episodes and changes no files', () => {
+  test('memory data stays read-only and the retired bare CLI entry is rejected', () => {
     for (let i = 0; i < 12; i++)
       saveEpisode(
         episode({ id: `run${i}`, signature: `problem${i}`, at: new Date(NOW + i).toISOString() })
@@ -1183,7 +1183,14 @@ describe('EV1 lifecycle, privacy and priors', () => {
       queued: 12,
     });
     expect(memoryData(NOW).recent).toHaveLength(10);
-    expect(main(['memory', '--json'])).toBe(0);
+    const error = spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(main(['memory', '--json'])).toBe(EXIT_USAGE);
+      expect(main(['memory', '--dry-run'])).toBe(EXIT_USAGE);
+      expect(String(error.mock.calls[0]?.[0])).toContain('memory propose');
+    } finally {
+      error.mockRestore();
+    }
     expect(readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8')).toBe(before);
   });
   test('a paused archive folds once while terminal scoring reads final evidence', () => {
