@@ -4,30 +4,20 @@ const patterns = exactPatterns();
 let buffer = '',
   failed = false,
   timer: ReturnType<typeof setTimeout> | undefined;
+// prettier-ignore
 const safeLength = (): number => {
   let held = 0;
-  for (const { value } of patterns)
-    for (let n = Math.min(value.length - 1, buffer.length); n > held; n--)
-      if (value.startsWith(buffer.slice(-n))) {
-        held = n;
-        break;
-      }
+  for (const { value } of patterns) for (let n = Math.min(value.length - 1, buffer.length); n > held; n--) if (value.startsWith(buffer.slice(-n))) { held = n; break; }
   return buffer.length - held;
 };
+// prettier-ignore
 const flush = (all = false): void => {
   if (failed || !buffer) return;
-  const length = all ? buffer.length : safeLength();
-  if (!length) return;
-  const value = buffer.slice(0, length);
-  buffer = buffer.slice(length);
-  try {
-    process.stdout.write(scanText(value));
-  } catch {
-    failed = true;
-    buffer = '';
-    process.stdout.write('[REDACTED:scan_failed]');
-  }
+  const length = all ? buffer.length : safeLength(); if (!length) return;
+  const value = buffer.slice(0, length); buffer = buffer.slice(length);
+  try { process.stdout.write(scanText(value)); } catch { failed = true; buffer = ''; process.stdout.write('[REDACTED:scan_failed]'); }
 };
+// prettier-ignore
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {
   if (failed) return;
