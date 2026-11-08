@@ -15,8 +15,13 @@ export interface DebtSource {
 export interface DebtClosure { id: string; repo: string; at: string; by: 'run' | 'operator'; reason: string; run?: string }
 // prettier-ignore
 export interface DebtRecord { id: string; repo: string; run: string; text: string; opened_at: string; status: 'open' | 'closed'; closed_at?: string }
+interface DebtIssue {
+  run_id: string;
+  started_at?: string;
+  reason: string;
+}
 // prettier-ignore
-export interface DebtSnapshot { debts: DebtRecord[]; bad_closure_lines: number; bad_closure_at: (string | undefined)[]; unreadable: number; unreadable_started_at: (string | undefined)[]; unreadable_sources: { run_id: string; started_at?: string; reason: string }[] }
+export interface DebtSnapshot { debts: DebtRecord[]; bad_closure_lines: number; bad_closure_at: (string | undefined)[]; unreadable: number; unreadable_started_at: (string | undefined)[]; unreadable_sources: DebtIssue[] }
 
 const canonicalCache = new Map<string, string>();
 export function canonicalRepo(repo: string): string {
@@ -71,14 +76,12 @@ export function readClosures(path = closurePath()): {
 
 function loadSources(): {
   sources: DebtSource[];
-  unreadable: number;
-  unreadable_sources: DebtSnapshot['unreadable_sources'];
+  issues: DebtIssue[];
 } {
   const dir = join(home().sa, 'runs');
-  if (!existsSync(dir)) return { sources: [], unreadable: 0, unreadable_sources: [] };
-  const ledgers: DebtLedger[] = [];
-  const unreadable_sources: DebtSnapshot['unreadable_sources'] = [];
-  let unreadable = 0;
+  if (!existsSync(dir)) return { sources: [], issues: [] };
+  const ledgers: DebtLedger[] = [],
+    issues: DebtIssue[] = [];
   for (const file of readdirSync(dir).filter(name => name.endsWith('.json'))) {
     try {
       const value = JSON.parse(readFileSync(join(dir, file), 'utf8')) as DebtLedger;
@@ -86,14 +89,12 @@ function loadSources(): {
         throw new Error('invalid ledger');
       ledgers.push(value);
     } catch {
-      unreadable++;
-      unreadable_sources.push({ run_id: file, reason: 'ledger_unreadable' });
+      issues.push({ run_id: file, reason: 'ledger_unreadable' });
     }
   }
   const projections = runProjections(ledgers.map(l => l.archon_run_id));
   return {
-    unreadable,
-    unreadable_sources,
+    issues,
     sources: ledgers.map(ledger => {
       try {
         const run =
@@ -107,16 +108,13 @@ function loadSources(): {
 }
 
 export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath()): DebtSnapshot {
-  const loaded = input ? { sources: input, unreadable: 0, unreadable_sources: [] } : loadSources();
-  const records = new Map<string, DebtRecord>();
-  // prettier-ignore
-  const unreadableStartedAt = Array.from({ length: loaded.unreadable }, (): string | undefined => undefined);
-  const unreadableSources: DebtSnapshot['unreadable_sources'] = [...loaded.unreadable_sources];
+  const loaded = input ? { sources: input, issues: [] } : loadSources(),
+    records = new Map<string, DebtRecord>(),
+    issues = [...loaded.issues];
   for (const { ledger, run } of loaded.sources) {
     const startedAt = (run instanceof Error ? undefined : run.started_at) ?? ledger.started_at;
     const bad = (reason: string): void => {
-      unreadableStartedAt.push(startedAt);
-      unreadableSources.push({ run_id: ledger.run_id, started_at: startedAt, reason });
+      issues.push({ run_id: ledger.run_id, started_at: startedAt, reason });
     };
     if (run instanceof Error) {
       if (ledger.rejected !== ledger.archon_run_id) bad('projection_failed');
@@ -185,9 +183,9 @@ export function debtSnapshot(input?: DebtSource[], closuresFile = closurePath())
     debts: [...records.values()].sort((a, b) => a.opened_at.localeCompare(b.opened_at)),
     bad_closure_lines: bad,
     bad_closure_at: badAt,
-    unreadable: unreadableStartedAt.length,
-    unreadable_started_at: unreadableStartedAt,
-    unreadable_sources: unreadableSources,
+    unreadable: issues.length,
+    unreadable_started_at: issues.map(issue => issue.started_at),
+    unreadable_sources: issues,
   };
 }
 
@@ -261,9 +259,9 @@ export function debtMetrics(
   return {
     debt: open,
     debt_open: open,
-    debt_unreadable: snapshot.unreadable,
+    debt_unreadable: snapshot.unreadable_sources.length,
     debt_bad_closure_lines: snapshot.bad_closure_lines,
-    debt_new_today: uncertainToday(snapshot.unreadable_started_at)
+    debt_new_today: uncertainToday(snapshot.unreadable_sources.map(issue => issue.started_at))
       ? 'unknown'
       : snapshot.debts.filter(debt => today(debt.opened_at)).length,
     debt_closed_today: uncertainToday(snapshot.bad_closure_at)
