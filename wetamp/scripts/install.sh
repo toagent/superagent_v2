@@ -74,6 +74,7 @@ fs.writeFileSync(process.argv[2], text);
   command -v gitleaks >/dev/null || { echo "install.sh: 未找到 gitleaks（brew install gitleaks），不发布秘密防火墙" >&2; return 1; }
   cp "$WETAMP/secrets/gitleaks.toml" "$jail/gitleaks.toml"
   cp "$WETAMP/hooks/secret-paths.json" "$jail/secret-paths.json"
+  cp "$WETAMP/secrets/sa-redact.sh" "$jail/sa-redact.sh"
   bun "$WETAMP/src/secrets/build.ts" "$jail"
   cp "$WETAMP/bin/ai-jail" "$jail/ai-jail"
   cp "$WETAMP/bin/ai-jail-shim" "$jail/ai-jail-shim"
