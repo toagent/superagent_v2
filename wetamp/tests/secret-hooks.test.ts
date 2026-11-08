@@ -1,16 +1,13 @@
 import { expect, test } from 'bun:test';
 import { writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
 import { tmp } from './helpers';
-
 const require = createRequire(import.meta.url);
 const guard = require('../hooks/guard.cjs') as {
   decide: (payload: Record<string, unknown>, client: string, env: NodeJS.ProcessEnv) => any;
 };
 // prettier-ignore
-const scanner = () => { const file = join(tmp(), 'scan.cjs'); writeFileSync(file, `exports.scanText = text => text.replaceAll('synthetic-secret-value', '[REDACTED:test]');`); return file; };
-
+const scanner = () => { const file = `${tmp()}/scan.cjs`; writeFileSync(file, `exports.scanText = text => text.replaceAll('synthetic-secret-value', '[REDACTED:test]');`); return file; };
 test('shell commands are wrapped once for Claude and Codex', async () => {
   await require('../hooks/redline.cjs').init();
   const env = { ...process.env, SA_SECRET_SCAN_MODULE: scanner() };
@@ -23,7 +20,6 @@ test('shell commands are wrapped once for Claude and Codex', async () => {
   const wrapped = claude.hookSpecificOutput.updatedInput.command;
   expect(guard.decide(payload(wrapped), 'codex', env)).not.toHaveProperty('updatedInput');
 });
-
 test('derived sessions redact non-shell output and block secret prompts', () => {
   const env = { ...process.env, SUPERAGENT_ROLE: 'general', SA_SECRET_SCAN_MODULE: scanner() };
   // prettier-ignore
