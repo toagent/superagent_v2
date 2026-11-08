@@ -79,10 +79,16 @@ test('unreadable evidence preserves totals and only obscures a relevant daily me
   // prettier-ignore
   expect(historical).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 1, debt_closed_today: 0 });
   // prettier-ignore
-  const broken = missing('today', 'completed', new Date().toISOString()), brokenArt = join(output, 'today/artifacts/runs/today');
+  const today = new Date().toISOString(), broken = missing('today', 'completed', today), brokenArt = join(output, 'today/artifacts/runs/today');
   mkdirSync(brokenArt, { recursive: true });
   writeFileSync(join(brokenArt, 'gate-m1-r1.json'), '{');
-  const current = debt.debtMetrics(debt.debtSnapshot([readable, broken], closures));
+  const currentSnapshot = debt.debtSnapshot([readable, broken], closures);
+  expect(currentSnapshot).toMatchObject({
+    unreadable: 1,
+    unreadable_started_at: [today],
+    unreadable_sources: [{ run_id: 'today', started_at: today, reason: 'gate_unreadable' }],
+  });
+  const current = debt.debtMetrics(currentSnapshot);
   // prettier-ignore
   expect(current).toMatchObject({ debt: 1, debt_open: 1, debt_unreadable: 1, debt_new_today: 'unknown', debt_closed_today: 0 });
   // A current in-flight run without gate evidence has no debt yet.
