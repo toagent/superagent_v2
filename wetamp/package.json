@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@archon/paths": "workspace:*",
     "@archon/workflows": "workspace:*",
     "ink": "^8.0.0",
     "react": "^19.3.0",

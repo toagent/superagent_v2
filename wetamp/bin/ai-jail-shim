@@ -15,6 +15,15 @@ while IFS= read -r candidate; do
 done < <(type -ap "$name")
 [ -n "$real" ] || { echo "ai-jail-shim: 找不到真实的 $name" >&2; exit 127; }
 
+secret_list="$HOME/.wetamp/secrets.list"
+if [ -f "$secret_list" ]; then
+  while IFS= read -r secret; do
+    [[ "$secret" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo "ai-jail-shim: invalid secret name" >&2; exit 78; }
+    value="$(/usr/bin/security find-generic-password -a "$secret" -s "superagent-secret:$secret" -w)" || { echo "ai-jail-shim: secret unavailable: $secret" >&2; exit 78; }
+    export "$secret=$value"
+  done < "$secret_list"
+fi
+
 args=("$@")
 if [ "$name" = codex ]; then
   rewritten=()

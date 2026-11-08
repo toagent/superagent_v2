@@ -181,6 +181,8 @@ import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
+import { secretCommand } from './secrets/command';
+import { secretsHealth } from './secrets/scan';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
@@ -2294,6 +2296,7 @@ function health(cwd?: string, verbose = false): number {
   const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
   const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
+  const secrets = secretsHealth(join(WETAMP, 'secrets', 'gitleaks.toml'));
   const tick = ntfyTickHealth(
     readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
     Date.now()
@@ -2304,7 +2307,8 @@ function health(cwd?: string, verbose = false): number {
     upstreamClean &&
     !drift.length &&
     !capabilities.length &&
-    !worker;
+    !worker &&
+    secrets.ok;
   print({
     ok,
     mode,
@@ -2319,6 +2323,7 @@ function health(cwd?: string, verbose = false): number {
       : {}),
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
+    secrets,
     tick,
   });
   return ok ? 0 : drift.length || capabilities.length ? EXIT_ALIAS_DRIFT : 1;
@@ -4617,6 +4622,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'report', audience: 'agent', flags: ['full', 'since'], operatorFlags: ['by-engine', 'baseline-days', 'review-whitelist'] },
   { command: 'quota', audience: 'agent', flags: [] },
   { command: 'health', audience: 'agent', flags: ['cwd', 'verbose'] },
+  { command: 'secret', audience: 'operator', positionals: 'set|list|rm <NAME>', flags: [] },
   { command: 'rollover', audience: 'agent', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
   { command: 'intake', audience: 'agent', positionals: INTAKE_USAGE.slice('intake '.length), flags: ['repo'] },
   { command: 'reclaim', audience: 'operator', flags: ['json'] },
@@ -4939,6 +4945,9 @@ export function main(argv: string[]): number {
       return code;
     });
   switch (verb) {
+    case 'secret':
+      print(secretCommand(target, a._[2]));
+      return 0;
     case 'debt': {
       const action = need(target, 'debt list|close');
       if (action === 'list') {

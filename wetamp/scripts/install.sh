@@ -64,9 +64,14 @@ const home = process.env.HOME_REAL;
 const literal = home.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
 const regex = home.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
 let text = fs.readFileSync(process.argv[1], "utf8");
-text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex);
+const paths = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const denies = paths.os.map(p => `  (subpath "${literal}/${p.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}")`).join("\n");
+text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies);
 fs.writeFileSync(process.argv[2], text);
-' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb"
+' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb" "$WETAMP/hooks/secret-paths.json"
+  bun "$WETAMP/src/secrets/build.ts" "$jail"
+  cp "$WETAMP/secrets/gitleaks.toml" "$jail/gitleaks.toml"
+  cp "$WETAMP/hooks/secret-paths.json" "$jail/secret-paths.json"
   cp "$WETAMP/bin/ai-jail" "$jail/ai-jail"
   cp "$WETAMP/bin/ai-jail-shim" "$jail/ai-jail-shim"
   chmod 755 "$jail/ai-jail" "$jail/ai-jail-shim"

@@ -5,6 +5,7 @@
     "src/**/*",
     "tests/**/*",
     "scripts/**/*.ts",
+    "secrets/**/*.ts",
     "templates/.archon/scripts/**/*",
     "../packages/workflows/src/defaults/text-imports.d.ts"
   ],

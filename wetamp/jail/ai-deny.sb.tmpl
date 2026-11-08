@@ -3,6 +3,7 @@
 (deny file-read* file-write*
   (subpath "__HOME_LITERAL__/Library/Mobile Documents")
   (regex #"^__HOME_REGEX__/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]")
+__SECRET_OS_DENIES__
   (regex #"(^|/)_private(/|$)"))
 (deny file-read* (literal "__HOME_LITERAL__/.wetamp/jail/.probe"))
 (deny file-write* (subpath "__HOME_LITERAL__/.wetamp/jail"))
