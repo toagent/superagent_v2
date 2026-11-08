@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { home, writeAtomic } from './config';
 import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
-import { cockpit, decisionHeader, REASONS, type Cockpit } from './board/cockpit';
+import { cockpit, type Cockpit } from './board/cockpit';
 import { presence, type Identity, type Presence } from './coord';
 import { heartbeat, shouldWriteHeartbeat, type Heartbeat } from './heartbeat';
 
@@ -14,21 +14,12 @@ export interface OrcaView {
   needs: string[];
 }
 
-/** Reasons can originate in node outcomes: only registered phrases cross into Orca. */
-export function orcaView(c: Cockpit, pulse: Heartbeat): OrcaView {
-  const phrases = new Set<string>(Object.values(REASONS));
-  const reason = (s: string): string =>
-    s
-      .split('+')
-      .map(x =>
-        Object.hasOwn(REASONS, x)
-          ? REASONS[x as keyof typeof REASONS]
-          : phrases.has(x)
-            ? x
-            : '待处置'
-      )
-      .join('、');
-  const head = decisionHeader(c);
+export function orcaView(_c: Cockpit, pulse: Heartbeat): OrcaView {
+  const running = new Set(
+    pulse.marshals.flatMap(m => m.running.map(item => `${m.project}\0${item.id}`))
+  ).size;
+  const waiting = pulse.marshals.flatMap(m => m.waiting.filter(item => item.actionable !== false));
+  const head = `跑 ${String(running)} · 等你 ${String(waiting.length)}`;
   const parts = pulse.marshals
     .filter(m => m.owner !== 'unknown')
     .map(m => m.line.replace(/[\r\n]+/g, ' '));
@@ -47,19 +38,17 @@ export function orcaView(c: Cockpit, pulse: Heartbeat): OrcaView {
     ].join('｜');
   while (comment().length > 200 && kept > 0) kept--;
   return {
-    status: c.needs.length
+    status: waiting.length
       ? 'in-review'
-      : c.unfinished || c.active.length
+      : running ||
+          pulse.marshals.length ||
+          pulse.reclaim_pending ||
+          pulse.unowned ||
+          pulse.unreadable
         ? 'in-progress'
         : 'completed',
     comment: comment(),
-    needs: [
-      ...new Set(
-        c.needs.map(r =>
-          JSON.stringify([r.id, reason(r.reason || (r.state === 'held:human' ? 'signoff' : ''))])
-        )
-      ),
-    ].sort(),
+    needs: [...new Set(waiting.map(item => JSON.stringify([item.id, item.waiting_for])))].sort(),
   };
 }
 

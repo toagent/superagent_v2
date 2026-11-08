@@ -37,7 +37,7 @@ const view = (active: CockpitRun[] = [], needs: CockpitRun[] = []): Cockpit => (
 });
 // prettier-ignore
 const pulse = (lines: string[] = [], reclaim = 0, unowned = 0, unreadable = 0): Heartbeat => ({ at: '2026-10-11T00:00:00Z', reclaim_pending: reclaim, unowned, unreadable, marshals:
-  lines.map((line, i) => ({ owner: { client: 'codex', pid: i + 1 }, owner_key: ['codex', null, null, i + 1, null], cwd: `/repo/${String(i)}`, project: `p${String(i)}`, running: [], waiting: [], line })) });
+  lines.map((line, i) => ({ owner: { client: 'codex', pid: i + 1 }, owner_key: ['codex', null, null, i + 1, null], cwd: `/repo/${String(i)}`, project: `p${String(i)}`, running: [{ id: `r${String(i)}`, kind: 'run', title: '', stage: '', role: '', state: 'running', elapsed_s: 0, last_activity_s: 0, estimate: unknownProgress() }], waiting: [], line })) });
 const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): Snapshot => ({
   at: '2026-10-11T00:00:00Z',
   summary: {},
@@ -48,6 +48,11 @@ const frame = (active: string[] = [], needs: string[] = [], why = 'approval'): S
     nativeState: active.includes(id) ? 'running' : 'failed',
     askReason: active.includes(id) ? undefined : (why as Hold),
     lastEvent: '2026-10-11T00:00:00Z',
+    coordination: {
+      owner: { client: 'codex', pid: 1 },
+      presence: { state: 'online', activity: 'active' },
+      pending: 0,
+    },
     nodes: { current: 'code-core', currentRole: 'coder', total: 1, done: 0 },
     engine: {
       title: 'plan',
@@ -130,25 +135,33 @@ function harness(s: Snapshot = frame()) {
 }
 
 describe('orcaView', () => {
-  test('empty, active and needs use cockpit counts and prioritize needs', () => {
+  test('empty, active and needs use heartbeat counts and prioritize needs', () => {
     expect(orcaView(view(), pulse())).toEqual({
       status: 'completed',
-      comment: '跑 0 · 等你 0 · 僵死 0 · ETA 未知 · 异常 0',
+      comment: '跑 0 · 等你 0',
       needs: [],
     });
     expect(orcaView(view([item('BestIFA')]), pulse(['BestIFA 元帅｜将军 编码'])).status).toBe(
       'in-progress'
     );
+    const heartbeat = pulse(['BestIFA 元帅｜将军 编码 m1/1', 'wt-hf10 元帅｜军师 评审'], 2, 1, 3);
+    heartbeat.marshals[0]!.waiting.push({
+      id: 'xiaopan-translator',
+      what: '评审',
+      code: 'review_limit',
+      waiting_for: '评审轮次用尽',
+      waited_s: 0,
+    });
     const v = orcaView(
       view(
         [item('BestIFA'), item('wt-hf10', { stage: '评审' })],
         [item('xiaopan-translator', { reason: '评审轮次用尽' })]
       ),
-      pulse(['BestIFA 元帅｜将军 编码 m1/1', 'wt-hf10 元帅｜军师 评审'], 2, 1, 3)
+      heartbeat
     );
     expect(v.status).toBe('in-review');
     expect(v.comment).toBe(
-      '跑 2 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜BestIFA 元帅｜将军 编码 m1/1｜wt-hf10 元帅｜军师 评审｜待回收 2｜归属未知 1｜不可读 3'
+      '跑 2 · 等你 1｜BestIFA 元帅｜将军 编码 m1/1｜wt-hf10 元帅｜军师 评审｜待回收 2｜归属未知 1｜不可读 3'
     );
     expect(v.comment).not.toMatch(/%|12m05s|99K|private question|3h/);
   });
@@ -161,13 +174,13 @@ describe('orcaView', () => {
       pulse(Array.from({ length: 6 }, (_, i) => `p${String(i)}-${'项'.repeat(75)}`))
     );
     expect(v.comment.length).toBeLessThanOrEqual(200);
-    expect(v.comment).toStartWith('跑 6 · 等你 1 · 僵死 0 · ETA 未知 · 异常 0｜p0-');
+    expect(v.comment).toStartWith('跑 6 · 等你 0｜p0-');
     expect(v.comment).toEndWith('｜…+4');
     expect(orcaView(view([item('项'.repeat(300))]), pulse(['项'.repeat(300)])).comment).toBe(
-      '跑 1 · 等你 0 · 僵死 0 · ETA 未知 · 异常 0｜…+1'
+      '跑 1 · 等你 0｜…+1'
     );
   });
-  test('node free text is excluded; needs identities are sorted unique pairs', () => {
+  test('cockpit needs are ignored when heartbeat has no actionable waiting', () => {
     const v = orcaView(
       view(
         [],
@@ -180,7 +193,9 @@ describe('orcaView', () => {
       pulse()
     );
     expect(v.comment).not.toContain('secret-node-summary');
-    expect(v.needs).toEqual(['["a","评审轮次用尽"]', '["b","待处置"]']);
+    expect(v.comment).toContain('等你 0');
+    expect(v.status).toBe('completed');
+    expect(v.needs).toEqual([]);
   });
 });
 
@@ -266,18 +281,23 @@ describe('syncOrca (injected only)', () => {
     expect(s.sets().at(-1)?.args).toContain('--read');
   });
   test('unowned identity changes are compacted while removed needs preserve manual read status', async () => {
-    const s = harness(frame(['one'], ['held', 'other']));
+    const unowned = (active: string[], needs: string[] = []) => {
+      const snapshot = frame(active, needs);
+      for (const row of snapshot.rows) row.coordination = undefined;
+      return snapshot;
+    };
+    const s = harness(unowned(['one'], ['held', 'other']));
     await syncOrca(s.deps);
-    s.h.snapshot = frame(['two'], ['held', 'other']);
+    s.h.snapshot = unowned(['two'], ['held', 'other']);
     expect(await syncOrca(s.deps)).toEqual({ skipped: 'unchanged' });
-    s.h.snapshot = frame(['two'], ['held']);
+    s.h.snapshot = unowned(['two'], ['held']);
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     expect(s.sets().at(-1)?.args).not.toContain('--unread');
     expect(s.sets().at(-1)?.args).not.toContain('--read');
-    const active = harness(frame(['one']));
+    const active = harness(unowned(['one']));
     await syncOrca(active.deps);
     expect(active.sets()[0]?.args).not.toContain('--unread');
-    active.h.snapshot = frame(['two']);
+    active.h.snapshot = unowned(['two']);
     expect(await syncOrca(active.deps)).toEqual({ skipped: 'unchanged' });
     expect(active.sets().at(-1)?.args).not.toContain('--read');
   });
@@ -289,14 +309,14 @@ describe('syncOrca (injected only)', () => {
     expect(await syncOrca(s.deps)).toEqual({ synced: true });
     const args = s.sets().at(-1)?.args;
     expect(args).toContain('in-progress');
-    expect(args).toContain('跑 0 · 等你 0 · 僵死 1 · ETA 未知 · 异常 0｜归属未知 1');
+    expect(args).toContain('跑 0 · 等你 0｜active 元帅｜无执行');
     expect(args).not.toContain('--read');
     expect(args).not.toContain('--unread');
   });
   test('EV-R1-02 queued jobs and unknown run ownership remain unfinished', () => {
     const s = frame();
     s.rows = [unreadableRow('unknown', '')];
-    expect(orcaView(cockpit(s), pulse()).status).toBe('in-progress');
+    expect(orcaView(cockpit(s), pulse([], 0, 1)).status).toBe('in-progress');
     s.rows = [];
     s.activity = {
       terms: [],
@@ -324,7 +344,7 @@ describe('syncOrca (injected only)', () => {
       ],
     };
     expect(cockpit(s).tree).toHaveLength(0);
-    expect(orcaView(cockpit(s), pulse()).status).toBe('in-progress');
+    expect(orcaView(cockpit(s), pulse([], 0, 1)).status).toBe('in-progress');
     s.activity.jobs[0].state = 'done';
     expect(orcaView(cockpit(s), pulse()).status).toBe('completed');
   });
