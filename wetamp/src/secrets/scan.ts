@@ -5,6 +5,7 @@ import { delimiter, join } from 'node:path';
 import { collectCredentialValues } from '@archon/paths/credential-redaction';
 
 const QUOTED = String.raw`"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?`;
+// prettier-ignore
 const KEY_VALUES: RegExp[] = [
   new RegExp(String.raw`\b(authorization)(["']?\s*[:=]\s*)(?:${QUOTED}|(?:[^"\\\n]|\\.)*)`, 'gi'),
   new RegExp(
@@ -15,21 +16,10 @@ const KEY_VALUES: RegExp[] = [
 ];
 export const redactKeyValues = (text: string): string =>
   KEY_VALUES.reduce((value, rule) => value.replace(rule, '$1$2***'), text);
-const strings = (value: unknown, key = ''): string[] =>
-  typeof value === 'string'
-    ? /token|key|secret|password/i.test(key)
-      ? [value]
-      : []
-    : value && typeof value === 'object'
-      ? Object.entries(value).flatMap(([name, child]) => strings(child, name))
-      : [];
-const read = (file: string): string => {
-  try {
-    return readFileSync(file, 'utf8');
-  } catch {
-    return '';
-  }
-};
+// prettier-ignore
+const strings = (value: unknown, key = ''): string[] => typeof value === 'string' ? (/token|key|secret|password/i.test(key) ? [value] : []) : value && typeof value === 'object' ? Object.entries(value).flatMap(([name, child]) => strings(child, name)) : [];
+// prettier-ignore
+const read = (file: string): string => { try { return readFileSync(file, 'utf8'); } catch { return ''; } };
 export interface ManagedSecret {
   name: string;
   value: string;
@@ -45,15 +35,8 @@ export function managedSecrets(env: NodeJS.ProcessEnv = process.env): ManagedSec
   for (const file of auth) try { for (const value of strings(JSON.parse(read(file)))) values.set('client_auth', value); } catch { /* unreadable auth */ }
   return [...values].filter(([, value]) => value.length >= 8).map(([name, value]) => ({ name, value }));
 }
-const encodings = (value: string): string[] => {
-  const bytes = Buffer.from(value);
-  return [
-    bytes.toString('base64'),
-    bytes.toString('base64url'),
-    bytes.toString('hex'),
-    encodeURIComponent(value),
-  ];
-};
+// prettier-ignore
+const encodings = (value: string): string[] => { const bytes = Buffer.from(value); return [bytes.toString('base64'), bytes.toString('base64url'), bytes.toString('hex'), encodeURIComponent(value)]; };
 // prettier-ignore
 export function exactPatterns(secrets = managedSecrets()): ManagedSecret[] {
   const out = new Map<string, string>();
