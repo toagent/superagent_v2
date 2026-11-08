@@ -25,6 +25,8 @@ export type {
   IsolationBlockReason,
   IsolationEnvironmentRow,
   WorktreeCreateConfig,
+  WorktreeSetupExecutor,
+  WorktreeSetupInput,
   RepoConfigLoader,
   WorktreeStatusBreakdown,
   CreateEnvironmentParams,
@@ -91,3 +93,5 @@ export {
   isPathWithinRoot,
 } from './worktree-copy';
 export type { CopyFileEntry } from './worktree-copy';
+
+export { validateWorktreePostCreate } from './post-create-config';

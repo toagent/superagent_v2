@@ -43,12 +43,7 @@ function getLog(): ReturnType<typeof createLogger> {
 import { IPlatformAdapter, Conversation, Codebase, ConversationNotFoundError } from '../types';
 import type { IsolationHints, IsolationEnvironmentRow } from '@archon/isolation';
 import type { AdoptionLane } from '../operations/workflow-adoption';
-import {
-  IsolationBlockedError,
-  IsolationResolver,
-  configureIsolation,
-  getIsolationProvider,
-} from '@archon/isolation';
+import { IsolationBlockedError, IsolationResolver, getIsolationProvider } from '@archon/isolation';
 import * as db from '../db/conversations';
 import { createIsolationStore } from '../db/isolation-environments';
 import { toError } from '../utils/error';
@@ -79,12 +74,12 @@ import type { RunModelOverrides } from '@archon/workflows/model-validation';
 import type { WorkflowRunConfigInput } from '@archon/workflows/schemas/run-config';
 import { createWorkflowDeps } from '../workflows/store-adapter';
 import { createCodebaseChildResolver } from '../workflows/child-isolation-resolver';
+import { configureWorktreeIsolation } from '../workflows/worktree-setup';
 import {
   cleanupToMakeRoom,
   getWorktreeStatusBreakdown,
   STALE_THRESHOLD_DAYS,
 } from '../services/cleanup-service';
-import { loadRepoConfig } from '../config/config-loader';
 import { toBranchName } from '@archon/git';
 import { startRunLiveOwner } from '../services/run-live-owner';
 
@@ -108,10 +103,7 @@ let isolationConfigured = false;
 
 function ensureIsolationConfigured(): void {
   if (!isolationConfigured) {
-    configureIsolation(async (repoPath: string) => {
-      const config = await loadRepoConfig(repoPath);
-      return config?.worktree ?? null;
-    });
+    configureWorktreeIsolation();
     isolationConfigured = true;
   }
 }

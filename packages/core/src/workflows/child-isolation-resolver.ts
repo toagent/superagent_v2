@@ -24,13 +24,12 @@ import type {
 import { createHash } from 'node:crypto';
 import {
   getIsolationProvider,
-  configureIsolation,
   classifyIsolationError,
   worktreeRegistrationMetadata,
 } from '@archon/isolation';
 import * as git from '@archon/git';
 import { createLogger } from '@archon/paths';
-import { loadRepoConfig } from '../config/config-loader';
+import { configureWorktreeIsolation } from './worktree-setup';
 import type { IIsolationStore } from '@archon/isolation';
 import type { Codebase } from '../schemas/codebase';
 
@@ -155,10 +154,7 @@ export function createCodebaseChildResolver(
   // Idempotent and cheap: it swaps the loader and drops the provider singleton,
   // which is rebuilt lazily. Re-running it after the CLI/orchestrator already
   // configured it is a no-op in effect — all three loaders are the same function.
-  configureIsolation(async (repoPath: string) => {
-    const repoConfig = await loadRepoConfig(repoPath);
-    return repoConfig?.worktree ?? null;
-  });
+  configureWorktreeIsolation();
 
   return {
     async resolve(req: ChildIsolationRequest): Promise<ChildIsolationResult> {

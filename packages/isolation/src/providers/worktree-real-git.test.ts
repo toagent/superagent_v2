@@ -731,6 +731,30 @@ describe('WorktreeProvider against real git', () => {
     expect(existsSync(join(worktreePath, 'work-in-progress.txt'))).toBe(true);
   });
 
+  test('postCreate is required before mutation, runs once for fresh setup, and rolls back failure', async () => {
+    const configured = async () => ({ postCreate: ['first', 'second'], postCreateTimeout: 123 });
+    await expect(new WorktreeProvider(configured).create(request)).rejects.toThrow(
+      'requires a worktree setup executor'
+    );
+    expect(await registeredWorktrees()).toEqual([resolve(repoPath)]);
+
+    const inputs: string[][] = [];
+    const prepared = new WorktreeProvider(configured, async input => {
+      inputs.push([...input.commands]);
+    });
+    await prepared.create(request);
+    await prepared.create(request);
+    expect(inputs).toEqual([['first', 'second']]);
+
+    await git(repoPath, 'worktree', 'remove', worktreePath);
+    const failing = new WorktreeProvider(configured, async () => {
+      throw new Error('setup failed');
+    });
+    await expect(failing.create(request)).rejects.toThrow('setup failed');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(await registeredWorktrees()).toEqual([resolve(repoPath)]);
+  });
+
   test.each([
     'archon: worktree setup in progress',
     'archon: worktree setup in progress: previous-attempt',

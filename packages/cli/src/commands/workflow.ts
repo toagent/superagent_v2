@@ -56,12 +56,12 @@ import {
   type RawTiersConfig,
 } from '@archon/workflows/model-validation';
 import {
-  configureIsolation,
   getIsolationProvider,
   resolveFolderBackend,
   classifyIsolationError,
   worktreeRegistrationMetadata,
 } from '@archon/isolation';
+import { configureWorktreeIsolation } from '@archon/core/workflows/worktree-setup';
 import type {
   ExecutionContext,
   ContainerBackend,
@@ -3031,10 +3031,7 @@ async function runWorkflowWithOwnedSource(
     const branchIdentifier = options.branchName ?? `${workflowName}-${Date.now()}`;
 
     // Configure isolation with repo config loader (same as orchestrator)
-    configureIsolation(async (repoPath: string) => {
-      const repoConfig = await loadRepoConfig(repoPath);
-      return repoConfig?.worktree ?? null;
-    });
+    configureWorktreeIsolation();
 
     const provider = getIsolationProvider();
 

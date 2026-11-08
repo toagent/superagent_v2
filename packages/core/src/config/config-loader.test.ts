@@ -669,6 +669,11 @@ worktree:
 
       const config = await loadConfig('/test/repo');
       expect(config.baseBranch).toBe('develop');
+
+      mockFsReadFile.mockResolvedValue('worktree:\n  postCreate: [""]\n');
+      await expect(loadRepoConfig('/test/repo')).rejects.toThrow(
+        'worktree.postCreate must be an array of non-empty command strings'
+      );
     });
 
     test('trims whitespace from baseBranch', async () => {

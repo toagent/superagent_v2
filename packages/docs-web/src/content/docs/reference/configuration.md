@@ -227,6 +227,11 @@ worktree:
     - plans/                # Local plans not committed to the team repo
   initSubmodules: true  # Optional: default true — auto-detects .gitmodules and runs
                         # `git submodule update --init --recursive`. Set false to opt out.
+  postCreate:            # Optional: foreground commands run once in each fresh worktree.
+    - '/opt/worktrunk/bin/wt -C "$PWD" -y step copy-ignored --require-include --format=json'
+    - 'bun install --frozen-lockfile'
+    - 'test -d node_modules'
+  postCreateTimeout: 300000  # Optional per-command timeout in milliseconds.
   path: .worktrees      # Optional: co-locate worktrees with the repo at
                         # <repoRoot>/.worktrees/<branch> instead of under
                         # ~/.archon/workspaces/<owner>/<repo>/worktrees/.
@@ -383,6 +388,12 @@ worktree:
 **Defaults behavior:** The app's bundled default commands and workflows are loaded at runtime and merged with repo-specific ones. Repo commands/workflows override app defaults by name. Set `defaults.loadDefaultCommands: false` or `defaults.loadDefaultWorkflows: false` to disable runtime loading.
 
 **Submodule behavior:** When a repo contains `.gitmodules`, submodules are initialized in new worktrees by default (git's `worktree add` does not do this). Repos without submodules skip this step. Submodule init failure throws a classified error (credentials, network, timeout). The incomplete checkout stays locked for manual inspection because parent-repository status cannot prove that submodules contain no changes. The error names the leftover path. Inspect it and preserve any changes, then finish any needed setup and run `git worktree unlock <path>` for reuse, or remove the checkout. Checkouts with index flags that can hide changes are also preserved when setup fails. Set `worktree.initSubmodules: false` to opt out.
+
+### Worktree preparation (`worktree.postCreate`)
+
+`worktree.postCreate` is an explicit opt-in list of foreground shell commands. Archon runs the commands in order with the fresh worktree as `$PWD`, after `copyFiles` and before releasing the setup lock. A nonzero exit, signal, startup error, or timeout stops creation and prevents the agent from starting. Existing or adopted worktrees do not run the commands again.
+
+The example uses a project-managed, stable Worktrunk binary path; replace it with the stable path your project controls. Archon does not install or require Worktrunk. Keep `.worktreeinclude` restricted to approved caches, copy only from a stable source, and follow cache restoration with the project's normal dependency installation and an explicit required-artifact check. A successful cache copy alone does not prove dependencies match the target lockfile. Commands must stay in the foreground; background hooks are not readiness evidence.
 
 **Remote behavior:** By default, all git operations (fetch, push, branch tracking) use the `origin` remote. If your repo uses a different remote name, configure `worktree.remote`. Resolution order:
 1. If `worktree.remote` is set: Uses the configured remote name for all operations.

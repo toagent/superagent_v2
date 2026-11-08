@@ -33,7 +33,9 @@ const mockProviderCreate = mock((_req: { identifier: string }) =>
 );
 
 /** Records the loader the resolver hands to the isolation factory (see the M1 test). */
-const mockConfigureIsolation = mock((_loader: (repoPath: string) => Promise<unknown>) => undefined);
+const mockConfigureIsolation = mock(
+  (_loader: (repoPath: string) => Promise<unknown>, _executor?: unknown) => undefined
+);
 
 const { worktreeRegistrationMetadata } = await import('@archon/isolation');
 mock.module('@archon/isolation', () => ({
@@ -260,6 +262,7 @@ describe('child worktree resolver', () => {
 
     expect(mockConfigureIsolation).toHaveBeenCalledTimes(1);
     expect(typeof mockConfigureIsolation.mock.calls[0][0]).toBe('function');
+    expect(typeof mockConfigureIsolation.mock.calls[0][1]).toBe('function');
   });
 
   test('a provider failure is routed through classifyIsolationError, not rethrown raw', async () => {

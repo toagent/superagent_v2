@@ -21,9 +21,11 @@ describe('Isolation Provider Factory', () => {
 
   test('configureIsolation resets singleton', () => {
     const first = getIsolationProvider();
-    configureIsolation(async () => null);
+    const executor = async (): Promise<void> => undefined;
+    configureIsolation(async () => null, executor);
     const second = getIsolationProvider();
     expect(first).not.toBe(second);
+    expect(second).toHaveProperty('setupExecutor', executor);
   });
 
   test('provider type is worktree', () => {

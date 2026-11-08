@@ -89,3 +89,10 @@ packages/workflows/src/policy-dispatch.ts
 packages/workflows/src/provider-attempts.ts
 packages/workflows/src/schemas/retry.ts
 packages/workflows/src/store-conformance.ts
+
+# Selective upstream port: d0bb89df992f25dbac0b36e8a696a923d1c6d592
+# Kept only the postCreate config contract, validation, injectable executor, and
+# fresh-worktree setup-lock call. Omitted upstream audit events, run pre-creation,
+# credential plumbing, subprocess framework, and workflow architecture changes.
+packages/isolation/src/post-create-config.ts
+packages/core/src/workflows/worktree-setup.ts
