@@ -19,8 +19,6 @@ interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | n
 // prettier-ignore
 export interface Heartbeat { at: string; reclaim_pending: number; legacy?: number; unowned: number; unreadable: number; heavy_queue?: Snapshot['heavy_queue']; marshals: Marshal[] }
 export const HEARTBEAT_INTERVAL_MS = 900_000;
-// prettier-ignore
-export type HeartbeatSummary = { available: true; line: string; running: Item[]; waiting: Marshal['waiting']; warnings?: string[] } | { available: false; reason: string };
 const age = (at: string | null | undefined, now: number): number | null => {
   const value = Date.parse(at ?? '');
   return Number.isFinite(value) ? Math.max(0, Math.floor((now - value) / 1000)) : null;
@@ -165,13 +163,6 @@ export const heartbeatBatch = (value: Heartbeat): string => createHash('sha256')
 // prettier-ignore
 export const shouldWriteHeartbeat = (previous: Heartbeat | undefined, next: Heartbeat, now: number): boolean => !previous || heartbeatBatch(previous) !== heartbeatBatch(next) || now - Date.parse(previous.at) >= HEARTBEAT_INTERVAL_MS;
 
-// prettier-ignore
-export function heartbeatSummary(value: Heartbeat, who: Identity, now: number): HeartbeatSummary {
-  const marshal = value.marshals.find(item => item.owner !== 'unknown' && same(who, item.owner));
-  if (!marshal) return { available: false, reason: 'caller heartbeat unavailable' };
-  const minutes = Math.floor((now - Date.parse(value.at)) / 60_000), warnings = minutes > 18 ? [`心跳过期 ${String(minutes)}m`] : [];
-  return { available: true, line: marshal.line, running: marshal.running, waiting: marshal.waiting, ...(warnings.length ? { warnings } : {}) };
-}
 export const responsibilities = (value: Heartbeat, who: Identity): Responsibility[] =>
   value.marshals
     .find(item => item.owner !== 'unknown' && same(who, item.owner))

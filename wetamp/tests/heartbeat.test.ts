@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { cockpit } from '../src/board/cockpit';
 import type { BoardRow, Snapshot } from '../src/board/data';
 // prettier-ignore
-import { adoptedRuns, heartbeat, heartbeatSummary, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
+import { adoptedRuns, heartbeat, responsibilities, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type TickRecord } from '../src/heartbeat';
 import { coord, repoScope, same, type Identity, type Presence } from '../src/coord';
 import { EXIT } from '../src/cli';
 import { generalKey } from '../src/stall';
@@ -75,16 +75,6 @@ test('heartbeat groups only online owners and counts unreadable and unowned rows
   expect(result.marshals.find(item => item.owner === 'unknown')?.waiting[0]).toMatchObject({
     id: 'orphan',
     waiting_for: '无人负责',
-  });
-  const selected = heartbeatSummary(result, b, now + 19 * 60_000);
-  expect(selected).toMatchObject({
-    available: true,
-    warnings: ['心跳过期 19m'],
-  });
-  expect(selected.available && selected.running.map(item => item.id)).toEqual(['b', 'b']);
-  expect(heartbeatSummary(result, owner(9), now)).toEqual({
-    available: false,
-    reason: 'caller heartbeat unavailable',
   });
 });
 
