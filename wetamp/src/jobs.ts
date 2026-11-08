@@ -33,7 +33,7 @@ import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { jobSession } from './usage';
-import { isTier, ROUTE_ROLE, type Tier } from './roles';
+import { ROUTE_ROLE, type Tier } from './roles';
 import { envPrecheck, provisionEnvironment } from '../templates/.archon/scripts/env-precheck';
 import { memoryReading, type MemoryReading } from './memory-pressure';
 export { memoryReading, type MemoryReading } from './memory-pressure';
@@ -83,7 +83,7 @@ export interface Job {
 }
 
 const USAGE =
-  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role commander|general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round <n>] [--author-model <model> --review-reason <reason>] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
+  'usage: superagent job exec --title <t> [--request-ref <ref>] [--card <path>] [--log <path>] [--role general|strategist] [--mode <mode>] [--risk G0|G1|G2] [--round <n>] [--author-model <model> --review-reason <reason>] [--worktree <branch> --base <ref>] (-- <cmd...> | --role <role> --prompt-file <path> [--output <path>]) | job clean <id> | jobs [--json] [--all]';
 export const SIMPLIFIED_CHINESE_REQUIREMENT =
   '所有自然语言输出一律简体中文：交回结果的 notes/blockers/needs、评审发现与理由、git 提交说明、给元帅或用户的消息；代码、命令、路径、标识符、错误原文、JSON 键名与枚举值保持原样。';
 export const RECENT_MS = 3_600_000;
@@ -102,6 +102,8 @@ export function modelOf(argv: string[]): string | null {
 }
 
 const ENV_TIER: Partial<Record<string, Tier>> = { general: 'general', reviewer: 'strategist' };
+const isJobRole = (value: unknown): value is Exclude<Tier, 'commander'> =>
+  value === 'general' || value === 'strategist';
 /** --role 缺省按派发环境：SUPERAGENT_ROLE=general 为将军、reviewer 为军师，其余不记。 */
 export const roleOf = (flag: Tier | undefined, env = process.env): Tier | null =>
   flag ?? ENV_TIER[env.SUPERAGENT_ROLE ?? ''] ?? null;
@@ -379,7 +381,6 @@ async function exec(
             ? process.env.SUPERAGENT_ROLE
             : job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE ?? '',
           SA_JOB_ID: job.id,
-          SUPERAGENT_JOB_ID: job.id,
           SA_JOB_CARD: job.card ?? '',
           SA_JOB_REQUEST_REF: job.request_ref ?? '',
           ARCHON_PROVIDER_OUTCOME: outcomePath ?? '',
@@ -474,7 +475,7 @@ export async function jobCli(
     const { jobs, bad } = readJobs();
     const shown = (a.flags.all ? jobs : jobs.filter(j => recent(j, now))).map(j => ({
       ...projectJob(j, jobs, now),
-      ...(j.id === process.env.SUPERAGENT_JOB_ID ? { self: true } : {}),
+      ...(j.id === process.env.SA_JOB_ID ? { self: true } : {}),
     }));
     if (a.flags.json) console.log(JSON.stringify({ jobs: shown, bad }, null, 2));
     else
@@ -491,14 +492,19 @@ export async function jobCli(
   }
   const { title, card, log, role, output } = a.flags;
   const input = a.flags['prompt-file'];
-  const badRole = role !== undefined && !isTier(role);
-  const automatic = !cmd.length && isTier(role) && !!input;
+  if (role === 'commander') {
+    console.error(`job: --role commander is retired; use -- codex exec -m <model> to select a model explicitly\n${USAGE}`);
+    return EXIT_USAGE;
+  }
+  const jobRole = isJobRole(role) ? role : undefined;
+  const badRole = role !== undefined && jobRole === undefined;
+  const automatic = !cmd.length && jobRole !== undefined && !!input;
   if (a._[1] !== 'exec' || a._.length !== 2 || !title || badRole ||
     (!cmd.length && !automatic) || (cmd.length > 0 && (input !== undefined || output !== undefined))) {
     console.error(USAGE);
     return EXIT_USAGE;
   }
-  if (!automatic && isTier(role) && !['codex', 'claude'].includes(kindOf(cmd[0])))
+  if (!automatic && jobRole && !['codex', 'claude'].includes(kindOf(cmd[0])))
     throw new Error('job: unsupported role provider; expected codex or claude');
   if (a.flags['request-ref'] !== undefined && !a.flags['request-ref'].trim()) throw new Error('job: empty request-ref');
   const authors = a.flags['author-model'] ?? [], reviewReason = a.flags['review-reason']?.trim();
@@ -511,7 +517,7 @@ export async function jobCli(
     throw new Error('job: this --card and --round already has a review');
   refreshBudgetQuota();
   let execution: Job['execution'];
-  if (isTier(role)) {
+  if (jobRole) {
     const tiers = loadTiers();
     const health = refreshClaudeHealth().health, admission = claudeAdmission(a.flags.mode, health);
     if (!admission.ok) throw new Error(`${admission.reason}: ${admission.detail}${
@@ -520,9 +526,9 @@ export async function jobCli(
     const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
     const risk = a.flags.risk ?? 'G1';
     if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2') throw new Error('job: invalid risk');
-    if (role === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
+    if (jobRole === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
       throw new Error('job: independent review requires --author-model');
-    const descriptor = describeExecution(tiers, ROUTE_ROLE[role], risk, Number(a.flags.round ?? 1));
+    const descriptor = describeExecution(tiers, ROUTE_ROLE[jobRole], risk, Number(a.flags.round ?? 1));
     const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, state).candidates;
     const provider = automatic ? candidates[0].provider : kindOf(cmd[0]) as 'codex' | 'claude';
     if (!automatic && provider === 'claude' && health.state !== 'up')
@@ -530,7 +536,7 @@ export async function jobCli(
     const model = automatic ? null : modelOf(cmd.slice(1));
     const candidate = automatic ? candidates[0] : candidates.find(a => a.provider === provider && (model === null || a.model === model));
     if (!candidate)
-      throw new Error(`job ${role}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
+      throw new Error(`job ${jobRole}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
     const policy = executionLaunch(descriptor, candidate);
     roleCommandArgs(automatic
       ? provider === 'codex' ? ['codex', 'exec', '--json', '--skip-git-repo-check', '-o', 'output', '-'] : ['claude', '-p']
@@ -540,5 +546,5 @@ export async function jobCli(
     if (automatic) console.error(`job: selected ${provider}/${candidate.model}; first routed candidate${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
   }
 
-  return exec(cmd, { title, card, input, output, log, role: roleOf(role), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'], review_reason: reviewReason, review_round: authors.length ? reviewRound : undefined }, probe);
+  return exec(cmd, { title, card, input, output, log, role: roleOf(jobRole), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'], review_reason: reviewReason, review_round: authors.length ? reviewRound : undefined }, probe);
 }
