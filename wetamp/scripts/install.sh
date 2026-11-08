@@ -69,9 +69,12 @@ const denies = paths.os.map(p => `  (subpath "${literal}/${p.replaceAll("\\", "\
 text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies);
 fs.writeFileSync(process.argv[2], text);
 ' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb" "$WETAMP/hooks/secret-paths.json"
-  bun "$WETAMP/src/secrets/build.ts" "$jail"
+  # The firewall activates once sa-redact.cjs exists, so publish it last and only with gitleaks present:
+  # an active redactor without its scanner or config would replace every shell output with scan_failed.
+  command -v gitleaks >/dev/null || { echo "install.sh: 未找到 gitleaks（brew install gitleaks），不发布秘密防火墙" >&2; return 1; }
   cp "$WETAMP/secrets/gitleaks.toml" "$jail/gitleaks.toml"
   cp "$WETAMP/hooks/secret-paths.json" "$jail/secret-paths.json"
+  bun "$WETAMP/src/secrets/build.ts" "$jail"
   cp "$WETAMP/bin/ai-jail" "$jail/ai-jail"
   cp "$WETAMP/bin/ai-jail-shim" "$jail/ai-jail-shim"
   chmod 755 "$jail/ai-jail" "$jail/ai-jail-shim"

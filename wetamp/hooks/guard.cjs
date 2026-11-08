@@ -25,7 +25,8 @@ const scanner = env => require(scannerPath(env));
 // every prompt; an uninstalled firewall stays inert instead (install is the activation step).
 const firewallInstalled = env =>
   fs.existsSync(scannerPath(env)) &&
-  (Boolean(env.SA_SECRET_SCAN_MODULE) || fs.existsSync(jailFile(env, 'sa-redact.cjs')));
+  (Boolean(env.SA_SECRET_SCAN_MODULE) ||
+    (fs.existsSync(jailFile(env, 'sa-redact.cjs')) && fs.existsSync(jailFile(env, 'gitleaks.toml'))));
 const mapStrings = (value, transform) => {
   if (typeof value === 'string') return transform(value);
   if (Array.isArray(value)) return value.map(item => mapStrings(item, transform));

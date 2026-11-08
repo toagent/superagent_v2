@@ -18,8 +18,9 @@ done < <(type -ap "$name")
 secret_list="$HOME/.wetamp/secrets.list"
 if [ -f "$secret_list" ]; then
   while IFS= read -r secret; do
-    [[ "$secret" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo "ai-jail-shim: invalid secret name" >&2; exit 78; }
-    value="$(/usr/bin/security find-generic-password -a "$secret" -s "superagent-secret:$secret" -w)" || { echo "ai-jail-shim: secret unavailable: $secret" >&2; exit 78; }
+    # A missing or locked secret must not stop the client from starting: skip it visibly.
+    [[ "$secret" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo "ai-jail-shim: 跳过非法凭据名" >&2; continue; }
+    value="$(/usr/bin/security find-generic-password -a "$secret" -s "superagent-secret:$secret" -w 2>/dev/null)" || { echo "ai-jail-shim: 凭据 $secret 不可用，本次未注入" >&2; continue; }
     export "$secret=$value"
   done < "$secret_list"
 fi

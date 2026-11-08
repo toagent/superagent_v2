@@ -76,7 +76,8 @@ test('secret commands persist names only; install renders OS denies and dry-run 
     };
   process.env.HOME = home;
   expect(() => secretCommand('set', 'SHORT', '1234567', run)).toThrow('at least 8');
-  expect(secretCommand('set', 'SYNTH_TOKEN', probe(), run)).toEqual({
+  const value = probe();
+  expect(secretCommand('set', 'SYNTH_TOKEN', value, run)).toEqual({
     ok: true,
     name: 'SYNTH_TOKEN',
   });
@@ -86,7 +87,9 @@ test('secret commands persist names only; install renders OS denies and dry-run 
     ok: true,
     name: 'SYNTH_TOKEN',
   });
-  expect(calls.map(args => args[0])).toEqual(['add-generic-password', 'delete-generic-password']);
+  // The value travels on stdin through `security -i`, never in argv.
+  expect(calls.map(args => args[0])).toEqual(['-i', 'delete-generic-password']);
+  expect(calls.flat().join(' ')).not.toContain(value);
   mkdirSync(join(home, 'archon'), { recursive: true });
   const install = Bun.spawnSync([join(import.meta.dir, '../scripts/install.sh')], {
     env: {
