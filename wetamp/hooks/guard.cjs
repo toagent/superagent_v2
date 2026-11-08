@@ -14,6 +14,21 @@ const { withState, once } = require('./hook-state.cjs');
 const dispatch = require('./dispatch-context.cjs');
 const redline = require('./redline.cjs');
 const { resolvePath, within, saHome } = redline;
+const REDACT_PREFIX = 'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;';
+
+const scanner = env =>
+  require(
+    env.SA_SECRET_SCAN_MODULE ||
+      path.join(env.HOME || require('node:os').homedir(), '.wetamp', 'jail', 'secret-scan.cjs')
+  );
+const mapStrings = (value, transform) => {
+  if (typeof value === 'string') return transform(value);
+  if (Array.isArray(value)) return value.map(item => mapStrings(item, transform));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, transform)]));
+  return value;
+};
+const scanned = (value, env) => mapStrings(value, text => scanner(env).scanText(text));
 
 const pool = tier => tiers[tier].pools.chatgpt;
 const deny = (reason, superagentPermissionCategory = 'authorization') => ({
@@ -196,8 +211,33 @@ function decide(payload, client, env = process.env) {
     typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
   const derived = derivedBy(payload, client, env);
   if (event !== 'PreToolUse') {
-    if (derived || !['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event))
-      return null;
+    if (event === 'UserPromptSubmit') {
+      const prompt = String(payload.prompt || '');
+      let safe;
+      try {
+        safe = !prompt || scanner(env).scanText(prompt) === prompt;
+      } catch {
+        safe = false;
+      }
+      if (safe) return null;
+      return {
+        decision: 'block',
+        reason: '检测到凭据内容；请在终端用 superagent secret set <NAME> 录入后按名字引用',
+        ...(client === 'claude'
+          ? { hookSpecificOutput: { hookEventName: event, suppressOriginalPrompt: true } }
+          : {}),
+      };
+    }
+    if (!['SessionStart', 'PostToolUse', 'SubagentStop', 'Stop'].includes(event)) return null;
+    if (event === 'PostToolUse') {
+      if (shellText(name, input) !== undefined) return null;
+      const next = scanned(payload.tool_response, env);
+      if (JSON.stringify(next) === JSON.stringify(payload.tool_response)) return null;
+      return client === 'claude'
+        ? { hookSpecificOutput: { hookEventName: event, updatedToolOutput: next } }
+        : { decision: 'block', reason: JSON.stringify(next) };
+    }
+    if (derived) return null;
     if (event === 'SessionStart') {
       const result = require('./scratch.cjs').start(payload, client, env);
       require('./heartbeat-panel.cjs').ensurePanel(payload, env);
@@ -224,6 +264,15 @@ function decide(payload, client, env = process.env) {
     onAdvisory: code => notices.add(code),
   });
   if (red) return deny(red, category);
+  if (text !== undefined) {
+    const wrapped = text.includes(REDACT_PREFIX) ? text : `${REDACT_PREFIX} ${text}`;
+    if (wrapped !== text) {
+      const updatedInput = { ...input, [Object.hasOwn(input, 'cmd') ? 'cmd' : 'command']: wrapped };
+      return client === 'claude'
+        ? { hookSpecificOutput: { hookEventName: event, updatedInput } }
+        : { decision: 'allow', updatedInput };
+    }
+  }
   const edit = microEdit.isEdit(client, name);
   const advisory = notices.size
     ? {

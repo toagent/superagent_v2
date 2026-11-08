@@ -160,6 +160,7 @@ const base: Reason[] = [
   deterministic('signoff', 'signoff', 'human', '等待人工签收'),
   deterministic('deadline', 'deadline', 'human', '计划截止已过'),
   entry('gate', 'gate', 'transient', 'engine', '评审节点执行失败'),
+  deterministic('secret_in_diff', 'gate', 'coder', '发布区间包含凭据'),
   entry('coder', 'coder', 'transient', 'coder', '编码节点执行失败'),
   deterministic('coder_budget', 'coder_budget', 'coder', 'Claude 将军单次预算用尽'),
   entry('environment', 'environment', 'transient', 'env', '环境预检失败'),

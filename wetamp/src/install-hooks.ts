@@ -50,9 +50,14 @@ const cmd = (file: string, client?: Client): string =>
 
 /** 延续 V1 事件清单与顺序：guard 五个事件；两端另有 advisory 两个。 */
 export function wanted(client: Client): [string, string][] {
-  const guard = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop'].map(
-    (e): [string, string] => [e, cmd('guard.cjs', client)]
-  );
+  const guard = [
+    'SessionStart',
+    'UserPromptSubmit',
+    'PreToolUse',
+    'PostToolUse',
+    'SubagentStop',
+    'Stop',
+  ].map((e): [string, string] => [e, cmd('guard.cjs', client)]);
   const intake = ['UserPromptSubmit', 'SessionStart'].map((e): [string, string] => [
     e,
     cmd('intake.cjs', client),
@@ -105,7 +110,15 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
         const key = `${condition(g)}\0${next}`;
         if (seen.has(key)) return [];
         seen.add(key);
-        return [{ ...h, command: next }];
+        return [
+          {
+            ...h,
+            command: next,
+            ...(client === 'claude' && ['PreToolUse', 'UserPromptSubmit'].includes(event)
+              ? { onFailure: 'block' }
+              : {}),
+          },
+        ];
       });
       return kept.length || !g.hooks.length ? [{ ...g, hooks: kept }] : [];
     });
@@ -117,7 +130,18 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
   for (const [event, command] of wanted(client)) {
     const list = (out[event] ??= []);
     if (!list.some(g => condition(g) === ALL && g.hooks?.some(h => h.command === command)))
-      list.push({ hooks: [{ type: 'command', command, timeout: 30 }] });
+      list.push({
+        hooks: [
+          {
+            type: 'command',
+            command,
+            timeout: 30,
+            ...(client === 'claude' && ['PreToolUse', 'UserPromptSubmit'].includes(event)
+              ? { onFailure: 'block' }
+              : {}),
+          },
+        ],
+      });
   }
   // A managed all-events handler already covers its matcher-scoped copies. Keep
   // unrelated handlers and their group/handler fields; do not execute ours twice.
@@ -200,35 +224,54 @@ function diff(file: string, before: string, after: string): string {
 export function openCodeGuard(guard = V2_HOOKS + 'git-guardrail.cjs'): string {
   return `// superagent:managed:git-guardrail
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+const require = createRequire(import.meta.url);
+const REDACT_PREFIX = 'exec > >(node ~/.wetamp/jail/sa-redact.cjs) 2>&1;';
+const scan = value => {
+  const scanner = require(process.env.SA_SECRET_SCAN_MODULE || join(process.env.HOME || homedir(), '.wetamp/jail/secret-scan.cjs'));
+  const visit = item => typeof item === 'string' ? scanner.scanText(item) : Array.isArray(item) ? item.map(visit) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).map(([key, child]) => [key, visit(child)])) : item;
+  return visit(value);
+};
+const guarded = payload => new Promise((resolve, reject) => {
+  const child = spawn('node', [${JSON.stringify(guard)}, 'codex']);
+  let error = '', stdout = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { error += data; });
+  child.on('error', reject);
+  child.stdin.on('error', reject);
+  child.on('close', code => {
+    if (code !== 0) return reject(new Error(error.trim() || 'Git guard unavailable'));
+    try { resolve(stdout.trim() ? JSON.parse(stdout) : null); }
+    catch { reject(new Error('Git guard advisory unavailable or invalid')); }
+  });
+  child.stdin.end(JSON.stringify(payload));
+});
 export const GitGuardrailPlugin = async (context = {}) => ({
   'tool.execute.before': async (input, output) => {
     const args = output?.args ?? input.args ?? {};
     const command = args.command ?? args.cmd ?? args.script;
     const payload = { ...input, session_id: input.sessionID ?? input.session_id,
       cwd: args.directory ?? args.workdir ?? input.cwd ?? context.directory ?? context.worktree,
-      tool_name: input.tool, tool_input: { ...args, command } };
-    await new Promise((resolve, reject) => {
-      const child = spawn('node', [${JSON.stringify(guard)}, '--privacy']);
-      let error = '', stdout = '';
-      child.stdout.on('data', data => { stdout += data; });
-      child.stderr.on('data', data => { error += data; });
-      child.on('error', reject);
-      child.stdin.on('error', reject);
-      child.on('close', async code => {
-        if (code !== 0) return reject(new Error(error.trim() || 'Git guard unavailable'));
-        try {
-          if (stdout.trim()) {
-            const notice = JSON.parse(stdout);
-            if (typeof notice.systemMessage !== 'string') throw new Error('Invalid Git guard advisory');
-            if (!context.client?.app?.log) throw new Error('Git guard advisory channel unavailable');
-            await context.client.app.log({ body: { service: 'superagent', level: 'warn', message: notice.systemMessage } });
-          }
-          resolve();
-        } catch { reject(new Error('Git guard advisory unavailable or invalid')); }
-      });
-      child.stdin.end(JSON.stringify(payload));
-    });
-  }
+      hook_event_name: 'PreToolUse', tool_name: typeof command === 'string' ? 'shell' : input.tool, tool_input: { ...args, command } };
+    const notice = await guarded(payload);
+    if (notice?.hookSpecificOutput?.permissionDecision === 'deny') throw new Error(notice.hookSpecificOutput.permissionDecisionReason);
+    if (notice?.systemMessage) {
+      if (!context.client?.app?.log) throw new Error('Git guard advisory unavailable: log channel missing');
+      await context.client.app.log({ body: { service: 'superagent', level: 'warn', message: notice.systemMessage } });
+    }
+    if (typeof command === 'string' && !command.includes(REDACT_PREFIX)) {
+      const wrapped = REDACT_PREFIX + ' ' + command;
+      if (output?.args) output.args.command = wrapped;
+      else args.command = wrapped;
+    }
+  },
+  'tool.execute.after': async (_input, output) => { const next = scan(output); Object.assign(output, next); },
+  'chat.message': async (input, output) => {
+    const value = output ?? input, next = scan(value);
+    if (JSON.stringify(next) !== JSON.stringify(value)) throw new Error('检测到凭据内容；请用 superagent secret set <NAME> 录入后按名字引用');
+  },
 });
 export default GitGuardrailPlugin;
 `;
@@ -239,7 +282,7 @@ export function installedOpenCodeGuard(): string {
   const entry = join(homedir(), '.local/bin/superagent');
   try {
     const wetamp = dirname(dirname(realpathSync(entry)));
-    const guard = join(wetamp, 'hooks/git-guardrail.cjs');
+    const guard = join(wetamp, 'hooks/guard.cjs');
     if (!statSync(join(wetamp, '../.git')).isDirectory() || !statSync(guard).isFile())
       throw new Error('unstable checkout');
     return guard;
@@ -266,7 +309,7 @@ function installOpenCode(dryRun: boolean, stamp: string): string {
     ],
     [
       join(home, '.wetamp/bin/git-guardrail.sh'),
-      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(guard)} "$@"\n`,
+      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(join(dirname(guard), 'git-guardrail.cjs'))} "$@"\n`,
     ],
   ];
   let out = '';

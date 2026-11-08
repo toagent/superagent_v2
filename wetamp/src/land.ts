@@ -32,6 +32,7 @@ import type { DeliveryReceipt } from './integration';
 import { gateHashInput, type PublishReceipt, type SyncOutput } from './contract';
 import type { RunView } from './archon';
 import { artifactsOf, evidenceJson, loadLedger, readJson, type Ledger } from './ledger';
+import { exactPatterns } from './secrets/scan';
 
 export interface DeliveryAuthorization {
   run: Controller;
@@ -309,6 +310,40 @@ const lastGate = (milestone: string): Record<string, unknown> => {
   return selected.value;
 };
 
+export const secretInDiff = (worktree: string, base: string): boolean => {
+  const config = join(import.meta.dir, '../secrets/gitleaks.toml');
+  const leaks = Bun.spawnSync(
+    [
+      'gitleaks',
+      'git',
+      `--log-opts=${base}..HEAD`,
+      '--config',
+      config,
+      '--ignore-gitleaks-allow',
+      '--no-banner',
+      '--report-format',
+      'json',
+      '--report-path',
+      '/dev/null',
+    ],
+    { cwd: worktree, stdout: 'ignore', stderr: 'pipe' }
+  );
+  if (![0, 1].includes(leaks.exitCode))
+    throw new Error(`secret scan failed: ${leaks.stderr.toString().trim()}`);
+  const diff = Bun.spawnSync(['git', '-C', worktree, 'diff', '--unified=0', base, 'HEAD'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 30_000,
+  });
+  if (diff.exitCode !== 0) throw new Error(`secret diff failed: ${diff.stderr.toString().trim()}`);
+  const added = diff.stdout
+    .toString()
+    .split('\n')
+    .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+    .join('\n');
+  return leaks.exitCode === 1 || exactPatterns().some(({ value }) => added.includes(value));
+};
+
 // prettier-ignore
 const integrationPublish = (): void => { const run = process.env.INPUTS_RUN ?? '', result = reclaimPublish(run, () => {
     const { ledger, fence } = authorized();
@@ -320,6 +355,8 @@ const integrationPublish = (): void => { const run = process.env.INPUTS_RUN ?? '
       typeof value[key] === 'string' ? value[key] : '';
     const reviewRequired = process.env.INPUTS_REVIEW_REQUIRED === '1';
     const receipt = evidencePath(tag);
+    if (secretInDiff(process.cwd(), process.env.INPUTS_TARGET_TIP ?? ledger.delivery.head))
+      return { status: 'rejected' as const, reason: 'secret_in_diff', evidence: 'publication range contains a secret' };
     return publish(
       {
         worktree: process.cwd(),

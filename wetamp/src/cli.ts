@@ -31,6 +31,7 @@ import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schema
 import { installMode } from './install-mode';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { scanText } from './secrets/scan';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import { canonicalRepo, closeDebts, debtMetrics, debtSnapshot } from './debt';
 import {
@@ -361,6 +362,10 @@ export const EXIT_ALIAS_DRIFT = 5;
 /** Temporary refusal: no run was created; the caller may retry after the launch lock is released. */
 export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
+class SecretInputError extends Error {}
+const assertSecretFree = (text: string): void => {
+  if (scanText(text) !== text) throw new SecretInputError('secret_in_input');
+};
 
 type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };
 // prettier-ignore
@@ -1670,6 +1675,7 @@ export function quickPlan(a: Args): string {
     throw new Error('quick requires either --goal <text> or --card <file>, not both');
   // Snapshot the full brief into the existing plan so later edits cannot change the run.
   const card = a.flags.card !== undefined ? readFileSync(a.flags.card, 'utf8') : undefined;
+  assertSecretFree(card ?? a.flags.goal ?? '');
   const goal =
     a.flags.card !== undefined
       ? `执行卡片 ${basename(a.flags.card)}，完整要求见备注。`
@@ -1754,6 +1760,7 @@ function preflight(): void {
 
 function checkedPlan(planPath: string, override?: string) {
   const rules = applyPlanRules(loadPlan(planPath), override);
+  assertSecretFree(JSON.stringify(rules.plan));
   const plan_lint = lintPlan(rules.plan, override),
     precheck = planPrecheck(rules.plan, rules.plan.repo, override);
   plan_lint.warnings.push(...rules.warnings, ...precheck.blocking, ...precheck.info);
@@ -2179,7 +2186,7 @@ function startRun(planPath: string, a: Args): number {
     mkdirSync(join(home().sa, 'launch-failures'), { recursive: true });
     writeAtomic(join(home().sa, 'launch-failures', `${run}.json`), JSON.stringify(failure) + '\n');
     print(failure);
-    return 1;
+    return e instanceof SecretInputError ? EXIT_USAGE : 1;
   } finally {
     release?.();
   }
@@ -2751,6 +2758,7 @@ function decide(l: Ledger, a: Args): number {
     throw new Error('decide retry after signoff rejection does not accept --pkg or --hint');
   const { hint, pkg } = a.flags;
   if (hint !== undefined) {
+    assertSecretFree(hint);
     if (pkg === undefined || !planOf(l).packages.some(p => p.id === pkg))
       throw new Error('decide retry --hint needs --pkg <package id from the plan>');
     writeFileSync(join(l.gen_dir, 'hints', `${pkg}.md`), hint + '\n');
@@ -5898,7 +5906,7 @@ async function runCli(): Promise<void> {
     return await exitCli(main(argv));
   } catch (e) {
     console.error(`superagent: ${(e as Error).message}`);
-    return await exitCli(1);
+    return await exitCli(e instanceof SecretInputError ? EXIT_USAGE : 1);
   }
 }
 // Let Bun finish evaluating the entry module before land can require it back.

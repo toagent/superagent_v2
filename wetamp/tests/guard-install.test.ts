@@ -30,8 +30,9 @@ function stableInstallation(root: string): string {
   mkdirSync(join(root, '.local/bin'), { recursive: true });
   writeFileSync(join(wetamp, 'bin/superagent'), '# fixture');
   writeFileSync(join(wetamp, 'hooks/git-guardrail.cjs'), '// fixture');
+  writeFileSync(join(wetamp, 'hooks/guard.cjs'), '// fixture');
   symlinkSync(join(wetamp, 'bin/superagent'), join(root, '.local/bin/superagent'));
-  return join(wetamp, 'hooks/git-guardrail.cjs');
+  return join(wetamp, 'hooks/guard.cjs');
 }
 
 test('OpenCode adapter preserves native payload, cwd and session for both event shapes', async () => {
@@ -61,7 +62,8 @@ test('OpenCode adapter preserves native payload, cwd and session for both event 
       ...input,
       session_id: 'session-42',
       cwd: root,
-      tool_name: 'bash',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'shell',
       tool_input: { ...args, command: 'git push' },
     });
   }
@@ -273,7 +275,7 @@ test('A-11: merged hook groups retain user handlers, unrelated fields and all-ha
     hooks: [{ command: 'user-edit-hook', custom: 'retained' }],
   });
   const own = merged.PreToolUse.flatMap(g => g.hooks ?? []).filter(h => h.command === command);
-  expect(own).toEqual([{ command, timeout: 42, userSetting: true }]);
+  expect(own).toEqual([{ command, timeout: 42, userSetting: true, onFailure: 'block' }]);
   expect(mergeHooks(merged, 'claude')).toEqual(merged);
 });
 

@@ -33,6 +33,7 @@ import { QUERY_TIMEOUT_MS } from './archon';
 import { newRunId } from './generate';
 import { checkoutFingerprint } from '../templates/.archon/scripts/checkout-integrity';
 import { jobSession } from './usage';
+import { scanText } from './secrets/scan';
 import { ROUTE_ROLE, type Tier } from './roles';
 import { envPrecheck, provisionEnvironment } from '../templates/.archon/scripts/env-precheck';
 import { memoryReading, type MemoryReading } from './memory-pressure';
@@ -503,6 +504,13 @@ export async function jobCli(
     (!cmd.length && !automatic) || (cmd.length > 0 && (input !== undefined || output !== undefined))) {
     console.error(USAGE);
     return EXIT_USAGE;
+  }
+  for (const file of [input, card].filter((value): value is string => value !== undefined)) {
+    const text = readFileSync(file, 'utf8');
+    if (scanText(text) !== text) {
+      console.error('job: secret_in_input');
+      return EXIT_USAGE;
+    }
   }
   if (!automatic && jobRole && !['codex', 'claude'].includes(kindOf(cmd[0])))
     throw new Error('job: unsupported role provider; expected codex or claude');

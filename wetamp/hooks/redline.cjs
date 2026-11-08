@@ -27,25 +27,10 @@ const expand = (word, env) =>
   word.replace(/^~(?=\/|$)/, homeOf(env)).replace(/\$\{HOME\}|\$HOME\b/g, homeOf(env));
 
 const SSH_PUBLIC = ['known_hosts', 'known_hosts.old', 'config'];
-const SECRET_FILES = [
-  ['.aws', 'credentials'],
-  ['.m2', 'settings.xml'],
-  ['.m2', 'settings-security.xml'],
-  ['.codex', 'auth.json'],
-  ['.local', 'share', 'opencode', 'auth.json'],
-  ['.zsh_history'],
-  ['.bash_history'],
-  ['.local', 'share', 'atuin'],
-  ['.config', 'code-server', 'config.yaml'],
-  ['.kube', 'config'],
-  ['.git-credentials'],
-  ['.aliyun'],
-  ['.alibabacloud'],
-  ['.netrc'],
-  ['.config', 'gh', 'hosts.yml'],
-  ['.npmrc'],
-  ['.pypirc'],
-];
+const SECRET_PATHS = require('./secret-paths.json');
+const SECRET_FILES = [...SECRET_PATHS.os, ...SECRET_PATHS.hook, ...SECRET_PATHS.client_auth]
+  .filter(file => file !== '.ssh')
+  .map(file => file.split('/'));
 const BROWSER = [
   ['Library', 'Application Support', 'Google', 'Chrome'],
   ['Library', 'Application Support', 'Chromium'],
@@ -76,7 +61,17 @@ function secretKind(abs, env) {
   )
     return '凭据文件';
   if (under(['Library', 'Keychains'])) return '钥匙串';
-  if (SECRET_FILES.some(under)) return '凭据文件';
+  if (
+    SECRET_FILES.some(segs =>
+      segs.some(seg => seg.includes('*'))
+        ? new RegExp(
+            `^${path.join(home, ...segs).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '[^/]*')}(?:/|$)`,
+            'i'
+          ).test(p)
+        : under(segs)
+    )
+  )
+    return '凭据文件';
   if (under(['Library', 'Mobile Documents'])) return 'iCloud';
   const cloud = path.join(home, 'library', 'cloudstorage') + '/';
   if (p.startsWith(cloud) && p.slice(cloud.length).split('/')[0].startsWith('icloud'))
@@ -270,6 +265,15 @@ function reason({
           ) {
             onCategory('privacy');
             return message('通过 security 读取钥匙串', '凭据内容不能交给模型');
+          }
+          if (
+            (command === 'gh' && argv[1] === 'auth' && argv[2] === 'token') ||
+            (command === 'git' && argv[1] === 'credential' && argv[2] === 'fill') ||
+            (command === 'kubectl' && argv[1] === 'config' && argv[2] === 'view' && argv.includes('--raw')) ||
+            (/^docker-credential-/.test(command) && argv[1] === 'get')
+          ) {
+            onCategory('privacy');
+            return message('输出凭据', '凭据内容不能交给模型', '直接使用对应 CLI，不打印凭据');
           }
           if (command === 'git') {
             const why = require('./git-danger.cjs').reason(
