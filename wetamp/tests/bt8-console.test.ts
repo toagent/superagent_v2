@@ -508,32 +508,27 @@ test('console snapshots are demand-only, authorized, and coalesce concurrent rea
 });
 
 test('snapshot worker recycles while idle and the next load uses a fresh worker', async () => {
-  const workers: {
-    onmessage: ((event: MessageEvent) => void) | null;
-    onerror: null;
+  type WorkerStub = ReturnType<NonNullable<Parameters<typeof createWorkerSnapshotLoader>[1]>> & {
     terminated: boolean;
-    postMessage: (message: { id: number }) => void;
-    terminate: () => void;
-  }[] = [];
+  };
+  const workers: WorkerStub[] = [];
   const spawn = () => {
-    const worker = {
-      onmessage: null as ((event: MessageEvent) => void) | null,
-      onerror: null,
+    const worker: WorkerStub = {
+      onMessage: null,
+      onError: null,
       terminated: false,
-      postMessage(message: { id: number }) {
+      send(message) {
         queueMicrotask(() =>
-          this.onmessage?.({
-            data: {
-              id: message.id,
-              snapshot: {
-                summary: {},
-                rows: [],
-                at: `worker-${String(workers.length)}`,
-              },
-              load_ms: 4,
-              rss: 8,
+          this.onMessage?.({
+            id: message.id,
+            snapshot: {
+              summary: {},
+              rows: [],
+              at: `worker-${String(workers.length)}`,
             },
-          } as MessageEvent)
+            load_ms: 4,
+            rss: 8,
+          })
         );
       },
       terminate() {
@@ -541,18 +536,30 @@ test('snapshot worker recycles while idle and the next load uses a fresh worker'
       },
     };
     workers.push(worker);
-    queueMicrotask(() => worker.onmessage?.({ data: { ready: true } } as MessageEvent));
+    queueMicrotask(() => worker.onMessage?.({ ready: true }));
     return worker;
   };
   const load = createWorkerSnapshotLoader(
     async () => ({ summary: {}, rows: [], at: 'fallback' }),
-    spawn as unknown as () => Worker,
+    spawn,
     { maxRounds: 1 }
   );
   expect((await load(200)).at).toBe('worker-1');
   expect(workers[0]?.terminated).toBe(true);
   expect((await load(200)).at).toBe('worker-2');
   expect(workers).toHaveLength(2);
+  expect('postMessage' in workers[0]!).toBe(false);
+  expect('onmessage' in workers[0]!).toBe(false);
+
+  const fallback = createWorkerSnapshotLoader(
+    async () => ({ summary: {}, rows: [], at: 'fallback' }),
+    () => {
+      const worker = spawn();
+      queueMicrotask(() => worker.onError?.(new Error('fixture')));
+      return worker;
+    }
+  );
+  expect((await fallback(200)).at).toBe('fallback');
 });
 
 test('console snapshot propagates initial failure and retries a failed background refresh', async () => {

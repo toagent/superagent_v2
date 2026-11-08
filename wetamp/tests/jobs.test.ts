@@ -292,7 +292,7 @@ describe('job registry', () => {
     const before = snapshot();
     for (const flags of ['', '--all']) {
       const output = JSON.parse(
-        sh(`SUPERAGENT_JOB_ID=lost-readonly bun src/cli.ts jobs --json ${flags}`, WETAMP)
+        sh(`SA_JOB_ID=lost-readonly bun src/cli.ts jobs --json ${flags}`, WETAMP)
       );
       expect(snapshot()).toEqual(before);
       if (flags) {
@@ -305,7 +305,7 @@ describe('job registry', () => {
         expect(output.jobs[0].self).toBeTrue();
       }
     }
-    expect(sh('SUPERAGENT_JOB_ID=lost-readonly bun src/cli.ts jobs', WETAMP)).toContain(
+    expect(sh('SA_JOB_ID=lost-readonly bun src/cli.ts jobs', WETAMP)).toContain(
       'lost-readonly (本作业)'
     );
     // Abort process/remote discovery; exercise the real board job filter without host I/O.
@@ -353,14 +353,10 @@ describe('job exec', () => {
   test.each([
     ['general', '', 'general'],
     ['strategist', '', 'reviewer'],
-    ['commander', 'general', 'general'],
-    ['commander', 'reviewer', 'reviewer'],
-    ['commander', 'worker', 'worker'],
     ['general', 'reviewer', 'reviewer'],
     ['general', 'worker', 'worker'],
     ['general', 'commander', 'general'],
     ['strategist', 'commander', 'reviewer'],
-    ['commander', 'commander', 'commander'],
     [undefined, 'general', 'general'],
     [undefined, 'reviewer', 'reviewer'],
     [undefined, 'worker', 'worker'],
@@ -475,7 +471,7 @@ else {
   test('unset parent and no requested role explicitly suppress child .env role', async () => {
     const root = tmp(), child = join(tmp(), 'child');
     writeFileSync(join(root, '.env'), 'SUPERAGENT_ROLE=commander\n');
-    writeFileSync(child, 'console.log(JSON.stringify({ present: "SUPERAGENT_ROLE" in process.env, role: process.env.SUPERAGENT_ROLE, job: process.env.SUPERAGENT_JOB_ID }));');
+    writeFileSync(child, 'console.log(JSON.stringify({ present: "SUPERAGENT_ROLE" in process.env, role: process.env.SUPERAGENT_ROLE, job: process.env.SA_JOB_ID }));');
     const script = `import { jobCli } from ${JSON.stringify(join(WETAMP, 'src/jobs.ts'))};
 delete process.env.SUPERAGENT_ROLE;
 process.chdir(${JSON.stringify(root)});
@@ -878,7 +874,7 @@ if (process.argv[2] === 'app-server') {
     const env = { BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`, SUPERAGENT_RELAY_QUOTA_URL: server.url.origin, SUPERAGENT_RELAY_QUOTA: '' }; mkdirSync(process.env.SUPERAGENT_HOME!, { recursive: true });
     try {
       writeFileSync(cache, JSON.stringify({ at: Date.now() - 3600e3 - 1, claude_daily_usd: 0 }));
-      const job = run(['job', 'exec', '--title', 'refresh', '--role', 'commander', '--', join(root, 'codex'), 'exec'], '', WETAMP, env); const exit = await job.exited; const err = await new Response(job.stderr as ReadableStream).text(); expect(exit, err).toBe(0); expect(await new Response(job.stdout as ReadableStream).text()).toBe('dispatched'); expect(calls, err).toBe(1);
+      const job = run(['job', 'exec', '--title', 'refresh', '--role', 'general', '--', join(root, 'codex'), 'exec'], '', WETAMP, env); const exit = await job.exited; const err = await new Response(job.stderr as ReadableStream).text(); expect(exit, err).toBe(0); expect(await new Response(job.stdout as ReadableStream).text()).toBe('dispatched'); expect(calls, err).toBe(1);
       unlinkSync(cache); const models = run(['models', '--json'], '', WETAMP, env); expect(await models.exited).toBe(0); expect(JSON.parse(await new Response(models.stdout as ReadableStream).text()).budget.degraded).toBe(true); expect(calls).toBe(2);
       expect(await run(['models', '--json'], '', WETAMP, env).exited).toBe(0); expect(calls).toBe(2);
       status = 503; unlinkSync(cache); const failed = run(['job', 'exec', '--title', 'advisory', '--', 'true'], '', WETAMP, env); expect(await failed.exited).toBe(0); expect(await new Response(failed.stderr as ReadableStream).text()).toContain('预算状态未知'); expect(calls).toBe(3);
@@ -948,7 +944,7 @@ const input = await Bun.stdin.text(); console.log(JSON.stringify({ args: process
     );
     chmodSync(codex, 0o755);
     setClaudeDown();
-    for (const role of ['strategist', 'general', 'commander']) {
+    for (const role of ['strategist', 'general']) {
       const output = join(root, `${role}.out`),
         p = run(promptArgs(`auto-${role}`, role, prompt, '--output', output), '', WETAMP, {
           PATH: `${root}:${process.env.PATH!}`,
@@ -1005,7 +1001,7 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true,
       CAPTURE: capture,
     };
     const failed = run(
-      promptArgs('auto-claude', 'commander', prompt, '--output', output),
+      promptArgs('auto-claude', 'general', prompt, '--output', output, '--mode', 'single:claude'),
       '',
       WETAMP,
       env
@@ -1575,5 +1571,10 @@ else {
   test('usage errors exit 64', async () => {
     expect(await run(['job', 'exec', '--', 'true']).exited).toBe(64); // 缺 --title
     expect(await run(['job', 'exec', '--title', 't']).exited).toBe(64); // 缺命令
+    const retired = run(['job', 'exec', '--title', 't', '--role', 'commander', '--', 'true']);
+    expect(await retired.exited).toBe(64);
+    expect(await new Response(retired.stderr as ReadableStream).text()).toContain(
+      'use -- codex exec -m <model>'
+    );
   });
 });

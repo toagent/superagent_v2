@@ -512,7 +512,16 @@ type WorkerReply =
       rss?: number;
       profile?: Record<string, number>;
     };
-type SnapshotWorker = Pick<Worker, 'onmessage' | 'onerror' | 'postMessage' | 'terminate'>;
+interface WorkerRequest {
+  id: number;
+  limit: number;
+}
+interface SnapshotWorker {
+  onMessage: ((message: WorkerReply) => void) | null;
+  onError: ((error: Error) => void) | null;
+  send(message: WorkerRequest): void;
+  terminate(): void;
+}
 function spawnSnapshotWorker(): SnapshotWorker {
   let terminated = false;
   const child = Bun.spawn(
@@ -521,16 +530,13 @@ function spawnSnapshotWorker(): SnapshotWorker {
       stdin: 'ignore',
       stdout: 'ignore',
       stderr: 'inherit',
-      ipc: (message: unknown) =>
-        (bridge.onmessage as ((event: MessageEvent) => void) | null)?.({
-          data: message,
-        } as MessageEvent),
+      ipc: (message: unknown) => bridge.onMessage?.(message as WorkerReply),
     }
   );
   const bridge: SnapshotWorker = {
-    onmessage: null,
-    onerror: null,
-    postMessage: message => {
+    onMessage: null,
+    onError: null,
+    send: message => {
       child.send(message);
     },
     terminate: () => {
@@ -539,10 +545,7 @@ function spawnSnapshotWorker(): SnapshotWorker {
     },
   };
   void child.exited.then(code => {
-    if (!terminated)
-      (bridge.onerror as ((event: ErrorEvent) => void) | null)?.(
-        new ErrorEvent('error', { message: `snapshot subprocess exited ${String(code)}` })
-      );
+    if (!terminated) bridge.onError?.(new Error(`snapshot subprocess exited ${String(code)}`));
   });
   return bridge;
 }
@@ -576,32 +579,32 @@ export function createWorkerSnapshotLoader(
   >();
   const start = (): SnapshotWorker => {
     const active = spawn();
-    active.onmessage = (event: MessageEvent<WorkerReply>) => {
-      if ('ready' in event.data) {
+    active.onMessage = message => {
+      if ('ready' in message) {
         ready = true;
-        for (const [id, request] of pending) active.postMessage({ id, limit: request.limit });
+        for (const [id, request] of pending) active.send({ id, limit: request.limit });
         return;
       }
-      const request = pending.get(event.data.id);
+      const request = pending.get(message.id);
       if (!request) return;
-      pending.delete(event.data.id);
+      pending.delete(message.id);
       const sample = {
-        load_ms: event.data.load_ms ?? 0,
+        load_ms: message.load_ms ?? 0,
         round_ms: performance.now() - request.started,
-        rss: event.data.rss ?? 0,
-        profile: event.data.profile,
+        rss: message.rss ?? 0,
+        profile: message.profile,
       };
       options.onSample?.(sample);
       recycle ||=
         ++rounds >= (options.maxRounds ?? 500) ||
         sample.rss > (options.maxRssBytes ?? 1536 * 1024 * 1024);
-      if (event.data.snapshot)
+      if (message.snapshot)
         request.resolve(
-          typeof event.data.snapshot === 'string'
-            ? (JSON.parse(event.data.snapshot) as Snapshot)
-            : event.data.snapshot
+          typeof message.snapshot === 'string'
+            ? (JSON.parse(message.snapshot) as Snapshot)
+            : message.snapshot
         );
-      else request.reject(new Error(event.data.error ?? 'snapshot worker failed'));
+      else request.reject(new Error(message.error ?? 'snapshot worker failed'));
       if (recycle && pending.size === 0) {
         console.log(
           `snapshot worker recycled: rounds=${String(rounds)} rss_mb=${(sample.rss / 1024 / 1024).toFixed(1)} load_ms=${sample.load_ms.toFixed(1)}`
@@ -612,8 +615,7 @@ export function createWorkerSnapshotLoader(
         rounds = 0;
       }
     };
-    active.onerror = event => {
-      event.preventDefault();
+    active.onError = error => {
       const requests = [...pending.values()];
       pending.clear();
       active.terminate();
@@ -621,7 +623,7 @@ export function createWorkerSnapshotLoader(
         worker = undefined;
         ready = false;
       }
-      console.error(`snapshot worker failed: ${event.message}; falling back to main thread`);
+      console.error(`snapshot worker failed: ${error.message}; falling back to main thread`);
       for (const request of requests) fallback(request.limit).then(request.resolve, request.reject);
     };
     return active;
@@ -633,7 +635,7 @@ export function createWorkerSnapshotLoader(
       pending.set(id, { limit, started: performance.now(), resolve, reject });
       try {
         const active = (worker ??= start());
-        if (ready) active.postMessage({ id, limit });
+        if (ready) active.send({ id, limit });
       } catch (error) {
         pending.delete(id);
         console.error(
