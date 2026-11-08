@@ -75,7 +75,17 @@ export function scanText(text: string, options: ScanOptions = {}): string {
   let result = text;
   for (const { name, value } of exactPatterns(options.secrets)) result = result.replaceAll(value, `[REDACTED:${name}]`);
   if (options.keyValues !== false) result = redactKeyValues(result);
-  return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? join(homedir(), '.wetamp', 'jail', 'gitleaks.toml'));
+  return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? defaultConfig());
+}
+// The config ships beside its code: install.sh copies it next to the built cjs in the jail, and the
+// engine checkout carries it at wetamp/secrets/. Never depend on the jail install from engine code,
+// or every run launch fails closed on a machine where the firewall is not installed yet.
+function defaultConfig(): string {
+  const candidates = [
+    join(__dirname, 'gitleaks.toml'),
+    join(__dirname, '..', '..', 'secrets', 'gitleaks.toml'),
+  ];
+  return candidates.find(existsSync) ?? join(homedir(), '.wetamp', 'jail', 'gitleaks.toml');
 }
 // prettier-ignore
 export function secretsHealth(config: string, home = process.env.HOME ?? homedir()): { ok: boolean; scanned: number } {
