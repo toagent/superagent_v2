@@ -148,6 +148,7 @@ const isolatedEnvKeys = [
   'GIT_CONFIG_GLOBAL',
   'SA_ARCHON_BIN',
   'SA_ENGINE_AUTO_PROMOTE',
+  'SA_GITLEAKS_CONFIG',
   'SA_SUPERVISOR',
   'SUPERAGENT_WRITE_ROOTS',
   'AGENT_SUPERVISOR_STATE',
@@ -159,6 +160,7 @@ beforeEach(() => {
   // Scratch commits must not execute the operator's unrelated global Git hooks
   // or signing setup. Repository-local configuration still applies.
   process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+  process.env.SA_GITLEAKS_CONFIG = join(WETAMP, 'secrets', 'gitleaks.toml');
 });
 const fixtureSpies: { mockRestore(): void }[] = [];
 let fixtureCaller: ReturnType<typeof coordModule.caller> | undefined;

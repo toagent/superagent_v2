@@ -364,7 +364,7 @@ export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 class SecretInputError extends Error {}
 const assertSecretFree = (text: string): void => {
-  if (scanText(text) !== text) throw new SecretInputError('secret_in_input');
+  if (scanText(text, { keyValues: false }) !== text) throw new SecretInputError('secret_in_input');
 };
 
 type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };

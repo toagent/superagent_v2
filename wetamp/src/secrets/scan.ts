@@ -51,6 +51,7 @@ interface Finding {
 export interface ScanOptions {
   secrets?: ManagedSecret[];
   gitleaks?: boolean;
+  keyValues?: boolean;
   config?: string;
 }
 // prettier-ignore
@@ -73,7 +74,7 @@ function gitleaks(text: string, config: string): string {
 export function scanText(text: string, options: ScanOptions = {}): string {
   let result = text;
   for (const { name, value } of exactPatterns(options.secrets)) result = result.replaceAll(value, `[REDACTED:${name}]`);
-  result = redactKeyValues(result);
+  if (options.keyValues !== false) result = redactKeyValues(result);
   return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? join(homedir(), '.wetamp', 'jail', 'gitleaks.toml'));
 }
 // prettier-ignore
