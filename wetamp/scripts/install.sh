@@ -60,13 +60,15 @@ install_jail() {
   mkdir -p "$jail/bin"
   HOME_REAL="$resolved" node -e '
 const fs = require("node:fs");
+const {spawnSync} = require("node:child_process");
 const home = process.env.HOME_REAL;
 const literal = home.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
 const regex = home.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
 let text = fs.readFileSync(process.argv[1], "utf8");
 const paths = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const denies = paths.os.map(p => `  (subpath "${literal}/${p.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}")`).join("\n");
-text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies);
+const execDenies = (paths.os_exec || []).flatMap(name => { const found = spawnSync("/bin/sh", ["-c", "command -v -- \"$1\"", "sh", name], {encoding: "utf8"}).stdout.trim(); return found ? [`(deny process-exec (literal "${fs.realpathSync(found).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"))`] : []; }).join("\n");
+text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies).replace("__SECRET_EXEC_DENIES__", execDenies);
 fs.writeFileSync(process.argv[2], text);
 ' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb" "$WETAMP/hooks/secret-paths.json"
   # The firewall activates once sa-redact.cjs exists, so publish it last and only with gitleaks present:

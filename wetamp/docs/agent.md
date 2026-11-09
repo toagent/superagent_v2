@@ -164,3 +164,10 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 - `superagent rollover start --reason "<reason>"` 创建会话换手令牌。
 
 完整参数看 `superagent --help`；运维命令看 `superagent --help --all`。
+
+## 1Password 凭据同步
+
+每台机器先在普通 TTY 终端运行 `superagent secret init-op`，按返回命令把只读
+`AI-Agents` 服务账号 token 存入本机钥匙串。导入或修改凭据后运行
+`superagent secret sync --vault AI-Agents`；删除保管库条目后加 `--prune`，只清理由同步
+创建的名字。AI jail 内禁止直接运行 `op`，也禁止 `secret set/rm/sync` 访问钥匙串。

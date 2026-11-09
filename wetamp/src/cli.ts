@@ -324,6 +324,8 @@ export const OPTIONS = {
   reconciled: { type: 'string' }, // explicit external-effect reconciliation, bound to a run snapshot
   session: { type: 'string' },
   'dry-run': { type: 'boolean' },
+  vault: { type: 'string' },
+  prune: { type: 'boolean' },
   open: { type: 'boolean' },
   schedule: { type: 'boolean' },
   runs: { type: 'string', multiple: true },
@@ -4636,7 +4638,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'report', audience: 'agent', flags: ['full', 'since'], operatorFlags: ['by-engine', 'baseline-days', 'review-whitelist'] },
   { command: 'quota', audience: 'agent', flags: [] },
   { command: 'health', audience: 'agent', flags: ['cwd', 'verbose', 'days'] },
-  { command: 'secret', audience: 'operator', positionals: 'set|list|rm <NAME>', flags: [] },
+  { command: 'secret', audience: 'operator', positionals: 'set|list|rm <NAME>|sync|init-op', flags: ['vault', 'dry-run', 'prune'] },
   { command: 'rollover', audience: 'agent', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
   { command: 'intake', audience: 'agent', positionals: INTAKE_USAGE.slice('intake '.length), flags: ['repo'] },
   { command: 'reclaim', audience: 'operator', flags: ['json'] },
@@ -4960,7 +4962,13 @@ export function main(argv: string[]): number {
     });
   switch (verb) {
     case 'secret':
-      print(secretCommand(target, a._[2]));
+      print(
+        secretCommand(target, a._[2], undefined, undefined, {
+          vault: a.flags.vault,
+          dryRun: a.flags['dry-run'],
+          prune: a.flags.prune,
+        })
+      );
       return 0;
     case 'debt': {
       const action = need(target, 'debt list|close');

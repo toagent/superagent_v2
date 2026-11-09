@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { buildSecrets } from '../src/secrets/build';
@@ -94,6 +94,11 @@ test('secret commands persist names only; install renders OS denies and dry-run 
   expect(calls.flat().join(' ')).not.toContain(value);
   // prettier-ignore
   expect(() => secretCommand('set', 'SYNTH_FAIL', value, () => ({ status: 1 }) as never)).toThrow('AI 会话的 jail 禁止访问钥匙串，请在普通终端执行');
+  const bin = join(home, 'bin'),
+    op = join(bin, 'op');
+  mkdirSync(bin);
+  writeFileSync(op, '#!/bin/sh\n', { mode: 0o755 });
+  chmodSync(op, 0o755);
   mkdirSync(join(home, 'archon'), { recursive: true });
   const install = Bun.spawnSync([join(import.meta.dir, '../scripts/install.sh')], {
     env: {
@@ -106,6 +111,7 @@ test('secret commands persist names only; install renders OS denies and dry-run 
       SA_SKIP_LAUNCHD_RELOAD: '1',
       SA_SKIP_DOCTOR: '1',
       XDG_STATE_HOME: join(home, 'state'),
+      PATH: `${bin}:${process.env.PATH}`,
     },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -114,6 +120,7 @@ test('secret commands persist names only; install renders OS denies and dry-run 
   const policy = readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8');
   expect(policy).toContain('/Library/Keychains');
   expect(policy).not.toContain('/.npmrc');
+  expect(policy).toContain(`(deny process-exec (literal "${op}"))`);
   expect(existsSync(join(home, '.wetamp/jail/sa-redact.cjs'))).toBeTrue();
   // prettier-ignore
   expect(readFileSync(join(home, '.wetamp/jail/sa-redact.sh'), 'utf8')).not.toMatch(/\/versions\/node\/v/);

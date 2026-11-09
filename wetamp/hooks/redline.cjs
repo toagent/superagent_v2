@@ -272,6 +272,14 @@ function reason({
         if (secret) return secret;
         for (const argv of parsed.argvs) {
           const command = path.basename(argv[0] || '');
+          if (command === 'op') {
+            onCategory('privacy');
+            return message(
+              '执行 1Password CLI',
+              'AI 会话不得直接访问 1Password',
+              '在普通终端运行 superagent secret sync'
+            );
+          }
           if (
             command === 'security' &&
             argv.slice(1).some(arg => /^(find-.*-password|dump-keychain|export)$/.test(arg))
