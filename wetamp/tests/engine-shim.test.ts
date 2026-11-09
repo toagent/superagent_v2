@@ -171,9 +171,11 @@ test('installed shim injects synthetic managed secrets before entering jail', ()
   const root = tmp(),
     jail = join(root, '.wetamp/jail'),
     bin = join(root, 'bin'),
+    shim = join(root, 'superagent'),
     probe = crypto.randomUUID();
   mkdirSync(jail, { recursive: true });
   mkdirSync(bin);
+  symlinkSync(SHIM, shim);
   writeFileSync(join(jail, 'installed'), '');
   writeFileSync(join(jail, '.probe'), '');
   writeFileSync(join(root, '.wetamp/secrets.list'), 'SF4_SYNTH\nSF4_MISSING\n');
@@ -187,7 +189,7 @@ test('installed shim injects synthetic managed secrets before entering jail', ()
     `#!/bin/sh\n[ "$SF4_SYNTH" = ${JSON.stringify(probe)} ] && printf set || printf unset\n`,
     { mode: 0o755 }
   );
-  const result = Bun.spawnSync([SHIM, 'models'], {
+  const result = Bun.spawnSync([shim, 'models'], {
     env: { ...process.env, HOME: root, PATH: `${bin}:${process.env.PATH}` },
     stdout: 'pipe',
     stderr: 'pipe',

@@ -8,11 +8,11 @@ jail="$HOME/.wetamp/jail"
 # from a normal terminal; inside an AI session the probe is unreadable, so nothing escapes here.
 if [[ -f "$jail/installed" && "${1:-}" != secret ]]; then
   if [[ -r "$jail/.probe" ]]; then
-    source "$(cd -P "$(dirname "$0")" && pwd)/secret-env.sh"
+    source "$(dirname "$(realpath "$0")")/secret-env.sh"
     inject_managed_secrets superagent-shim
     exec "$jail/ai-jail" "$0" "$@"
   elif ! command ls -A "$jail" 2>/dev/null | command grep -Fxq .probe; then
-    source "$(cd -P "$(dirname "$0")" && pwd)/secret-env.sh"
+    source "$(dirname "$(realpath "$0")")/secret-env.sh"
     inject_managed_secrets superagent-shim
     exec "$jail/ai-jail" "$0" "$@"
   fi
