@@ -211,13 +211,20 @@ describe('ai-jail', () => {
     const home = tmp(),
       zshrc = join(home, '.zshrc'),
       realBin = join(home, '.opencode/bin'),
+      op = join(home, 'Caskroom/1password-cli/2.42.0/op'),
       original = 'export KEEP=1\nexport PATH="$HOME/.opencode/bin:$PATH"\n';
     mkdirSync(realBin, { recursive: true });
+    mkdirSync(dirname(op), { recursive: true });
+    writeFileSync(op, '#!/bin/sh\n', { mode: 0o755 });
+    process.env.PATH = `${dirname(op)}:${process.env.PATH}`;
     writeFileSync(join(realBin, 'opencode'), '#!/bin/sh\n', { mode: 0o755 });
     writeFileSync(zshrc, original);
     install(home);
     expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).toContain(
       '(allow process-exec (literal "/bin/launchctl") (with no-sandbox))'
+    );
+    expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).toContain(
+      `/Caskroom/1password-cli/[^/]+/op$")`
     );
     const first = readFileSync(zshrc, 'utf8');
     expect(first.match(/# >>> superagent ai-jail >>>/g)).toHaveLength(1);

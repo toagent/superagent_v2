@@ -167,6 +167,37 @@ test('installed jail re-enters before the superagent CLI', () => {
   expect(readFileSync(marker, 'utf8')).toBe(`${SHIM} models`);
 });
 
+test('installed shim injects synthetic managed secrets before entering jail', () => {
+  const root = tmp(),
+    jail = join(root, '.wetamp/jail'),
+    bin = join(root, 'bin'),
+    probe = crypto.randomUUID();
+  mkdirSync(jail, { recursive: true });
+  mkdirSync(bin);
+  writeFileSync(join(jail, 'installed'), '');
+  writeFileSync(join(jail, '.probe'), '');
+  writeFileSync(join(root, '.wetamp/secrets.list'), 'SF4_SYNTH\nSF4_MISSING\n');
+  writeFileSync(
+    join(bin, 'security'),
+    `#!/bin/sh\n[ "$3" = SF4_SYNTH ] || exit 1\nprintf %s ${JSON.stringify(probe)}\n`,
+    { mode: 0o755 }
+  );
+  writeFileSync(
+    join(jail, 'ai-jail'),
+    `#!/bin/sh\n[ "$SF4_SYNTH" = ${JSON.stringify(probe)} ] && printf set || printf unset\n`,
+    { mode: 0o755 }
+  );
+  const result = Bun.spawnSync([SHIM, 'models'], {
+    env: { ...process.env, HOME: root, PATH: `${bin}:${process.env.PATH}` },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe('set');
+  expect(result.stderr.toString()).toContain('凭据 SF4_MISSING 不可用');
+  expect(result.stderr.toString()).not.toContain(probe);
+});
+
 test('real continuation CLI emits the JSON contract consumed by the shim', () => {
   const root = tmp(),
     result = Bun.spawnSync(

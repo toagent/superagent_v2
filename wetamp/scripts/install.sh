@@ -67,7 +67,14 @@ const regex = home.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
 let text = fs.readFileSync(process.argv[1], "utf8");
 const paths = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const denies = paths.os.map(p => `  (subpath "${literal}/${p.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}")`).join("\n");
-const execDenies = (paths.os_exec || []).flatMap(name => { const found = spawnSync("/bin/sh", ["-c", "command -v -- \"$1\"", "sh", name], {encoding: "utf8"}).stdout.trim(); return found ? [`(deny process-exec (literal "${fs.realpathSync(found).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"))`] : []; }).join("\n");
+const quote = (s) => s.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
+const regexQuote = (s) => s.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
+const execDenies = (paths.os_exec || []).flatMap(name => {
+  const found = spawnSync("/bin/sh", ["-c", "command -v -- \"$1\"", "sh", name], {encoding: "utf8"}).stdout.trim();
+  if (!found) return [];
+  const resolved = fs.realpathSync(found), versioned = resolved.match(/^(.*\/(?:Caskroom|Cellar)\/[^/]+)\/[^/]+(\/.*)$/);
+  return [versioned ? `(deny process-exec (regex "^${regexQuote(versioned[1])}\/[^/]+${regexQuote(versioned[2])}$"))` : `(deny process-exec (literal "${quote(resolved)}"))`];
+}).join("\n");
 text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies).replace("__SECRET_EXEC_DENIES__", execDenies);
 fs.writeFileSync(process.argv[2], text);
 ' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb" "$WETAMP/hooks/secret-paths.json"
@@ -80,7 +87,8 @@ fs.writeFileSync(process.argv[2], text);
   bun "$WETAMP/src/secrets/build.ts" "$jail"
   cp "$WETAMP/bin/ai-jail" "$jail/ai-jail"
   cp "$WETAMP/bin/ai-jail-shim" "$jail/ai-jail-shim"
-  chmod 755 "$jail/ai-jail" "$jail/ai-jail-shim"
+  cp "$WETAMP/bin/secret-env.sh" "$jail/secret-env.sh"
+  chmod 755 "$jail/ai-jail" "$jail/ai-jail-shim" "$jail/secret-env.sh"
   : >"$jail/.probe"
   for client in claude codex opencode; do ln -sfn ../ai-jail-shim "$jail/bin/$client"; done
   update_jail_rc add

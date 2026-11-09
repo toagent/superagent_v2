@@ -18,8 +18,7 @@ const unknown = (why: string) => ({ quota: `中转余量：未知（${why}）` }
 const numeric = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 // prettier-ignore
 export function relayQuota(dir?: string, stage: 'start' | 'end' = 'start',
-  readToken = () => process.env.TOAGENT_RELAY_QUOTA_TOKEN ?? spawnSync('security', ['find-generic-password', '-s', 'toagent-relay-quota', '-w'],
-    { timeout: 200, stdio: ['ignore', 'pipe', 'ignore'] }).output[1]?.toString().trim()): { quota?: string } {
+  readToken = () => process.env.TOAGENT_RELAY_QUOTA_TOKEN): { quota?: string } {
   const url = process.env.SUPERAGENT_RELAY_QUOTA_URL;
   if (!url || process.env.SUPERAGENT_RELAY_QUOTA === 'off') return {};
   const path = dir && `${dir}/relay-quota.${stage}.json`, started = Date.now(); let result = unknown('network');
