@@ -11,6 +11,19 @@
 `quick` 仍会生成并冻结 plan，后续生命周期与 `run` 相同。不要用 `job exec` 代替有
 交付验收的工作包。
 
+## 全局工作入口
+
+当前 AI 可用结构化检索词定位跨项目事实，或读取全局待决队列：
+
+```bash
+superagent work find --terms-json '["功能词","错误码"]' --json
+superagent work queue --json
+```
+
+`find` 只检索 `export --all-repos` 的当前投影；`queue` 只投影 `cockpit.needs`。返回的
+action descriptor 供 AI 选择现有 `ask answer` 或 `inbox --ack` 控制入口，不直接执行动作，
+也不代表 commit、合入、push 或部署能力。
+
 ## 主流程
 
 ```bash

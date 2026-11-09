@@ -300,6 +300,7 @@ export const OPTIONS = {
   interval: { type: 'string' },
   watch: { type: 'boolean' },
   limit: { type: 'string' },
+  'terms-json': { type: 'string' },
   json: { type: 'boolean' }, // board/models/status/brief/wait 等命令的机器可读输出开关
   diagnose: { type: 'boolean' },
   full: { type: 'boolean' },
@@ -4619,6 +4620,8 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
   { command: 'status', audience: 'agent', positionals: '<run>', flags: [] },
   { command: 'brief', audience: 'agent', positionals: '<run>', flags: [] },
+  { command: 'work find', audience: 'agent', flags: ['terms-json', 'limit', 'json'] },
+  { command: 'work queue', audience: 'agent', flags: ['json'] },
   { command: 'land', audience: 'agent', positionals: '<run>', flags: ['apply'] },
   { command: 'resume', audience: 'agent', positionals: '<run>', flags: ['reconciled'] },
   { command: 'recover', audience: 'agent', positionals: '<run>', flags: ['evidence', 'reconciled'] },
@@ -4678,7 +4681,7 @@ const renderUsage = (all: boolean): string =>
     ...CLI_COMMAND_USAGE.filter(command => all || command.audience === 'agent').map(command =>
       usageLine(command, all)
     ),
-    '  输出均为 JSON；退出码：0 完成 1 失败 2 取消 3 待决策 4 运行中 5 别名漂移 64 用法错误 75 暂拒可重试',
+    '  JSON；exit: 0完成 1失败 2取消 3待决 4运行 5别名漂移 64用法 75暂拒',
     '  运维命令：superagent --help --all',
     `  agent 文档：${join(WETAMP, 'docs/agent.md')}`,
   ].join('\n');
@@ -5879,6 +5882,7 @@ async function runCli(): Promise<void> {
         'job',
         'jobs',
         'rollover',
+        'work',
       ].includes(verb ?? '')
     )
       assertEngineAccess(argv);
@@ -5901,6 +5905,7 @@ async function runCli(): Promise<void> {
     if (verb === 'console' || verb === 'web')
       return await exitCli(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs') return await exitCli(await jobCli(argv));
+    if (verb === 'work') return await exitCli(await (await import('./work')).workCli(argv));
     if (verb === 'rollover') {
       const parsed = parseArgs(argv),
         command = parsed._[1],

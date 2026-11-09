@@ -387,3 +387,23 @@ export function exportCli(argv: string[]): number {
   if (result.output) process.stdout.write(`${JSON.stringify(result.output)}\n`);
   return result.exit;
 }
+
+/** Current cross-repository facts for read-only derived projections such as `work find`. */
+export function collectCurrentExport(now = new Date()): ReturnType<typeof buildExport> {
+  return buildExport(
+    [
+      'export',
+      '--source-instance',
+      'superagent-work',
+      '--since',
+      '1970-01-01T00:00:00Z',
+      '--until',
+      now.toISOString(),
+      '--timezone',
+      'UTC',
+      '--all-repos',
+      '--json',
+    ],
+    now
+  );
+}
