@@ -23,6 +23,16 @@ function resolvePath(file) {
 }
 const homeOf = env => env.HOME || os.homedir();
 const saHome = env => env.SUPERAGENT_HOME || path.join(homeOf(env), '.superagent');
+const NON_FILESYSTEM_TOOLS = new Set([
+  'AskUserQuestion',
+  'TodoWrite',
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'ExitPlanMode',
+  'EnterPlanMode',
+  'ToolSearch',
+]);
 const expand = (word, env) =>
   word.replace(/^~(?=\/|$)/, homeOf(env)).replace(/\$\{HOME\}|\$HOME\b/g, homeOf(env));
 
@@ -65,7 +75,10 @@ function secretKind(abs, env) {
     SECRET_FILES.some(segs =>
       segs.some(seg => seg.includes('*'))
         ? new RegExp(
-            `^${path.join(home, ...segs).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '[^/]*')}(?:/|$)`,
+            `^${path
+              .join(home, ...segs)
+              .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+              .replaceAll('*', '[^/]*')}(?:/|$)`,
             'i'
           ).test(p)
         : under(segs)
@@ -242,7 +255,7 @@ function reason({
             );
           }
         }
-      return paths ? null : privacy(strings(input), cwd, env);
+      return paths || NON_FILESYSTEM_TOOLS.has(name) ? null : privacy(strings(input), cwd, env);
     }
     let analysisFailed = false;
     const result = require('./shell-ast.cjs').analyze(
@@ -269,7 +282,10 @@ function reason({
           if (
             (command === 'gh' && argv[1] === 'auth' && argv[2] === 'token') ||
             (command === 'git' && argv[1] === 'credential' && argv[2] === 'fill') ||
-            (command === 'kubectl' && argv[1] === 'config' && argv[2] === 'view' && argv.includes('--raw')) ||
+            (command === 'kubectl' &&
+              argv[1] === 'config' &&
+              argv[2] === 'view' &&
+              argv.includes('--raw')) ||
             (/^docker-credential-/.test(command) && argv[1] === 'get')
           ) {
             onCategory('privacy');

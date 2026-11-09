@@ -184,6 +184,7 @@ import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
 import { secretCommand } from './secrets/command';
 import { secretsHealth } from './secrets/scan';
+import { auditTranscripts } from './secrets/audit';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
@@ -294,6 +295,7 @@ export const OPTIONS = {
   help: { type: 'boolean', short: 'h' },
   cwd: { type: 'string' },
   verbose: { type: 'boolean' },
+  days: { type: 'string' },
   once: { type: 'boolean' },
   interval: { type: 'string' },
   watch: { type: 'boolean' },
@@ -2265,7 +2267,9 @@ function reconcileIntents(): Action[] {
   return out;
 }
 
-function health(cwd?: string, verbose = false): number {
+function health(cwd?: string, verbose = false, daysRaw?: string): number {
+  const days = Number(daysRaw ?? 7);
+  if (!Number.isFinite(days) || days <= 0) throw new Error('--days must be positive');
   const hooks = Bun.spawnSync(['git', 'config', '--global', '--path', 'core.hooksPath'], {
     env: process.env,
     stdout: 'pipe',
@@ -2303,7 +2307,8 @@ function health(cwd?: string, verbose = false): number {
   const upstreamFiles = upstreamDiff ? upstreamDiff.split('\n') : [];
   const upstreamClean = clean.exitCode === 0 && upstreamFiles.length === 0;
   const worker = codexWorkerProblem();
-  const secrets = secretsHealth(join(WETAMP, 'secrets', 'gitleaks.toml'));
+  const secrets = secretsHealth(join(WETAMP, 'secrets', 'gitleaks.toml')),
+    transcripts = auditTranscripts({ days });
   const tick = ntfyTickHealth(
     readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
     Date.now()
@@ -2315,7 +2320,8 @@ function health(cwd?: string, verbose = false): number {
     !drift.length &&
     !capabilities.length &&
     !worker &&
-    secrets.ok;
+    secrets.ok &&
+    transcripts.ok;
   print({
     ok,
     mode,
@@ -2330,7 +2336,7 @@ function health(cwd?: string, verbose = false): number {
       : {}),
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
-    secrets,
+    secrets: { ...secrets, transcripts },
     tick,
   });
   return ok ? 0 : drift.length || capabilities.length ? EXIT_ALIAS_DRIFT : 1;
@@ -4629,7 +4635,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'models', audience: 'agent', flags: ['mode'] },
   { command: 'report', audience: 'agent', flags: ['full', 'since'], operatorFlags: ['by-engine', 'baseline-days', 'review-whitelist'] },
   { command: 'quota', audience: 'agent', flags: [] },
-  { command: 'health', audience: 'agent', flags: ['cwd', 'verbose'] },
+  { command: 'health', audience: 'agent', flags: ['cwd', 'verbose', 'days'] },
   { command: 'secret', audience: 'operator', positionals: 'set|list|rm <NAME>', flags: [] },
   { command: 'rollover', audience: 'agent', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
   { command: 'intake', audience: 'agent', positionals: INTAKE_USAGE.slice('intake '.length), flags: ['repo'] },
@@ -5446,7 +5452,7 @@ export function main(argv: string[]): number {
       console.error('usage: superagent memory propose <run> <request-json> | memory publish');
       return EXIT_USAGE;
     case 'health':
-      return health(a.flags.cwd, a.flags.verbose);
+      return health(a.flags.cwd, a.flags.verbose, a.flags.days);
     case 'heartbeat':
       console.error('heartbeat is async: run it through bin/superagent');
       return EXIT_USAGE;

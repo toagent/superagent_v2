@@ -281,7 +281,12 @@ test('known accident mutations each fail a real generated scenario', () => {
         `mutation ${mutation.file}`,
       ],
     ]) {
-      const git = Bun.spawnSync(['git', ...args], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
+      const git = Bun.spawnSync(['git', ...args], {
+        cwd: root,
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
       expect(git.exitCode, git.stderr.toString()).toBe(0);
     }
     const run = Bun.spawnSync(

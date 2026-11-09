@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 
 type Args = {
-  shell: string;
+  shell?: string;
   derived: boolean;
   env?: object;
   cwd: string;
@@ -71,6 +71,15 @@ const allowed = [
   'sh -c "cd /Users/Shared" && touch local',
   'bash scripts/selftest.sh --fake',
 ];
+// prettier-ignore
+test('non-filesystem UI tools allow protected-path prose while MCP remains guarded', () => {
+  const input = { question: 'Mention ~/.wetamp/backups without reading it' };
+  for (const name of [
+    'AskUserQuestion', 'TodoWrite', 'TaskCreate', 'TaskUpdate',
+    'TaskList', 'ExitPlanMode', 'EnterPlanMode', 'ToolSearch',
+  ]) expect(redline.reason({ ...args(''), shell: undefined, name, input })).toBeNull();
+  expect(redline.reason({ ...args(''), shell: undefined, name: 'mcp__files__read', input: { path: '~/.aws/credentials' } })).toContain('已拦截：');
+});
 test.each(allowed)('HF6 R2 permits literal data and modeled scope: %s', shell => {
   expect(redline.reason(args(shell))).toBeNull();
 });
