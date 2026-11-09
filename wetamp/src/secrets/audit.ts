@@ -47,6 +47,22 @@ const files = (root: string, cutoff: number, accept: (path: string) => boolean):
   return found;
 };
 
+const occurrenceCount = (text: string, patterns: string[]): number => {
+  const spans: [number, number][] = [];
+  for (const pattern of patterns)
+    for (let at = text.indexOf(pattern); at >= 0; at = text.indexOf(pattern, at + 1))
+      spans.push([at, at + pattern.length]);
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  let count = 0,
+    end = -1;
+  for (const [start, nextEnd] of spans)
+    if (start >= end) {
+      count++;
+      end = nextEnd;
+    } else end = Math.max(end, nextEnd);
+  return count;
+};
+
 export function auditTranscripts(options: AuditOptions = {}): TranscriptAudit {
   const env = options.env ?? process.env,
     home = options.home ?? env.HOME ?? homedir(),
@@ -71,10 +87,7 @@ export function auditTranscripts(options: AuditOptions = {}): TranscriptAudit {
       continue;
     }
     scanned++;
-    let count = 0;
-    for (const pattern of patterns)
-      for (let at = text.indexOf(pattern); at >= 0; at = text.indexOf(pattern, at + pattern.length))
-        count++;
+    const count = occurrenceCount(text, patterns);
     if (count) findings.push({ path, count });
   }
   return { ok: findings.length === 0, scanned, findings };

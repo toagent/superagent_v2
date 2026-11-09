@@ -146,6 +146,7 @@ test('HF6 R2 real hook reports advisory for missing dependencies for either role
     Bun.spawnSync(['node', join(dir, 'hooks/guard.cjs'), 'codex'], {
       env: {
         ...process.env,
+        HOME: dir,
         SUPERAGENT_HOME: dir,
         ARCHON_HOME: dir,
         SUPERAGENT_ROLE: role,
