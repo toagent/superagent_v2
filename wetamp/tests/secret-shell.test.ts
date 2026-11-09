@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { copyFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildSecrets } from '../src/secrets/build';
 import { tmp } from './helpers';
@@ -37,6 +37,13 @@ test('sourced redactor flushes before shell exit and keeps cd and exit status', 
     expect(out).not.toContain(probe);
     expect(out).not.toContain(second);
     expect(out).not.toContain(encoded.trim());
+    const started = performance.now();
+    // prettier-ignore
+    const background = Bun.spawn([shell, '-c', `. ${join(import.meta.dir, '../secrets/sa-redact.sh')}; (sleep 5 &); echo BACKGROUND`], { env: { ...process.env, SA_REDACT_CJS: join(dir, 'sa-redact.cjs'), SA_GITLEAKS_CONFIG: join(dir, 'gitleaks.toml') }, stdout: 'pipe' });
+    expect(await background.exited).toBe(0);
+    expect(performance.now() - started).toBeLessThan(1000);
+    // prettier-ignore
+    expect(Buffer.from((await background.stdout.getReader().read()).value ?? []).toString()).toContain('BACKGROUND');
   }
 });
 
@@ -75,4 +82,15 @@ test('install-rendered helper works with a minimal PATH and says so when the red
   );
   expect(broken).toContain('redactor_unavailable');
   expect(broken).not.toContain(probe);
+  // prettier-ignore
+  const home = tmp(), bin = join(home, 'bin'), real = join(home, 'real'), jail = join(home, '.wetamp/jail');
+  for (const path of [bin, real, jail]) mkdirSync(path, { recursive: true });
+  writeFileSync(join(home, '.wetamp/secrets.list'), 'SYNTH_TOKEN\n');
+  // prettier-ignore
+  for (const file of [join(real, 'claude'), join(jail, 'ai-jail')]) writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  symlinkSync(join(import.meta.dir, '../bin/ai-jail-shim'), join(bin, 'claude'));
+  // prettier-ignore
+  const nested = Bun.spawnSync([join(bin, 'claude')], { env: { HOME: home, PATH: `${bin}:${real}:/usr/bin:/bin`, SYNTH_TOKEN: probe }, stderr: 'pipe' });
+  expect(nested.exitCode).toBe(0);
+  expect(nested.stderr.toString()).toBe('');
 });

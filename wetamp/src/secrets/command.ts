@@ -47,7 +47,7 @@ export function secretCommand(action: string | undefined, name?: string, value?:
     // `-w <value>` would expose the value in argv; `security -i` reads the whole command from stdin.
     const quoted = `"${secret.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
     if (/[\r\n]/.test(secret)) throw new Error('secret: value must be a single line');
-    if (run('/usr/bin/security', ['-i'], `add-generic-password -U -a ${name} -s ${service} -w ${quoted}\n`).status !== 0) throw new Error('secret: keychain write failed');
+    if (run('/usr/bin/security', ['-i'], `add-generic-password -U -a ${name} -s ${service} -w ${quoted}\n`).status !== 0) throw new Error('secret: AI 会话的 jail 禁止访问钥匙串，请在普通终端执行');
     save([...new Set([...names(), name])].sort()); return { ok: true, name }; }
   if (action === 'rm') { if (run('/usr/bin/security', ['delete-generic-password', '-a', name, '-s', service]).status !== 0) throw new Error('secret: keychain delete failed'); save(names().filter(value => value !== name)); return { ok: true, name }; }
   throw new Error('usage: superagent secret set|list|rm <NAME>');

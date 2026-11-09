@@ -26,6 +26,8 @@ test('managed values cover raw, line endings, four encodings, and key-value rule
   for (const variant of variants) expect(output).not.toContain(variant.value);
   expect(output).toContain('[REDACTED:PROBE]');
   expect(output).toContain('token=***');
+  // prettier-ignore
+  expect(scanText('max_tokens: value = id\nkeyboard=value abc123', { secrets: [], gitleaks: false, keyValues: false })).toBe('max_tokens: value = id\nkeyboard=value abc123');
 });
 
 test('gitleaks ignores allow comments and mismatched decoded ranges redact the whole line', () => {
@@ -90,6 +92,8 @@ test('secret commands persist names only; install renders OS denies and dry-run 
   // The value travels on stdin through `security -i`, never in argv.
   expect(calls.map(args => args[0])).toEqual(['-i', 'delete-generic-password']);
   expect(calls.flat().join(' ')).not.toContain(value);
+  // prettier-ignore
+  expect(() => secretCommand('set', 'SYNTH_FAIL', value, () => ({ status: 1 }) as never)).toThrow('AI 会话的 jail 禁止访问钥匙串，请在普通终端执行');
   mkdirSync(join(home, 'archon'), { recursive: true });
   const install = Bun.spawnSync([join(import.meta.dir, '../scripts/install.sh')], {
     env: {
@@ -111,6 +115,8 @@ test('secret commands persist names only; install renders OS denies and dry-run 
   expect(policy).toContain('/Library/Keychains');
   expect(policy).not.toContain('/.npmrc');
   expect(existsSync(join(home, '.wetamp/jail/sa-redact.cjs'))).toBeTrue();
+  // prettier-ignore
+  expect(readFileSync(join(home, '.wetamp/jail/sa-redact.sh'), 'utf8')).not.toMatch(/\/versions\/node\/v/);
   writeFileSync(join(home, '.zshrc'), 'export SYNTH_TOKEN=value\n');
   const migration = Bun.spawnSync(
     [process.execPath, join(import.meta.dir, '../secrets/migrate.ts'), '--dry-run'],

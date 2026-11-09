@@ -7,7 +7,7 @@ const guard = require('../hooks/guard.cjs') as {
   decide: (payload: Record<string, unknown>, client: string, env: NodeJS.ProcessEnv) => any;
 };
 // prettier-ignore
-const scanner = () => { const file = `${tmp()}/scan.cjs`; writeFileSync(file, `exports.scanText = text => text.replaceAll('synthetic-secret-value', '[REDACTED:test]');`); return file; };
+const scanner = () => { const file = `${tmp()}/scan.cjs`; writeFileSync(file, `exports.scanText = (text, options) => { if (options?.keyValues !== false) throw new Error('keyValues enabled'); return text.replaceAll('synthetic-secret-value', '[REDACTED:test]'); };`); return file; };
 test('shell commands are wrapped once for Claude and Codex', async () => {
   await require('../hooks/redline.cjs').init();
   const env = { ...process.env, SA_SECRET_SCAN_MODULE: scanner() };

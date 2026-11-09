@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { WETAMP } from '../src/config';
-import { mergeHooks } from '../src/install-hooks';
+import { mergeHooks, openCodeGuard } from '../src/install-hooks';
 
 test('Codex context advisory hooks are complete and idempotent', () => {
   const once = mergeHooks({}, 'codex'),
@@ -10,4 +10,5 @@ test('Codex context advisory hooks are complete and idempotent', () => {
       once[event].flatMap(group => group.hooks ?? []).filter(hook => hook.command === command)
     ).toHaveLength(1);
   expect(mergeHooks(once, 'codex')).toEqual(once);
+  expect(openCodeGuard()).toContain('scanner.scanText(item, { keyValues: false })');
 });

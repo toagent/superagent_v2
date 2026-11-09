@@ -234,7 +234,7 @@ const scan = value => {
   const module = process.env.SA_SECRET_SCAN_MODULE || join(process.env.HOME || homedir(), '.wetamp/jail/secret-scan.cjs');
   if (!existsSync(module)) return value;
   const scanner = require(module);
-  const visit = item => typeof item === 'string' ? scanner.scanText(item) : Array.isArray(item) ? item.map(visit) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).map(([key, child]) => [key, visit(child)])) : item;
+  const visit = item => typeof item === 'string' ? scanner.scanText(item, { keyValues: false }) : Array.isArray(item) ? item.map(visit) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).map(([key, child]) => [key, visit(child)])) : item;
   return visit(value);
 };
 const guarded = payload => new Promise((resolve, reject) => {

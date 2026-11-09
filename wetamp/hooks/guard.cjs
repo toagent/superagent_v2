@@ -36,7 +36,8 @@ const mapStrings = (value, transform) => {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, transform)]));
   return value;
 };
-const scanned = (value, env) => mapStrings(value, text => scanner(env).scanText(text));
+const scanned = (value, env) =>
+  mapStrings(value, text => scanner(env).scanText(text, { keyValues: false }));
 
 const pool = tier => tiers[tier].pools.chatgpt;
 const deny = (reason, superagentPermissionCategory = 'authorization') => ({
@@ -224,7 +225,7 @@ function decide(payload, client, env = process.env) {
       const prompt = String(payload.prompt || '');
       let safe;
       try {
-        safe = !prompt || scanner(env).scanText(prompt) === prompt;
+        safe = !prompt || scanner(env).scanText(prompt, { keyValues: false }) === prompt;
       } catch {
         safe = false;
       }
