@@ -536,16 +536,18 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     );
   });
 
-  test('worker stub: after --remote-hooks the superagent entry refuses control-plane verbs without bun', () => {
+  test('worker stub: allows local secret while refusing control-plane verbs', () => {
     const { home, sh } = sandbox();
     const entry = join(home, '.local', 'bin', 'superagent');
+    const fakeBin = join(home, 'fake-bin');
     mkdirSync(dirname(entry), { recursive: true });
+    mkdirSync(fakeBin);
+    symlinkSync('/bin/echo', join(fakeBin, 'bun'));
     rmSync(entry); // Replace the stable symlink with the legacy regular-file fixture.
     writeFileSync(entry, 'old v1 entry');
     const sa = (...args: string[]): { code: number; out: string } => {
-      // PATH 不含 bun：桩分支必须在 exec bun 之前
       const p = Bun.spawnSync([entry, ...args], {
-        env: { HOME: home, PATH: '/usr/bin:/bin', XDG_STATE_HOME: '' },
+        env: { HOME: home, PATH: `${fakeBin}:/usr/bin:/bin`, XDG_STATE_HOME: '' },
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -570,8 +572,15 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       expect(r.code).toBe(69);
       expect(r.out).toContain('仅本机运行（本机为控制面）');
     }
+    expect(sa('secret', '--help')).toEqual({
+      code: 0,
+      out: `${join(WETAMP, 'src', 'cli.ts')} secret --help\n`,
+    });
     expect(sa('--version')).toMatchObject({ code: 0, out: expect.stringContaining('(worker,') });
-    expect(sa('--help')).toMatchObject({ code: 0, out: expect.stringContaining('worker 桩') });
+    expect(sa('--help')).toMatchObject({
+      code: 0,
+      out: expect.stringContaining('--help | secret'),
+    });
     // install.json 指向别的 checkout：本入口不是那台 worker 的桩，照常走控制面
     const state = join(home, '.local', 'state', 'superagent', 'install.json');
     writeFileSync(
