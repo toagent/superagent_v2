@@ -153,7 +153,11 @@ test('console launch arguments acquire the jail only after installation', () => 
   expect(consoleProgramArguments()[0]).toBe(process.execPath);
   mkdirSync(jail, { recursive: true });
   writeFileSync(join(jail, 'installed'), '');
-  expect(consoleProgramArguments().slice(0, 2)).toEqual([join(jail, 'ai-jail'), process.execPath]);
+  expect(consoleProgramArguments().slice(0, 3)).toEqual([
+    join(jail, 'secret-env.sh'),
+    join(jail, 'ai-jail'),
+    process.execPath,
+  ]);
 });
 test('observer loader blocks native dotenv reload, including override:true in ARCHON_HOME', async () => {
   const root = tmp();

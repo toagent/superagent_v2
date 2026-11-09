@@ -174,7 +174,9 @@ export function consoleProgramArguments(): string[] {
     'serve',
   ];
   const jail = join(process.env.HOME ?? '', '.wetamp/jail');
-  return existsSync(join(jail, 'installed')) ? [join(jail, 'ai-jail'), ...args] : args;
+  return existsSync(join(jail, 'installed'))
+    ? [join(jail, 'secret-env.sh'), join(jail, 'ai-jail'), ...args]
+    : args;
 }
 /** Panel data is a projection of cockpit, never a separate collector. */
 // prettier-ignore

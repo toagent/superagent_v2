@@ -190,13 +190,38 @@ test('installed shim injects synthetic managed secrets before entering jail', ()
     { mode: 0o755 }
   );
   const result = Bun.spawnSync([shim, 'models'], {
-    env: { ...process.env, HOME: root, PATH: `${bin}:${process.env.PATH}` },
+    env: { ...process.env, HOME: root, SECURITY_BIN: join(bin, 'security') },
     stdout: 'pipe',
     stderr: 'pipe',
   });
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toBe('set');
   expect(result.stderr.toString()).toContain('凭据 SF4_MISSING 不可用');
+  expect(result.stderr.toString()).not.toContain(probe);
+});
+
+test('secret-env executable injects managed secrets before its command', () => {
+  const root = tmp(),
+    bin = join(root, 'security'),
+    probe = crypto.randomUUID();
+  mkdirSync(join(root, '.wetamp'), { recursive: true });
+  writeFileSync(join(root, '.wetamp/secrets.list'), 'SF5_SYNTH\n');
+  writeFileSync(bin, `#!/bin/sh\nprintf %s ${JSON.stringify(probe)}\n`, { mode: 0o755 });
+  const result = Bun.spawnSync(
+    [
+      join(import.meta.dir, '..', 'bin', 'secret-env.sh'),
+      '/bin/sh',
+      '-c',
+      'printf %s "$SF5_SYNTH"',
+    ],
+    {
+      env: { ...process.env, HOME: root, SECURITY_BIN: bin },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe(probe);
   expect(result.stderr.toString()).not.toContain(probe);
 });
 
