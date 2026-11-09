@@ -7,7 +7,7 @@ const guard = require('../hooks/guard.cjs') as {
   decide: (payload: Record<string, unknown>, client: string, env: NodeJS.ProcessEnv) => any;
 };
 // prettier-ignore
-const scanner = () => { const file = `${tmp()}/scan.cjs`; writeFileSync(file, `exports.scanText = (text, options) => { if (options?.keyValues !== false) throw new Error('keyValues enabled'); return text.replaceAll('synthetic-secret-value', '[REDACTED:test]'); };`); return file; };
+const scanner = () => { const file = `${tmp()}/scan.cjs`; writeFileSync(file, `exports.scanText = (text, options) => { if (options?.keyValues !== false) throw new Error('keyValues enabled'); let result = text.replaceAll('synthetic-secret-value', '[REDACTED:test]'); if (options?.heuristics !== false) result = result.replaceAll('synthetic-heuristic-value', '[REDACTED:heuristic]'); return result; };`); return file; };
 test('shell commands are wrapped once for Claude and Codex', async () => {
   await require('../hooks/redline.cjs').init();
   const env = { ...process.env, SA_SECRET_SCAN_MODULE: scanner() };
@@ -42,11 +42,18 @@ test('an uninstalled firewall stays inert instead of hiding output or blocking p
     guard.decide({ hook_event_name: 'UserPromptSubmit', prompt: 'hello' }, 'claude', env)
   ).toBeNull();
 });
-test('derived sessions redact non-shell output and block secret prompts', () => {
+test('prompt skips heuristics while tool output redacts them and managed prompts still block', () => {
   const env = { ...process.env, SUPERAGENT_ROLE: 'general', SA_SECRET_SCAN_MODULE: scanner() };
   // prettier-ignore
-  const post = guard.decide({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {}, tool_response: { data: ['synthetic-secret-value'] } }, 'claude', env);
-  expect(post.hookSpecificOutput.updatedToolOutput).toEqual({ data: ['[REDACTED:test]'] });
+  const post = guard.decide({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {}, tool_response: { data: ['synthetic-heuristic-value'] } }, 'claude', env);
+  expect(post.hookSpecificOutput.updatedToolOutput).toEqual({ data: ['[REDACTED:heuristic]'] });
+  expect(
+    guard.decide(
+      { hook_event_name: 'UserPromptSubmit', prompt: 'synthetic-heuristic-value' },
+      'claude',
+      env
+    )
+  ).toBeNull();
   const prompt = guard.decide(
     { hook_event_name: 'UserPromptSubmit', prompt: 'synthetic-secret-value' },
     'claude',
@@ -54,6 +61,7 @@ test('derived sessions redact non-shell output and block secret prompts', () => 
   );
   expect(prompt).toMatchObject({
     decision: 'block',
+    reason: '检测到凭据；请按 ai-secret-sync 录入 1Password AI-Agents 后用 $NAME 引用',
     hookSpecificOutput: { suppressOriginalPrompt: true },
   });
 });

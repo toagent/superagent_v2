@@ -225,14 +225,16 @@ function decide(payload, client, env = process.env) {
       const prompt = String(payload.prompt || '');
       let safe;
       try {
-        safe = !prompt || scanner(env).scanText(prompt, { keyValues: false }) === prompt;
+        safe =
+          !prompt ||
+          scanner(env).scanText(prompt, { keyValues: false, heuristics: false }) === prompt;
       } catch {
         safe = false;
       }
       if (safe) return null;
       return {
         decision: 'block',
-        reason: '检测到凭据内容；请在终端用 superagent secret set <NAME> 录入后按名字引用',
+        reason: '检测到凭据；请按 ai-secret-sync 录入 1Password AI-Agents 后用 $NAME 引用',
         ...(client === 'claude'
           ? { hookSpecificOutput: { hookEventName: event, suppressOriginalPrompt: true } }
           : {}),

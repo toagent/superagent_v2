@@ -45,13 +45,18 @@ export function exactPatterns(secrets = managedSecrets()): ManagedSecret[] {
   return [...out].map(([value, name]) => ({ name, value })).sort((a, b) => b.value.length - a.value.length);
 }
 interface Finding {
+  RuleID?: string;
   Secret?: string;
   StartLine?: number;
   EndLine?: number;
 }
+// These rules infer secrets from generic field names and entropy, so prompt input must not
+// block on them. Tool-output redaction keeps them enabled to catch unmanaged secret values.
+export const HEURISTIC_RULES = new Set(['generic-api-key', 'password-assignment']);
 export interface ScanOptions {
   secrets?: ManagedSecret[];
   gitleaks?: boolean;
+  heuristics?: boolean;
   keyValues?: boolean;
   config?: string;
 }
@@ -64,19 +69,19 @@ export const redactGitleaksFindings = (text: string, findings: Finding[]): strin
   return lines.join('\n');
 };
 // prettier-ignore
-function gitleaks(text: string, config: string): string {
+function gitleaks(text: string, config: string, heuristics = true): string {
   if (!text) return text;
   const result = spawnSync('gitleaks', ['stdin', '--config', config, '--ignore-gitleaks-allow', '--no-banner', '--report-format', 'json', '--report-path', '-'], { input: text, encoding: 'utf8' });
   if (result.status === 0) return text;
   if (result.status !== 1) throw new Error('scan_failed');
-  try { const findings = JSON.parse(result.stdout || '[]') as Finding[]; if (!findings.length) throw new Error('empty report'); return redactGitleaksFindings(text, findings); } catch { throw new Error('scan_failed'); }
+  try { const findings = JSON.parse(result.stdout || '[]') as Finding[]; if (!findings.length) throw new Error('empty report'); const kept = heuristics ? findings : findings.filter(finding => !HEURISTIC_RULES.has(finding.RuleID ?? '')); return kept.length ? redactGitleaksFindings(text, kept) : text; } catch { throw new Error('scan_failed'); }
 }
 // prettier-ignore
 export function scanText(text: string, options: ScanOptions = {}): string {
   let result = text;
   for (const { name, value } of exactPatterns(options.secrets)) result = result.replaceAll(value, `[REDACTED:${name}]`);
   if (options.keyValues !== false) result = redactKeyValues(result);
-  return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? defaultConfig());
+  return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? defaultConfig(), options.heuristics);
 }
 // The config ships beside its code: install.sh copies it next to the built cjs in the jail, and the
 // engine checkout carries it at wetamp/secrets/. Never depend on the jail install from engine code,

@@ -30,11 +30,30 @@ test('managed values cover raw, line endings, four encodings, and key-value rule
   expect(scanText('max_tokens: value = id\nkeyboard=value abc123', { secrets: [], gitleaks: false, keyValues: false })).toBe('max_tokens: value = id\nkeyboard=value abc123');
 });
 
-test('gitleaks ignores allow comments and mismatched decoded ranges redact the whole line', () => {
-  const token = `ghp_${randomBytes(27).toString('hex').slice(0, 36)}`;
-  const output = scanText(`safe\n${token} # gitleaks:allow\nafter`, { secrets: [], config });
+test('prompt filtering skips heuristic keys but keeps vendor and managed detections', () => {
+  const generic = `preview?key=${Array.from({ length: 32 }, (_, index) =>
+      (index % 16).toString(16)
+    ).join('')}`,
+    token = `ghp_${randomBytes(27).toString('hex').slice(0, 36)}`,
+    managed = probe();
+  expect(scanText(generic, { secrets: [], config, keyValues: false, heuristics: false })).toBe(
+    generic
+  );
+  expect(scanText(generic, { secrets: [], config, keyValues: false })).not.toBe(generic);
+  const output = scanText(`safe\n${token} # gitleaks:allow\nafter`, {
+    secrets: [],
+    config,
+    heuristics: false,
+  });
   expect(output).not.toContain(token);
   expect(output).toContain('[REDACTED:gitleaks]');
+  expect(
+    scanText(managed, {
+      secrets: [{ name: 'MANAGED', value: managed }],
+      config,
+      heuristics: false,
+    })
+  ).toBe('[REDACTED:MANAGED]');
   expect(redactGitleaksFindings('keep\nencoded\nend', [{ Secret: 'decoded', StartLine: 2 }])).toBe(
     'keep\n[REDACTED:gitleaks]\nend'
   );
