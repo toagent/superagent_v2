@@ -1,3 +1,6 @@
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { Runner } from './command';
 import { deleteSecret, saveNames, storedNames, writeSecret } from './command';
 
@@ -13,32 +16,57 @@ const output = (result: ReturnType<Runner>): string =>
     .toString()
     .replace(/\r?\n$/, '');
 
-export function initOp(tty: boolean): { ok: true; command: string } {
-  if (!tty) throw new Error('secret init-op: 须在普通 TTY 终端执行');
-  return {
-    ok: true,
-    command: 'security add-generic-password -U -a superagent -s superagent-op-sa-token -w',
-  };
+// The service-account token lives in a 0600 file the jail denies (secret-paths.json "os"):
+// macOS `security ... -w` prompts through getpass, which silently truncates input at 128 characters,
+// and a 1Password service-account token is several hundred characters long.
+export const opTokenFile = (home = process.env.HOME ?? homedir()): string =>
+  join(home, '.config', 'superagent', 'op-sa.token');
+export function initOp(
+  tty: boolean,
+  readStdin: () => string = () => readFileSync(0, 'utf8'),
+  file = opTokenFile()
+): { ok: true; command?: string; stored?: string } {
+  if (tty) return { ok: true, command: 'pbpaste | superagent secret init-op' };
+  const token = readStdin().trim();
+  if (!token.startsWith('ops_') || token.length < 200 || /\s/.test(token))
+    throw new Error(
+      'secret init-op: 输入不像 1Password 服务账号 token（应以 ops_ 开头、无空白、数百字符）'
+    );
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${String(process.pid)}.tmp`;
+  writeFileSync(temp, token, { mode: 0o600 });
+  chmodSync(temp, 0o600);
+  renameSync(temp, file);
+  return { ok: true, stored: file };
 }
 
 export function syncSecrets(run: Runner, options: Options = {}): unknown {
   const op = options.opPath === undefined ? Bun.which('op') : options.opPath;
   if (!op) throw new Error('secret sync: 未找到 op，请执行 brew install 1password-cli');
-  const tokenResult = run('/usr/bin/security', [
-    'find-generic-password',
-    '-w',
-    '-a',
-    'superagent',
-    '-s',
-    'superagent-op-sa-token',
-  ]);
-  const token = output(tokenResult);
-  if (tokenResult.status !== 0) throw new Error('secret sync: 钥匙串不可访问，须在普通终端执行');
-  if (!token) throw new Error('secret sync: 未初始化，请先执行 superagent secret init-op');
+  const file = opTokenFile();
+  let token = existsSync(file) ? readFileSync(file, 'utf8').trim() : '';
+  if (!token) {
+    const tokenResult = run('/usr/bin/security', [
+      'find-generic-password',
+      '-w',
+      '-a',
+      'superagent',
+      '-s',
+      'superagent-op-sa-token',
+    ]);
+    token = output(tokenResult);
+    if (tokenResult.status !== 0 && tokenResult.status !== 44)
+      throw new Error('secret sync: 钥匙串不可访问，须在普通终端执行');
+  }
+  if (!token)
+    throw new Error('secret sync: 未初始化，请先执行 pbpaste | superagent secret init-op');
   const env = { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: token };
   const vault = options.vault ?? 'AI-Agents';
   const listed = run(op, ['item', 'list', '--vault', vault, '--format', 'json'], undefined, env);
-  if (listed.status !== 0) throw new Error('secret sync: op item list failed');
+  if (listed.status !== 0)
+    throw new Error(
+      `secret sync: op item list failed: ${Buffer.from(listed.stderr).toString().split('\n')[0].slice(0, 160)}`
+    );
   let items: unknown;
   try {
     items = JSON.parse(output(listed)) as unknown;

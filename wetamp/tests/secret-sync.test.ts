@@ -79,12 +79,17 @@ test('dry-run and initialization expose no values and perform no keychain writes
     secretCommand('sync', undefined, undefined, f.run, { opPath: '/fake/op', dryRun: true })
   ).toMatchObject({ synced: ['ONLY'], dry_run: true });
   expect(f.calls.some(call => call.args[0] === '-i')).toBeFalse();
-  expect(() => secretCommand('init-op', undefined, undefined, f.run, { tty: false })).toThrow(
-    'TTY'
-  );
   expect(secretCommand('init-op', undefined, undefined, f.run, { tty: true })).toMatchObject({
-    command: expect.stringContaining('superagent-op-sa-token'),
+    command: expect.stringContaining('pbpaste'),
   });
+  expect(() =>
+    secretCommand('init-op', undefined, undefined, f.run, { tty: false, stdin: 'short' })
+  ).toThrow('ops_');
+  const token = 'ops_' + 'x'.repeat(400);
+  expect(
+    secretCommand('init-op', undefined, undefined, f.run, { tty: false, stdin: token })
+  ).toMatchObject({ ok: true });
+  expect(f.calls.some(call => call.args.includes('add-generic-password'))).toBeFalse();
   expect(() => secretCommand('sync', undefined, undefined, f.run, { opPath: null })).toThrow(
     'brew install 1password-cli'
   );

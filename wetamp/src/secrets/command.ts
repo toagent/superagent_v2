@@ -72,10 +72,10 @@ const hidden = (): string => {
   return Buffer.from(bytes).toString();
 };
 // prettier-ignore
-export function secretCommand(action: string | undefined, name?: string, value?: string, run: Runner = (command, args, input, env) => spawnSync(command, args, { input, env }), options: { vault?: string; dryRun?: boolean; prune?: boolean; opPath?: string | null; tty?: boolean } = {}): unknown {
+export function secretCommand(action: string | undefined, name?: string, value?: string, run: Runner = (command, args, input, env) => spawnSync(command, args, { input, env }), options: { vault?: string; dryRun?: boolean; prune?: boolean; opPath?: string | null; tty?: boolean; stdin?: string } = {}): unknown {
   if (action === 'list') return storedNames();
   if (action === 'sync' || action === 'init-op')
-    return action === 'sync' ? syncSecrets(run, options) : initOp(options.tty ?? process.stdin.isTTY);
+    return action === 'sync' ? syncSecrets(run, options) : initOp(options.tty ?? process.stdin.isTTY, options.stdin ? () => options.stdin ?? '' : undefined);
   if (!name || !valid(name)) throw new Error('secret: NAME must match [A-Z_][A-Z0-9_]*');
   if ((action === 'set' || action === 'rm') && inJail()) throw new Error('secret: AI 会话的 jail 禁止访问钥匙串，请在普通终端执行');
   if (action === 'set') { const secret = value ?? hidden();
