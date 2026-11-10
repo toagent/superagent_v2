@@ -32,11 +32,11 @@ const mutations: Mutation[] = [
   },
   {
     file: 'src/generate.ts',
-    from: 'const engineAccept = p.accept;',
-    to: 'const engineAccept = coderAccept;',
+    from: 'const engineAccept = p.accept.filter(check => check.resource);',
+    to: 'const engineAccept = p.accept;',
     test: 'tests/generate.test.ts',
     name: 'splits coder smoke checks from complete engine acceptance',
-    expectedError: 'expect(received).toContain(expected)',
+    expectedError: 'expect(received).not.toContain(expected)',
   },
   {
     file: 'src/land.ts',

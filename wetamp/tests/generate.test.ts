@@ -1887,10 +1887,8 @@ describe('renderBrief', () => {
   });
   test('splits coder smoke checks from complete engine acceptance', () => {
     const p = structuredClone(fixture.packages[0]);
-    p.scope.write.push('wetamp/src/core.ts', 'wetamp/tests/core.test.ts:2-8');
     p.accept.push(
-      { cmd: 'cd wetamp && env NODE_ENV=test bun run type-check', timeout_s: 30 },
-      { cmd: 'cd wetamp && bun test tests/core.test.ts tests/other.test.ts', timeout_s: 30 },
+      { cmd: 'python -m pytest tests/test_core.py', timeout_s: 30 },
       { cmd: 'cd wetamp && bun test tests/other.test.ts', timeout_s: 30 },
       { cmd: 'cd wetamp && bun test tests/core.test.ts', timeout_s: 900, resource: 'heavy-test' }
     );
@@ -1905,12 +1903,13 @@ describe('renderBrief', () => {
       expect(b).toContain(s);
     const own = b.split('### 你要运行的验收命令')[1]?.split('### 引擎验收会运行')[0];
     const engine = b.split('### 引擎验收会运行（你不要运行）')[1]?.split('## 你的权限')[0];
-    expect(own).toContain('`cd wetamp && env NODE_ENV=test bun run type-check`');
-    expect(own).toContain('`cd wetamp && bun test tests/core.test.ts tests/other.test.ts`');
-    expect(own).not.toContain('`test -f core.txt`');
-    expect(own).not.toContain('`cd wetamp && bun test tests/other.test.ts`');
+    expect(own).toContain('`python -m pytest tests/test_core.py`');
+    expect(own).toContain('`cd wetamp && bun test tests/other.test.ts`');
+    expect(own).toContain('`test -f core.txt`');
     expect(own).not.toContain('`cd wetamp && bun test tests/core.test.ts`');
-    for (const check of p.accept) expect(engine).toContain(`\`${check.cmd}\``);
+    expect(engine).toContain('`cd wetamp && bun test tests/core.test.ts`');
+    expect(engine).not.toContain('`python -m pytest tests/test_core.py`');
+    expect(engine).not.toContain('`cd wetamp && bun test tests/other.test.ts`');
     expect(b).toContain('命令通过不代替逐项核对需求的实现位置与对应测试');
     expect(b).not.toContain('跑长时测试（全量、E2E）');
   });
@@ -2129,7 +2128,7 @@ test('SHIFT_LEFT_ACCEPT generated code/repair/fix require acceptance before deli
         command === 'sa-repair'
           ? '资源检查仍使用上节包装前缀'
           : command === 'sa-code'
-            ? '引擎验收不要运行'
+            ? '资源检查不要运行'
             : '标为引擎运行的检查不要运行'
       );
       expect(prompt).toContain(
