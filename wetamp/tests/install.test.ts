@@ -120,7 +120,8 @@ describe('install.sh', () => {
     const plist = join(la, 'com.wetamp.superagent.supervise-tick.plist');
     const bunDir = dirname(Bun.which('bun') ?? ''),
       nodeDir = dirname(Bun.which('node') ?? ''),
-      callerPath = `${bunDir}:${nodeDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`;
+      gitleaksDir = dirname(Bun.which('gitleaks') ?? ''),
+      callerPath = `${bunDir}:${nodeDir}:${gitleaksDir}:${home}/.nvm/versions/node/v24.22.1/bin:${home}/.codex/tmp/session:/usr/bin:/bin`;
     mkdirSync(join(home, '.nvm/current/bin'), { recursive: true });
     runInstall(home, la, undefined, callerPath);
     const xml = readFileSync(plist, 'utf8');

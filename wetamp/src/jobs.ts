@@ -506,6 +506,7 @@ export async function jobCli(
     return EXIT_USAGE;
   }
   for (const file of [input, card].filter((value): value is string => value !== undefined)) {
+    if (!existsSync(file)) continue;
     const text = readFileSync(file, 'utf8');
     if (scanText(text) !== text) {
       console.error('job: secret_in_input');

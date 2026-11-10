@@ -4692,9 +4692,9 @@ const renderUsage = (all: boolean): string =>
     ...CLI_COMMAND_USAGE.filter(command => all || command.audience === 'agent').map(command =>
       usageLine(command, all)
     ),
-    '  JSON；exit: 0完成 1失败 2取消 3待决 4运行 5别名漂移 64用法 75暂拒',
-    '  运维命令：superagent --help --all',
-    `  agent 文档：${join(WETAMP, 'docs/agent.md')}`,
+    '  JSON；exit: 0完成 1失败 2取消 3待决 4运行 5漂移 64用法 75暂拒',
+    '  运维：superagent --help --all',
+    `  文档：${join(WETAMP, 'docs/agent.md')}`,
   ].join('\n');
 export const USAGE = renderUsage(false);
 export const allUsage = (): string => renderUsage(true);
