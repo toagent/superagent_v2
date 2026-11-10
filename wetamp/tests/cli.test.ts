@@ -39,7 +39,7 @@ import {
   classify,
   classifyRun,
   adoptCandidates,
-  deliveryBase,
+  continuation,
   decisionQuestion,
   EXIT,
   EXIT_ALIAS_DRIFT,
@@ -76,17 +76,8 @@ const req = createRequire(import.meta.url);
 const generatorModule = req('../src/generate.ts') as typeof import('../src/generate');
 const realGenerate = generate;
 const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof generate> => {
-  const [
-    plan,
-    run,
-    fake = false,
-    previousHash,
-    carried,
-    delivery,
-    engineSnapshot,
-    routingState,
-    deliveryBase,
-  ] = args;
+  const [plan, run, fake = false, previousHash, carried, delivery, engineSnapshot, routingState] =
+    args;
   const dir = join(process.env.SUPERAGENT_HOME!, 'gen', run);
   const workflow = `sa-${run}`;
   const archon = join(dir, '.archon');
@@ -110,8 +101,7 @@ const fastGenerate = (...args: Parameters<typeof generate>): ReturnType<typeof g
         carried,
         delivery,
         engineSnapshot,
-        routingState,
-        deliveryBase
+        routingState
       )
     )
   );
@@ -433,15 +423,15 @@ test('sa base_ref follows the ledger chain into fresh run review wiring and reje
   };
   const oldest = prior('oldest', base), previous = prior('previous', 'sa/oldest');
   let wired: string | undefined;
-  fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation((...args) => { wired = args[8]; return fastGenerate(...args); }));
+  fixtureSpies.push(spyOn(generatorModule, 'generate').mockImplementation((...args) => { wired = args[4]?.baselines?.review; return fastGenerate(...args); }));
   const plan = fixturePlan(s.root, repo, p => { p.base_ref = 'sa/previous'; });
   expect(captured(() => main(['run', plan, '--fake', '--fresh', '--allow-overlap', 'fixture'])).code).toBe(0);
   expect(wired).toBe(base);
-  expect(deliveryBase(previous)).toBe(base);
+  expect(continuation(previous)?.baselines?.review).toBe(base);
   fixturePlan(oldest.gen_dir, repo, p => { p.base_ref = 'sa/previous'; });
-  expect(deliveryBase(previous)).toBeUndefined();
+  expect(continuation(previous)).toBeUndefined();
   fixturePlan(previous.gen_dir, repo, p => { p.base_ref = 'sa/missing'; });
-  expect(deliveryBase(previous)).toBeUndefined();
+  expect(continuation(previous)).toBeUndefined();
 });
 
 describe('quick', () => {

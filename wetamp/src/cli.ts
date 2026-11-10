@@ -177,7 +177,13 @@ import {
   refreshClaudeHealth,
 } from './claude-health';
 import { launchAgent, orcaBin, type AgentLaunch } from './orca';
-import { engineHash, generate, newRunId, type Carried, type ReviewCheckpoint } from './generate';
+import {
+  engineHash,
+  generate,
+  newRunId,
+  type Continuation,
+  type ReviewCheckpoint,
+} from './generate';
 import { loadPlan, milestones, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
@@ -1188,10 +1194,13 @@ export const recoveryOutputHashes = (
   }
 };
 
-function reviewCheckpoints(l: Ledger, run: RunView): Carried['reviews'] {
+function reviewCheckpoints(
+  l: Ledger,
+  run: RunView
+): NonNullable<Continuation['baselines']>['checkpoints'] {
   if (!run.working_path) return {};
   try {
-    const reviews: NonNullable<Carried['reviews']> = {},
+    const reviews: NonNullable<NonNullable<Continuation['baselines']>['checkpoints']> = {},
       art = artifactsOf(run),
       head = gitHead(run.working_path),
       hashes = recoveryOutputHashes(run.id, l.repo);
@@ -1211,7 +1220,7 @@ function reviewCheckpoints(l: Ledger, run: RunView): Carried['reviews'] {
   }
 }
 
-export function deliveryBase(l: Ledger): string | undefined {
+export function continuation(l: Ledger): Continuation | undefined {
   let current = l;
   const seen = new Set<string>();
   for (;;) {
@@ -1226,7 +1235,9 @@ export function deliveryBase(l: Ledger): string | undefined {
           timeout: QUERY_TIMEOUT_MS,
         }
       );
-      return resolved.exitCode === 0 ? resolved.stdout.toString().trim() : undefined;
+      return resolved.exitCode === 0
+        ? { from: l.run_id, packages: [], baselines: { review: resolved.stdout.toString().trim() } }
+        : undefined;
     }
     if (seen.has(match[1])) return undefined;
     seen.add(match[1]);
@@ -1238,11 +1249,11 @@ export function deliveryBase(l: Ledger): string | undefined {
   }
 }
 
-function planDeliveryBase(plan: Plan): string | undefined {
+function planContinuation(plan: Plan): Continuation | undefined {
   const match = /^(?:refs\/heads\/)?sa\/(.+)$/.exec(plan.base_ref);
   if (!match) return undefined;
   try {
-    return deliveryBase(loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]));
+    return continuation(loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]));
   } catch {
     return undefined;
   }
@@ -1469,8 +1480,7 @@ function recoverRun(
             freshDirectory: staleSnapshot,
             evidence: carriedEvidence,
             coded,
-            reviews,
-            deliveryBase: deliveryBase(l),
+            baselines: { ...continuation(l)?.baselines, checkpoints: reviews },
             ...(recovery
               ? {
                   recovery: {
@@ -2003,24 +2013,25 @@ function startRun(planPath: string, a: Args): number {
         }
         phase = 'engine';
         const engine = runEngineSnapshot();
-        const continuation: Carried | undefined = adopted
+        const carried: Continuation | undefined = adopted
           ? {
               from: adopted.run.id,
               packages: [],
-              reviews: reviewCheckpoints(adopted.ledger, adopted.run),
-              deliveryBase: deliveryBase(adopted.ledger),
+              baselines: {
+                ...continuation(adopted.ledger)?.baselines,
+                checkpoints: reviewCheckpoints(adopted.ledger, adopted.run),
+              },
             }
-          : undefined;
+          : planContinuation(plan);
         const gen = generate(
           plan,
           run,
           a.flags.fake ?? false,
           undefined,
-          continuation,
+          carried,
           delivery,
           engine.path,
-          routing,
-          adopted ? undefined : planDeliveryBase(plan)
+          routing
         );
         freezePlanRules(plan, gen.dir);
         const branch = adopted?.ledger.branch ?? `sa/${run}`;

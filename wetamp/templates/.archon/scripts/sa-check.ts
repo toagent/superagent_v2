@@ -1134,7 +1134,7 @@ export function scopeBase(runStart: string, base: string): string {
 
 /** Use one authored-change baseline for both scope and package complexity checks. */
 function packageChangeBase(runStart: string, base: string): string {
-  return env('TARGET_TIP') || scopeBase(runStart, base);
+  return scopeBase(runStart, env('TARGET_TIP') || base);
 }
 
 const LOCKFILES = new Set([

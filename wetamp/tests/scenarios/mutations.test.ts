@@ -100,8 +100,8 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
-    from: "return env('TARGET_TIP') || scopeBase(runStart, base);",
-    to: 'return scopeBase(runStart, base);',
+    from: "return scopeBase(runStart, env('TARGET_TIP') || base);",
+    to: "return env('TARGET_TIP') || scopeBase(runStart, base);",
     test: 'tests/sa-check.test.ts',
     name: 'synced mainline edits are not scope violations',
     expectedError: 'out_of_scope',

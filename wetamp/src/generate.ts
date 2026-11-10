@@ -127,14 +127,17 @@ export function newRunId(now = new Date()): string {
 
 const REVIEW_IDLE_MS = 15 * 60 * 1000;
 
-export interface Carried {
+export interface Continuation {
   from: string;
   packages: string[];
-  deliveryBase?: string;
+  baselines?: {
+    authored?: string;
+    review?: string;
+    checkpoints?: Partial<Record<string, ReviewCheckpoint>>;
+  };
   freshDirectory?: boolean;
   evidence?: Record<string, string>;
   coded?: string[];
-  reviews?: Partial<Record<string, ReviewCheckpoint>>;
   recovery?: RecoveryEvidence & { admitted_by: unknown; admitted_at: string };
 }
 // prettier-ignore
@@ -191,11 +194,10 @@ export function buildWorkflow(
   fake = false,
   now = Date.now(),
   tiers: Tiers = loadTiers(),
-  carried?: Carried,
+  carried?: Continuation,
   delivery?: import('./land').DeliveryTarget,
   engineSnapshot?: string,
-  state: RouteState = routeState(tiers, plan.mode, now),
-  deliveryBase?: string
+  state: RouteState = routeState(tiers, plan.mode, now)
 ): Node {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
@@ -220,15 +222,17 @@ export function buildWorkflow(
     }
     return undefined;
   };
-  const carriedScopeBase = [
-    ...Object.values(carried?.evidence ?? {}),
-    ...(carried?.recovery?.rounds.flatMap(round => {
-      const legacy = round as Partial<typeof round>;
-      return [legacy.source?.path, legacy.freeze?.path];
-    }) ?? []),
-  ]
-    .map(evidenceScopeBase)
-    .find(Boolean);
+  const carriedScopeBase =
+    carried?.baselines?.authored ??
+    [
+      ...Object.values(carried?.evidence ?? {}),
+      ...(carried?.recovery?.rounds.flatMap(round => {
+        const legacy = round as Partial<typeof round>;
+        return [legacy.source?.path, legacy.freeze?.path];
+      }) ?? []),
+    ]
+      .map(evidenceScopeBase)
+      .find(Boolean);
   const resuming = Boolean(
     carried &&
     (carried.freshDirectory === true ||
@@ -236,7 +240,7 @@ export function buildWorkflow(
       (carried.coded?.length ?? 0) > 0 ||
       Object.keys(carried.evidence ?? {}).length > 0 ||
       carried.recovery !== undefined ||
-      Object.keys(carried.reviews ?? {}).length > 0)
+      Object.keys(carried.baselines?.checkpoints ?? {}).length > 0)
   );
   const execution = (id: string): Node => {
     if (fake) return {};
@@ -917,7 +921,7 @@ export function buildWorkflow(
         pkgs: ids,
         scope_pkgs,
         scope_base: scopeBase,
-        review_base: carried.deliveryBase ?? ref.required(syncReadyHandle, 'target_tip'),
+        review_base: carried.baselines?.review ?? ref.required(syncReadyHandle, 'target_tip'),
         risk: m.risk,
         milestone: m.id,
         target_tip: ref.required(syncReadyHandle, 'target_tip'),
@@ -953,13 +957,12 @@ export function buildWorkflow(
       continue;
     }
     let prev = syncReady;
-    const rawCheckpoint = carried?.reviews?.[m.id];
+    const rawCheckpoint = carried?.baselines?.checkpoints?.[m.id];
     // prettier-ignore
     const checkpoint = rawCheckpoint?.gate.decision && ['advance', 'debt'].includes(rawCheckpoint.gate.decision.kind) ? rawCheckpoint : undefined;
     const reviewBase =
       checkpoint?.gate.reviewed_head ??
-      carried?.deliveryBase ??
-      deliveryBase ??
+      carried?.baselines?.review ??
       ref.required(syncReadyHandle, 'target_tip');
     // prettier-ignore
     const checkpointAtoms = checkpoint ? [['head', checkpoint.gate.reviewed_head], ['diff_hash', checkpoint.gate.reviewed_diff_hash],
@@ -1683,11 +1686,10 @@ export function generate(
   run: string,
   fake = false,
   previousHash?: string,
-  carried?: Carried,
+  carried?: Continuation,
   delivery?: import('./land').DeliveryTarget,
   engineSnapshot?: string,
-  routingState?: RouteState,
-  deliveryBase?: string
+  routingState?: RouteState
 ): Gen {
   const engineWetamp = engineSnapshot ? join(engineSnapshot, 'wetamp') : WETAMP;
   const engine_commit = cleanEngine();
@@ -1728,17 +1730,16 @@ export function generate(
     carried,
     delivery,
     engineSnapshot,
-    state,
-    deliveryBase
+    state
   );
   assertGeneratedWorkflow(definition, !ms.some(m => m.human));
   const wfDir = join(dir, '.archon', 'workflows', workflow);
   for (const d of [wfDir, join(dir, 'briefs'), join(dir, 'hints')])
     mkdirSync(d, { recursive: true });
-  if (carried?.reviews) {
+  if (carried?.baselines?.checkpoints) {
     const checkpointDir = join(dir, 'review-checkpoints');
     mkdirSync(checkpointDir, { recursive: true });
-    for (const [milestone, checkpoint] of Object.entries(carried.reviews))
+    for (const [milestone, checkpoint] of Object.entries(carried.baselines.checkpoints))
       if (checkpoint)
         writeFileSync(join(checkpointDir, `${milestone}.json`), JSON.stringify(checkpoint.gate));
   }

@@ -11,7 +11,7 @@ import {
   generate,
   newRunId,
   renderBrief,
-  type Carried,
+  type Continuation,
 } from '../src/generate';
 import { install, loadTiers, snapshotPolicy, WETAMP } from '../src/config';
 import * as coord from '../src/coord';
@@ -618,7 +618,7 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
     buildWorkflow(p, milestones(p), 'adopted', '/GEN', false, NOW, loadTiers(), {
       from: 'old',
       packages: [p.packages[0].id],
-      deliveryBase: 'a'.repeat(40),
+      baselines: { review: 'a'.repeat(40) },
       evidence: { [p.packages[0].id]: evidence },
     })
   );
@@ -639,11 +639,9 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
       false,
       NOW,
       loadTiers(),
+      { from: 'previous', packages: [], baselines: { review: start } },
       undefined,
-      undefined,
-      undefined,
-      undefined,
-      start
+      undefined
     )
   );
   expect(
@@ -809,7 +807,7 @@ describe('buildWorkflow', () => {
   test('coder repairs resume only guaranteed single-owner sessions', () => {
     const plan = structuredClone(fixture);
     plan.packages = [plan.packages[0]];
-    const buildNodes = (p: Plan, fake = false, carried?: Carried) =>
+    const buildNodes = (p: Plan, fake = false, carried?: Continuation) =>
       nodesOf(
         buildWorkflow(p, milestones(p), 'resume', '/GEN', fake, NOW, fixtureTiers(), carried)
       );
@@ -905,7 +903,7 @@ describe('buildWorkflow', () => {
       buildWorkflow(fixture, milestones(fixture), 'continued', '/GEN', false, NOW, loadTiers(), {
         from: 'old-run',
         packages: [],
-        reviews: { m1: checkpoint },
+        baselines: { checkpoints: { m1: checkpoint } },
       })
     );
     const carried = nodes.find(n => n.id === 'carried-gate-m1')!;
@@ -941,7 +939,7 @@ describe('buildWorkflow', () => {
       buildWorkflow(fixture, milestones(fixture), 'continued', '/GEN', false, NOW, loadTiers(), {
         from: 'old',
         packages: [],
-        reviews: { m1: checkpoint },
+        baselines: { checkpoints: { m1: checkpoint } },
       })
     );
     const carry = nodes.find(n => n.id === 'carried-gate-m1')!;

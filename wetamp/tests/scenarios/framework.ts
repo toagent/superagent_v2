@@ -26,7 +26,7 @@ import {
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { fixturePlan, gitRepo, sh, tmp, trackTestChild } from '../helpers';
-import { engineHash, generate, type Carried } from '../../src/generate';
+import { engineHash, generate, type Continuation } from '../../src/generate';
 import { classifyRun, loadLedger, ledgerPath, main } from '../../src/cli';
 import type { RunView } from '../../src/archon';
 import * as coordination from '../../src/coord';
@@ -70,7 +70,7 @@ export interface ScenarioFixture {
   targetAfterInjection?: string;
   targetAdvancedAfterResync?: boolean;
   targetAdvanceAfterInitialSync?: string;
-  carried?: Carried;
+  carried?: Continuation;
   engineSnapshot?: string;
   omitNewFindingOnRetry?: boolean;
   fake?: boolean;
