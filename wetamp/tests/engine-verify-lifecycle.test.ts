@@ -13,8 +13,9 @@ afterEach(() => {
 // prettier-ignore
 function fixture() {
   const root = tmp(),
-    source = gitRepo(root),
-    base = sh('git rev-parse HEAD', source).trim();
+    source = gitRepo(root);
+  sh('git branch -M 1.0.0', source);
+  const base = sh('git rev-parse HEAD', source).trim();
   writeFileSync(join(source, 'change'), 'change');
   sh('git add change && git commit -qm change', source);
   const sha = sh('git rev-parse HEAD', source).trim(),
@@ -92,13 +93,13 @@ test('auto verify waits for a live process group, then cleans and retries after 
     groupAlive: () => alive,
     spawn: () => (spawned++, { pid: 30, unref() {} }),
   };
-  expect(autoVerify(join(f.root, f.sha), dependencies)).toMatchObject({
+  expect(autoVerify(join(f.root, f.base), dependencies)).toMatchObject({
     started: false,
     error: 'verify_process_group_alive',
   });
   expect(existsSync(prior.checkout!)).toBe(true);
   alive = false;
-  expect(autoVerify(join(f.root, f.sha), dependencies)).toMatchObject({ started: true, base: f.base });
+  expect(autoVerify(join(f.root, f.base), dependencies)).toMatchObject({ started: true, base: f.base });
   expect(existsSync(prior.checkout!)).toBe(false);
   expect({ spawned, retries: verifyRecord(f.sha)?.retries }).toEqual({ spawned: 1, retries: 1 });
 });
