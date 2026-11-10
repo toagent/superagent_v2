@@ -257,7 +257,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       file,
       JSON.stringify({ permissions: { deny: ['Read(./secret)'], allow: ['Bash(echo *)'] } })
     );
-    expect(sh('--hooks').code).toBe(0);
+    const installed = sh('--hooks');
+    expect(installed.code, installed.out).toBe(0);
     const first = readFileSync(file, 'utf8');
     const { permissions } = JSON.parse(first);
     expect(permissions.allow).toEqual(['Bash(echo *)']);
