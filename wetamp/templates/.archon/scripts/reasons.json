@@ -119,6 +119,13 @@
     "description": "评审节点执行失败"
   },
   {
+    "code": "secret_in_diff",
+    "hold": "gate",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "发布区间包含凭据"
+  },
+  {
     "code": "coder",
     "hold": "coder",
     "determinism": "transient",
@@ -369,6 +376,13 @@
     "determinism": "deterministic",
     "owner": "engine",
     "description": "评审节点执行失败"
+  },
+  {
+    "code": "secret_in_diff+review_limit",
+    "hold": "review_limit",
+    "determinism": "deterministic",
+    "owner": "coder",
+    "description": "发布区间包含凭据"
   },
   {
     "code": "coder+review_limit",
