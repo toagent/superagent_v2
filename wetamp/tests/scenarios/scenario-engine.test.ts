@@ -105,6 +105,7 @@ exec "$S12_REAL_ARCHON" "$@"
     writeFileSync(join(source, 'engine-b'), 'B');
     sh('git add engine-b && git commit -qm engine-B', source);
     const b = sh('git rev-parse HEAD', source).trim();
+    writeFileSync(join(home, 'engine/promotions', `${b}.verify.json`), JSON.stringify({ sha: b, base: a, status: 'passed', files: [], failed_files: [], log: join(home, 'engine/promotions', `${b}.verify.log`), at: new Date().toISOString() }));
     promote(b, undefined, { probe: passedProbe });
     Object.assign(process.env, { SA_ARCHON_BIN: archon, S12_BUN: process.execPath, S12_PROBE: probe, S12_REAL_ARCHON: join(aPath, 'wetamp/bin/archon'), S12_RUNNER: runner, S12_STATE_DIR: root });
     const who = coordination.caller(), launcherPreload = join(root, 'launcher.cjs');
