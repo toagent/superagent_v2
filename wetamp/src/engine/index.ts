@@ -586,7 +586,7 @@ const verifyFailureTitle = (record: EngineVerifyRecord, currentSha: string): str
     subject = '';
   }
   const kind = record.failed_files.length === 0 ? '基础设施异常' : '发现回归';
-  return `引擎上线后复验${kind}｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
+  return `引擎候选验证${kind}｜${record.sha.slice(0, 10)}${subject ? `（${subject}）` : ''}｜线上版本 ${currentSha.slice(0, 10)} 仍在服务`;
 };
 // prettier-ignore
 const reportVerifyFailure = (record: EngineVerifyRecord, currentSha: string, dependencies: AutoVerifyDependencies): void => { const failure_kind = record.failed_files.length === 0 ? 'infrastructure' : 'regression'; if (failure_kind === 'regression') { const title = verifyFailureTitle(record, currentSha); (dependencies.handoff ?? ((item, messageTitle) => { const dedupe_key = JSON.stringify(['post-promotion-verify', failure_kind, [...new Set(item.failed_files)].sort()]); coord().handoff(repoScope(WETAMP), caller(true), { kind: 'bug', title: messageTitle, body: `base: ${item.base}\nfailed_files: ${item.failed_files.join(', ')}\nlog: ${item.log}`, evidence: [item.sha, item.log], dedupe_key, severity: 'normal' }, 0, false); }))(record, title); } writeVerify({ ...record, failure_kind, reported: true }); };
@@ -595,32 +595,36 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
   if (!current) return;
   const inspect = dependencies.inspect ?? inspectProcess,
     currentSha = basename(current);
+  let targetSha = currentSha;
   try {
+    targetSha = releaseHead();
     let records = verifyRecords();
     for (const record of records.filter(r => r.status === 'running')) {
       const state = attemptState(record, inspect, dependencies.groupAlive);
       if (state !== 'dead') return { sha: record.sha, started: false, ...(record.pgid ? { error: state === 'live' ? 'verify_process_group_alive' : 'verify_process_group_unknown' } : {}) };
-      const lost = lostVerify(record, record.sha !== currentSha && isAncestor(record.sha, currentSha) ? 'superseded' : 'failed');
+      const lost = lostVerify(record, record.sha !== targetSha && isAncestor(record.sha, targetSha) ? 'superseded' : 'failed');
       writeVerify(lost);
       cleanupVerify(lost);
     }
     records = verifyRecords();
-    for (const record of records.filter(r => r.status === 'failed' && !r.reported && !(r.error === 'verify_process_lost' && (r.retries ?? 0) < 1)))
+    const retryableInfrastructure = (record: EngineVerifyRecord): boolean =>
+      record.status === 'failed' && record.failed_files.length === 0 && (record.retries ?? 0) < 1;
+    const prior = verifyRecord(targetSha),
+      retry = targetSha !== currentSha && prior && retryableInfrastructure(prior) ? prior : undefined;
+    for (const record of records.filter(r => r.status === 'failed' && !r.reported && r.sha !== retry?.sha))
       reportVerifyFailure(record, currentSha, dependencies);
-    const prior = verifyRecord(currentSha), retry = prior?.status === 'failed' && prior.error === 'verify_process_lost' && (prior.retries ?? 0) < 1 ? prior : undefined;
-    if (prior && !retry) return { sha: currentSha, started: false };
+    if (targetSha === currentSha) return { sha: targetSha, started: false };
+    if (prior && !retry) return { sha: targetSha, started: false };
     const passed = records
-        .filter(r => r.status === 'passed' && isAncestor(r.sha, currentSha))
-        .sort((a, b) => a.at.localeCompare(b.at))
-        .at(-1),
+        .filter(r => r.status === 'passed' && r.sha !== targetSha && isAncestor(r.sha, targetSha))
+        .sort((a, b) => Number(git(['rev-list', '--ancestry-path', '--count', `${a.sha}..${targetSha}`])) - Number(git(['rev-list', '--ancestry-path', '--count', `${b.sha}..${targetSha}`])))
+        .at(0),
       base =
         retry?.base ?? passed?.sha ??
-        receipts()
-          .filter(r => r.sha !== currentSha && isAncestor(r.sha, currentSha))
-          .at(-1)?.sha;
-    if (!base) return { sha: currentSha, started: false };
+        (receipt(currentSha) && isAncestor(currentSha, targetSha) ? currentSha : undefined);
+    if (!base) return { sha: targetSha, started: false };
     if (retry && !/^[0-9a-f]{40}$/i.test(retry.sha)) throw new Error('engine auto-verify: invalid retry sha');
-    const token = crypto.randomUUID(), attempt = crypto.randomUUID(), command = [process.execPath, join(current, 'wetamp/src/cli.ts'), 'engine', 'verify', currentSha, '--base', base],
+    const token = crypto.randomUUID(), attempt = crypto.randomUUID(), command = [process.execPath, join(current, 'wetamp/src/cli.ts'), 'engine', 'verify', targetSha, '--base', base],
       spawned = dependencies.spawn
         ? dependencies.spawn(command, { ...process.env, SA_ENGINE_VERIFY_TOKEN: token })
         : Bun.spawn(command, {
@@ -634,10 +638,10 @@ export function autoVerify(current: string | undefined, dependencies: AutoVerify
       identity = inspect(spawned.pid);
     if (identity.state !== 'online')
       throw new Error('engine auto-verify: process identity unavailable');
-    writeVerify({ sha: currentSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${currentSha}.verify.log`), at: new Date().toISOString(), attempt, checkout: join(verifyRoot(), currentSha, attempt), pid: spawned.pid, pid_start: identity.start, host: hostname(), token, ...(retry ? { retries: (retry.retries ?? 0) + 1 } : {}) });
+    writeVerify({ sha: targetSha, base, status: 'running', files: [], failed_files: [], log: join(promotionDir(), `${targetSha}.verify.log`), at: new Date().toISOString(), attempt, checkout: join(verifyRoot(), targetSha, attempt), pid: spawned.pid, pid_start: identity.start, host: hostname(), token, ...(retry ? { retries: (retry.retries ?? 0) + 1 } : {}) });
     spawned.unref();
-    return { sha: currentSha, base, started: true };
-  } catch (error) { return { sha: currentSha, started: false, error: error instanceof Error ? error.message : String(error) }; }
+    return { sha: targetSha, base, started: true };
+  } catch (error) { return { sha: targetSha, started: false, error: error instanceof Error ? error.message : String(error) }; }
 }
 
 interface PromotionMarker {
@@ -800,12 +804,17 @@ export function promote(
     } catch {
       // No prior attempt.
     }
-    marker = beginPromotion(sha);
     const current = currentEngineSnapshot();
     if (bootstrapEvidence && current)
       throw new Error('engine promote: bootstrap evidence is first-use only');
     if (isRejected(sha)) throw new Error('engine promote: sha is rejected');
     if (sha !== releaseHead()) throw new Error('engine promote: candidate is not 1.0.0 HEAD');
+    if (!(bootstrapEvidence && !current)) {
+      const verified = verifyRecord(sha);
+      if (verified?.sha !== sha || verified.status !== 'passed')
+        throw new Error('engine promote: candidate verify has not passed');
+    }
+    marker = beginPromotion(sha);
     const snapshot = prepareSnapshot(sha, retryingFailedCandidate);
     const next = bootstrapEvidence
       ? (() => {
@@ -988,10 +997,16 @@ export function engineStatus(): Record<string, unknown> {
     counts[key][state] = (counts[key][state] ?? 0) + 1;
   }
   const currentSha = current && basename(current);
+  let verify: EngineVerifyRecord | null = null;
+  try {
+    verify = verifyRecord(releaseHead()) ?? null;
+  } catch {
+    // Status remains available when the release ref is missing.
+  }
   const verified = receipts();
   return {
     current,
-    verify: currentSha ? (verifyRecord(currentSha) ?? null) : null,
+    verify,
     hold: engineHold(),
     protocol_version: ENGINE_PROTOCOL_VERSION,
     snapshots: verified.map(item => ({
@@ -1078,6 +1093,8 @@ export function autoPromote(
   try {
     const sha = releaseHead();
     if (shaOfSnapshot(current) === sha) return { sha, promoted: false };
+    const verified = verifyRecord(sha);
+    if (verified?.sha !== sha || verified.status !== 'passed') return { sha, promoted: false };
     const marker = join(promotionDir(), `${sha}.json`);
     if (existsSync(marker)) {
       const prior = JSON.parse(readFileSync(marker, 'utf8')) as PromotionMarker;

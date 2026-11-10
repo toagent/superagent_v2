@@ -83,6 +83,21 @@ const commit = (source: string, name: string): string => {
   return sh('git rev-parse HEAD', source).trim();
 };
 
+const recordVerify = (
+  sha: string,
+  base: string,
+  status: 'passed' | 'failed' = 'passed',
+  failed_files: string[] = [],
+  at = new Date().toISOString()
+): void => {
+  const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions');
+  mkdirSync(promotions, { recursive: true });
+  writeFileSync(
+    join(promotions, `${sha}.verify.json`),
+    JSON.stringify({ sha, base, status, files: failed_files, failed_files, log: `/${sha}.log`, at })
+  );
+};
+
 // prettier-ignore
 const successfulProbe = (): ProbeEvidence => JSON.parse('{"ok":true,"level":"G1","run_id":"probe-run","duration_ms":7,"evidence_path":"/probe/evidence.json"}');
 
@@ -244,6 +259,11 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
   expect(promote(first, f.evidence).bootstrap_evidence).toBe(f.evidence);
   expect(() => promote(first, f.evidence)).toThrow('first-use only');
   const second = commit(f.source, 'second');
+  expect(() => promote(second, undefined, { probe: successfulProbe })).toThrow(
+    'candidate verify has not passed'
+  );
+  expect(currentEngineSnapshot()).toEndWith(first);
+  recordVerify(second, first);
   engineCommand(['hold', 'on']);
   let follows = 0;
   expect(promote(second, undefined, { probe: successfulProbe, followConsole: () => { follows++; throw new Error('restart failed'); } })).toMatchObject({
@@ -273,6 +293,7 @@ test('bootstrap, descendant promotion, rollback rejection, and a newer descendan
     'sha is rejected'
   );
   const third = commit(f.source, 'third');
+  recordVerify(third, second);
   expect(promote(third, undefined, { probe: successfulProbe }).sha).toBe(third);
   expect(currentEngineSnapshot()).toEndWith(third);
 }, testTimeout(120_000));
@@ -282,6 +303,7 @@ test('promotion keeps its verified candidate when 1.0.0 advances during the prob
   const f = sourceFixture(), first = f.sha();
   promote(first, f.evidence);
   const candidate = commit(f.source, 'candidate');
+  recordVerify(candidate, first);
   const receipt = promote(candidate, undefined, { probe: () => (commit(f.source, 'advanced'), successfulProbe()) });
   expect(receipt.sha).toBe(candidate);
   expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${candidate}.json`), 'utf8')).sha).toBe(candidate);
@@ -293,6 +315,7 @@ test('promotion rejects a rewritten 1.0.0 and preserves current', () => {
   const f = sourceFixture(), first = f.sha();
   promote(first, f.evidence);
   const candidate = commit(f.source, 'candidate');
+  recordVerify(candidate, first);
   expect(() => promote(candidate, undefined, { probe: () => {
     sh(`git switch -q --detach '${first}'`, f.source);
     sh(`git branch -f 1.0.0 '${commit(f.source, 'rewritten')}'`, f.source);
@@ -318,6 +341,7 @@ test(
     }
 
     const second = commit(f.source, 'second');
+    recordVerify(second, first);
     const receipts = join(engine, 'receipts');
     const firstReceipt = JSON.parse(readFileSync(join(receipts, `${first}.json`), 'utf8'));
     firstReceipt.protocol_version = 2;
@@ -339,10 +363,12 @@ test('failed read-only candidate retries explicitly while in-service snapshots s
   writeFileSync(acceptance, '#!/bin/sh\necho full-failure-output\nexit 7\n');
   sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm failed-acceptance', f.source);
   const failed = f.sha(), failedLog = join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${failed}.acceptance.log`);
+  recordVerify(failed, first);
   expect(() => promote(failed, undefined, { probe: successfulProbe })).toThrow(failedLog);
   expect(JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME!, 'engine', 'promotions', `${failed}.json`), 'utf8'))).toMatchObject({ status: 'failed', evidence_path: failedLog });
   writeFileSync(acceptance, '#!/bin/sh\nexit 0\n'); sh('git add wetamp/scripts/engine-acceptance.sh && git commit -qm restored-acceptance', f.source);
   const second = commit(f.source, 'second');
+  recordVerify(second, failed);
   expect(() => promote(second, undefined, { probe: path => { expect(statSync(path).mode & 0o222).toBe(0); return { ...successfulProbe(), ok: false, reason: 'not_published' }; } })).toThrow('probe_failed');
   const snapshot = join(process.env.SUPERAGENT_HOME!, 'engine', second),
     receipt = join(process.env.SUPERAGENT_HOME!, 'engine', 'receipts', `${second}.json`),
@@ -375,6 +401,9 @@ test('auto promotion detaches once and marks a lost promoter with an explicit re
     detached = 0;
   const deps = { spawn: () => ({ pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start: 'Mon Oct 20 00:00:00 2026' } as const) : ({ state } as const) };
   expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+  expect(detached).toBe(0);
+  recordVerify(second, first);
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
   expect(detached).toBe(1);
   expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({ status: 'running', pid: 424242, pid_start: 'Mon Oct 20 00:00:00 2026' });
   expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
@@ -399,6 +428,9 @@ test('engine hold is visible, idempotent, and pauses only automatic promotion', 
   expect(engineCommand(['hold', 'off'])).toEqual({ hold: null });
   expect(engineCommand(['hold', 'off'])).toEqual({ hold: null });
   expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
+  expect(spawned).toBe(0); expect(existsSync(marker)).toBe(false);
+  recordVerify(second, first);
+  expect(autoPromote(deps)).toEqual({ sha: second, promoted: false });
   expect(spawned).toBe(1); expect(existsSync(marker)).toBe(true);
 }, testTimeout(60_000));
 
@@ -411,6 +443,7 @@ test('auto promotion waits for the promotion lock before spawning', () => {
     engine = join(process.env.SUPERAGENT_HOME!, 'engine'),
     marker = join(engine, 'promotions', `${second}.json`),
     held = lock(join(engine, 'engine.lock'));
+  recordVerify(second, first);
   expect(held.ok).toBe(true);
   let spawned = 0;
   const deps = { spawn: () => (spawned++, { pid: 424242, unref: () => {} }), inspect: () => ({ state: 'online', start: 'Mon Oct 20 00:00:00 2026' } as const) };
@@ -476,18 +509,28 @@ test('verify executor uses heavy slot and kills a timed-out test process', () =>
 }, testTimeout(60_000));
 
 // prettier-ignore
-test('auto verify cleans a lost process checkout, suppresses its defect, and supersedes stale work', () => {
-  const f = sourceFixture(), first = f.sha(); promote(first, f.evidence); const second = commit(f.source, 'verify-second'); promote(second, undefined, { probe: successfulProbe });
-  const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'); let spawned = 0, detached = 0, state: 'online' | 'offline' | 'unknown' = 'online', start = 'start'; const handoffs: string[] = [];
-  const dependencies = { spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start } as const) : ({ state } as const), handoff: (_record: unknown, title: string) => handoffs.push(title) };
-  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, base: first, started: true }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, started: false });
-  const secondRecord = join(promotions, `${second}.verify.json`); writeFileSync(secondRecord, JSON.stringify({ ...JSON.parse(readFileSync(secondRecord, 'utf8')), status: 'passed' }));
-  const third = commit(f.source, 'verify-third'); promote(third, undefined, { probe: successfulProbe }); expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true });
-  state = 'unknown'; autoVerify(currentEngineSnapshot(), dependencies); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8')).status).toBe('running');
-  const staleCheckout = JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8')).checkout as string; mkdirSync(staleCheckout, { recursive: true }); writeFileSync(join(staleCheckout, 'stale'), 'stale');
-  state = 'online'; start = 'reused'; expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: third, base: second, started: true }); expect(existsSync(staleCheckout)).toBe(false); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8'))).toMatchObject({ status: 'running', retries: 1 });
-  start = 'reused-again'; autoVerify(currentEngineSnapshot(), dependencies); expect(handoffs).toEqual([]); expect(JSON.parse(readFileSync(join(promotions, `${third}.verify.json`), 'utf8'))).toMatchObject({ failure_kind: 'infrastructure', reported: true });
-  const fourth = commit(f.source, 'verify-fourth'); promote(fourth, undefined, { probe: successfulProbe }); autoVerify(currentEngineSnapshot(), dependencies); const fifth = commit(f.source, 'verify-fifth'); promote(fifth, undefined, { probe: successfulProbe }); start = 'stale'; autoVerify(currentEngineSnapshot(), dependencies);
-  expect(JSON.parse(readFileSync(join(promotions, `${fourth}.verify.json`), 'utf8')).status).toBe('superseded'); expect(engineStatus()).toMatchObject({ verify: { sha: fifth, status: 'running' } });
-  expect({ spawned, detached, handoffs: handoffs.length }).toEqual({ spawned: 5, detached: 5, handoffs: 0 }); expect(existsSync(join(process.env.SUPERAGENT_HOME!, 'ntfy/state.json'))).toBe(false);
+test('candidate verify uses the nearest graph ancestor and failures preserve current', () => {
+  const f = sourceFixture(), first = f.sha(); promote(first, f.evidence);
+  delete process.env.SA_ENGINE_AUTO_PROMOTE;
+  const promotions = join(process.env.SUPERAGENT_HOME!, 'engine/promotions'), second = commit(f.source, 'verify-second');
+  let spawned = 0, detached = 0, state: 'online' | 'offline' = 'online'; const handoffs: string[] = [];
+  const dependencies = { spawn: () => (spawned++, { pid: 424242, unref: () => detached++ }), inspect: () => state === 'online' ? ({ state, start: 'start' } as const) : ({ state } as const), handoff: (_record: unknown, title: string) => handoffs.push(title) };
+  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: second, base: first, started: true });
+  recordVerify(second, first, 'passed', [], '2099-01-01T00:00:00.000Z'); promote(second, undefined, { probe: successfulProbe });
+  const third = commit(f.source, 'verify-third'); recordVerify(third, second, 'passed', [], '2000-01-01T00:00:00.000Z');
+  const fourth = commit(f.source, 'verify-fourth');
+  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: fourth, base: third, started: true });
+  recordVerify(fourth, third, 'failed', ['regression.test.ts']);
+  expect(autoPromote({ spawn: () => (spawned++, { pid: 1, unref() {} }) })).toEqual({ sha: fourth, promoted: false });
+  expect(currentEngineSnapshot()).toEndWith(second);
+  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: fourth, started: false });
+  expect(handoffs).toHaveLength(1);
+  const fifth = commit(f.source, 'verify-fifth'); recordVerify(fifth, third, 'failed');
+  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: fifth, base: third, started: true });
+  expect(JSON.parse(readFileSync(join(promotions, `${fifth}.verify.json`), 'utf8'))).toMatchObject({ status: 'running', retries: 1 });
+  recordVerify(fifth, third, 'failed'); writeFileSync(join(promotions, `${fifth}.verify.json`), JSON.stringify({ ...JSON.parse(readFileSync(join(promotions, `${fifth}.verify.json`), 'utf8')), retries: 1 }));
+  expect(autoVerify(currentEngineSnapshot(), dependencies)).toEqual({ sha: fifth, started: false });
+  expect(currentEngineSnapshot()).toEndWith(second);
+  expect(engineStatus()).toMatchObject({ verify: { sha: fifth, status: 'failed', failure_kind: 'infrastructure', retries: 1 } });
+  expect({ spawned, detached, handoffs: handoffs.length }).toEqual({ spawned: 3, detached: 3, handoffs: 1 });
 }, testTimeout(180_000));
