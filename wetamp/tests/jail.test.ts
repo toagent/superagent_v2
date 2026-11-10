@@ -40,10 +40,12 @@ describe('ai-jail', () => {
     if (process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec')) return;
     const home = tmp(),
       jail = join(home, '.wetamp/jail'),
+      cache = join(home, 'cache'),
       blocked = [
         join(home, 'Library/Mobile Documents/a'),
         join(home, 'Library/CloudStorage/iCloudDrive/a'),
         join(home, 'work/a/_private/b/a'),
+        join(cache, 'com.apple.quicklook.ThumbnailsAgent/a'),
       ],
       canaryDir = join(home, 'work/canary/_private'),
       safe = join(home, 'work/public/a');
@@ -51,6 +53,10 @@ describe('ai-jail', () => {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, 'before');
     }
+    const getconf = join(home, 'getconf');
+    writeFileSync(getconf, '#!/bin/sh\nprintf \'%s\\n\' "$SA_TEST_CACHE"\n', { mode: 0o755 });
+    process.env.PATH = `${dirname(getconf)}:${process.env.PATH}`;
+    process.env.SA_TEST_CACHE = cache;
     install(home);
     mkdirSync(canaryDir, { recursive: true });
     writeFileSync(join(canaryDir, 'canary'), 'blocked');
@@ -68,6 +74,18 @@ describe('ai-jail', () => {
       expect(write.exitCode).not.toBe(0);
       expect(readFileSync(file, 'utf8')).toBe('before');
     }
+    const trust = join(home, '.vault-bridge/trust/key'),
+      request = join(home, '.vault-bridge/requests/request.json');
+    mkdirSync(dirname(trust), { recursive: true });
+    mkdirSync(dirname(request), { recursive: true });
+    writeFileSync(trust, 'before');
+    expect(run('/bin/cat', trust).stdout.toString()).toBe('before');
+    const trustWrite = run('/bin/sh', '-c', 'printf changed > "$1"', 'sh', trust);
+    expect(trustWrite.exitCode).not.toBe(0);
+    expect(trustWrite.stderr.toString()).toMatch(/Operation not permitted/);
+    expect(readFileSync(trust, 'utf8')).toBe('before');
+    expect(run('/bin/sh', '-c', 'printf ok > "$1"', 'sh', request).exitCode).toBe(0);
+    expect(readFileSync(request, 'utf8')).toBe('ok');
     const ps = run('/bin/sh', '-c', 'exec /bin/ps -o lstart= -p $$');
     expect(ps.exitCode, ps.stderr.toString()).toBe(0);
     expect(ps.stdout.toString().trim()).not.toBe('');

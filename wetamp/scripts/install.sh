@@ -55,8 +55,13 @@ install_jail() {
     echo "install.sh: 当前已在 ai-jail 内，跳过 jail 资产更新" >&2
     return
   fi
-  local resolved
+  local resolved cache quicklook=""
   resolved="$(realpath "$HOME")"
+  if cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)" && [ -n "$cache" ] && cache="$(realpath "$cache" 2>/dev/null)"; then
+    quicklook="$cache/com.apple.quicklook.ThumbnailsAgent"
+  else
+    echo "install.sh: 无法解析 DARWIN_USER_CACHE_DIR，跳过 QuickLook 缓存 jail 规则" >&2
+  fi
   mkdir -p "$jail/bin"
   HOME_REAL="$resolved" node -e '
 const fs = require("node:fs");
@@ -66,8 +71,8 @@ const literal = home.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
 const regex = home.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
 let text = fs.readFileSync(process.argv[1], "utf8");
 const paths = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
-const denies = paths.os.map(p => `  (subpath "${literal}/${p.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}")`).join("\n");
 const quote = (s) => s.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
+const denies = paths.os.map(p => `  (subpath "${literal}/${quote(p)}")`).join("\n");
 const regexQuote = (s) => s.replace(/[\\^$.*+?()[\]{}|\"]/g, "\\$&");
 const execDenies = (paths.os_exec || []).flatMap(name => {
   const found = spawnSync("/bin/sh", ["-c", "command -v -- \"$1\"", "sh", name], {encoding: "utf8"}).stdout.trim();
@@ -75,9 +80,10 @@ const execDenies = (paths.os_exec || []).flatMap(name => {
   const resolved = fs.realpathSync(found), versioned = resolved.match(/^(.*\/(?:Caskroom|Cellar)\/[^/]+)\/[^/]+(\/.*)$/);
   return [versioned ? `(deny process-exec (regex "^${regexQuote(versioned[1])}\/[^/]+${regexQuote(versioned[2])}$"))` : `(deny process-exec (literal "${quote(resolved)}"))`];
 }).join("\n");
-text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies).replace("__SECRET_EXEC_DENIES__", execDenies);
+const quicklook = process.argv[4] ? `(deny file-read* file-write* (subpath "${quote(process.argv[4])}"))` : "";
+text = text.replaceAll("__HOME_LITERAL__", literal).replaceAll("__HOME_REGEX__", regex).replace("__SECRET_OS_DENIES__", denies).replace("__SECRET_EXEC_DENIES__", execDenies).replace("__QUICKLOOK_DENY__", quicklook);
 fs.writeFileSync(process.argv[2], text);
-' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb" "$WETAMP/hooks/secret-paths.json"
+' "$WETAMP/jail/ai-deny.sb.tmpl" "$jail/ai-deny.sb" "$WETAMP/hooks/secret-paths.json" "$quicklook"
   # The firewall activates once sa-redact.cjs exists, so publish it last and only with gitleaks present:
   # an active redactor without its scanner or config would replace every shell output with scan_failed.
   command -v gitleaks >/dev/null || { echo "install.sh: 未找到 gitleaks（brew install gitleaks），不发布秘密防火墙" >&2; return 1; }

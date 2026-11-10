@@ -6,6 +6,8 @@
 __SECRET_OS_DENIES__
   (regex #"(^|/)_private(/|$)"))
 __SECRET_EXEC_DENIES__
+__QUICKLOOK_DENY__
+(deny file-write* (subpath "__HOME_LITERAL__/.vault-bridge/trust"))
 (deny file-read* (literal "__HOME_LITERAL__/.wetamp/jail/.probe"))
 (deny file-write* (subpath "__HOME_LITERAL__/.wetamp/jail"))
 ; setuid executables cannot start sandboxed; coord and hooks use ps for process identity.

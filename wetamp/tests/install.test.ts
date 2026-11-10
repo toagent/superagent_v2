@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   statSync,
@@ -53,7 +54,7 @@ function runInstall(
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  expect(p.exitCode).toBe(expectedExit);
+  expect(p.exitCode, p.stderr.toString()).toBe(expectedExit);
   return p.stdout.toString() + p.stderr.toString();
 }
 
@@ -82,13 +83,35 @@ describe('install.sh', () => {
     const backups = readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-'));
     expect(backups.length).toBe(1);
 
-    expect(runInstall(home).trim()).toBe('install: mode=controller');
+    expect(runInstall(home)).toContain('install: mode=controller');
     expect(readFileSync(join(home, 'archon', '.env'), 'utf8')).toBe(env1);
     expect(readFileSync(join(home, 'archon', 'config.yaml'), 'utf8')).toBe(cfg1);
     expect(
       readdirSync(join(home, 'archon')).filter(f => f.startsWith('config.yaml.bak-')).length
     ).toBe(1);
     for (const d of ['gen', 'runs']) expect(readdirSync(home)).toContain(d);
+  });
+
+  test('jail policy renders QuickLook and trust rules, and skips unavailable cache', () => {
+    const home = tmp(),
+      bin = join(home, 'bin'),
+      cache = join(home, 'cache'),
+      getconf = join(bin, 'getconf');
+    for (const dir of [bin, cache]) mkdirSync(dir);
+    writeFileSync(getconf, '#!/bin/sh\nprintf \'%s\\n\' "$SA_TEST_CACHE"\n', { mode: 0o755 });
+    runInstall(home, undefined, undefined, `${bin}:${process.env.PATH}`, { SA_TEST_CACHE: cache });
+    const policy = readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8'),
+      root = realpathSync(home);
+    expect(policy).toContain(`(subpath "${root}/cache/com.apple.quicklook.ThumbnailsAgent")`);
+    expect(policy).toContain(`(deny file-write* (subpath "${root}/.vault-bridge/trust"))`);
+
+    const missing = tmp();
+    writeFileSync(getconf, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const output = runInstall(missing, undefined, undefined, `${bin}:${process.env.PATH}`);
+    expect(output).toContain('跳过 QuickLook 缓存 jail 规则');
+    expect(readFileSync(join(missing, '.wetamp/jail/ai-deny.sb'), 'utf8')).not.toContain(
+      'ThumbnailsAgent'
+    );
   });
 
   test('launchd plist: rendered with escaped paths, left alone when identical, backed up when different', () => {
@@ -114,7 +137,7 @@ describe('install.sh', () => {
     expect(xml).toContain(`${home.replace('&', '&amp;')}/.nvm/current/bin`);
     expect(xml).not.toContain('.nvm/versions/');
     expect(xml).not.toContain('.codex/tmp/');
-    expect(runInstall(home, la, undefined, callerPath).trim()).toBe('install: mode=controller');
+    expect(runInstall(home, la, undefined, callerPath)).toContain('install: mode=controller');
     writeFileSync(plist, 'stale');
     runInstall(home, la, undefined, callerPath);
     expect(readFileSync(plist, 'utf8')).toBe(xml);
