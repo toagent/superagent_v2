@@ -222,6 +222,15 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
   function sandbox(): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
     const home = tmp();
     stableInstall(home);
+    rmSync(join(home, 'stable-engine/wetamp/hooks/git-guardrail.cjs'));
+    symlinkSync(
+      join(WETAMP, 'hooks/git-guardrail.cjs'),
+      join(home, 'stable-engine/wetamp/hooks/git-guardrail.cjs')
+    );
+    symlinkSync(
+      join(WETAMP, 'hooks/guard.cjs'),
+      join(home, 'stable-engine/wetamp/hooks/guard.cjs')
+    );
     const sh = (...args: string[]): { code: number; out: string } => {
       const p = Bun.spawnSync(['bash', join(WETAMP, 'scripts', 'install.sh'), ...args], {
         env: {
@@ -279,7 +288,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
   test('OpenCode plugin rejects iCloud read/edit/bash/MCP and allows SynologyDrive', () => {
     const home = tmp(),
       adapter = join(home, 'adapter.mjs');
-    writeFileSync(adapter, openCodeGuard());
+    writeFileSync(adapter, openCodeGuard(join(WETAMP, 'hooks/guard.cjs')));
     const script = `import plugin from ${JSON.stringify(adapter)};
       const hooks = await plugin({ directory: process.env.HOME });
       const results = [];
@@ -368,9 +377,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       'PreToolUse',
       'Stop',
       'SessionStart',
+      'UserPromptSubmit',
       'PostToolUse',
       'SubagentStop',
-      'UserPromptSubmit',
     ]);
     expect(JSON.stringify(after)).not.toContain('/work/github/superagent/');
     expect(readdirSync(join(home, '.superagent', 'backups'))[0]).toMatch(/^hooks-\d{8}T\d{6}Z$/);
@@ -416,6 +425,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     ]);
     expect(at('UserPromptSubmit')).toEqual([
       [undefined, V2('context-advisory.cjs')],
+      [undefined, `${V2('guard.cjs')} claude`],
       [undefined, `${V2('intake.cjs')} claude`],
     ]);
     expect(sh('--hooks').out.trim()).toMatch(
@@ -437,11 +447,11 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sh('--hooks').code).toBe(0);
     expect(cmds(settings).map(([e, ...c]) => [e, c.length])).toEqual([
       ['SessionStart', 3],
+      ['UserPromptSubmit', 3],
       ['PreToolUse', 2],
       ['PostToolUse', 1],
       ['SubagentStop', 1],
       ['Stop', 1],
-      ['UserPromptSubmit', 2],
     ]);
     expect(cmds(codex).flat()).toContain(`${V2('guard.cjs')} codex`);
     expect(existsSync(join(home, '.superagent', 'backups'))).toBe(false);
@@ -505,6 +515,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         `${hooks}:session_start:2:0`,
         `${hooks}:user_prompt_submit:0:0`,
         `${hooks}:user_prompt_submit:1:0`,
+        `${hooks}:user_prompt_submit:2:0`,
       ].sort()
     );
     expect(state[`${hooks}:pre_tool_use:0:0`].trusted_hash).toBe('sha256:user');
@@ -641,13 +652,20 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const root = tmp(),
       toolkit = join(root, 'wetamp');
     mkdirSync(toolkit);
-    for (const dir of ['hooks', 'scripts', 'bin', 'jail'])
+    for (const dir of ['hooks', 'scripts', 'bin', 'jail', 'secrets'])
       cpSync(join(WETAMP, dir), join(toolkit, dir), { recursive: true });
+    cpSync(join(WETAMP, 'src/secrets'), join(toolkit, 'src/secrets'), { recursive: true });
     writeFileSync(join(toolkit, 'tiers.json'), readFileSync(join(WETAMP, 'tiers.json')));
     mkdirSync(join(root, '.git'));
     const commands = join(root, 'commands');
     mkdirSync(commands);
     symlinkSync(Bun.which('node')!, join(commands, 'node'));
+    symlinkSync(Bun.which('gitleaks')!, join(commands, 'gitleaks'));
+    writeFileSync(
+      join(commands, 'bun'),
+      `#!/bin/sh\n[ "$1" = install ] && exit 0\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+      { mode: 0o755 }
+    );
     const bunInstall = join(root, 'bun-install');
     mkdirSync(join(bunInstall, 'bin'), { recursive: true });
     symlinkSync(process.execPath, join(bunInstall, 'bin/bun'));

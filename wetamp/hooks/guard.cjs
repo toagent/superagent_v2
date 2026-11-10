@@ -276,6 +276,7 @@ function decide(payload, client, env = process.env) {
     onAdvisory: code => notices.add(code),
   });
   if (red) return deny(red, category);
+  let rewrite = null;
   // Only a leading prefix counts as wrapped: a prefix inside a comment or string must not opt out.
   if (text !== undefined && firewallInstalled(env) && !text.startsWith(REDACT_PREFIX)) {
     const updatedInput = {
@@ -284,7 +285,7 @@ function decide(payload, client, env = process.env) {
     };
     // Codex accepts updatedInput only beside permissionDecision "allow"; local Codex already
     // runs danger-full-access inside the outer jail, so this does not broaden its permissions.
-    return {
+    rewrite = {
       hookSpecificOutput: {
         hookEventName: event,
         ...(client === 'claude' ? {} : { permissionDecision: 'allow' }),
@@ -292,13 +293,14 @@ function decide(payload, client, env = process.env) {
       },
     };
   }
+  const withRewrite = result => (rewrite ? { ...rewrite, ...(result || {}) } : result);
   const edit = microEdit.isEdit(client, name);
   const advisory = notices.size
     ? {
         systemMessage: `SUPERAGENT advisory：本次护栏无法完整确认命令效果，已放行（${[...notices].join(', ')}）。`,
       }
     : null;
-  if (derived) return advisory;
+  if (derived) return withRewrite(advisory);
   const context = dispatch.contextReason(
     client,
     name,
@@ -319,10 +321,12 @@ function decide(payload, client, env = process.env) {
     (edit || text !== undefined) && rootCall(payload)
       ? commanderWrite(payload, client, env, text)
       : null;
-  if (write) return write;
-  return notices.size
-    ? { systemMessage: `SUPERAGENT advisory：${[...notices].join('; ')}。已放行。` }
-    : advisory;
+  if (write) return withRewrite(write);
+  return withRewrite(
+    notices.size
+      ? { systemMessage: `SUPERAGENT advisory：${[...notices].join('; ')}。已放行。` }
+      : advisory
+  );
 }
 
 if (require.main === module)

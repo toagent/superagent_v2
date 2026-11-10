@@ -56,6 +56,7 @@ type Out = {
     permissionDecision?: string;
     permissionDecisionReason?: string;
     additionalContext?: string;
+    updatedInput?: { command?: string };
   };
   systemMessage?: string;
 } | null;
@@ -755,10 +756,17 @@ describe('guard.cjs', () => {
       expect(reason(out), command).toBeUndefined();
       expect(out?.systemMessage, command).toContain('advisory');
     }
-    expect(guard('claude', bash('echo x > NOTES.md'))).toBeNull();
-    expect(guard('claude', bash('touch auth.ts'))).toBeNull();
-    expect(guard('claude', bash('cp NOTES.md a.ts'))).toBeNull();
-    expect(guard('claude', bash('git status'))).toBeNull();
+    for (const command of [
+      'echo x > NOTES.md',
+      'touch auth.ts',
+      'cp NOTES.md a.ts',
+      'git status',
+    ]) {
+      const out = guard('claude', bash(command));
+      expect(reason(out), command).toBeUndefined();
+      expect(out?.hookSpecificOutput?.updatedInput?.command, command).toContain(command);
+      expect(out?.systemMessage, command).toBeUndefined();
+    }
     expect(
       reason(guard('codex', { tool_name: 'apply_patch', tool_input: { input: 'invalid' } }))
     ).toContain('redline_internal_error');
