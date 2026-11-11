@@ -207,12 +207,29 @@ const wrappedLines = (value: string, width: number): string[] => {
   }
   return lines;
 };
-function MobileHeartbeatFrame({ model, now, width, rows }: HeartbeatFrameProps): ReactElement {
+function MobileHeartbeatFrame({
+  model,
+  quota,
+  now,
+  width,
+  rows,
+}: HeartbeatFrameProps): ReactElement {
   const drift = driftAt(model, now),
     availableRows = Math.max(0, rows - 1),
     staleLines = model.health.stale ? wrappedLines(model.health.stale.message, width) : [],
     staleRows = Math.min(availableRows, staleLines.length),
-    bodyBudget = Math.max(0, availableRows - staleRows),
+    // 额度页脚固定在底部：≤3 行时无损折行，更长才截成 2 行；始终给标题留 1 行。
+    quotaPrefix = '额度：',
+    quotaIndent = ' '.repeat(Bun.stringWidth(quotaPrefix)),
+    quotaWidth = Math.max(1, width - Bun.stringWidth(quotaPrefix)),
+    quotaLimit = Math.min(3, Math.max(0, availableRows - staleRows - 1)),
+    completeQuotaLines = wrappedLines(quota ?? '未配置', quotaWidth),
+    quotaLines = (
+      completeQuotaLines.length <= quotaLimit
+        ? completeQuotaLines
+        : displayLines(quota ?? '未配置', quotaWidth, Math.min(2, quotaLimit))
+    ).map((line, index) => fit((index ? quotaIndent : quotaPrefix) + line, width)),
+    bodyBudget = Math.max(0, availableRows - staleRows - quotaLines.length),
     attention = model.attention.at(0),
     current = model.attention.find(item => item.run)?.run ?? model.runs.at(0),
     checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
@@ -282,6 +299,11 @@ function MobileHeartbeatFrame({ model, now, width, rows }: HeartbeatFrameProps):
           +{String(model.runs.length - 1)} 个 run
         </Text>
       )}
+      {quotaLines.map((line, index) => (
+        <Text key={index} backgroundColor="cyan" color="black" wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
     </Box>
   );
 }

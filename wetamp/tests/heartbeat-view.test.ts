@@ -237,7 +237,7 @@ test('长项目名与额度在各尺寸下不超宽高预算', () => {
         expect(lines[0]).toContain(clock);
         expect(lines[0]).toContain('巡检正常');
       }
-      expect(lines.some(line => line.includes('额度：'))).toBe(columns >= 60);
+      expect(lines.slice(-2).filter(line => line.includes('额度：'))).toHaveLength(1);
     }
   }
   const realQuota =
@@ -264,7 +264,16 @@ test('手机宽度使用紧凑投影并区分阶段异常与停摆', () => {
       expect(lines).toContain('+1 条需处理');
       expect(lines.find(line => line.includes('当前 run-1 · 验收 · 已用 2m'))).toBeDefined();
       expect(lines).toContain('+1 个 run');
-      expect(lines.some(line => line.includes('额度：'))).toBe(false);
+      const quotaStart = lines.findIndex(line => line.startsWith('额度：'));
+      expect(quotaStart).toBeGreaterThan(0);
+      expect(
+        lines
+          .slice(quotaStart)
+          .map((line, index) =>
+            index ? line.slice(Bun.stringWidth('额度：')) : line.slice('额度：'.length)
+          )
+          .join('')
+      ).toBe(quota);
       expect(lines.every(line => Bun.stringWidth(line) <= columns)).toBe(true);
       expect(lines.length).toBeLessThanOrEqual(rows - 1);
     }
