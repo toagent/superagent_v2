@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock } from '../src/archon';
 import {
+  CLAUDE_PROBE_BUDGET_USD,
   PROBE_BACKOFF_MS,
   claudeProbeModel,
   readClaudeHealth,
@@ -81,6 +82,7 @@ test('corruption becomes unknown and a due injected probe self-heals with bounde
     expect(Date.parse(failed.next_probe_at!)).toBe(now + 1 + PROBE_BACKOFF_MS[0]);
   process.env.TZ = 'Asia/Shanghai';
   expect(claudeHealthNotice(failed)).toContain('自 10:00');
+  expect(CLAUDE_PROBE_BUDGET_USD).toBe(0.25);
 });
 
 test('newer observations beat stale probes, probe is single-flight, and persistence failures do not throw', () => {

@@ -6,7 +6,8 @@ import { redact } from './redact';
 export const TRIP_RETRIES = 10,
   PROBE_BACKOFF_MS = [5, 10, 20, 30].map(n => n * 60_000),
   CLAUDE_PROBE_TIMEOUT_MS = 45_000,
-  CLAUDE_PROBE_BUDGET_USD = 0.05;
+  // A real one-turn "Reply with OK." probe cost $0.0643 with cache traffic.
+  CLAUDE_PROBE_BUDGET_USD = 0.25;
 type Cause = { source: 'dispatch' | 'job' | 'probe'; class: string; retries: number } & Partial<
   Record<'model' | 'run' | 'node' | 'evidence', string>
 >;

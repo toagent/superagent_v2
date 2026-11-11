@@ -4724,7 +4724,7 @@ function tickOutput(
 
 /** Console availability must not gate the unattended heartbeat. */
 // prettier-ignore
-export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined, syncDecisions = syncDecisionChannel, publishDecisions = publishPendingNtfy): Promise<number> {
+export async function superviseTickCli(refresh = async (): Promise<unknown> => (await import('./web/server')).refreshConsole(), sync = async (snapshot: Snapshot): Promise<unknown> => (await import('./orca')).syncOrca(snapshot), mode: TickMode = {}, load = async (): Promise<Snapshot> => createLoader()(20), reclaimTask = reclaimTick, startMaintenance: () => unknown = import.meta.main ? launchMaintenance : () => undefined, syncDecisions = syncDecisionChannel, publishDecisions = publishPendingNtfy, refreshHealth = refreshClaudeHealth, runActions = tickOutput): Promise<number> {
   const errors: string[] = [];
   const stages = {} as Omit<NtfyTickRecord, 'at'>;
   const result = async (stage: keyof typeof stages, run: () => unknown, errorLabel: string = stage): Promise<unknown> => {
@@ -4742,6 +4742,16 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
   };
   if (!mode.noGlobal) await result('reclaim', reclaimTask);
   else stages.reclaim = { ok: true, duration_ms: 0, skipped: 'no-global' };
+  await result('console', () => mode.noGlobal ? { skipped: 'no-global' } : refresh(), 'console refresh');
+  let output: Record<string, unknown> = {};
+  await result('ntfy_sync', async () => {
+    if (mode.noGlobal) return { skipped: 'no-global' };
+    const synced = await syncDecisions();
+    if (synced.failed) throw new Error(`ntfy callback failures: ${String(synced.failed)}`);
+    return synced;
+  });
+  const exit = ((await result('actions', () => runActions(mode, value => (output = value)))) as number | undefined) ?? 1;
+  await result('failover', () => { if (mode.noGlobal) return { skipped: 'no-global' }; refreshHealth(); return claudeCommanderFailover(); }, 'commander failover');
   let snapshot: Snapshot | undefined;
   if (!mode.noGlobal) snapshot = (await result('collect', async () => { const value = await load(); value.general = collectGenerals(value); return value; })) as Snapshot | undefined;
   else stages.collect = { ok: true, duration_ms: 0, skipped: 'no-global' };
@@ -4756,15 +4766,6 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
       return changed ? undefined : { skipped: 'unchanged' };
     });
   else stages.publish = { ok: true, duration_ms: 0, skipped: mode.noGlobal ? 'no-global' : 'collect-failed' };
-  await result('console', () => mode.noGlobal ? { skipped: 'no-global' } : refresh(), 'console refresh');
-  let output: Record<string, unknown> = {};
-  await result('ntfy_sync', async () => {
-    if (mode.noGlobal) return { skipped: 'no-global' };
-    const synced = await syncDecisions();
-    if (synced.failed) throw new Error(`ntfy callback failures: ${String(synced.failed)}`);
-    return synced;
-  });
-  const exit = ((await result('actions', () => tickOutput(mode, value => (output = value)))) as number | undefined) ?? 1;
   await result('ntfy_publish', () => mode.noGlobal ? { skipped: 'no-global' } : publishDecisions());
   if (exit)
     stages.actions = {
@@ -4772,7 +4773,6 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
       duration_ms: stages.actions?.duration_ms ?? 0,
       error: 'tick actions failed',
     };
-  await result('failover', () => mode.noGlobal ? { skipped: 'no-global' } : claudeCommanderFailover(), 'commander failover');
   await result('orca', async () => {
     if (mode.noGlobal) return { skipped: 'no-global' };
     const synced = snapshot ? await sync(snapshot) : { skipped: 'collect-failed' };
