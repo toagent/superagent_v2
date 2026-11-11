@@ -192,11 +192,11 @@ export function queueTickStaleAlert(alert: TickStaleAlert | undefined, previousI
   return alert.id;
 }
 // prettier-ignore
-export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; messages: string[]; stale?: TickStaleAlert } {
+export function tickHealth(tick: TickRecord | undefined, now: number): { ok: boolean; alive: boolean; messages: string[]; failedStages: Stage[]; stale?: TickStaleAlert } {
   const parsed = Date.parse(tick?.at ?? ''), minutes = Number.isFinite(parsed) ? Math.floor((now - parsed) / 60_000) : Infinity;
   const messages = minutes > 3 ? [`未收到巡检心跳${Number.isFinite(minutes) ? ` ${String(minutes)}m` : ''}`] : [];
-  if (tick?.collect && !tick.collect.ok) messages.push(`巡检采集失败：${tick.collect.error ?? 'unknown'}`);
-  if (tick) for (const stage of ['publish', 'reclaim', 'orca', 'console', 'failover', 'actions'] as const) { const record = tick[stage]; if (record && !record.ok) messages.push(`${stage}异常：${record.error ?? 'unknown'}`); }
+  const failedStages: Stage[] = [];
+  if (tick) for (const stage of ['collect', 'publish', 'reclaim', 'orca', 'console', 'failover', 'actions'] as const) { const record = tick[stage]; if (record && !record.ok) { failedStages.push(stage); messages.push(stage === 'collect' ? `巡检采集失败：${record.error ?? 'unknown'}` : `${stage}异常：${record.error ?? 'unknown'}`); } }
   const stale = tickStaleAlert(tick, now);
-  return { ok: messages.length === 0, messages, ...(stale ? { stale } : {}) };
+  return { ok: messages.length === 0, alive: minutes <= 3, messages, failedStages, ...(stale ? { stale } : {}) };
 }

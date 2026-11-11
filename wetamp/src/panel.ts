@@ -196,11 +196,34 @@ export function renderPanel(
 ): string {
   const model = panelModel(heartbeat, tick, now, filter, scopeLabel),
     drift = driftAt(model, now),
+    checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
+    health = !model.health.alive
+      ? '巡检可能停了'
+      : model.health.failedStages.length
+        ? `巡检运行中·${model.health.failedStages.join('、')}异常`
+        : '巡检正常',
     lines = [
-      `心跳面板｜${model.projects}｜${new Date(now).toLocaleString('zh-CN', { hour12: false })}｜${model.health.ok ? '巡检正常' : `⚠️ 巡检可能停了：${model.health.messages.join('；')}`}`,
+      `心跳面板｜${model.projects}｜${new Date(now).toLocaleString('zh-CN', { hour12: false })}｜${health}`,
       '',
       '需要处理',
     ];
+  if (width < 60) {
+    const attention = model.attention.at(0),
+      current = model.attention.find(item => item.run)?.run ?? model.runs.at(0),
+      clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5),
+      headerFixed = `心跳｜｜${clock}｜${health}`,
+      compact = [
+        `心跳｜${fit(model.projects, Math.max(1, width - Bun.stringWidth(headerFixed)))}｜${clock}｜${health}`,
+        `异常 ${String(model.health.failedStages.length)}｜数据 ${String(checkedAge)}s前｜在跑 ${String(model.stats.running)}｜等待 ${String(model.stats.waiting)}`,
+        attention ? `需处理｜${shortRunId(attention.id)}｜${attention.text}` : '需处理｜无',
+        ...(model.attention.length > 1 ? [`+${String(model.attention.length - 1)} 条需处理`] : []),
+        current
+          ? `当前｜${shortRunId(current.id)}｜${current.stage}｜已用 ${current.elapsed_s === null ? '未知' : panelDuration(current.elapsed_s + drift)}`
+          : '当前｜暂无在跑任务',
+        ...(model.runs.length > 1 ? [`+${String(model.runs.length - 1)} 个 run`] : []),
+      ];
+    return compact.map(line => fit(line, Math.max(1, width))).join('\n');
+  }
   lines.push(
     ...(model.attention.length
       ? model.attention.map(item =>

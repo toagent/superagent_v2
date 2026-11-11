@@ -31,8 +31,7 @@ const age = (seconds: number | null, drift: number, recent = false): string => {
 };
 const generalLabel = (run: PanelRun, drift: number): string => {
   const idle = panelDuration((run.generalDetails?.idle_s ?? 0) + drift);
-  if (run.general === 'working' && run.generalDetails?.spinning)
-    return `空转 ${idle}（在跑命令）`;
+  if (run.general === 'working' && run.generalDetails?.spinning) return `空转 ${idle}（在跑命令）`;
   return {
     working: '干活',
     idle: `空转 ${idle}${run.generalDetails?.waiting_command ? '（在等命令）' : ''}`,
@@ -45,11 +44,6 @@ const attentionLabel = (item: PanelAttention, drift: number): string =>
   item.run
     ? `${shortRunId(item.id)} · ${item.project} · ${item.text} · ${generalLabel(item.run, drift)}`
     : `${shortRunId(item.id)} · ${item.project} · ${item.text} · ${attentionWait(item, drift, ' · ')}${item.next ? ` · 下一步：${item.next}` : ''}`;
-const attentionReason = (item: PanelAttention, drift: number): string =>
-  item.run
-    ? `${item.text} · ${generalLabel(item.run, drift)}`
-    : `${item.text} · ${attentionWait(item, drift, ' · ')}${item.next ? ` · 下一步：${item.next}` : ''}`;
-
 type PipelineKind = 'code' | 'verify' | 'repair' | 'review' | 'land' | 'other';
 const pipelineKind = (run: PanelRun): PipelineKind => {
   if (run.stageKind === 'settle') return 'verify';
@@ -213,104 +207,23 @@ const wrappedLines = (value: string, width: number): string[] => {
   }
   return lines;
 };
-const mobilePipeline = (run: PanelRun): string => {
-  const current = pipelineKind(run),
-    currentPhase = current === 'repair' ? 'verify' : current,
-    phases: { kind: PipelineKind; label: string }[] = [
-      { kind: 'code', label: '编' },
-      { kind: 'verify', label: '验' },
-      { kind: 'review', label: '评' },
-      { kind: 'land', label: '合' },
-    ],
-    currentIndex = phases.findIndex(phase => phase.kind === currentPhase),
-    round = /-r(\d+)(?:-|$)/.exec(run.node ?? '')?.[1];
-  return phases
-    .map((phase, index) => {
-      const icon = index < currentIndex ? '✓' : index === currentIndex ? '●' : '○';
-      const label =
-        current === 'repair' && phase.kind === 'verify'
-          ? `修${round ? `r${round}` : ''}`
-          : phase.label;
-      return `${icon}${label}`;
-    })
-    .join(' ');
-};
-const shortRoles = (roles: string[]): string =>
-  [...new Set(roles.map(role => role.split('·')[0] ?? role))].join('、');
-
-function MobileRunCard({
-  run,
-  width,
-  drift,
-  now,
-}: {
-  run: PanelRun;
-  width: number;
-  drift: number;
-  now: number;
-}): ReactElement {
-  return (
-    <Box width={width} flexDirection="column">
-      <Box height={1}>
-        <StateIcon state={run.general} now={now} />
-        <Text wrap="truncate-end">
-          {' '}
-          {shortRunId(run.id)} · 已用 {age(run.elapsed_s, drift)}
-        </Text>
-      </Box>
-      <Text wrap="truncate-end">{fit(run.title, width)}</Text>
-      <Text wrap="truncate-end">
-        {fit(`${mobilePipeline(run)} · ${shortRoles(run.roles)}`, width)}
-      </Text>
-    </Box>
-  );
-}
-
-function MobileHeartbeatFrame({
-  model,
-  quota,
-  now,
-  width,
-  rows,
-}: HeartbeatFrameProps): ReactElement {
+function MobileHeartbeatFrame({ model, now, width, rows }: HeartbeatFrameProps): ReactElement {
   const drift = driftAt(model, now),
     availableRows = Math.max(0, rows - 1),
     staleLines = model.health.stale ? wrappedLines(model.health.stale.message, width) : [],
     staleRows = Math.min(availableRows, staleLines.length),
-    quotaPrefix = '额度：',
-    quotaIndent = ' '.repeat(Bun.stringWidth(quotaPrefix)),
-    quotaWidth = Math.max(1, width - Bun.stringWidth(quotaPrefix)),
-    completeQuotaLines = wrappedLines(quota ?? '未配置', quotaWidth),
-    quotaLimit = Math.min(3, Math.max(0, availableRows - 1)),
-    quotaValueLines =
-      completeQuotaLines.length <= quotaLimit
-        ? completeQuotaLines
-        : displayLines(quota ?? '未配置', quotaWidth, Math.min(2, quotaLimit)),
-    quotaLines = quotaValueLines.map((line, index) =>
-      fit((index ? quotaIndent : quotaPrefix) + line, width)
-    ),
-    footerRows = Math.min(availableRows, 1 + quotaLines.length),
-    bodyBudget = Math.max(0, availableRows - footerRows - staleRows),
-    attention = model.attention.slice(0, 5),
-    runningReserve = 1 + (model.runs.length ? 3 : 1),
-    attentionBudget = Math.max(0, bodyBudget - 4 - runningReserve),
-    attentionCount = attention.length
-      ? Math.min(attention.length, Math.floor(attentionBudget / 2))
-      : 0,
-    attentionOverflow =
-      model.attention.length > attentionCount && attentionBudget - attentionCount * 2 > 0,
-    shownAttentionRows = attention.length
-      ? attentionCount * 2 + (attentionOverflow ? 1 : 0)
-      : Math.min(1, attentionBudget),
-    fixedRows = 4 + shownAttentionRows + 1 + (model.runs.length ? 0 : 1),
-    cardBudget = Math.max(0, bodyBudget - fixedRows),
-    capacity = Math.floor(cardBudget / 3),
-    shown = model.runs.slice(0, capacity),
-    hidden = model.runs.length - shown.length,
-    showHidden = hidden > 0 && cardBudget - shown.length * 3 > 0,
+    bodyBudget = Math.max(0, availableRows - staleRows),
+    attention = model.attention.at(0),
+    current = model.attention.find(item => item.run)?.run ?? model.runs.at(0),
     checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
     clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5),
-    health = `${model.health.ok ? `● 正常 · 巡检 ${String(checkedAge)}s 前` : '⚠ 巡检可能停了'}${ntfyPauseNotice(model)}`;
+    health = !model.health.alive
+      ? '⚠ 巡检可能停了'
+      : model.health.failedStages.length
+        ? `⚠ 巡检运行中·${model.health.failedStages.join('、')}异常`
+        : '● 巡检正常',
+    headerSuffix = `${clock} · ${health}${ntfyPauseNotice(model)}`,
+    projectWidth = Math.max(1, width - Bun.stringWidth(headerSuffix) - Bun.stringWidth('◆  · '));
   return (
     <Box flexDirection="column" width={width}>
       {staleLines.slice(0, staleRows).map((line, index) => (
@@ -325,89 +238,50 @@ function MobileHeartbeatFrame({
       ))}
       {bodyBudget >= 1 && (
         <Text bold color="cyan" wrap="truncate-end">
-          {fit(`◆ 心跳 · ${model.projects}`, width)}
+          {fit(`◆ ${fit(model.projects, projectWidth)} · ${headerSuffix}`, width)}
         </Text>
       )}
       {bodyBudget >= 2 && (
-        <Text color={model.health.ok ? undefined : 'red'} wrap="truncate-end">
-          {fit(`${clock} ${health}`, width)}
-        </Text>
-      )}
-      {bodyBudget >= 3 && (
-        <Text wrap="truncate-end">
-          跑{String(model.stats.running)} 等{String(model.stats.waiting)}{' '}
-          <Text color={model.attention.length ? 'yellow' : undefined} wrap="truncate-end">
-            需{String(model.attention.length)}
-          </Text>{' '}
-          收{String(model.stats.reclaimPending)} 遗{String(model.stats.legacy)}
-        </Text>
-      )}
-      {model.heavyQueue.slice(0, 1).map(item => (
-        <Text key={item.command} color="yellow" wrap="truncate-end">
+        <Text
+          color={
+            !model.health.alive ? 'red' : model.health.failedStages.length ? 'yellow' : undefined
+          }
+          wrap="truncate-end"
+        >
           {fit(
-            `⏳ 排队等重型名额 ${panelDuration(item.queued_s + drift)} · 持有者 ${item.holders.length ? item.holders.map(holder => `${fit(holder.command, 20)} (${panelDuration(holder.running_s + drift)})`).join('、') : '未知'}`,
+            `异常${String(model.health.failedStages.length)} · 数据${String(checkedAge)}s前 · 跑${String(model.stats.running)} · 等${String(model.stats.waiting)}`,
             width
           )}
         </Text>
-      ))}
-      {bodyBudget >= 4 && (
-        <Text bold wrap="truncate-end">
-          需要处理
+      )}
+      {bodyBudget >= 3 && (
+        <Text color={attention ? 'yellow' : 'green'} wrap="truncate-end">
+          {fit(
+            attention ? `需处理 ⚠ ${shortRunId(attention.id)} · ${attention.text}` : '需处理 ✓ 无',
+            width
+          )}
         </Text>
       )}
-      {attention.length ? (
-        attention.slice(0, attentionCount).map((item, index) => (
-          <Box key={`${item.project}-${String(index)}`} flexDirection="column" height={2}>
-            <Text color="yellow" wrap="truncate-end">
-              {fit(`⚠ ${shortRunId(item.id)} · ${item.project}`, width)}
-            </Text>
-            <Text color="yellow" wrap="truncate-end">
-              {fit(`  ${attentionReason(item, drift)}`, width)}
-            </Text>
-          </Box>
-        ))
-      ) : shownAttentionRows ? (
-        <StatusMessage success>无需处理</StatusMessage>
-      ) : null}
-      {attentionOverflow && (
+      {bodyBudget >= 4 && model.attention.length > 1 && (
         <Text color="yellow" wrap="truncate-end">
-          +{String(model.attention.length - attentionCount)} 条
+          +{String(model.attention.length - 1)} 条需处理
         </Text>
       )}
-      {bodyBudget >= 5 + shownAttentionRows && (
-        <Text bold wrap="truncate-end">
-          进行中
+      {bodyBudget >= 5 && (
+        <Text wrap="truncate-end">
+          {fit(
+            current
+              ? `当前 ${shortRunId(current.id)} · ${current.stage} · 已用 ${age(current.elapsed_s, drift)}`
+              : '当前 暂无在跑任务',
+            width
+          )}
         </Text>
       )}
-      {!model.runs.length && bodyBudget >= 6 + shownAttentionRows && (
+      {bodyBudget >= 6 && model.runs.length > 1 && (
         <Text dimColor wrap="truncate-end">
-          暂无在跑任务
+          +{String(model.runs.length - 1)} 个 run
         </Text>
       )}
-      {shown.map(run => (
-        <MobileRunCard
-          key={`${run.project}-${run.id}`}
-          run={run}
-          width={width}
-          drift={drift}
-          now={now}
-        />
-      ))}
-      {showHidden && (
-        <Text dimColor wrap="truncate-end">
-          +{String(hidden)} 个 run 未显示
-        </Text>
-      )}
-      {availableRows > 0 && (
-        <Text backgroundColor="cyan" color="black" wrap="truncate-end">
-          {fit(`巡检 ${String(checkedAge)}s 前`, width)}
-        </Text>
-      )}
-      {quotaLines.map((line, index) => (
-        <Text key={index} backgroundColor="cyan" color="black" wrap="truncate-end">
-          {line}
-        </Text>
-      ))}
     </Box>
   );
 }
@@ -450,9 +324,11 @@ export function HeartbeatFrame({
     hidden = model.runs.length - shown.length,
     checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
     clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }),
-    health = model.health.ok
-      ? `● 巡检正常 · 巡检 ${String(checkedAge)}s 前`
-      : `⚠ 巡检可能停了：${model.health.messages.join('；')}`,
+    health = !model.health.alive
+      ? `⚠ 巡检可能停了：${model.health.messages.join('；')}`
+      : model.health.failedStages.length
+        ? `⚠ 巡检运行中 · ${model.health.failedStages.join('、')} 异常`
+        : `● 巡检正常 · 巡检 ${String(checkedAge)}s 前`,
     status = `${clock} · ${health}${ntfyPauseNotice(model)}`,
     titleWidth = Math.max(0, width - Bun.stringWidth(status) - 1),
     header = titleWidth

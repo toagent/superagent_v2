@@ -93,11 +93,22 @@ test('用 tick 判断新鲜度并按 heartbeat.at 漂移时长', () => {
   expect(fresh).toContain('巡检正常');
   expect(fresh).toContain('已用 12m');
   expect(fresh).toContain('最近活动 ≥11m 前');
-  expect(renderPanel(old, tick(4), now, allMarshals, 120)).toContain('⚠️ 巡检可能停了');
+  expect(renderPanel(old, tick(4), now, allMarshals, 120)).toContain('巡检可能停了');
   const current = heartbeat();
   current.marshals[0]!.running[0]!.last_activity_s = 0;
   current.marshals[0]!.running[0]!.coder = false;
-  expect(renderPanel(current, tick(), now, allMarshals, 30)).toContain('114127-582a｜demo');
+  const compact = renderPanel(
+    current,
+    { ...tick(), failover: { ok: false, error: 'down' } },
+    now,
+    allMarshals,
+    40
+  );
+  expect(compact).toContain('巡检运行中·failover异常');
+  expect(compact).not.toContain('巡检可能停了');
+  expect(compact).toContain('异常 1｜数据 0s前');
+  expect(compact).toContain('当前｜114127-582a｜编码｜已用 2m');
+  for (const line of compact.split('\n')) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(40);
   const output = renderPanel(current, tick(), now, allMarshals, 120);
   expect(output).toContain('最近活动 刚刚｜将军 已交回');
 });

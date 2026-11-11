@@ -273,7 +273,11 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     failover: { ok: true },
     actions: { ok: true },
   } satisfies TickRecord;
-  expect(tickHealth(tick, now).messages).toEqual(['未收到巡检心跳 4m', 'orca异常：down']);
+  expect(tickHealth(tick, now)).toMatchObject({
+    alive: false,
+    failedStages: ['orca'],
+    messages: ['未收到巡检心跳 4m', 'orca异常：down'],
+  });
   const stale = tickHealth({ at: new Date(now - 6 * 60_000).toISOString() }, now).stale;
   const queued: string[] = [];
   let queuedId = queueTickStaleAlert(stale, undefined, alert => queued.push(alert.id));
@@ -284,7 +288,7 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
   );
   expect(queueTickStaleAlert(undefined, queuedId, () => undefined)).toBeUndefined();
   // prettier-ignore
-  expect(tickHealth({ at: new Date(now).toISOString(), collect: { ok: true }, publish: { ok: true } }, now)).toEqual({ ok: true, messages: [] });
+  expect(tickHealth({ at: new Date(now).toISOString(), collect: { ok: true }, publish: { ok: true } }, now)).toEqual({ ok: true, alive: true, messages: [], failedStages: [] });
   expect(
     tickHealth(
       {
@@ -295,6 +299,10 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
         orca: { ok: true },
       },
       now
-    ).messages
-  ).toEqual(['巡检采集失败：bad ledger', 'reclaim异常：broken']);
+    )
+  ).toMatchObject({
+    alive: true,
+    failedStages: ['collect', 'reclaim'],
+    messages: ['巡检采集失败：bad ledger', 'reclaim异常：broken'],
+  });
 });
