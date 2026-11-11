@@ -484,7 +484,12 @@ test('board-v2 resolves coord wire keys, suppresses acknowledgements and dedupli
     }
     expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
   }
-  for (const state of ['accepted', 'done', 'rejected'] as const) {
+  // accepted 仍在 needs 中显示「处理中」且无可答决策；只有 done/rejected 才关闭。
+  s.coordMessages = [{ ...message, state: 'accepted' }];
+  const accepted = cockpit(s, ms).needs;
+  expect(accepted.map(r => r.id)).toEqual([message.id, 'held']);
+  expect(accepted[0]?.decision).toBeUndefined();
+  for (const state of ['done', 'rejected'] as const) {
     s.coordMessages = [{ ...message, state }];
     expect(cockpit(s, ms).needs.map(r => r.id)).toEqual(['held']);
   }
