@@ -246,6 +246,32 @@ test('every S3 reason translates, unknown reason survives unchanged, needs requi
   expect(c.needs[0].waiting).toBe('3m00s');
   expect(render(snapshot())).not.toContain('需要你');
 });
+test('accepted COORD work stays visible as processing until done or rejected', () => {
+  const s = snapshot(),
+    message = {
+      id: 'coord-message',
+      scope: { kind: 'repo' as const, id: '/repo/project' },
+      sender: { client: 'claude', pid: 2 },
+      recipient: { client: 'codex', pid: 1 },
+      generation: 1,
+      kind: 'task' as const,
+      title: '处理交接',
+      body: '',
+      evidence: [],
+      severity: 'normal' as const,
+      state: 'accepted' as const,
+      at: iso(-60_000),
+      ask: { question: '接管？', status: 'pending', generation: 1, owner: null },
+    };
+  s.asks = { 'coord:coord-message': { status: 'pending' } };
+  s.coordMessages = [message];
+  const processing = cockpit(s, now).needs;
+  expect(processing).toHaveLength(1);
+  expect(processing[0]).toMatchObject({ state: 'accepted', decision: undefined });
+  expect(processing[0].question).toContain('处理中');
+  for (const state of ['done', 'rejected'] as const)
+    expect(cockpit({ ...s, coordMessages: [{ ...message, state }] }, now).needs).toHaveLength(0);
+});
 test('token daily total does not masquerade session cumulative as role/day, unavailable stays unknown', () => {
   const s = snapshot([row('r')]);
   s.usage!.sessions = [

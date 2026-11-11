@@ -119,6 +119,13 @@ const identity = createRequire(import.meta.url)('../../hooks/identity.cjs') as {
 export const presence = identity.presence,
   same = identity.same,
   identityKey = identity.key;
+/** Null is an owner snapshot only for fenced escalation decisions, never identity authorization. */
+export const sameEscalationOwner = (
+  a: Identity | null | undefined,
+  b: Identity | null | undefined
+): boolean => (!a && !b) || same(a, b);
+export const messageClosed = (state: MessageState): boolean =>
+  state === 'done' || state === 'rejected';
 export const archonMutation = shared.archonMutation;
 export const scopeRepoName = (scope: Scope): string => {
   const path = scope.kind === 'repo' ? scope.id : scope.repo;
@@ -469,14 +476,29 @@ export class Coordination {
     });
   }
   ownedNonterminalRuns(client: string) {
-    const statuses = this.d.statuses();
-    return this.d.runs().flatMap(l => {
-      if (!this.isRunOwnershipEvidence(l, statuses)) return [];
-      const view = this.ownerWithStatuses(runScope(l), statuses);
-      return view.owner?.client === client && !view.conflicts.length
-        ? [{ run_id: l.run_id, repo: l.repo, owner: view.owner, generation: view.generation }]
-        : [];
-    });
+    const statuses = this.d.statuses(),
+      owned: { run_id: string; repo: string; owner: Identity; generation: number }[] = [];
+    let unavailable = 0;
+    for (const l of this.d.runs()) {
+      if (!this.isRunOwnershipEvidence(l, statuses)) continue;
+      let scope: ReturnType<typeof runScope>;
+      try {
+        scope = runScope(l);
+      } catch {
+        unavailable++;
+        continue;
+      }
+      const view = this.ownerWithStatuses(scope, statuses);
+      if (view.owner?.client === client && !view.conflicts.length)
+        owned.push({
+          run_id: l.run_id,
+          repo: l.repo,
+          owner: view.owner,
+          generation: view.generation,
+        });
+    }
+    if (unavailable) console.error(`coord: ${String(unavailable)} ownership ledgers unavailable`);
+    return owned;
   }
   private leaseKey(scope: Scope, who: Identity): string {
     return shared.hash([scope, identity.key(who)]);
@@ -757,7 +779,7 @@ export class Coordination {
     const owners = new Map<string, ReturnType<Coordination['ownerWithStatuses']>>(),
       routed: { message: Message; owner?: ReturnType<Coordination['ownerWithStatuses']> }[] = [];
     for (const message of this.messages()) {
-      if (!all && ['done', 'rejected'].includes(message.state)) continue;
+      if (!all && messageClosed(message.state)) continue;
       if (message.type) {
         if (same(message.recipient, who)) routed.push({ message });
       } else {
@@ -850,7 +872,7 @@ export class Coordination {
                   message.dedupe_key === input.dedupe_key
               )
             : [],
-          duplicate = matching.find(message => !['done', 'rejected'].includes(message.state)),
+          duplicate = matching.find(message => !messageClosed(message.state)),
           at = new Date(this.d.now()).toISOString();
         if (duplicate) {
           duplicate.evidence = [...new Set([...duplicate.evidence, ...input.evidence])];
@@ -935,10 +957,7 @@ export class Coordination {
               );
             return;
           }
-          if (
-            ['done', 'rejected'].includes(m.state) ||
-            (m.state === 'accepted' && state !== 'done')
-          )
+          if (messageClosed(m.state) || (m.state === 'accepted' && state !== 'done'))
             throw new Error('inbox: invalid state transition');
           m.state = state;
           m.note = note;
@@ -963,10 +982,7 @@ export class Coordination {
   }
   pending(scope: Scope): number {
     return this.messages().filter(
-      m =>
-        shared.hash(m.scope) === shared.hash(scope) &&
-        !m.type &&
-        ['queued', 'surfaced', 'accepted', 'escalated'].includes(m.state)
+      m => shared.hash(m.scope) === shared.hash(scope) && !m.type && !messageClosed(m.state)
     ).length;
   }
   answerEscalation(id: string, generation: number, persist: (key: string) => void): boolean {
@@ -987,7 +1003,7 @@ export class Coordination {
           !view ||
           view.conflicts.length ||
           view.generation !== generation ||
-          !same(view.owner, m.ask.owner)
+          !sameEscalationOwner(view.owner, m.ask.owner)
         )
           return false;
         persist(`coord:${m.id}:${String(generation)}:0`);
@@ -1026,7 +1042,7 @@ export class Coordination {
           if (a.status === 'yes') {
             if (
               m.ask.generation !== this.owner(m.scope).generation ||
-              !same(m.ask.owner, this.owner(m.scope).owner)
+              !sameEscalationOwner(m.ask.owner, this.owner(m.scope).owner)
             )
               throw new Error('coord: stale takeover answer');
             this.claim(

@@ -569,6 +569,38 @@ test('run scope keeps terminal ledger ownership while repo scope excludes termin
     { run_id: 'unknown', status: 'unknown' },
   ]);
 });
+test('ownedNonterminalRuns skips unavailable repositories without dropping valid runs', () => {
+  const s = setup(),
+    good: RunRef = {
+      run_id: 'good',
+      archon_run_id: 'good-engine',
+      repo: s.repo,
+      controller: { ...a, generation: 1 },
+    },
+    bad: RunRef = {
+      run_id: 'bad',
+      archon_run_id: 'bad-engine',
+      repo: join(s.root, 'deleted-repo'),
+      controller: { ...a, generation: 1 },
+    },
+    c = new Coordination({
+      sa: s.sa,
+      runs: () => [bad, good],
+      statuses: () =>
+        new Map([
+          [good.archon_run_id, 'running'],
+          [bad.archon_run_id, 'running'],
+        ]),
+      presence: () => online,
+    }),
+    errors = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    expect(c.ownedNonterminalRuns('codex').map(run => run.run_id)).toEqual(['good']);
+    expect(errors).toHaveBeenCalledWith('coord: 1 ownership ledgers unavailable');
+  } finally {
+    errors.mockRestore();
+  }
+});
 test('surfaced resolves owners outside the registry lock and caches batch status by scope', () => {
   const s = setup(),
     runs = Array.from(

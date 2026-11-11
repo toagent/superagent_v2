@@ -20,7 +20,7 @@ import {
   updateLedger,
   type Ledger,
 } from './cli';
-import { coord, runScope, same, scopeRepoName, type Controller } from './coord';
+import { coord, runScope, sameEscalationOwner, scopeRepoName, type Controller } from './coord';
 import type { Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
 
@@ -281,7 +281,7 @@ export function coordinationDecisions(c = coord()): Decision[] {
       if (
         view.conflicts.length ||
         view.generation !== m.ask.generation ||
-        !same(view.owner, m.ask.owner)
+        !sameEscalationOwner(view.owner, m.ask.owner)
       )
         return [];
       const repo = scopeRepoName(m.scope);

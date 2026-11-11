@@ -96,6 +96,60 @@ test('COORD decision consequences name repository, finder, and ownership effects
     source: { ref: expect.any(String) },
   });
 });
+test('owner-null COORD decisions answer yes/no and reject a stale generation', () => {
+  const escalated = () => {
+    let now = Date.now();
+    const root = tmp(),
+      repo = gitRepo(root),
+      sa = join(root, 'sa'),
+      scope = repoScope(repo),
+      finder = { client: 'claude', host: hostname(), pid: 2, pid_start: 'finder' },
+      c = new CoordinationRegistry({
+        sa,
+        runs: () => [],
+        now: () => now,
+        presence: () => ({ state: 'unknown' }),
+      });
+    mkdirSync(sa);
+    c.handoff(
+      scope,
+      finder,
+      {
+        kind: 'task',
+        title: 'unowned work',
+        body: 'body',
+        evidence: [],
+        severity: 'urgent',
+      },
+      0,
+      false
+    );
+    now += 16 * 60_000;
+    c.tick(() => ({ status: 'pending' }));
+    const message = c.messages().find(m => !m.type)!;
+    return { c, scope, finder, message };
+  };
+
+  const yes = escalated();
+  expect(coordinationDecisions(yes.c)).toHaveLength(1);
+  let yesStatus = 'pending';
+  expect(
+    yes.c.answerEscalation(yes.message.id, yes.message.generation, () => (yesStatus = 'yes'))
+  ).toBeTrue();
+  yes.c.tick(() => ({ status: yesStatus }));
+  expect(yes.c.owner(yes.scope).owner).toEqual(yes.finder);
+
+  const no = escalated();
+  let noStatus = 'pending';
+  expect(no.c.answerEscalation(no.message.id, 0, () => (noStatus = 'no'))).toBeTrue();
+  no.c.tick(() => ({ status: noStatus }));
+  expect(no.c.owner(no.scope).owner).toBeNull();
+  expect(no.c.messages().find(m => m.id === no.message.id)?.state).toBe('queued');
+
+  const stale = escalated();
+  stale.c.claim(stale.scope, stale.finder);
+  expect(stale.c.answerEscalation(stale.message.id, 0, () => undefined)).toBeFalse();
+});
 test('automatic, terminal, resolved and stale lifecycle never become actionable human work', () => {
   const f = fixture();
   for (const status of ['running', 'pending', 'completed', 'cancelled', 'failed'] as const) {

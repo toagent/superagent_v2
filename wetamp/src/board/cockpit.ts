@@ -4,6 +4,7 @@ import { progressLabel, jobProgress, unknownProgress, type Progress } from './et
 import { HOLD_POLICY } from '../cli';
 import { shortModel } from '../models';
 import { fmtTokens } from '../usage';
+import { messageClosed } from '../coord';
 import { elapsedAt, fmtElapsed, type BoardRow, type Snapshot } from './data';
 
 /** Stable S3 reasons have exactly one display translation; unknown reasons remain evidence. */
@@ -342,7 +343,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       const parts = /^coord:([^:]+)(?::(\d+):(\d+))?$/.exec(key);
       const m = parts?.[1] ? messages.get(parts[1]) : undefined;
       if (!m || !parts) return unresolved();
-      if (m.type || ['accepted', 'done', 'rejected'].includes(m.state)) return [];
+      if (m.type || messageClosed(m.state)) return [];
       if (m.ask && !['pending', 'unknown'].includes(m.ask.status)) return [];
       if (
         parts[2] &&
@@ -353,7 +354,10 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
       if (seen.has(`coord:${m.id}`)) return [];
       seen.add(`coord:${m.id}`);
       const repo = m.scope.kind === 'repo' ? m.scope.id : m.scope.repo;
-      const decision = { event: m.title.replace(/[\r\n]+/g, ' '), yes: '发现者接管', no: '继续等' };
+      const processing = m.state === 'accepted';
+      const decision = processing
+        ? undefined
+        : { event: m.title.replace(/[\r\n]+/g, ' '), yes: '发现者接管', no: '继续等' };
       return [
         {
           progress: unknownProgress(),
@@ -372,7 +376,7 @@ export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
           round: '-',
           reason: m.kind,
           decision,
-          question: decisionText(decision),
+          question: decision ? decisionText(decision) : '处理中；接收方完成或拒绝后关闭',
           waiting: fmtElapsed(Math.max(0, Math.floor((now - clock(m.at)) / 1000))),
         },
       ];
