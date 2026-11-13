@@ -15,6 +15,7 @@ function fixture(
     | 'restored'
     | 'lateConnect'
     | 'latePinned'
+    | 'lateDuplicate'
     | 'connecting'
     | 'live'
     | 'empty'
@@ -39,7 +40,7 @@ if(a[1]==='close'&&(((mode==='restored'||mode==='lateConnect')&&a[3]==='restored
 if(a[1]==='close'&&mode==='codeFail'){console.log(JSON.stringify({ok:false,error:{code:'terminal_close_failed'}}));process.exit(2)}
 if(a[1]==='list'){
  const calls=fs.readFileSync(process.env.FAKE_CALLS,'utf8').trim().split('\\n').map(JSON.parse),n=calls.filter(x=>x[1]==='list').length;
- const handles=mode==='live'?['saved','duplicate','other']:(mode==='restored'||mode==='lateConnect')?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
+ const handles=mode==='live'?(n===1?['saved','duplicate','other']:['saved','other']):mode==='lateDuplicate'?(n===1?['saved','other']:['saved','duplicate','other']):(mode==='restored'||mode==='lateConnect')?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
  const incarnationId=h=>h==='saved'?'current':h==='restored'?'old':h+'-incarnation';
  const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:(mode!=='connecting'||handle!=='created')&&(mode!=='lateConnect'||n>1),orphaned:false}));
  const visualLayouts=[{root:{groups:[{tabs:handles.map(handle=>({title:handle==='other'?'心跳·other':'心跳·superagent_v2',panes:[{handle}]}))}]}}];
@@ -136,9 +137,26 @@ test('live recorded panel closes duplicates without creating', () => {
   );
   expect(run(current).exitCode).toBe(0);
   const calls = invocations(current.calls);
-  expect(calls.map(call => call[1])).toEqual(['list', 'close']);
+  expect(calls.map(call => call[1])).toEqual(['list', 'close', 'list']);
   expect(calls[1]).toContain('duplicate');
   expect(calls[1]).toContain('--tab');
+});
+
+test('live recorded panel closes a duplicate that appears on rescan', () => {
+  const current = fixture('lateDuplicate');
+  mkdirSync(join(current.home, 'panels'), { recursive: true });
+  writeFileSync(
+    record(current.home, current.repo),
+    JSON.stringify({ handle: 'saved', incarnationId: 'current' })
+  );
+  expect(run(current).exitCode).toBe(0);
+  const calls = invocations(current.calls);
+  expect(calls.map(call => call[1])).toEqual(['list', 'list', 'close']);
+  expect(calls.some(call => call[1] === 'create')).toBe(false);
+  expect(JSON.parse(readFileSync(record(current.home, current.repo), 'utf8'))).toEqual({
+    handle: 'saved',
+    incarnationId: 'current',
+  });
 });
 
 test('rescan keeps the created panel even before it connects', () => {

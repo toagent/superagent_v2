@@ -225,16 +225,26 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
         .map(value => `'${value.replace(/'/g, "'\\''")}'`)
         .join(' '),
       shellCommand = `while true; do ${watch}; case $? in 75) continue;; esac; echo '心跳面板暂不可用，60 秒后重试'; sleep 60; done`;
+    const rescan = (keep, replaceKeep = false) => {
+      if (rescanDelayMs > 0)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
+      return tidyPanels(
+        orca, listState(orca, selector, env), title, keep, shellCommand, record, env, replaceKeep
+      );
+    };
     const current = recordedTerminal(prior, state.terminals);
     const tidied = tidyPanels(orca, state, title, current?.handle, shellCommand, record, env);
     if (tidied === 'waiting') {
-      if (rescanDelayMs > 0)
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
-      if (tidyPanels(orca, listState(orca, selector, env), title, null, shellCommand, record, env) === 'waiting')
+      if (rescan(null) === 'waiting')
         logFailure(new Error('pinned heartbeat terminal is not live after rescan'), env);
       return;
     }
-    if (tidied || current) return;
+    if (tidied) return;
+    if (current) {
+      if (rescan(current.handle, true) === 'waiting')
+        logFailure(new Error('pinned heartbeat terminal is not live after rescan'), env);
+      return;
+    }
     const created = command(
         orca,
         [
@@ -258,10 +268,7 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
     if (!createdTerminal) throw new Error('created heartbeat terminal has no incarnationId');
     const next = { handle, incarnationId: createdTerminal.incarnationId };
     atomicWrite(record, next);
-    if (rescanDelayMs > 0)
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rescanDelayMs);
-    const rescanned = listState(orca, selector, env);
-    if (tidyPanels(orca, rescanned, title, handle, shellCommand, record, env, true) === 'waiting')
+    if (rescan(handle, true) === 'waiting')
       logFailure(new Error('pinned heartbeat terminal is not live after rescan'), env);
   } finally {
     fs.closeSync(fd);
