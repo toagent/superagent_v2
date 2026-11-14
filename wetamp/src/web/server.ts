@@ -17,6 +17,7 @@ import { memoryOverview, memoryPanel } from './memory';
 import { makeWritable } from '../engine';
 import { normalizeLaunchdPath } from '../launchd-path';
 import { bootstrapLaunchd, bootoutLaunchd, kickstartLaunchd, printLaunchd } from '../launchd';
+import { hudEvents, HudEventsUnsupported } from './events';
 
 interface LegacyWebState {
   port: number;
@@ -388,6 +389,19 @@ export function handler(
       }
     }
     if (url.pathname === '/sa/data') return respond(JSON.stringify(get()), 200, 'application/json');
+    if (url.pathname === '/sa/events') {
+      try {
+        return respond(
+          JSON.stringify(hudEvents(url.searchParams.get('after'), url.searchParams.get('limit'))),
+          200,
+          'application/json'
+        );
+      } catch (error) {
+        return error instanceof HudEventsUnsupported
+          ? respond(error.message, 501)
+          : respond('Events unavailable', 503);
+      }
+    }
     if (url.pathname === '/api/overview') return respond('Not Found', 404);
     url.searchParams.delete('t');
     try {
