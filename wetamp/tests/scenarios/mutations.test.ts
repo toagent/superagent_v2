@@ -59,6 +59,14 @@ const mutations: Mutation[] = [
     expectedError: 'expected',
   },
   {
+    file: 'src/land.ts',
+    from: 'report.some(finding => !HEURISTIC_RULES.has(ruleId(finding)))',
+    to: 'report.length > 0',
+    test: 'tests/secret-gates.test.ts',
+    name: 'publication range ignores heuristic findings',
+    expectedError: 'Expected: false',
+  },
+  {
     file: 'templates/.archon/scripts/sa-check.ts',
     from: 'artifact_sha256: sha(serialized)',
     to: "artifact_sha256: ''",

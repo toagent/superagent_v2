@@ -32,7 +32,7 @@ import type { DeliveryReceipt } from './integration';
 import { gateHashInput, type PublishReceipt, type SyncOutput } from './contract';
 import type { RunView } from './archon';
 import { artifactsOf, evidenceJson, loadLedger, readJson, type Ledger } from './ledger';
-import { exactPatterns } from './secrets/scan';
+import { exactPatterns, HEURISTIC_RULES } from './secrets/scan';
 
 export interface DeliveryAuthorization {
   run: Controller;
@@ -310,13 +310,13 @@ const lastGate = (milestone: string): Record<string, unknown> => {
   return selected.value;
 };
 
-export const secretInDiff = (worktree: string, base: string): boolean => {
+export const secretInDiff = (worktree: string, base: string, scanner = 'gitleaks'): boolean => {
   const config = join(import.meta.dir, '../secrets/gitleaks.toml');
   const leaks = Bun.spawnSync(
     [
-      'gitleaks',
+      scanner,
       'git',
-      `--log-opts=${base}..HEAD`,
+      `--log-opts=${base}..HEAD --diff-merges=remerge`,
       '--config',
       config,
       '--ignore-gitleaks-allow',
@@ -324,24 +324,42 @@ export const secretInDiff = (worktree: string, base: string): boolean => {
       '--report-format',
       'json',
       '--report-path',
-      '/dev/null',
+      '-',
+      '--redact=100',
     ],
-    { cwd: worktree, stdout: 'ignore', stderr: 'pipe' }
+    { cwd: worktree, stdout: 'pipe', stderr: 'pipe' }
   );
   if (![0, 1].includes(leaks.exitCode))
     throw new Error(`secret scan failed: ${leaks.stderr.toString().trim()}`);
-  const diff = Bun.spawnSync(['git', '-C', worktree, 'diff', '--unified=0', base, 'HEAD'], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: 30_000,
-  });
-  if (diff.exitCode !== 0) throw new Error(`secret diff failed: ${diff.stderr.toString().trim()}`);
-  const added = diff.stdout
-    .toString()
-    .split('\n')
-    .filter(line => line.startsWith('+') && !line.startsWith('+++'))
-    .join('\n');
-  return leaks.exitCode === 1 || exactPatterns().some(({ value }) => added.includes(value));
+  const ruleId = (finding: unknown): string =>
+    String(typeof finding === 'object' && finding ? (Reflect.get(finding, 'RuleID') ?? '') : '');
+  let leaked = false;
+  try {
+    const report: unknown = JSON.parse(leaks.stdout.toString() || '[]');
+    if (!Array.isArray(report) || (leaks.exitCode === 1 && !report.length)) throw new Error();
+    leaked = report.some(finding => !HEURISTIC_RULES.has(ruleId(finding)));
+  } catch {
+    throw new Error('secret scan failed: invalid report');
+  }
+  const history = '-p --format= --no-ext-diff --unified=0 --diff-merges=remerge'.split(' ');
+  const commands = [
+    ['diff', '--unified=0', base, 'HEAD'],
+    ['log', ...history, `${base}..HEAD`],
+  ];
+  const added: string[] = [];
+  const options = { stdout: 'pipe', stderr: 'pipe', timeout: 30_000 } as const;
+  for (const command of commands) {
+    const result = Bun.spawnSync(['git', '-C', worktree, ...command], options);
+    if (result.exitCode !== 0)
+      throw new Error(`secret diff failed: ${result.stderr.toString().trim()}`);
+    let hunk = false;
+    for (const line of result.stdout.toString().split('\n')) {
+      if (line.startsWith('diff --git ')) hunk = false;
+      else if (line.startsWith('@@ ')) hunk = true;
+      else if (hunk && line.startsWith('+')) added.push(line.slice(1));
+    }
+  }
+  return leaked || exactPatterns().some(({ value }) => added.some(line => line.includes(value)));
 };
 
 // prettier-ignore
