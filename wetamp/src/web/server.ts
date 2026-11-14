@@ -391,11 +391,8 @@ export function handler(
     if (url.pathname === '/sa/data') return respond(JSON.stringify(get()), 200, 'application/json');
     if (url.pathname === '/sa/events') {
       try {
-        return respond(
-          JSON.stringify(hudEvents(url.searchParams.get('after'), url.searchParams.get('limit'))),
-          200,
-          'application/json'
-        );
+        const page = hudEvents(url.searchParams.get('after'), url.searchParams.get('limit'));
+        return respond(JSON.stringify(page), 200, 'application/json');
       } catch (error) {
         return error instanceof HudEventsUnsupported
           ? respond(error.message, 501)

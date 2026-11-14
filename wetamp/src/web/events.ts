@@ -1,34 +1,23 @@
 import { Database } from 'bun:sqlite';
-import { basename, join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
-import { home } from '../config';
-import { ledgerIds, loadLedger } from '../cli';
+import { basename, join, resolve, sep } from 'node:path';
 import { stageKind } from '../board/cockpit';
 import { workflowRoles, type Role } from '../board/workflow';
-
+import { ledgerIds, loadLedger } from '../cli';
+import { home } from '../config';
 export class HudEventsUnsupported extends Error {}
-export interface HudEvent {
-  seq: number;
-  at: string;
-  project: string;
-  run: string;
-  stage: ReturnType<typeof stageKind>;
-  role: Role | null;
-  kind: string;
-  tool?: ReturnType<typeof toolKind>;
-  tokens?: number;
-  ms?: number;
-}
-
-const KINDS: Record<string, string> = {
-  node_started: 'node_start',
-  node_completed: 'node_done',
-  node_failed: 'node_fail',
-  node_retry_scheduled: 'node_retry',
-  workflow_completed: 'run_done',
-  workflow_failed: 'run_fail',
-  workflow_cancelled: 'run_cancel',
+type ToolKind = keyof typeof TOOLS | 'mcp' | 'other';
+type Delivery = [run: string, project: string, roles?: Map<string, Role>];
+type Row = Record<'workflow_run_id' | 'event_type' | 'data' | 'created_at', string> & {
+  event_order: number;
+  step_name: string | null;
 };
+const eventKind = (type: string): string | undefined =>
+  'node_start,node_done,node_fail,node_retry,run_done,run_fail,run_cancel'.split(',')[
+    'node_started,node_completed,node_failed,node_retry_scheduled,workflow_completed,workflow_failed,workflow_cancelled'
+      .split(',')
+      .indexOf(type)
+  ];
 const TOOLS = {
   edit: new Set(['file_change', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch']),
   exec: new Set(['Bash', 'exec_command', 'shell']),
@@ -36,21 +25,16 @@ const TOOLS = {
   structured: new Set(['StructuredOutput']),
   subagent: new Set(['Task', 'spawn_agent']),
 };
-export function toolKind(
-  name: string
-): 'edit' | 'exec' | 'read' | 'mcp' | 'structured' | 'subagent' | 'other' {
+const EVENTS_SQL = `SELECT e.event_order, e.workflow_run_id, e.event_type, e.step_name, e.data, e.created_at FROM remote_agent_workflow_events e JOIN remote_agent_workflow_runs r ON r.id = e.workflow_run_id WHERE e.event_order > ? AND e.event_order IS NOT NULL AND r.workflow_name LIKE 'sa-%' AND e.workflow_run_id IN (SELECT value FROM json_each(?)) AND e.event_type IN ('node_started','node_completed','node_failed','node_retry_scheduled','workflow_completed','workflow_failed','workflow_cancelled','provider_event') AND (e.event_type != 'provider_event' OR (json_valid(e.data) AND json_extract(e.data, '$.event.type') = 'tool_call')) ORDER BY e.event_order LIMIT ?`;
+const object = (value: unknown): Record<string, unknown> =>
+  Object(value ?? {}) as Record<string, unknown>;
+const finite = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+export function toolKind(name: string): ToolKind {
   if (name.startsWith('mcp__')) return 'mcp';
-  for (const kind of ['edit', 'exec', 'read', 'structured', 'subagent'] as const)
+  for (const kind of Object.keys(TOOLS) as (keyof typeof TOOLS)[])
     if (TOOLS[kind].has(name)) return kind;
-  if (/^(find_|get_symbols_|search_for_pattern$|list_dir$)/.test(name)) return 'read';
-  return 'other';
-}
-
-interface Delivery {
-  run: string;
-  project: string;
-  workflow: string;
-  roles?: Map<string, Role>;
+  return /^(find_|get_symbols_|search_for_pattern$|list_dir$)/.test(name) ? 'read' : 'other';
 }
 let cached: { root: string; until: number; runs: Map<string, Delivery> } | undefined;
 function deliveryRuns(): Map<string, Delivery> {
@@ -63,57 +47,57 @@ function deliveryRuns(): Map<string, Delivery> {
       const ledger = loadLedger(id),
         repo = resolve(ledger.repo),
         project = basename(repo);
-      if (
+      const excluded =
         !ledger.workflow.startsWith('sa-') ||
-        repo === scratch ||
         repo.startsWith(scratch + sep) ||
-        /fake/i.test(project)
-      )
-        continue;
-      runs.set(ledger.archon_run_id, {
-        run: ledger.run_id,
-        project,
-        workflow: ledger.workflow,
-        roles: workflowRoles(ledger),
-      });
+        /fake/i.test(project);
+      if (excluded) continue;
+      runs.set(ledger.archon_run_id, [ledger.run_id, project, workflowRoles(ledger)]);
     } catch {
-      /* A bad ledger cannot identify a delivery run. */
+      continue;
     }
   cached = { root, until: Date.now() + 2000, runs };
   return runs;
 }
-
-interface Row {
-  event_order: number;
-  workflow_run_id: string;
-  workflow_name: string;
-  event_type: string;
-  step_name: string | null;
-  data: string;
-  created_at: string;
+function project(row: Row, delivery: Delivery): Record<string, unknown> | undefined {
+  const [run, project, roles] = delivery;
+  const data = object(JSON.parse(row.data));
+  const provider = object(data.event);
+  const tool =
+    provider.type === 'tool_call' && typeof provider.name === 'string'
+      ? toolKind(provider.name)
+      : undefined;
+  const kind = tool ? 'tool' : eventKind(row.event_type);
+  if (!kind) return;
+  const done = kind === 'node_done';
+  const tokens = done ? finite(object(data.tokens).input) : undefined;
+  const ms = done ? finite(data.duration_ms) : undefined;
+  return {
+    seq: row.event_order,
+    at: row.created_at,
+    project,
+    run,
+    stage: stageKind(row.step_name),
+    role: row.step_name ? (roles?.get(row.step_name) ?? null) : null,
+    kind,
+    ...(tool ? { tool } : {}),
+    ...(tokens === undefined ? {} : { tokens }),
+    ...(ms === undefined ? {} : { ms }),
+  };
 }
-const object = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-const finite = (value: unknown): number | undefined =>
-  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
-
-export function hudEvents(
-  after?: string | null,
-  requestedLimit?: string | null
-): { cursor: string; more: boolean; events: HudEvent[] } {
+export function hudEvents(after?: string | null, requestedLimit?: string | null) {
   if (process.env.DATABASE_URL)
     throw new HudEventsUnsupported('Postgres event projection is not supported');
-  const path = join(home().archon, 'archon.db'),
-    parsedAfter = Number(after),
-    parsedLimit = Number(requestedLimit);
-  const limit =
-    Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(500, Math.floor(parsedLimit)) : 200;
-  const db = new Database(path, { readonly: true });
+  const db = new Database(join(home().archon, 'archon.db'), { readonly: true });
   try {
+    const parsedAfter = Number(after),
+      parsedLimit = Number(requestedLimit);
+    const limit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(500, Math.floor(parsedLimit))
+        : 200;
     const initial =
-      after !== undefined && after !== null && Number.isFinite(parsedAfter) && parsedAfter >= 0
+      after != null && Number.isFinite(parsedAfter) && parsedAfter >= 0
         ? Math.floor(parsedAfter)
         : (db
             .query<
@@ -121,56 +105,18 @@ export function hudEvents(
               []
             >("SELECT COALESCE(MAX(event_order), 0) AS seq FROM remote_agent_workflow_events WHERE created_at < datetime('now', '-24 hours')")
             .get()?.seq ?? 0);
-    const deliveries = deliveryRuns(),
-      events: HudEvent[] = [];
-    let scan = initial,
-      exhausted = false;
-    const query = db.query<Row, [number, number]>(
-      `SELECT e.event_order, e.workflow_run_id, r.workflow_name, e.event_type, e.step_name, e.data, e.created_at FROM remote_agent_workflow_events e JOIN remote_agent_workflow_runs r ON r.id = e.workflow_run_id WHERE e.event_order > ? AND e.event_order IS NOT NULL AND r.workflow_name LIKE 'sa-%' AND e.event_type IN ('node_started','node_completed','node_failed','node_retry_scheduled','workflow_completed','workflow_failed','workflow_cancelled','provider_event') ORDER BY e.event_order LIMIT ?`
-    );
-    while (events.length <= limit && !exhausted) {
-      const rows = query.all(scan, Math.max(501, limit * 2));
-      exhausted = rows.length < Math.max(501, limit * 2);
-      for (const row of rows) {
-        scan = row.event_order;
-        const delivery = deliveries.get(row.workflow_run_id);
-        if (delivery?.workflow !== row.workflow_name) continue;
-        let data: Record<string, unknown>;
-        try {
-          data = object(JSON.parse(row.data));
-        } catch {
-          continue;
-        }
-        const provider = object(data.event),
-          tool =
-            provider.type === 'tool_call' && typeof provider.name === 'string'
-              ? toolKind(provider.name)
-              : undefined;
-        const kind = tool ? 'tool' : KINDS[row.event_type];
-        if (!kind) continue;
-        const event: HudEvent = {
-          seq: row.event_order,
-          at: row.created_at,
-          project: delivery.project,
-          run: delivery.run,
-          stage: stageKind(row.step_name),
-          role: row.step_name ? (delivery.roles?.get(row.step_name) ?? null) : null,
-          kind,
-        };
-        if (tool) event.tool = tool;
-        if (kind === 'node_done') {
-          const tokens = finite(object(data.tokens).input),
-            ms = finite(data.duration_ms);
-          if (tokens !== undefined) event.tokens = tokens;
-          if (ms !== undefined) event.ms = ms;
-        }
-        events.push(event);
-        if (events.length > limit) break;
-      }
-    }
+    const deliveries = deliveryRuns();
+    const rows = db
+      .query<Row, [number, string, number]>(EVENTS_SQL)
+      .all(initial, JSON.stringify([...deliveries.keys()]), limit + 1);
+    const events = rows.flatMap(row => {
+      const delivery = deliveries.get(row.workflow_run_id);
+      const event = delivery && project(row, delivery);
+      return event ? [event] : [];
+    });
     const page = events.slice(0, limit);
     return {
-      cursor: String(page.at(-1)?.seq ?? initial),
+      cursor: String((page.at(-1)?.seq as number | undefined) ?? initial),
       more: events.length > limit,
       events: page,
     };

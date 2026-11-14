@@ -1,18 +1,10 @@
-import { afterEach, expect, test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { handler } from '../src/web/server';
 import { hudEvents, toolKind } from '../src/web/events';
 import { tmp } from './helpers';
-
-const saved = { ...process.env };
-afterEach(() => {
-  for (const key of ['SUPERAGENT_HOME', 'ARCHON_HOME', 'DATABASE_URL']) {
-    if (saved[key] === undefined) delete process.env[key];
-    else process.env[key] = saved[key];
-  }
-});
 
 function fixture() {
   const root = tmp(),
@@ -28,22 +20,15 @@ function fixture() {
     join(gen, '.archon/workflows/sa-test/sa-test.yaml'),
     'nodes:\n  - id: code-one\n    model: "@sa-coder"\n  - id: verify-one\n'
   );
-  writeFileSync(
-    join(root, 'runs/delivery.json'),
-    JSON.stringify({
-      run_id: 'delivery',
-      archon_run_id: 'engine',
-      repo: process.cwd(),
-      gen_dir: gen,
-      plan: join(gen, 'plan.json'),
-      branch: 'sa/test',
-      workflow: 'sa-test',
-      console: '',
-      started_at: '',
-      transcript: '',
-      log: '',
-    })
-  );
+  const ledger = {
+    run_id: 'delivery',
+    archon_run_id: 'engine',
+    repo: process.cwd(),
+    gen_dir: gen,
+    branch: 'sa/test',
+    workflow: 'sa-test',
+  };
+  writeFileSync(join(root, 'runs/delivery.json'), JSON.stringify(ledger));
   const db = new Database(join(archon, 'archon.db'));
   db.exec(
     'CREATE TABLE remote_agent_workflow_runs (id TEXT PRIMARY KEY, workflow_name TEXT); CREATE TABLE remote_agent_workflow_events (event_order INTEGER, workflow_run_id TEXT, event_type TEXT, step_name TEXT, data TEXT, created_at TEXT);'
@@ -110,6 +95,9 @@ test('tool projection classifies machine names and never serializes tool input',
 test('/sa/events shares authentication, avoids snapshot refresh, and rejects Postgres', async () => {
   process.env.DATABASE_URL = 'postgres://fixture';
   let updates = 0;
+  const update = async () => {
+    updates++;
+  };
   const get = handler(
     39890,
     'fixture',
@@ -118,9 +106,7 @@ test('/sa/events shares authentication, avoids snapshot refresh, and rejects Pos
     fetch,
     undefined,
     undefined,
-    async () => {
-      updates++;
-    }
+    update
   );
   const request = (path: string) =>
     new Request(`http://127.0.0.1:39890${path}`, { headers: { host: '127.0.0.1:39890' } });
