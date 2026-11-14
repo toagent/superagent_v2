@@ -20,26 +20,37 @@ function fixture() {
     join(gen, '.archon/workflows/sa-test/sa-test.yaml'),
     'nodes:\n  - id: code-one\n    model: "@sa-coder"\n  - id: verify-one\n'
   );
-  const ledger = {
-    run_id: 'delivery',
-    archon_run_id: 'engine',
-    repo: process.cwd(),
-    gen_dir: gen,
-    branch: 'sa/test',
-    workflow: 'sa-test',
-  };
-  writeFileSync(join(root, 'runs/delivery.json'), JSON.stringify(ledger));
   const db = new Database(join(archon, 'archon.db'));
   db.exec(
     'CREATE TABLE remote_agent_workflow_runs (id TEXT PRIMARY KEY, workflow_name TEXT); CREATE TABLE remote_agent_workflow_events (event_order INTEGER, workflow_run_id TEXT, event_type TEXT, step_name TEXT, data TEXT, created_at TEXT);'
   );
-  db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?)').run('engine', 'sa-test');
-  db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?)').run('unregistered', 'sa-test');
+  const register = (run_id = 'delivery', archon_run_id = 'engine') => {
+    writeFileSync(
+      join(root, `runs/${run_id}.json`),
+      JSON.stringify({
+        run_id,
+        archon_run_id,
+        repo: process.cwd(),
+        gen_dir: gen,
+        branch: 'sa/test',
+        workflow: 'sa-test',
+      })
+    );
+    db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?)').run(
+      archon_run_id,
+      `sa-${run_id}`
+    );
+  };
+  register();
+  db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?)').run(
+    'unregistered',
+    'sa-missing'
+  );
   const add = (seq: number, type: string, step: string | null, data: object = {}, run = 'engine') =>
     db
       .query('INSERT INTO remote_agent_workflow_events VALUES (?, ?, ?, ?, ?, ?)')
       .run(seq, run, type, step, JSON.stringify(data), new Date().toISOString());
-  return { db, add };
+  return { db, add, register };
 }
 
 test('event_order pagination is lossless and projects only delivery lifecycle events', () => {
@@ -66,6 +77,34 @@ test('event_order pagination is lossless and projects only delivery lifecycle ev
       events: [{ seq: 5, kind: 'run_done', role: null }],
     });
     expect([...first.events, ...second.events].map(event => event.seq)).toEqual([1, 3, 5]);
+  } finally {
+    db.close();
+  }
+});
+
+test('a run registered after the first page remains reachable', () => {
+  const { db, add, register } = fixture();
+  try {
+    add(1, 'node_started', 'code-one');
+    const first = hudEvents('0', '1');
+    register('later', 'later-engine');
+    add(2, 'workflow_completed', null, {}, 'later-engine');
+    expect(hudEvents(first.cursor, '1')).toMatchObject({
+      cursor: '2',
+      events: [{ seq: 2, run: 'later', kind: 'run_done' }],
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('excluded rows still advance the scan cursor', () => {
+  const { db, add } = fixture();
+  try {
+    add(1, 'node_failed', 'verify-one', {}, 'unregistered');
+    const page = hudEvents('0', '1');
+    expect(page).toMatchObject({ cursor: '1', more: false, events: [] });
+    expect(hudEvents(page.cursor, '1').events).toEqual([]);
   } finally {
     db.close();
   }

@@ -3,12 +3,15 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { stageKind } from '../board/cockpit';
 import { workflowRoles, type Role } from '../board/workflow';
-import { ledgerIds, loadLedger } from '../cli';
+import { loadLedger } from '../cli';
 import { home } from '../config';
 export class HudEventsUnsupported extends Error {}
 type ToolKind = keyof typeof TOOLS | 'mcp' | 'other';
 type Delivery = [run: string, project: string, roles?: Map<string, Role>];
-type Row = Record<'workflow_run_id' | 'event_type' | 'data' | 'created_at', string> & {
+type Row = Record<
+  'workflow_run_id' | 'workflow_name' | 'event_type' | 'data' | 'created_at',
+  string
+> & {
   event_order: number;
   step_name: string | null;
 };
@@ -25,7 +28,7 @@ const TOOLS = {
   structured: new Set(['StructuredOutput']),
   subagent: new Set(['Task', 'spawn_agent']),
 };
-const EVENTS_SQL = `SELECT e.event_order, e.workflow_run_id, e.event_type, e.step_name, e.data, e.created_at FROM remote_agent_workflow_events e JOIN remote_agent_workflow_runs r ON r.id = e.workflow_run_id WHERE e.event_order > ? AND e.event_order IS NOT NULL AND r.workflow_name LIKE 'sa-%' AND e.workflow_run_id IN (SELECT value FROM json_each(?)) AND e.event_type IN ('node_started','node_completed','node_failed','node_retry_scheduled','workflow_completed','workflow_failed','workflow_cancelled','provider_event') AND (e.event_type != 'provider_event' OR (json_valid(e.data) AND json_extract(e.data, '$.event.type') = 'tool_call')) ORDER BY e.event_order LIMIT ?`;
+const EVENTS_SQL = `SELECT e.event_order, e.workflow_run_id, r.workflow_name, e.event_type, e.step_name, e.data, e.created_at FROM remote_agent_workflow_events e JOIN remote_agent_workflow_runs r ON r.id = e.workflow_run_id WHERE e.event_order > ? AND e.event_order IS NOT NULL AND r.workflow_name LIKE 'sa-%' AND e.event_type IN ('node_started','node_completed','node_failed','node_retry_scheduled','workflow_completed','workflow_failed','workflow_cancelled','provider_event') AND (e.event_type != 'provider_event' OR (json_valid(e.data) AND json_extract(e.data, '$.event.type') = 'tool_call')) ORDER BY e.event_order LIMIT ?`;
 const object = (value: unknown): Record<string, unknown> =>
   Object(value ?? {}) as Record<string, unknown>;
 const finite = (value: unknown): number | undefined =>
@@ -36,28 +39,28 @@ export function toolKind(name: string): ToolKind {
     if (TOOLS[kind].has(name)) return kind;
   return /^(find_|get_symbols_|search_for_pattern$|list_dir$)/.test(name) ? 'read' : 'other';
 }
-let cached: { root: string; until: number; runs: Map<string, Delivery> } | undefined;
-function deliveryRuns(): Map<string, Delivery> {
+let cached: { root: string; runs: Map<string, Delivery | null> } | undefined;
+function delivery(row: Row): Delivery | undefined {
   const root = home().sa;
-  if (cached?.root === root && cached.until > Date.now()) return cached.runs;
-  const scratch = resolve(tmpdir()),
-    runs = new Map<string, Delivery>();
-  for (const id of ledgerIds())
-    try {
-      const ledger = loadLedger(id),
-        repo = resolve(ledger.repo),
-        project = basename(repo);
-      const excluded =
+  if (cached?.root !== root) cached = { root, runs: new Map() };
+  const known = cached.runs.get(row.workflow_run_id);
+  if (known !== undefined) return known ?? undefined;
+  try {
+    const ledger = loadLedger(row.workflow_name.slice(3)),
+      repo = resolve(ledger.repo),
+      project = basename(repo),
+      excluded =
+        ledger.archon_run_id !== row.workflow_run_id ||
         !ledger.workflow.startsWith('sa-') ||
-        repo.startsWith(scratch + sep) ||
-        /fake/i.test(project);
-      if (excluded) continue;
-      runs.set(ledger.archon_run_id, [ledger.run_id, project, workflowRoles(ledger)]);
-    } catch {
-      continue;
-    }
-  cached = { root, until: Date.now() + 2000, runs };
-  return runs;
+        repo.startsWith(resolve(tmpdir()) + sep) ||
+        /fake/i.test(project),
+      value: Delivery | null = excluded ? null : [ledger.run_id, project, workflowRoles(ledger)];
+    if (cached.runs.size >= 512) cached.runs.clear();
+    cached.runs.set(row.workflow_run_id, value);
+    return value ?? undefined;
+  } catch {
+    return;
+  }
 }
 function project(row: Row, delivery: Delivery): Record<string, unknown> | undefined {
   const [run, project, roles] = delivery;
@@ -105,20 +108,17 @@ export function hudEvents(after?: string | null, requestedLimit?: string | null)
               []
             >("SELECT COALESCE(MAX(event_order), 0) AS seq FROM remote_agent_workflow_events WHERE created_at < datetime('now', '-24 hours')")
             .get()?.seq ?? 0);
-    const deliveries = deliveryRuns();
-    const rows = db
-      .query<Row, [number, string, number]>(EVENTS_SQL)
-      .all(initial, JSON.stringify([...deliveries.keys()]), limit + 1);
-    const events = rows.flatMap(row => {
-      const delivery = deliveries.get(row.workflow_run_id);
-      const event = delivery && project(row, delivery);
-      return event ? [event] : [];
+    const rows = db.query<Row, [number, number]>(EVENTS_SQL).all(initial, limit + 1);
+    const scanned = rows.slice(0, limit);
+    const events = scanned.flatMap(row => {
+      const event = delivery(row);
+      const projected = event && project(row, event);
+      return projected ? [projected] : [];
     });
-    const page = events.slice(0, limit);
     return {
-      cursor: String((page.at(-1)?.seq as number | undefined) ?? initial),
-      more: events.length > limit,
-      events: page,
+      cursor: String(scanned.at(-1)?.event_order ?? initial),
+      more: rows.length > limit,
+      events,
     };
   } finally {
     db.close();
