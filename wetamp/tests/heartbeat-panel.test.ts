@@ -18,6 +18,8 @@ function fixture(
     | 'lateDuplicate'
     | 'connecting'
     | 'live'
+    | 'unknown'
+    | 'unknownFresh'
     | 'empty'
     | 'codeFail' = 'empty'
 ) {
@@ -40,11 +42,11 @@ if(a[1]==='close'&&(((mode==='restored'||mode==='lateConnect')&&a[3]==='restored
 if(a[1]==='close'&&mode==='codeFail'){console.log(JSON.stringify({ok:false,error:{code:'terminal_close_failed'}}));process.exit(2)}
 if(a[1]==='list'){
  const calls=fs.readFileSync(process.env.FAKE_CALLS,'utf8').trim().split('\\n').map(JSON.parse),n=calls.filter(x=>x[1]==='list').length;
- const handles=mode==='live'?(n===1?['saved','duplicate','other']:['saved','other']):mode==='lateDuplicate'?(n===1?['saved','other']:['saved','duplicate','other']):(mode==='restored'||mode==='lateConnect')?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
+ const handles=mode==='live'?(n===1?['saved','duplicate','other']:['saved','other']):mode==='lateDuplicate'?(n===1?['saved','other']:['saved','duplicate','other']):mode==='unknown'?['saved']:mode==='unknownFresh'?(n===1?[]:['created']):(mode==='restored'||mode==='lateConnect')?['restored']:mode==='latePinned'?(n===1?[]:n===2?['created']:['created','late']):mode==='connecting'?(n===1?[]:n===2?['created']:['created','late']):mode==='codeFail'?['duplicate']:(n===1?[]:['created']);
  const incarnationId=h=>h==='saved'?'current':h==='restored'?'old':h+'-incarnation';
- const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:(mode!=='connecting'||handle!=='created')&&(mode!=='lateConnect'||n>1),orphaned:false}));
+ const terminals=handles.map(handle=>({handle,incarnationId:incarnationId(handle),connected:(mode!=='connecting'||handle!=='created')&&(mode!=='lateConnect'||n>1),orphaned:mode.startsWith('unknown')}));
  const visualLayouts=[{root:{groups:[{tabs:handles.map(handle=>({title:handle==='other'?'心跳·other':'心跳·superagent_v2',panes:[{handle}]}))}]}}];
- console.log(JSON.stringify({result:{terminals,visualLayouts}}));
+ console.log(JSON.stringify({result:{terminals,visualLayouts:mode.startsWith('unknown')?null:visualLayouts}}));
 }else console.log(JSON.stringify({result:{terminal:{handle:'created'}}}));
 `,
     { mode: 0o755 }
@@ -157,6 +159,25 @@ test('live recorded panel closes a duplicate that appears on rescan', () => {
     handle: 'saved',
     incarnationId: 'current',
   });
+});
+
+test('unknown topology trusts a connected recorded terminal', () => {
+  const current = fixture('unknown');
+  mkdirSync(join(current.home, 'panels'), { recursive: true });
+  writeFileSync(
+    record(current.home, current.repo),
+    JSON.stringify({ handle: 'saved', incarnationId: 'current' })
+  );
+  expect(run(current).exitCode).toBe(0);
+  expect(run(current).exitCode).toBe(0);
+  expect(invocations(current.calls).some(call => call[1] === 'create')).toBe(false);
+});
+
+test('unknown topology without a record creates only once', () => {
+  const current = fixture('unknownFresh');
+  expect(run(current).exitCode).toBe(0);
+  expect(run(current).exitCode).toBe(0);
+  expect(invocations(current.calls).filter(call => call[1] === 'create')).toHaveLength(1);
 });
 
 test('rescan keeps the created panel even before it connects', () => {

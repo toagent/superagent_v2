@@ -156,13 +156,14 @@ function listState(orca, selector, env) {
   };
 }
 
-function recordedTerminal(record, terminals) {
+function recordedTerminal(record, terminals, topologyKnown) {
   if (typeof record?.handle !== 'string' || typeof record?.incarnationId !== 'string') return null;
   return terminals.find(
     terminal =>
       terminal.handle === record.handle &&
       terminal.incarnationId === record.incarnationId &&
-      live(terminal)
+      terminal.connected === true &&
+      (!topologyKnown || !terminal.orphaned)
   );
 }
 
@@ -232,7 +233,7 @@ function ensure(root, env = process.env, rescanDelayMs = RESCAN_DELAY_MS) {
         orca, listState(orca, selector, env), title, keep, shellCommand, record, env, replaceKeep
       );
     };
-    const current = recordedTerminal(prior, state.terminals);
+    const current = recordedTerminal(prior, state.terminals, state.visualLayouts != null);
     const tidied = tidyPanels(orca, state, title, current?.handle, shellCommand, record, env);
     if (tidied === 'waiting') {
       if (rescan(null) === 'waiting')
