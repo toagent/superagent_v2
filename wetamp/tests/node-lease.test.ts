@@ -73,8 +73,9 @@ test('并行节点只唤醒一次，单节点取消后可从真实 CLI 续作', 
   const engineRun = { id: 'engine', status: 'running', working_path: repo, output_root: join(sa, 'output'), started_at: startedAt, metadata: { execution_owner: { host: hostname(), pid: owner.pid, bound_at: new Date(Date.parse(processState.start) + 1000).toISOString() } }, nodes: [{ nodeId: 'start-m1', state: 'completed' }, { nodeId: 'code-core', state: 'running', startedAt }, { nodeId: 'code-api', state: 'running', startedAt: activeAt }] };
   writeFileSync(runFile, JSON.stringify(engineRun));
   expect(executionOwnership(engineRun as RunView)).toEqual({ state: 'online' });
+  const launcher = { ...owner, tty: null, cwd: repo } as Ledger['launcher'];
   // prettier-ignore
-  const ledger: Ledger = { run_id: 'lease', archon_run_id: 'engine', plan: join(gen, 'plan.json'), gen_dir: gen, repo, branch: 'sa/lease', workflow: 'wf', workflow_hash: engineHash(), engine_hash: engineHash(), console: 'codex', started_at: startedAt, transcript: '', log: '', launcher: { ...owner, client: 'codex', tty: null, cwd: repo } };
+  const ledger: Ledger = { run_id: 'lease', archon_run_id: 'engine', plan: join(gen, 'plan.json'), gen_dir: gen, repo, branch: 'sa/lease', workflow: 'wf', workflow_hash: engineHash(), engine_hash: engineHash(), console: 'codex', started_at: startedAt, transcript: '', log: '', launcher };
   writeFileSync(join(runs, 'lease.json'), JSON.stringify(ledger));
   writeFileSync(
     bin,
