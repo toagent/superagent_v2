@@ -8,7 +8,7 @@ import type { StallRecord } from './stall';
 export const NODE_LEASE = Object.freeze({ progress_window_ms: 5 * 60_000, extension_factor: 1.5 });
 
 // prettier-ignore
-export interface NodeLeaseRecord { engine_run: string; node: string; started_at: string; budget_s: number; extended_at?: string; stopped_at?: string; evidence?: string }
+export interface NodeLeaseRecord { engine_run: string; node: string; started_at: string; budget_s: number; extended_at?: string; stopped_at?: string; waited_at?: string; evidence?: string }
 // prettier-ignore
 export type NodeLeaseDecision = { action: 'none' } | { action: 'extend'; lease: NodeLeaseRecord } | { action: 'stop'; lease: NodeLeaseRecord; elapsed_s: number };
 
@@ -85,13 +85,12 @@ const eventSummaries = (
 };
 
 export function writeNodeLeaseReport(
-  runId: string,
   run: RunView,
   lease: NodeLeaseRecord,
   elapsed_s: number,
   artifacts: string,
   worktree: string,
-  pkg: string
+  next_action: string
 ): string {
   const stat = spawnSync('git', ['diff', '--stat', 'HEAD', '--'], {
     cwd: worktree,
@@ -114,7 +113,7 @@ export function writeNodeLeaseReport(
         extended: lease.extended_at !== undefined,
         diff_stat: stat.status === 0 ? stat.stdout.trim() : 'unavailable',
         recent_events: eventSummaries(run),
-        next_action: `superagent decide ${runId} retry --pkg ${pkg} --hint "根据租约交回证据继续"`,
+        next_action,
       },
       null,
       2

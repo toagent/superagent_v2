@@ -111,18 +111,18 @@ plan 包使用非空 `review_reason`。`risk:"G2"`、`mode:"strict"` 和 `review
 
 `brief` 和 `status` 返回的 `next_action` 是当前状态的处置入口；动作前先核对 owner 与证据。
 
-| 状态                                                       | 含义                       | 常用动作                                        |
-| ---------------------------------------------------------- | -------------------------- | ----------------------------------------------- |
-| `held:human`                                               | plan 声明人工签收          | `superagent decide <run> approve` 或 reject     |
-| `held:environment`                                         | 环境检查失败               | 修好环境后 `superagent decide <run> retry`      |
-| `held:gate` / `held:scope` / `held:rework`                 | 验收、范围或返工需要决定   | 按证据 approve，或带包与提示 retry              |
-| `held:paused`                                              | 显式暂停                   | `superagent resume <run>`                       |
-| `held:target_dirty` / `target_dirty`                       | 目标检出有操作者改动       | 清理归属后重新 land                             |
-| `held:owner_unknown` / `owner_lost`                        | 执行 owner 不明确或已丢失  | 先对账，再 recover                              |
-| `held:recovery_admission_unknown` / `held:reclaim_pending` | 恢复接纳或回收续授权未确认 | 对账后 `recover --reconciled`；不确定就停下报告 |
-| `held:engine_suspect`                                      | 引擎判定与验收矛盾         | 看 `brief` 证据，按引擎缺陷处理，不重跑规避     |
-| `held:gate`（`budget_exceeded`）                           | 将军节点时间租约用尽       | 查看租约证据后按包带提示 retry                  |
-| `sync_conflict` / `target_advanced` / `review_stale`       | 实时目标 tip 无法直接组合  | 按 `next_action` 重同步或重验                   |
+| 状态                                                       | 含义                       | 常用动作                                            |
+| ---------------------------------------------------------- | -------------------------- | --------------------------------------------------- |
+| `held:human`                                               | plan 声明人工签收          | `superagent decide <run> approve` 或 reject         |
+| `held:environment`                                         | 环境检查失败               | 修好环境后 `superagent decide <run> retry`          |
+| `held:gate` / `held:scope` / `held:rework`                 | 验收、范围或返工需要决定   | 按证据 approve，或带包与提示 retry                  |
+| `held:paused`                                              | 显式暂停                   | `superagent resume <run>`                           |
+| `held:target_dirty` / `target_dirty`                       | 目标检出有操作者改动       | 清理归属后重新 land                                 |
+| `held:owner_unknown` / `owner_lost`                        | 执行 owner 不明确或已丢失  | 先对账，再 recover                                  |
+| `held:recovery_admission_unknown` / `held:reclaim_pending` | 恢复接纳或回收续授权未确认 | 对账后 `recover --reconciled`；不确定就停下报告     |
+| `held:engine_suspect`                                      | 引擎判定与验收矛盾         | 看 `brief` 证据，按引擎缺陷处理，不重跑规避         |
+| `held:gate`（`budget_exceeded`）                           | 将军节点时间租约用尽       | 按租约证据中的 snapshot 执行 `recover --reconciled` |
+| `sync_conflict` / `target_advanced` / `review_stale`       | 实时目标 tip 无法直接组合  | 按 `next_action` 重同步或重验                       |
 
 重试可缩小到包并附修复提示：
 

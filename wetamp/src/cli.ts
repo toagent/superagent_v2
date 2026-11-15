@@ -85,6 +85,7 @@ import { ENGINE_CHANGED } from './board/App';
 import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
 import {
+  NODE_LEASE,
   nodeLeaseDecision,
   nodeLeaseProgress,
   writeNodeLeaseReport,
@@ -443,8 +444,8 @@ export interface Ledger {
   auto_retries?: AutoRetry[];
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
-  /** 将军节点当前尝试的时间租约；engine_run + node + started_at 隔离重试。 */
-  node_lease?: NodeLeaseRecord;
+  /** 按节点记录当前尝试的时间租约；engine_run + node + started_at 隔离重试。 */
+  node_leases?: Record<string, NodeLeaseRecord>;
   intervened?: boolean;
   /** Append-only explicit decisions; absent on historical runs with unknown coverage. */
   intervention_events?: (Pick<Disposition, 'at' | 'action' | 'ok' | 'error'> & {
@@ -464,6 +465,14 @@ export interface Ledger {
   retro?: Retro;
   retro_history?: Retro[];
 }
+
+const stoppedNodeLeases = (l: Ledger, runId: string): NodeLeaseRecord[] =>
+  Object.values(l.node_leases ?? {}).filter(
+    lease => lease.engine_run === runId && lease.stopped_at
+  );
+
+const stoppedNodeLease = (l: Ledger, runId: string, node?: string): NodeLeaseRecord | undefined =>
+  stoppedNodeLeases(l, runId).find(lease => !node || lease.node === node);
 
 export interface Retro {
   at: string;
@@ -898,8 +907,9 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     reauthorize = reauthorizationHint(l, run, c),
-    action = reauthorize ?? (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at
-      ? `superagent decide ${l.run_id} retry --pkg ${packageForNode(planOf(l), l.node_lease.node)?.id ?? '<id>'} --hint "根据租约交回证据继续"`
+    lease = stoppedNodeLease(l, run.id, c.node),
+    action = reauthorize ?? (lease
+      ? `superagent recover ${l.run_id} --reconciled ${recoverySnapshot(run)}`
       : reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
       : reason === 'target_checkout_changed' && l.delivery ? targetCheckoutAction(l, l.delivery)
@@ -997,7 +1007,9 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
-    ...(l.node_lease?.engine_run === run.id ? { node_lease: l.node_lease } : {}),
+    ...(Object.values(l.node_leases ?? {}).some(lease => lease.engine_run === run.id)
+      ? { node_leases: l.node_leases }
+      : {}),
   };
 }
 
@@ -1030,9 +1042,10 @@ const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
 /** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
+  const stoppedLease = stoppedNodeLease(l, run.id);
   if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
-  if (run.status === 'cancelled' && l.node_lease?.engine_run === run.id && l.node_lease.stopped_at)
-    return { state: heldState('gate'), exit: EXIT.held, node: l.node_lease.node };
+  if (run.status === 'cancelled' && stoppedLease)
+    return { state: heldState('gate'), exit: EXIT.held, node: stoppedLease.node };
   if (run.status === 'cancelled') return c;
   if (coderBudgetExceeded(run, c)) return { ...c, state: heldState('gate'), exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
@@ -1651,6 +1664,23 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
       .filter(message => ['queued', 'surfaced', 'escalated'].includes(message.state));
     if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
     const run = getRun(l.archon_run_id, l.repo);
+    const persisted = loadLedger(l.run_id);
+    const pendingLease =
+      run.status === 'running'
+        ? stoppedNodeLeases(persisted, run.id).find(lease => !lease.waited_at)
+        : undefined;
+    if (pendingLease) {
+      updateLedger(persisted, current => {
+        const lease = current.node_leases?.[pendingLease.node];
+        if (lease?.started_at === pendingLease.started_at)
+          lease.waited_at = new Date().toISOString();
+      });
+      return summary(persisted, run, {
+        state: heldState('gate'),
+        exit: EXIT.held,
+        node: pendingLease.node,
+      });
+    }
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost')
       return { ...summary(l, run, c), action: `superagent recover ${l.run_id}` };
@@ -2879,11 +2909,12 @@ function brief(l: Ledger, json = false, suffix: string[] = []): number {
   if (typeof s.next === 'string') lines.push(`blocked: ${String(s.reason)}；next: ${s.next}`);
   lines.push(`initiator: ${JSON.stringify(s.initiator)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
-  if (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at) {
-    const pkg = packageForNode(planOf(l), l.node_lease.node)?.id ?? '<id>';
+  for (const lease of stoppedNodeLeases(l, run.id)) {
     lines.push(
-      `lease: ${String(l.node_lease.budget_s)}s budget${l.node_lease.extended_at ? '（已续租）' : ''}；evidence: ${l.node_lease.evidence ?? 'missing'}`,
-      `next: superagent decide ${l.run_id} retry --pkg ${pkg} --hint "根据租约交回证据继续"`
+      `lease ${lease.node}: ${String(lease.budget_s)}s budget${lease.extended_at ? '（已续租）' : ''}；evidence: ${lease.evidence ?? 'missing'}`,
+      run.status === 'cancelled'
+        ? `next: superagent recover ${l.run_id} --reconciled ${recoverySnapshot(run)}`
+        : `next: superagent cancel ${l.run_id} --reason superseded；或继续 wait`
     );
   }
   const history = l.adoptions?.at(-1)?.packages;
@@ -4120,7 +4151,7 @@ function tick(
 
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
 export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
-  if (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at) return 'coder';
+  if (stoppedNodeLease(l, run.id, c.node)) return 'coder';
   if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
@@ -4139,7 +4170,7 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
 }
 
 const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
-  if (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at) return 'budget_exceeded';
+  if (stoppedNodeLease(l, run.id, c.node)) return 'budget_exceeded';
   if (coderBudgetExceeded(run, c)) return 'coder_budget';
   const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
     reason?: unknown;
@@ -4403,66 +4434,102 @@ function dispose(
   if (c.exit === EXIT.running) {
     const plan = planOf(l),
       roles = workflowRoles(l),
-      node = run.nodes?.find(
+      nodes = (run.nodes ?? []).filter(
         candidate => candidate.state === 'running' && roles?.get(candidate.nodeId) === 'coder'
       ),
-      pkg = node ? packageForNode(plan, node.nodeId) : undefined,
-      progress = node ? nodeProgress(run, plan)[node.nodeId] : undefined;
-    if (node && pkg && progress) {
-      const lease = nodeLeaseDecision(
+      progressByNode = nodeProgress(run, plan),
+      extensions: { node: string; budget_s: number }[] = [],
+      stops: { node: string; lease: NodeLeaseRecord; elapsed_s: number; pkg: string }[] = [];
+    for (const node of nodes) {
+      const pkg = packageForNode(plan, node.nodeId),
+        progress = progressByNode[node.nodeId];
+      if (!pkg || !progress) continue;
+      const decision = nodeLeaseDecision(
         run,
         { nodeId: node.nodeId, startedAt: node.startedAt, budget_s: progress.budget_s },
-        l.node_lease,
+        l.node_leases?.[node.nodeId],
         nodeLeaseProgress(l.run_id)
       );
-      if (lease.action === 'extend') {
+      if (decision.action === 'extend') {
         updateLedger(l, current => {
-          current.node_lease = lease.lease;
+          (current.node_leases ??= {})[node.nodeId] = decision.lease;
         });
-        return record(l, 'lease_extended', {
-          run_id: l.run_id,
-          action: 'lease_extended',
-          ok: true,
-          node: node.nodeId,
-          budget_s: progress.budget_s,
-          limit_s: Math.floor(progress.budget_s * 1.5),
-        });
+        extensions.push({ node: node.nodeId, budget_s: progress.budget_s });
       }
-      if (lease.action === 'stop') {
-        const report = writeNodeLeaseReport(
-            l.run_id,
+      if (decision.action === 'stop')
+        stops.push({
+          node: node.nodeId,
+          lease: decision.lease,
+          elapsed_s: decision.elapsed_s,
+          pkg: pkg.id,
+        });
+    }
+    if (stops.length) {
+      const cancelled = nodes.length === 1 ? cancelRun(run.id, run.status, l.repo) : { ok: true };
+      const reportRun = nodes.length === 1 && cancelled.ok ? getRun(run.id, l.repo) : run,
+        nextAction =
+          nodes.length === 1
+            ? `superagent recover ${l.run_id} --reconciled ${recoverySnapshot(reportRun)}`
+            : `superagent cancel ${l.run_id} --reason superseded；或继续 wait`,
+        reports = stops.map(stop => ({
+          ...stop,
+          evidence: writeNodeLeaseReport(
             run,
-            lease.lease,
-            lease.elapsed_s,
+            stop.lease,
+            stop.elapsed_s,
             artifactsOf(run),
             run.working_path ?? l.repo,
-            pkg.id
+            nextAction
           ),
-          stopped = cancelRun(run.id, run.status, l.repo);
-        if (stopped.ok)
-          updateLedger(l, current => {
-            current.node_lease = {
-              ...lease.lease,
-              stopped_at: new Date().toISOString(),
-              evidence: report,
+        }));
+      if (cancelled.ok)
+        updateLedger(l, current => {
+          const stoppedAt = new Date().toISOString();
+          for (const stop of reports)
+            (current.node_leases ??= {})[stop.node] = {
+              ...stop.lease,
+              stopped_at: stoppedAt,
+              evidence: stop.evidence,
             };
-          });
-        return record(l, 'budget_exceeded', {
-          run_id: l.run_id,
-          action: 'lease_stop',
-          ok: stopped.ok,
-          node: node.nodeId,
-          evidence: report,
-          ...(stopped.ok
-            ? {}
-            : {
-                error:
-                  'error' in stopped && typeof stopped.error === 'string'
-                    ? stopped.error
-                    : 'cancel refused',
-              }),
+          if (nodes.length === 1)
+            (current.intervention_events ??= []).push({
+              at: stoppedAt,
+              action: 'cancel',
+              ok: true,
+              source: 'superagent',
+              origin: 'engine',
+              reason: 'budget_exceeded',
+            });
         });
-      }
+      return record(l, 'budget_exceeded', {
+        run_id: l.run_id,
+        action: 'lease_stop',
+        ok: cancelled.ok,
+        node: reports[0].node,
+        nodes: reports.map(stop => stop.node),
+        evidence: reports[0].evidence,
+        ...(nodes.length > 1 ? { run_continues: true } : {}),
+        ...(cancelled.ok
+          ? {}
+          : {
+              error:
+                'error' in cancelled && typeof cancelled.error === 'string'
+                  ? cancelled.error
+                  : 'cancel refused',
+            }),
+      });
+    }
+    if (extensions.length) {
+      const extension = extensions[0];
+      return record(l, 'lease_extended', {
+        run_id: l.run_id,
+        action: 'lease_extended',
+        ok: true,
+        node: extension.node,
+        nodes: extensions.map(item => item.node),
+        budget_s: extension.budget_s,
+        limit_s: Math.floor(extension.budget_s * NODE_LEASE.extension_factor),
+      });
     }
   }
   const reauthorize = reauthorizationHint(l, run, c);
