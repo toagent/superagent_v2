@@ -1664,7 +1664,8 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
       .filter(message => ['queued', 'surfaced', 'escalated'].includes(message.state));
     if (inbox.length) return { run_id: l.run_id, state: 'inbox', exit: EXIT.held, inbox };
     const run = getRun(l.archon_run_id, l.repo);
-    const persisted = loadLedger(l.run_id);
+    // 租约由 supervise-tick 写入落盘账本；调用方持有的 l 可能过期，账本未落盘则不存在租约。
+    const persisted = existsSync(ledgerPath(l.run_id)) ? loadLedger(l.run_id) : l;
     const pendingLease =
       run.status === 'running'
         ? stoppedNodeLeases(persisted, run.id).find(lease => !lease.waited_at)
