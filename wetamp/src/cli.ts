@@ -816,6 +816,42 @@ export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, str
       : []
   );
 
+const coderReceiptFields = (l: Ledger, art: string) => {
+  const receipts = existsSync(art)
+    ? readdirSync(art)
+        .filter(file => file.endsWith('.coder.json'))
+        .flatMap(file => {
+          const value = evidenceJson(l, art, file) as Record<string, unknown> | undefined;
+          return value ? [value] : [];
+        })
+    : [];
+  const unverified = [
+    ...new Set(
+      receipts.flatMap(value =>
+        Array.isArray(value.unverified)
+          ? value.unverified.filter((item): item is string => typeof item === 'string')
+          : []
+      )
+    ),
+  ];
+  const deviations = receipts
+    .flatMap((value): unknown[] =>
+      Array.isArray(value.deviations) ? (value.deviations as unknown[]) : []
+    )
+    .filter(
+      (item): item is { path: string; why: string } =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as { path?: unknown }).path === 'string' &&
+        typeof (item as { why?: unknown }).why === 'string'
+    )
+    .filter(
+      (item, index, all) =>
+        all.findIndex(other => other.path === item.path && other.why === item.why) === index
+    );
+  return { unverified, deviations };
+};
+
 /** 登记过的 run id（runs/*.json 去掉扩展名）。 */
 export const ledgerIds = (): string[] => {
   const dir = join(home().sa, 'runs');
@@ -946,6 +982,7 @@ function summary(
   const landFile = landEvidence(run)?.file;
   confined(l, art);
   const needs = needsOf(art, undefined, l);
+  const receiptFields = coderReceiptFields(l, art);
   const outOfScope = c.exit === EXIT.running ? [] : outOfScopeOf(l, art);
   const hold = lease ? undefined : holdOf(l, run, c);
   const projection = lease
@@ -1008,6 +1045,7 @@ function summary(
       tag: d.tag,
       decision: d.decision ?? 'unknown',
     })),
+    ...receiptFields,
     ...(outOfScope.length ? { out_of_scope: outOfScope } : {}),
     ...(c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown'
       ? {
@@ -2864,11 +2902,17 @@ function decide(l: Ledger, a: Args): number {
 }
 
 /** ≤20 行纯文本：状态、各轮 gate 结论与评审债、签收提问状态、合入命令、证据路径。 */
-function brief(l: Ledger, json = false, suffix: string[] = []): number {
+function brief(
+  l: Ledger,
+  json = false,
+  suffix: string[] = [],
+  snapshot?: Record<string, unknown>
+): number {
   const run = getRun(l.archon_run_id, l.repo);
   const c = classifyRun(l, run);
-  const s = summary(l, run, c);
+  const s = snapshot ?? summary(l, run, c);
   const art = artifactsOf(run);
+  const node = typeof s.node === 'string' ? s.node : undefined;
   if (json) {
     print({
       ...s,
@@ -2896,7 +2940,7 @@ function brief(l: Ledger, json = false, suffix: string[] = []): number {
     return c.exit;
   }
   const lines = [
-    `${l.run_id} ${c.state}${c.node ? ` @${c.node}` : ''} nodes ${String(s.nodes)} branch ${
+    `${l.run_id} ${String(s.state)}${node ? ` @${node}` : ''} nodes ${String(s.nodes)} branch ${
       l.branch
     }`,
   ];
@@ -2907,6 +2951,18 @@ function brief(l: Ledger, json = false, suffix: string[] = []): number {
     lines.push(
       `receipt: ${typed.state} ${typed.failed_node ?? '-'} ${typed.reason} → ${typed.action}`
     );
+  const receiptLines = (label: string, items: string[]): void => {
+    if (!items.length) return;
+    const extra = items.length > 3 ? `（另 ${String(items.length - 3)} 条）` : '';
+    lines.push(`${label}: ${items.slice(0, 3).join('；')}${extra}`);
+  };
+  receiptLines('unverified', Array.isArray(s.unverified) ? (s.unverified as string[]) : []);
+  receiptLines(
+    'deviations',
+    Array.isArray(s.deviations)
+      ? (s.deviations as { path: string; why: string }[]).map(item => `${item.path}: ${item.why}`)
+      : []
+  );
   lines.push(`last_activity: ${JSON.stringify(s.last_activity)}`);
   const ownership = coord().owner(runScope(l));
   lines.push(
@@ -5363,14 +5419,19 @@ export function main(argv: string[]): number {
       if (s.state === 'completed' && eventLedger) s.delivery = deliveryProjection(eventLedger);
       if (a.flags.json) print({ ...s, ...quota });
       else
-        brief(compactLedger, false, [
-          ...(ledgers.length > 1
-            ? [
-                `pending: ${(Array.isArray(s.pending) ? s.pending : ledgers.map(item => item.run_id)).join(' ')}`,
-              ]
-            : []),
-          ...(quota.quota ? [quota.quota] : []),
-        ]);
+        brief(
+          compactLedger,
+          false,
+          [
+            ...(ledgers.length > 1
+              ? [
+                  `pending: ${(Array.isArray(s.pending) ? s.pending : ledgers.map(item => item.run_id)).join(' ')}`,
+                ]
+              : []),
+            ...(quota.quota ? [quota.quota] : []),
+          ],
+          s
+        );
       return Number(s.exit);
     }
     case 'quota': {

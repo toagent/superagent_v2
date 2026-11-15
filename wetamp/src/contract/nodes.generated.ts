@@ -725,6 +725,7 @@ export interface CoderOutput {
   }[];
   notes: string;
   blockers: string[];
+  unverified: string[];
   /**
    * 仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null
    */
@@ -767,6 +768,7 @@ export const coderOutputFormat = {
     },
     notes: { type: 'string' },
     blockers: { type: 'array', items: { type: 'string' } },
+    unverified: { type: 'array', items: { type: 'string' } },
     error_class: {
       description: '仅在未完成（partial/blocked/error）时填写失败类别；status=done 时必须为 null',
       type: ['string', 'null'],
@@ -811,6 +813,7 @@ export const coderOutputFormat = {
     'quick_checks',
     'notes',
     'blockers',
+    'unverified',
     'error_class',
     'deviations',
     'needs',

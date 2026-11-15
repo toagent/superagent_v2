@@ -2797,6 +2797,10 @@ describe('brief / land (archon stub)', () => {
       'gate-m1-r1.json': { verdict: 'fix', reason: 'review_failed', debt: [] },
       'gate-m1-r1.review.json': {},
       'gate-m1-r2.json': { verdict: 'pass', reason: null, debt: ['d1'] },
+      'verify-core.coder.json': {
+        unverified: ['mock only', 'not run', 'inferred', 'fourth'],
+        deviations: [{ path: 'src/a.ts', why: 'plan mismatch' }],
+      },
       'land.json': { commands: ['git switch main', 'git merge --ff-only sa/sa1'] },
     });
     const { code, out } = captured(() => main(['brief', 'sa1']));
@@ -2804,11 +2808,17 @@ describe('brief / land (archon stub)', () => {
     const lines = out.split('\n');
     expect(lines[0]).toStartWith('sa1 completed');
     expect(lines[1]).toStartWith('receipt: completed - unclassified →');
+    expect(lines).toContain('unverified: mock only；not run；inferred（另 1 条）');
+    expect(lines).toContain('deviations: src/a.ts: plan mismatch');
     expect(lines).toContain('gate-m1-r1: unknown debt=0');
     expect(lines).toContain('gate-m1-r2: unknown debt=0');
     expect(lines).toContain('git merge --ff-only sa/sa1');
     expect(lines).toContain(`evidence: ${art}`);
     expect(lines.length).toBeLessThanOrEqual(20);
+    expect(JSON.parse(captured(() => main(['status', 'sa1', '--json'])).out)).toMatchObject({
+      unverified: ['mock only', 'not run', 'inferred', 'fourth'],
+      deviations: [{ path: 'src/a.ts', why: 'plan mismatch' }],
+    });
   });
   test('report: states, review rounds, first pass, escalations, node seconds, debt, recoveries', () => {
     const art = withArtifacts('failed', {

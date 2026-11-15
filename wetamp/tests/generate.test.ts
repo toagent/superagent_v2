@@ -888,6 +888,7 @@ describe('buildWorkflow', () => {
       quick_checks: [],
       notes: "carried from old'run",
       blockers: [],
+      unverified: [],
       error_class: null,
       deviations: [],
       needs: [],

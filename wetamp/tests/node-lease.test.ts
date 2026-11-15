@@ -98,18 +98,20 @@ test('并行与单节点超限都只上报一次且不取消 run', () => {
   expect(report.next_action).toBe(
     'superagent wait lease；或 superagent cancel lease --reason operator'
   );
-  expect(waitRun(loadLedger('lease'), 1)).toMatchObject({ state: 'held:gate', exit: EXIT.held });
-  expect(waitRun(loadLedger('lease'), 0)).toMatchObject({ state: 'running', timed_out: true });
   const output = spyOn(console, 'log').mockImplementation(() => undefined);
   try {
-    expect(main(['brief', 'lease'])).toBe(EXIT.running);
+    expect(main(['wait', 'lease', '--timeout', '1'])).toBe(EXIT.held);
     const brief = output.mock.calls.map(call => String(call[0])).join('\n');
     expect(brief).toContain(
       'next: superagent wait lease；或 superagent cancel lease --reason operator'
     );
+    expect(brief.split('\n')[0]).toStartWith('lease held:gate @code-core');
+    expect(brief).toContain('receipt: held:gate code-core budget_exceeded →');
+    expect(brief).toContain('lease code-core: 1200s budget');
     expect(brief).not.toContain('编码节点失败');
     expect(brief).not.toContain('recover lease --reconciled');
   } finally {
     output.mockRestore();
   }
+  expect(waitRun(loadLedger('lease'), 0)).toMatchObject({ state: 'running', timed_out: true });
 });

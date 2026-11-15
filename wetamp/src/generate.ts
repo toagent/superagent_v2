@@ -1023,6 +1023,7 @@ export function buildWorkflow(
               quick_checks: [],
               notes: `${resumed} from ${carried.from}`,
               blockers: [],
+              unverified: [],
               error_class: null,
               deviations: [],
               needs: [],
@@ -1543,7 +1544,7 @@ const fakeEdit = (p: Pkg, line: string): string => {
   const classes: Record<string, string> = { done_with_error_class: "task", partial_green: "env", blocked_needs: "env", scope_request: "scope_violation" };
   if (scenario && ![...Object.keys(classes), "invalid_json"].includes(scenario)) throw new Error(`unknown FAKE_CODER_SCENARIO: ${scenario}`);
   const outside = "scope-request.test.ts", scope = scenario === "scope_request" && line === p.id;
-  const output = { status: scenario === "partial_green" ? "partial" : scenario === "blocked_needs" || scope ? "blocked" : "done", changed_files: [safePath(p), ...(scope ? [outside] : [])], quick_checks: [], notes: "fake", blockers: [], error_class: scope ? "scope_violation" : scenario === "scope_request" ? null : classes[scenario] ?? null, deviations: [], needs: scope ? [{ cap: "scope_decision", why: "fixture", minimal_ask: outside }] : scenario === "blocked_needs" ? [{ cap: "network", why: "fixture", minimal_ask: "fixture" }] : [] };
+  const output = { status: scenario === "partial_green" ? "partial" : scenario === "blocked_needs" || scope ? "blocked" : "done", changed_files: [safePath(p), ...(scope ? [outside] : [])], quick_checks: [], notes: "fake", blockers: [], unverified: [], error_class: scope ? "scope_violation" : scenario === "scope_request" ? null : classes[scenario] ?? null, deviations: [], needs: scope ? [{ cap: "scope_decision", why: "fixture", minimal_ask: outside }] : scenario === "blocked_needs" ? [{ cap: "network", why: "fixture", minimal_ask: "fixture" }] : [] };
   return [
     `mkdir -p "$(dirname '${safePath(p)}')" && echo '${line}' >> '${safePath(p)}'`,
     ...(scope ? [`echo '${line}' >> '${outside}'`] : []),

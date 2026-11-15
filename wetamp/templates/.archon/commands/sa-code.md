@@ -21,7 +21,7 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
    验收（冒烟/行为测试）通过且核心目标达成即交付；验收外发现的问题写进 `deviations` 交由引擎记债，不继续扩大修改。
 3. 交付前运行 brief 中列给你的验收命令（即「你要运行的验收命令」）：在当前 worktree、commit 前按原样各运行一次；「引擎验收会运行」列出的资源检查不要运行。保持相同 cwd 与环境前缀，失败就在本会话继续修，直到全部通过。把实际命令与退出码写进 `quick_checks`。引擎的 verify 独立运行全部 accept，是唯一的放行依据；coder 自报永远不作为验收证据。基线上就失败且与本次工作无关的命令，在 `deviations` 附证据后继续；需要更换工具链版本、`JAVA_HOME`/`PATH` 等环境才能通过时，不得绕过，须在 `needs` 报 `{"cap":"environment","why":"<原样失败的命令与关键信号>","minimal_ask":"<可直接写进 accept 的环境前缀，如 JAVA_HOME=…>"}`。
 4. 能自己解决的问题不得返回 `blocked` 或 `partial`。工具调用被执行层拒绝时，改用等价路径完成任务，并在 `deviations` 记录调用、原始拒绝返回与替代路径；不得绕过护栏。只有任务目标本身必须执行被拒绝的高危操作时，才返回 `blocked`、`error_class: redline` 和非空 `needs`；缺少无法获得的外部资源时也可返回 `blocked`，但 `needs` 必须非空，每条 `{cap, why, minimal_ask}` 写清缺什么能力、原因与最小请求。没有 `needs` 的 `blocked` 按 `partial` 处理。
-5. 正常完成时 `status` 填 `done`、`error_class` 填 null，`deviations`/`needs` 没有就填空数组。
+5. 正常完成时 `status` 填 `done`、`error_class` 填 null，`unverified`/`deviations`/`needs` 没有就填空数组。只在假执行器/mock 上验证过的行为、没跑过的验收、凭推断的结论都写入 `unverified`；与卡片/plan 不一致的做法及原因写入 `deviations`。
 6. 拒绝须附工具调用证据：只有真实拒绝且满足上述必要条件才可写 `error_class: redline`；在 `needs[].why` 引用该工具调用及原始返回。任务完成时必须写 `status=done、error_class=null`。
 
 过程中正常调用工具读取、修改、测试、提交；全部完成后，最后一条回复只输出符合 output_format 的紧凑 JSON，字符串字段简短，不粘贴 diff、日志或源码。
