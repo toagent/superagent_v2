@@ -185,6 +185,11 @@
           "size": {
             "enum": ["S", "M", "L"]
           },
+          "budget_min": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "将军节点的可选墙钟观测预算，单位为分钟"
+          },
           "max_net_lines": {
             "type": "integer",
             "minimum": 0,

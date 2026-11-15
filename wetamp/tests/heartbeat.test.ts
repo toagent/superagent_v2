@@ -243,6 +243,14 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
       },
     },
   };
+  snap.rows[0]!.activeNodes![0]!.progress = {
+    started_at: '2026-10-29T09:50:00Z',
+    elapsed_s: 600,
+    budget_s: 1200,
+    last_event_at: '2026-10-29T09:59:20Z',
+    last_event_s: 40,
+    event_count: 8,
+  };
   const online = (): Presence => ({ state: 'online', activity: 'active' });
   const first = heartbeat(snap, cockpit(snap, now), now, online);
   const later = heartbeat(snap, cockpit(snap, now + 60_000), now + 60_000, online);
@@ -250,6 +258,8 @@ test('heartbeat persistence ignores clocks, refreshes at 900s, and health classi
     state: 'working',
     spinning: true,
   });
+  expect(first.marshals[0]?.running[0]?.progress).toMatchObject({ budget_s: 1200, event_count: 8 });
+  expect(first.marshals[0]?.line).toContain('10/20 分钟 · 最近事件 40s 前');
   expect(shouldWriteHeartbeat(first, later, now + 60_000)).toBe(false);
   const volatile = structuredClone(later);
   volatile.marshals[0]!.running[0]!.general = {

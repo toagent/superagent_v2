@@ -112,6 +112,11 @@ describe('loadPlan', () => {
     expect(loaded.budget.weighted_tokens).toBe(1e20);
     expect(loaded.caps).toBeUndefined();
     expect(loaded.packages[0].signoff).toBeUndefined();
+    expect(loaded.packages[0].budget_min).toBeUndefined();
+    const explicit = setup(p => (pkgs(p)[0].budget_min = 7));
+    expect(loadPlan(explicit.path, [explicit.root]).packages[0].budget_min).toBe(7);
+    const invalid = setup(p => (pkgs(p)[0].budget_min = 0));
+    expect(() => loadPlan(invalid.path, [invalid.root])).toThrow('plan invalid');
     expect(loaded.packages[0].accept[0].cache).toBeUndefined();
     for (const patch of [
       (p: Record<string, unknown>) => (p.mode = null),

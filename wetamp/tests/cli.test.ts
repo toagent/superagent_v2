@@ -1427,7 +1427,36 @@ const featureRepo = (root: string): string => {
 
 describe('waitRun (archon stub)', () => {
   test('compact default status reuses brief and --json preserves the status object', () => {
-    stub([run('running', { nodes: [{ nodeId: 'code-core', state: 'running' }] })]);
+    const startedAt = new Date(Date.now() - 12 * 60_000).toISOString(),
+      observedAt = new Date(Date.now() - 40_000).toISOString(),
+      s = stub([
+        run('running', {
+          output_root: '',
+          nodes: [{ nodeId: 'code-core', state: 'running', startedAt }],
+        }),
+      ]),
+      output = join(s.root, 'output');
+    mkdirSync(join(output, 'logs'), { recursive: true });
+    const response = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8'));
+    response.output_root = output;
+    writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(response));
+    writeFileSync(
+      join(s.root, 'gen', 'plan.json'),
+      JSON.stringify({ packages: [{ id: 'core', size: 'S' }] })
+    );
+    writeFileSync(
+      join(output, 'logs', 'r.jsonl'),
+      JSON.stringify({
+        type: 'provider_event',
+        workflow_id: 'r',
+        ts: observedAt,
+        step: 'code-core',
+        attemptId: 'attempt',
+        seq: 0,
+        observedAt,
+        event: { type: 'agent_message_chunk', text: 'ok' },
+      })
+    );
     const compact = captured(() => main(['status', 'sa1'])),
       brief = captured(() => main(['brief', 'sa1'])),
       json = captured(() => main(['status', 'sa1', '--json']));
@@ -1437,6 +1466,14 @@ describe('waitRun (archon stub)', () => {
       run_id: 'sa1',
       state: 'running',
       nodes: '0/1 completed',
+      progress: {
+        'code-core': {
+          started_at: startedAt,
+          budget_s: 1200,
+          event_count: 1,
+          last_event_at: observedAt,
+        },
+      },
     });
   });
   test('compact default multi-run wait includes pending and terminal quota', () => {

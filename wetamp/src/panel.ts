@@ -71,6 +71,7 @@ export interface PanelRun {
   estimate: Progress;
   general: PanelGeneralState;
   generalDetails?: Marshal['running'][number]['general'];
+  progress?: Marshal['running'][number]['progress'];
 }
 export interface PanelAttention {
   id: string;
@@ -133,6 +134,7 @@ export function panelModel(
       estimate: first.estimate,
       general: generalKind(first),
       ...(first.general ? { generalDetails: first.general } : {}),
+      ...(first.progress ? { progress: first.progress } : {}),
     };
   });
   const byRun = new Map(runs.map(run => [`${run.project}\0${run.id}`, run]));
@@ -250,10 +252,13 @@ export function renderPanel(
           : run.last_activity_s + drift < 60
             ? '刚刚'
             : `≥${panelDuration(run.last_activity_s + drift)} 前`;
+    const progress = run.progress
+      ? `${String(Math.floor(((run.progress.elapsed_s ?? 0) + drift) / 60))}/${String(Math.floor(run.progress.budget_s / 60))} 分钟 · ${run.progress.last_event_s === null ? '最近事件未知' : `最近事件 ${String(run.progress.last_event_s + drift)}s 前`}`
+      : `已用 ${elapsed}｜最近活动 ${activity}`;
     lines.push(
       `${shortRunId(run.id)}｜${run.project}｜${run.title}`,
       `  阶段 ${run.stage}｜执行者 ${run.roles.join('、')}`,
-      `  已用 ${elapsed}｜最近活动 ${activity}｜将军 ${generalState(run, drift)}`
+      `  ${progress}｜将军 ${generalState(run, drift)}`
     );
   }
   lines.push(

@@ -119,6 +119,10 @@ export interface Plan {
     risk: 'G0' | 'G1' | 'G2';
     size: 'S' | 'M' | 'L';
     /**
+     * 将军节点的可选墙钟观测预算，单位为分钟
+     */
+    budget_min?: number;
+    /**
      * Maximum net added non-test, non-generated lines authored by this package
      */
     max_net_lines?: number;

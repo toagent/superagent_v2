@@ -135,9 +135,20 @@ test('中文按显示宽度截断且空数据明确显示无', () => {
 test('panelModel 集中结构化统计、阶段键与原始时长', () => {
   const value = heartbeat(now - 10 * 60_000);
   value.marshals[0]!.running[0]!.node = 'verify-m1';
+  value.marshals[0]!.running[0]!.progress = {
+    started_at: new Date(now - 12 * 60_000).toISOString(),
+    elapsed_s: 120,
+    budget_s: 1200,
+    last_event_at: new Date(now - 40_000).toISOString(),
+    last_event_s: 40,
+    event_count: 3,
+  };
   const model = panelModel(value, tick(), now);
   expect(model.stats).toEqual({ running: 1, waiting: 1, reclaimPending: 2, legacy: 3 });
   expect(model.runs[0]).toMatchObject({ stageKind: 'verify', elapsed_s: 120 });
+  expect(renderPanel(value, tick(), now, allMarshals, 120)).toContain(
+    '12/20 分钟 · 最近事件 640s 前'
+  );
   expect(model.attention).toHaveLength(2);
   expect(model.checkedAt).toBe(tick().at);
   expect(panelModel(value, undefined, now).checkedAt).toBe(value.at);

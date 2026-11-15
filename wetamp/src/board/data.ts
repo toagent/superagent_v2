@@ -30,6 +30,7 @@ import { readUsage, type UsageCache } from '../usage';
 import { readEta, type Estimate } from './eta';
 import { confined, workflowRoles, type Role } from './workflow';
 import { memoryData } from '../memory';
+import { nodeProgress, type NodeProgress } from '../node-progress';
 import {
   EXIT,
   artifactsOf,
@@ -52,7 +53,8 @@ export interface BoardRow {
   nativeState?: RunView['status'];
   completed_at?: RunView['completed_at'];
   lastEvent?: string | null;
-  activeNodes?: { id: string; role: string | null; model: string | null; startedAt?: string }[];
+  // prettier-ignore
+  activeNodes?: { id: string; role: string | null; model: string | null; startedAt?: string; progress?: NodeProgress }[];
   working_path?: string | null;
   coordination?: { owner: Identity | null; presence: Presence; pending: number; error?: string };
   landed?: boolean;
@@ -198,6 +200,14 @@ export function rowOf(
   const pkg = plan?.packages.find(p =>
     ['code', 'verify', 'repair', 'settle'].some(k => current === `${k}-${p.id}`)
   );
+  const progress = nodeProgress(
+    run,
+    plan ?? null,
+    opts.now,
+    opts.roles
+      ? new Set([...opts.roles].flatMap(([id, role]) => (role === 'coder' ? [id] : [])))
+      : undefined
+  );
   const currentMs = pkg
     ? (pkg.milestone ?? 'm1')
     : (ms.find(m =>
@@ -337,6 +347,7 @@ export function rowOf(
           role: opts.roles?.get(n.nodeId) ?? null,
           model: m?.resolved.source === 'provider' ? m.resolved.value : (m?.requested ?? null),
           ...(n.startedAt ? { startedAt: n.startedAt } : {}),
+          ...(progress[n.nodeId] ? { progress: progress[n.nodeId] } : {}),
         };
       }),
     archon_id: l.archon_run_id,
@@ -646,6 +657,26 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
           ? { ...saved, coordination: { ...saved.coordination, pending: pendingCount } }
           : saved;
         if (row.span?.ended_ms === null) row = { ...row, elapsed_s: elapsedAt(row, now) };
+        if (row.activeNodes?.length) {
+          const nodeRoles = roles.get(l.run_id),
+            progress = nodeProgress(
+              r.run,
+              planOf(l),
+              now,
+              nodeRoles
+                ? new Set(
+                    [...nodeRoles].flatMap(([id, role]) => (role === 'coder' ? [id] : []))
+                  )
+                : undefined
+            );
+          row = {
+            ...row,
+            activeNodes: row.activeNodes.map(node => ({
+              ...node,
+              ...(progress[node.id] ? { progress: progress[node.id] } : {}),
+            })),
+          };
+        }
         rowCache.set(l.run_id, row);
         rows.push(row);
         continue;

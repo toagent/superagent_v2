@@ -194,6 +194,7 @@ import { secretsHealth } from './secrets/scan';
 import { auditTranscripts } from './secrets/audit';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
+import { nodeProgress } from './node-progress';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
@@ -920,6 +921,7 @@ function reauthorizationHint(l: Ledger, run: RunView, c: Classified): string | u
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
 function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
   const nodes = run.nodes ?? [];
+  const roles = workflowRoles(l);
   const art = artifactsOf(run);
   const landFile = landEvidence(run)?.file;
   confined(l, art);
@@ -939,6 +941,14 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     adoption: l.adoptions?.at(-1) ?? null,
     package_history: l.adoptions?.at(-1)?.packages ?? {},
     last_activity: lastActivity(l),
+    progress: nodeProgress(
+      run,
+      planOf(l),
+      Date.now(),
+      roles
+        ? new Set([...roles].flatMap(([id, role]) => (role === 'coder' ? [id] : [])))
+        : undefined
+    ),
     state: c.state,
     exit: c.exit,
     ...projection,
