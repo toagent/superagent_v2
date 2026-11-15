@@ -139,6 +139,7 @@ import {
   QUERY_TIMEOUT_MS,
   recover,
   reportRunRevisions,
+  runAdoptionStates,
   runStatuses,
   signalHuman,
   waitNotification,
@@ -1797,19 +1798,21 @@ const packageIdentity = (plan: Plan): string => {
     : JSON.stringify(plan.packages.map(({ id, title }) => [id, title]));
 };
 
-/** Two hours comes from E7's observed cancel-and-redispatch window. Any unreadable evidence fails open. */
+/** Two hours after the previous run stopped comes from E7's observed redispatch window. */
 // prettier-ignore
 export function adoptCandidates(plan: Plan, now = Date.now()): AdoptCandidate[] {
   const identity = packageIdentity(plan);
-  let statuses: ReturnType<typeof runStatuses>;
-  try { statuses = runStatuses(); } catch { return []; }
-  if (!statuses) return [];
+  let runs: ReturnType<typeof runAdoptionStates>;
+  try { runs = runAdoptionStates(); } catch { return []; }
+  if (!runs) return [];
   return ledgers().flatMap(previous => {
     try {
       if ('error' in previous || repoScope(previous.repo).id !== repoScope(plan.repo).id) return [];
-      const age = now - Date.parse(previous.started_at), oldPlan = planOf(previous),
-        status = statuses.get(previous.archon_run_id),
+      const run = runs.get(previous.archon_run_id), oldPlan = planOf(previous),
+        status = run?.status,
         state = previous.state === 'failed' ? 'failed' : status === 'paused' ? 'held:paused' : status,
+        stopped = state === 'held:paused' ? run?.last_activity_at : run?.completed_at,
+        age = now - Date.parse(stopped ?? ''),
         listed = Bun.spawnSync(['git', '-C', previous.repo, 'worktree', 'list', '--porcelain', '-z'],
           { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }),
         worktree = listed.exitCode === 0 ? targetCheckout(listed.stdout.toString(), previous.branch) : undefined;
@@ -5889,7 +5892,6 @@ async function runCli(): Promise<void> {
         'ntfy',
         'supervise-tick',
         'console',
-        'web',
         'job',
         'jobs',
         'rollover',
@@ -5913,8 +5915,7 @@ async function runCli(): Promise<void> {
         })
       );
     }
-    if (verb === 'console' || verb === 'web')
-      return await exitCli(await (await import('./web/server')).webCli(argv));
+    if (verb === 'console') return await exitCli(await (await import('./web/server')).webCli(argv));
     if (verb === 'job' || verb === 'jobs') return await exitCli(await jobCli(argv));
     if (verb === 'work') return await exitCli(await (await import('./work')).workCli(argv));
     if (verb === 'rollover') {

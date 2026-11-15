@@ -713,7 +713,7 @@ test('INTAKE_NATIVE node/bun transport scopes capture, restore, stable turns and
   Bun.spawnSync(['git', 'init', unregistered]);
   expect(hook({ ...p, cwd: unregistered })).toBe('');
   expect(hook({ ...p, turn_id: undefined })).toContain('advisory');
-  expect(hook({ ...p, session_id: 'unbound' })).toContain('advisory');
+  expect(hook({ ...p, session_id: 'unbound' })).toBe('');
   expect(hook({ ...p, prompt: 'conflicting body' })).toContain('advisory');
   const beforeNotification = readFileSync(join(intakeRoot(home, repo), 'state.json'), 'utf8');
   expect(

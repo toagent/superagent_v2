@@ -52,10 +52,9 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
     if (!store.list().some(t => t.repo === repo)) return;
     if (typeof p.session_id !== 'string' || !p.session_id.trim()) return advisory(event);
     const identity = store.nativeIdentity(repo, client, p.session_id);
-    if (!identity && event === 'UserPromptSubmit') return advisory(event);
+    if (!identity && event === 'UserPromptSubmit') return;
     let inputKey: string | undefined;
     if (event === 'UserPromptSubmit') {
-      if (!identity) return advisory(event);
       if (typeof p.prompt !== 'string' || !p.prompt.trim()) return advisory(event);
       if (!isTaskNotification({ source: client, text: p.prompt })) {
         const message = client === 'codex' ? p.turn_id : randomUUID();

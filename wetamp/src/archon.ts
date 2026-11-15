@@ -194,6 +194,26 @@ export function runStatuses(): Map<string, RunView['status']> | null {
   }
 }
 
+export function runAdoptionStates(): Map<
+  string,
+  Pick<RunView, 'status' | 'last_activity_at' | 'completed_at'>
+> | null {
+  const path = join(home().archon, 'archon.db');
+  if (process.env.DATABASE_URL || !existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    const rows = db
+      .query<
+        RunView,
+        []
+      >('SELECT id, status, last_activity_at, completed_at FROM remote_agent_workflow_runs')
+      .all();
+    return new Map(rows.map(run => [run.id, run]));
+  } finally {
+    db.close();
+  }
+}
+
 /** GC needs only these run-row fields; keep PostgreSQL and CLI stubs on their existing path. */
 export function runProjections(ids: string[]): Map<string, RunView> | null {
   const path = join(home().archon, 'archon.db');
