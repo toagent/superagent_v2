@@ -18,7 +18,7 @@
     "hold": "signoff",
     "determinism": "deterministic",
     "owner": "human",
-    "description": "工作包或节点预算已用尽"
+    "description": "净增行数超过工作包上限"
   },
   {
     "code": "stalled",

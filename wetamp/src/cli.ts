@@ -466,13 +466,11 @@ export interface Ledger {
   retro_history?: Retro[];
 }
 
-const stoppedNodeLeases = (l: Ledger, runId: string): NodeLeaseRecord[] =>
-  Object.values(l.node_leases ?? {}).filter(
-    lease => lease.engine_run === runId && lease.stopped_at
-  );
+const reportedNodeLeases = (l: Ledger, runId: string): NodeLeaseRecord[] =>
+  Object.values(l.node_leases ?? {}).filter(lease => lease.engine_run === runId && lease.evidence);
 
-const stoppedNodeLease = (l: Ledger, runId: string, node?: string): NodeLeaseRecord | undefined =>
-  stoppedNodeLeases(l, runId).find(lease => !node || lease.node === node);
+const nodeLeaseNextAction = (runId: string): string =>
+  `superagent wait ${runId}；或 superagent cancel ${runId} --reason operator`;
 
 export interface Retro {
   at: string;
@@ -907,10 +905,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     reauthorize = reauthorizationHint(l, run, c),
-    lease = stoppedNodeLease(l, run.id, c.node),
-    action = reauthorize ?? (lease
-      ? `superagent recover ${l.run_id} --reconciled ${recoverySnapshot(run)}`
-      : reason === 'target_protected' ? '在 feature 分支重跑'
+    action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
       : reason === 'target_checkout_changed' && l.delivery ? targetCheckoutAction(l, l.delivery)
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
@@ -939,7 +934,12 @@ function reauthorizationHint(l: Ledger, run: RunView, c: Classified): string | u
 }
 
 /** ≤20 行的摘要：元帅只读这个和证据路径。 */
-function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown> {
+function summary(
+  l: Ledger,
+  run: RunView,
+  c: Classified,
+  lease?: NodeLeaseRecord
+): Record<string, unknown> {
   const nodes = run.nodes ?? [];
   const roles = workflowRoles(l);
   const art = artifactsOf(run);
@@ -947,8 +947,19 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
   confined(l, art);
   const needs = needsOf(art, undefined, l);
   const outOfScope = c.exit === EXIT.running ? [] : outOfScopeOf(l, art);
-  const hold = holdOf(l, run, c);
-  const projection = terminalProjection(l, run, c);
+  const hold = lease ? undefined : holdOf(l, run, c);
+  const projection = lease
+    ? {
+        delivery_state: 'pending' as const,
+        receipt: {
+          state: c.state,
+          failed_node: lease.node,
+          reason: 'budget_exceeded',
+          evidence_path: lease.evidence ?? artifactsOf(run),
+          action: nodeLeaseNextAction(l.run_id),
+        },
+      }
+    : terminalProjection(l, run, c);
   return {
     run_id: l.run_id,
     initiator: l.launcher ?? 'unknown',
@@ -1010,6 +1021,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     ...(Object.values(l.node_leases ?? {}).some(lease => lease.engine_run === run.id)
       ? { node_leases: l.node_leases }
       : {}),
+    ...(lease ? { reason: 'budget_exceeded', next: nodeLeaseNextAction(l.run_id) } : {}),
   };
 }
 
@@ -1042,10 +1054,7 @@ const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
 /** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
-  const stoppedLease = stoppedNodeLease(l, run.id);
   if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
-  if (run.status === 'cancelled' && stoppedLease)
-    return { state: heldState('gate'), exit: EXIT.held, node: stoppedLease.node };
   if (run.status === 'cancelled') return c;
   if (coderBudgetExceeded(run, c)) return { ...c, state: heldState('gate'), exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
@@ -1668,7 +1677,7 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
     const persisted = existsSync(ledgerPath(l.run_id)) ? loadLedger(l.run_id) : l;
     const pendingLease =
       run.status === 'running'
-        ? stoppedNodeLeases(persisted, run.id).find(lease => !lease.waited_at)
+        ? reportedNodeLeases(persisted, run.id).find(lease => !lease.waited_at)
         : undefined;
     if (pendingLease) {
       updateLedger(persisted, current => {
@@ -1676,11 +1685,12 @@ export function waitRun(l: Ledger, timeoutS: number, who = caller(true)): Record
         if (lease?.started_at === pendingLease.started_at)
           lease.waited_at = new Date().toISOString();
       });
-      return summary(persisted, run, {
-        state: heldState('gate'),
-        exit: EXIT.held,
-        node: pendingLease.node,
-      });
+      return summary(
+        persisted,
+        run,
+        { state: heldState('gate'), exit: EXIT.held, node: pendingLease.node },
+        pendingLease
+      );
     }
     const c = classifyRun(l, run);
     if (c.state === 'owner_lost')
@@ -2910,12 +2920,10 @@ function brief(l: Ledger, json = false, suffix: string[] = []): number {
   if (typeof s.next === 'string') lines.push(`blocked: ${String(s.reason)}；next: ${s.next}`);
   lines.push(`initiator: ${JSON.stringify(s.initiator)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
-  for (const lease of stoppedNodeLeases(l, run.id)) {
+  for (const lease of reportedNodeLeases(l, run.id)) {
     lines.push(
       `lease ${lease.node}: ${String(lease.budget_s)}s budget${lease.extended_at ? '（已续租）' : ''}；evidence: ${lease.evidence ?? 'missing'}`,
-      run.status === 'cancelled'
-        ? `next: superagent recover ${l.run_id} --reconciled ${recoverySnapshot(run)}`
-        : `next: superagent cancel ${l.run_id} --reason superseded；或继续 wait`
+      `next: ${nodeLeaseNextAction(l.run_id)}`
     );
   }
   const history = l.adoptions?.at(-1)?.packages;
@@ -4152,7 +4160,6 @@ function tick(
 
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
 export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
-  if (stoppedNodeLease(l, run.id, c.node)) return 'coder';
   if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
@@ -4171,7 +4178,6 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
 }
 
 const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
-  if (stoppedNodeLease(l, run.id, c.node)) return 'budget_exceeded';
   if (coderBudgetExceeded(run, c)) return 'coder_budget';
   const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
     reason?: unknown;
@@ -4440,7 +4446,7 @@ function dispose(
       ),
       progressByNode = nodeProgress(run, plan),
       extensions: { node: string; budget_s: number }[] = [],
-      stops: { node: string; lease: NodeLeaseRecord; elapsed_s: number; pkg: string }[] = [];
+      reportsDue: { node: string; lease: NodeLeaseRecord; elapsed_s: number; pkg: string }[] = [];
     for (const node of nodes) {
       const pkg = packageForNode(plan, node.nodeId),
         progress = progressByNode[node.nodeId];
@@ -4457,67 +4463,41 @@ function dispose(
         });
         extensions.push({ node: node.nodeId, budget_s: progress.budget_s });
       }
-      if (decision.action === 'stop')
-        stops.push({
+      if (decision.action === 'report')
+        reportsDue.push({
           node: node.nodeId,
           lease: decision.lease,
           elapsed_s: decision.elapsed_s,
           pkg: pkg.id,
         });
     }
-    if (stops.length) {
-      const cancelled = nodes.length === 1 ? cancelRun(run.id, run.status, l.repo) : { ok: true };
-      const reportRun = nodes.length === 1 && cancelled.ok ? getRun(run.id, l.repo) : run,
-        nextAction =
-          nodes.length === 1
-            ? `superagent recover ${l.run_id} --reconciled ${recoverySnapshot(reportRun)}`
-            : `superagent cancel ${l.run_id} --reason superseded；或继续 wait`,
-        reports = stops.map(stop => ({
-          ...stop,
-          evidence: writeNodeLeaseReport(
-            run,
-            stop.lease,
-            stop.elapsed_s,
-            artifactsOf(run),
-            run.working_path ?? l.repo,
-            nextAction
-          ),
-        }));
-      if (cancelled.ok)
-        updateLedger(l, current => {
-          const stoppedAt = new Date().toISOString();
-          for (const stop of reports)
-            (current.node_leases ??= {})[stop.node] = {
-              ...stop.lease,
-              stopped_at: stoppedAt,
-              evidence: stop.evidence,
-            };
-          if (nodes.length === 1)
-            (current.intervention_events ??= []).push({
-              at: stoppedAt,
-              action: 'cancel',
-              ok: true,
-              source: 'superagent',
-              origin: 'engine',
-              reason: 'budget_exceeded',
-            });
-        });
+    if (reportsDue.length) {
+      const reports = reportsDue.map(item => ({
+        ...item,
+        evidence: writeNodeLeaseReport(
+          run,
+          item.lease,
+          item.elapsed_s,
+          artifactsOf(run),
+          run.working_path ?? l.repo,
+          nodeLeaseNextAction(l.run_id)
+        ),
+      }));
+      updateLedger(l, current => {
+        for (const report of reports)
+          (current.node_leases ??= {})[report.node] = {
+            ...report.lease,
+            evidence: report.evidence,
+          };
+      });
       return record(l, 'budget_exceeded', {
         run_id: l.run_id,
-        action: 'lease_stop',
-        ok: cancelled.ok,
+        action: 'lease_report',
+        ok: true,
         node: reports[0].node,
-        nodes: reports.map(stop => stop.node),
+        nodes: reports.map(report => report.node),
         evidence: reports[0].evidence,
-        ...(nodes.length > 1 ? { run_continues: true } : {}),
-        ...(cancelled.ok
-          ? {}
-          : {
-              error:
-                'error' in cancelled && typeof cancelled.error === 'string'
-                  ? cancelled.error
-                  : 'cancel refused',
-            }),
+        run_continues: true,
       });
     }
     if (extensions.length) {

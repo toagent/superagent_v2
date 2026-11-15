@@ -81,7 +81,7 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 - `scope.read_hint` 给出优先读取路径，不扩大写范围。
 
 完整结构以 `schemas/plan.schema.json` 为准。将军节点到达时间预算后由 `supervise-tick`
-按近期工作树进展续租一次，否则精确停止 run 并保留工作树与交回证据。
+按近期工作树进展续租一次；超限只写交回报告并唤醒一次 `wait`，不会取消或暂停 run。
 
 ## 评审
 
@@ -111,18 +111,17 @@ plan 包使用非空 `review_reason`。`risk:"G2"`、`mode:"strict"` 和 `review
 
 `brief` 和 `status` 返回的 `next_action` 是当前状态的处置入口；动作前先核对 owner 与证据。
 
-| 状态                                                       | 含义                       | 常用动作                                            |
-| ---------------------------------------------------------- | -------------------------- | --------------------------------------------------- |
-| `held:human`                                               | plan 声明人工签收          | `superagent decide <run> approve` 或 reject         |
-| `held:environment`                                         | 环境检查失败               | 修好环境后 `superagent decide <run> retry`          |
-| `held:gate` / `held:scope` / `held:rework`                 | 验收、范围或返工需要决定   | 按证据 approve，或带包与提示 retry                  |
-| `held:paused`                                              | 显式暂停                   | `superagent resume <run>`                           |
-| `held:target_dirty` / `target_dirty`                       | 目标检出有操作者改动       | 清理归属后重新 land                                 |
-| `held:owner_unknown` / `owner_lost`                        | 执行 owner 不明确或已丢失  | 先对账，再 recover                                  |
-| `held:recovery_admission_unknown` / `held:reclaim_pending` | 恢复接纳或回收续授权未确认 | 对账后 `recover --reconciled`；不确定就停下报告     |
-| `held:engine_suspect`                                      | 引擎判定与验收矛盾         | 看 `brief` 证据，按引擎缺陷处理，不重跑规避         |
-| `held:gate`（`budget_exceeded`）                           | 将军节点时间租约用尽       | 按租约证据中的 snapshot 执行 `recover --reconciled` |
-| `sync_conflict` / `target_advanced` / `review_stale`       | 实时目标 tip 无法直接组合  | 按 `next_action` 重同步或重验                       |
+| 状态                                                       | 含义                       | 常用动作                                        |
+| ---------------------------------------------------------- | -------------------------- | ----------------------------------------------- |
+| `held:human`                                               | plan 声明人工签收          | `superagent decide <run> approve` 或 reject     |
+| `held:environment`                                         | 环境检查失败               | 修好环境后 `superagent decide <run> retry`      |
+| `held:gate` / `held:scope` / `held:rework`                 | 验收、范围或返工需要决定   | 按证据 approve，或带包与提示 retry              |
+| `held:paused`                                              | 显式暂停                   | `superagent resume <run>`                       |
+| `held:target_dirty` / `target_dirty`                       | 目标检出有操作者改动       | 清理归属后重新 land                             |
+| `held:owner_unknown` / `owner_lost`                        | 执行 owner 不明确或已丢失  | 先对账，再 recover                              |
+| `held:recovery_admission_unknown` / `held:reclaim_pending` | 恢复接纳或回收续授权未确认 | 对账后 `recover --reconciled`；不确定就停下报告 |
+| `held:engine_suspect`                                      | 引擎判定与验收矛盾         | 看 `brief` 证据，按引擎缺陷处理，不重跑规避     |
+| `sync_conflict` / `target_advanced` / `review_stale`       | 实时目标 tip 无法直接组合  | 按 `next_action` 重同步或重验                   |
 
 重试可缩小到包并附修复提示：
 
@@ -136,6 +135,7 @@ superagent abandon <run> --reason "<reason>"
 `cancel --reason` 只接受标签：unstated、superseded、replaced、deadline、operator、test、duplicate、obsolete、rejected。
 `abandon --reason` 接受自由文本，用于终止 paused/failed 的 run。
 `recover` 只接纳已确认失去 owner 且副作用完成对账的 run；live 或 unknown owner 会拒绝。
+租约交回后可再次 `superagent wait <run>`，或显式执行 `superagent cancel <run> --reason operator`。
 
 ## 常见拒绝
 

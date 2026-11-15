@@ -82,6 +82,7 @@ Bun.spawnSync = (command, options) => {
 /** Tests inherit the preload-isolated environment; explicit role tests may override it. */
 export const fixtureEnv = (env: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   ...process.env,
+  SA_COORD_ADMISSION: '',
   SA_SKIP_LAUNCHD_RELOAD: '1',
   ...env,
 });

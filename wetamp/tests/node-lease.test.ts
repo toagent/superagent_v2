@@ -1,5 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
@@ -17,7 +16,7 @@ afterEach(() => {
   process.env = { ...saved };
 });
 
-test('近期工作树进展只续租一次，并在 1.5 倍预算停下', () => {
+test('近期工作树进展只续租一次，并在 1.5 倍预算上报', () => {
   const now = Date.parse('2026-11-15T10:20:00Z'),
     startedAt = '2026-11-15T10:00:00Z',
     run = { id: 'engine', status: 'running' } as RunView,
@@ -28,10 +27,12 @@ test('近期工作树进展只续租一次，并在 1.5 倍预算停下', () => 
   expect(extended.action).toBe('extend');
   if (extended.action !== 'extend') throw new Error('expected extension');
   expect(nodeLeaseDecision(run, node, extended.lease, progress, now + 599_000).action).toBe('none');
-  expect(nodeLeaseDecision(run, node, extended.lease, progress, now + 600_000).action).toBe('stop');
+  expect(nodeLeaseDecision(run, node, extended.lease, progress, now + 600_000).action).toBe(
+    'report'
+  );
 });
 
-test('并行节点只唤醒一次，单节点取消后可从真实 CLI 续作', () => {
+test('并行与单节点超限都只上报一次且不取消 run', () => {
   const root = tmp(),
     repo = gitRepo(root),
     sa = join(root, 'sa'),
@@ -91,18 +92,24 @@ test('并行节点只唤醒一次，单节点取消后可从真实 CLI 续作', 
   engineRun.nodes = [{ nodeId: 'start-m1', state: 'completed' }, { nodeId: 'code-core', state: 'running', startedAt: new Date(Date.now() - 22 * 60_000).toISOString() }];
   writeFileSync(runFile, JSON.stringify(engineRun));
   expect(main(['supervise-tick'])).toBe(0);
-  expect(readFileSync(calls, 'utf8')).toContain('workflow cancel engine --json');
+  expect(readFileSync(calls, 'utf8')).not.toContain('workflow cancel engine --json');
   const report = JSON.parse(readFileSync(join(artifacts, 'node-lease-code-core.json'), 'utf8'));
   expect(report).toMatchObject({ reason: 'budget_exceeded', extended: false });
-  expect(report.next_action).toMatch(/^superagent recover lease --reconciled [0-9a-f]{64}$/);
-  const cancelled = JSON.parse(readFileSync(runFile, 'utf8'));
-  const db = new Database(join(archon, 'archon.db'));
-  db.run(
-    'create table remote_agent_workflow_runs (id text, status text, metadata text, started_at text)'
+  expect(report.next_action).toBe(
+    'superagent wait lease；或 superagent cancel lease --reason operator'
   );
-  // prettier-ignore
-  db.run('insert into remote_agent_workflow_runs values (?, ?, ?, ?)', ['engine', 'cancelled', JSON.stringify(cancelled.metadata), cancelled.started_at]);
-  db.close();
-  expect(main(report.next_action.split(' ').slice(1))).toBe(0);
-  expect(readFileSync(calls, 'utf8')).toContain('workflow resume engine --detach --json');
+  expect(waitRun(loadLedger('lease'), 1)).toMatchObject({ state: 'held:gate', exit: EXIT.held });
+  expect(waitRun(loadLedger('lease'), 0)).toMatchObject({ state: 'running', timed_out: true });
+  const output = spyOn(console, 'log').mockImplementation(() => undefined);
+  try {
+    expect(main(['brief', 'lease'])).toBe(EXIT.running);
+    const brief = output.mock.calls.map(call => String(call[0])).join('\n');
+    expect(brief).toContain(
+      'next: superagent wait lease；或 superagent cancel lease --reason operator'
+    );
+    expect(brief).not.toContain('编码节点失败');
+    expect(brief).not.toContain('recover lease --reconciled');
+  } finally {
+    output.mockRestore();
+  }
 });

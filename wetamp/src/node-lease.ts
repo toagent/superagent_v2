@@ -8,9 +8,9 @@ import type { StallRecord } from './stall';
 export const NODE_LEASE = Object.freeze({ progress_window_ms: 5 * 60_000, extension_factor: 1.5 });
 
 // prettier-ignore
-export interface NodeLeaseRecord { engine_run: string; node: string; started_at: string; budget_s: number; extended_at?: string; stopped_at?: string; waited_at?: string; evidence?: string }
+export interface NodeLeaseRecord { engine_run: string; node: string; started_at: string; budget_s: number; extended_at?: string; waited_at?: string; evidence?: string }
 // prettier-ignore
-export type NodeLeaseDecision = { action: 'none' } | { action: 'extend'; lease: NodeLeaseRecord } | { action: 'stop'; lease: NodeLeaseRecord; elapsed_s: number };
+export type NodeLeaseDecision = { action: 'none' } | { action: 'extend'; lease: NodeLeaseRecord } | { action: 'report'; lease: NodeLeaseRecord; elapsed_s: number };
 
 export function nodeLeaseProgress(runId: string): StallRecord | undefined {
   try {
@@ -45,11 +45,11 @@ export function nodeLeaseDecision(
         started_at: node.startedAt ?? '',
         budget_s: node.budget_s,
       };
-  if (lease.stopped_at || elapsed_s < node.budget_s) return { action: 'none' };
+  if (lease.evidence || elapsed_s < node.budget_s) return { action: 'none' };
   if (lease.extended_at)
     return elapsed_s < node.budget_s * NODE_LEASE.extension_factor
       ? { action: 'none' }
-      : { action: 'stop', lease, elapsed_s };
+      : { action: 'report', lease, elapsed_s };
   const progressAge = progress ? now - progress.progressAt : Infinity;
   const recentProgress =
     progress?.node === node.nodeId &&
@@ -58,7 +58,7 @@ export function nodeLeaseDecision(
     progressAge <= NODE_LEASE.progress_window_ms;
   return recentProgress
     ? { action: 'extend', lease: { ...lease, extended_at: new Date(now).toISOString() } }
-    : { action: 'stop', lease, elapsed_s };
+    : { action: 'report', lease, elapsed_s };
 }
 
 const eventSummaries = (
