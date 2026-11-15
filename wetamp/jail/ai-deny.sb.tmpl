@@ -5,6 +5,8 @@
   (regex #"^__HOME_REGEX__/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]")
 __SECRET_OS_DENIES__
   (regex #"(^|/)_private(/|$)"))
+; Keychain search list/default keychain writes go through cfprefsd, bypassing file rules.
+(deny user-preference-write (preference-domain "com.apple.security"))
 __SECRET_EXEC_DENIES__
 __QUICKLOOK_DENY__
 (deny file-write* (subpath "__HOME_LITERAL__/.vault-bridge/trust"))

@@ -244,6 +244,12 @@ describe('ai-jail', () => {
     expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).toContain(
       `/Caskroom/1password-cli/[^/]+/op$")`
     );
+    expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).toContain(
+      '(deny user-preference-write (preference-domain "com.apple.security"))'
+    );
+    expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).not.toContain(
+      'user-preference-read'
+    );
     const first = readFileSync(zshrc, 'utf8');
     expect(first.match(/# >>> superagent ai-jail >>>/g)).toHaveLength(1);
     expect(first.startsWith(original)).toBe(true);
