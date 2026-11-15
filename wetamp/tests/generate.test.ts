@@ -11,7 +11,6 @@ import {
   generate,
   newRunId,
   renderBrief,
-  type Continuation,
 } from '../src/generate';
 import { install, loadTiers, snapshotPolicy, WETAMP } from '../src/config';
 import * as coord from '../src/coord';
@@ -274,7 +273,7 @@ type N = {
   idle_timeout?: number;
   model?: string;
   provider?: string;
-  context?: { resume: string };
+  context?: 'fresh' | { resume: string };
   approval?: { message: string; decisions?: { id: string }[] };
   retry?: { max_attempts?: number; on_error: string };
   maxBudgetUsd?: number;
@@ -804,26 +803,53 @@ describe('buildWorkflow', () => {
         ]);
     }
   });
-  test('coder repairs resume only guaranteed single-owner sessions', () => {
+  test('every real agent node declares a fresh context except named sync conflict resolution', () => {
     const plan = structuredClone(fixture);
     plan.packages = [plan.packages[0]];
-    const buildNodes = (p: Plan, fake = false, carried?: Continuation) =>
-      nodesOf(
-        buildWorkflow(p, milestones(p), 'resume', '/GEN', fake, NOW, fixtureTiers(), carried)
+    const buildPlan = (p: Plan, delivery = false) =>
+      buildWorkflow(
+        p,
+        milestones(p),
+        'c0ffee-0001',
+        '/GEN',
+        false,
+        NOW,
+        fixtureTiers(),
+        undefined,
+        delivery ? { checkout: '/target', branch: 'target', head: 'a'.repeat(40) } : undefined
       );
-    const resumed = buildNodes(plan);
-    expect(resumed.find(n => n.id === 'repair-core')?.context).toEqual({ resume: 'code-core' });
-    expect(resumed.find(n => n.id === 'fix-m1-r2')?.context).toEqual({ resume: 'code-core' });
-    expect(resumed.find(n => n.id === 'fix-m1-r3')?.context).toEqual({ resume: 'fix-m1-r2' });
-    expect(resumed.filter(n => n.id.startsWith('review-')).every(n => !n.context)).toBeTrue();
-    expect(validateDagStructure(validNodes(resumed))).toBeNull();
     const multi = structuredClone(fixture);
     multi.packages[1].milestone = 'm1';
-    expect(buildNodes(multi).some(n => n.id.startsWith('fix-') && n.context)).toBeFalse();
-    const carry = buildNodes(plan, false, { from: 'old', packages: ['core'] });
-    const fake = buildNodes(plan, true);
-    for (const nodes of [carry, fake])
-      expect(nodes.filter(n => /^(repair|fix)-/.test(n.id)).every(n => !n.context)).toBeTrue();
+    const workflows = [
+      buildPlan(plan),
+      buildPlan(fixture),
+      buildPlan(multi),
+      buildPlan(plan, true),
+    ];
+    for (const workflow of workflows) {
+      const agents = allNodesOf(workflow).filter(node => node.command);
+      expect(agents.length).toBeGreaterThan(0);
+      expect(agents.every(node => node.context !== undefined)).toBeTrue();
+      expect(
+        agents
+          .filter(node => /^(code|repair|fix|review)-/.test(node.id))
+          .every(node => node.context === 'fresh')
+      ).toBeTrue();
+      expect(validateDagStructure(validNodes(nodesOf(workflow)))).toBeNull();
+    }
+    const deliveryAgents = allNodesOf(workflows.at(-1)!).filter(node => node.command);
+    expect(deliveryAgents.find(node => node.id === 'resolve-sync-review-m1')?.context).toEqual({
+      resume: 'code-core',
+    });
+    expect(deliveryAgents.find(node => node.id === 'resolve-resync-m1')?.context).toBe('fresh');
+    expect(deliveryAgents.find(node => node.id === 'repair-core')?.with).toMatchObject({
+      context_node: 'repair-context-core',
+      prior_work: '$code-core.output',
+    });
+    expect(deliveryAgents.find(node => node.id === 'fix-m1-r2')?.with).toMatchObject({
+      prior_work: '$handoff-m1-r2.output.handoff',
+      context_node: 'handoff-m1-r2',
+    });
   });
   test('P2: carry changes code/verify and scope wiring; an empty carry preserves every byte', () => {
     const make = (packages: string[], coded?: string[]) =>

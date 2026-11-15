@@ -152,6 +152,14 @@ const check = (id: string, deps: string[], inputs: Node, extra: Node = {}): Node
   ...extra,
 });
 
+const declareAgentContexts = (nodes: Node[]): void => {
+  for (const node of nodes) {
+    if ((node.command !== undefined || node.prompt !== undefined) && node.context === undefined)
+      node.context = 'fresh';
+    declareAgentContexts((node.loop_group as { nodes?: Node[] } | undefined)?.nodes ?? []);
+  }
+};
+
 // 与 Archon subprocess 默认值的契约由 generate.test.ts 校验；不是 CLI 查询超时。
 const ARCHON_SUBPROCESS_DEFAULT_TIMEOUT_MS = 120_000;
 // 子进程均有独立上界；额外 5s 仅供 Bun 启动、hash 和本地文件操作。
@@ -1120,7 +1128,6 @@ export function buildWorkflow(
         });
       nodes.push({
         id: `repair-${p.id}`,
-        ...(!fake && !carry ? { context: { resume: `code-${p.id}` } } : {}),
         ...(fake
           ? { bash: fakeEdit(p, `repair ${p.id}`) }
           : {
@@ -1169,10 +1176,7 @@ export function buildWorkflow(
     const reviewSyncReadyHandle = output<SyncOutput>(reviewSyncReady);
     prev = reviewSyncReady;
     base = ref.required(reviewSyncReadyHandle, 'merge_base');
-    const briefs = m.packages.map(brief).join(' '),
-      resumeFixes =
-        m.packages.length === 1 &&
-        nodes.some(n => n.id === `repair-${m.packages[0].id}` && n.context !== undefined);
+    const briefs = m.packages.map(brief).join(' ');
     const rounds: Node = {};
     for (let r = 1; r <= maxRounds; r++) {
       const t = `${m.id}-r${String(r)}`;
@@ -1218,9 +1222,6 @@ export function buildWorkflow(
         }
         nodes.push({
           id: `fix-${t}`,
-          ...(resumeFixes
-            ? { context: { resume: r === 2 ? `code-${m.packages[0].id}` : `fix-${before}` } }
-            : {}),
           ...(fake
             ? { bash: fakeEdit(m.packages[0], `fix ${m.id} r${String(r)}`) }
             : {
@@ -1438,6 +1439,7 @@ export function buildWorkflow(
     );
     after = { depends_on: [`integrate-${m.id}`] };
   }
+  declareAgentContexts(nodes);
   return {
     name: `sa-${run}`,
     description: `superagent run ${run}: ${String(plan.packages.length)} package(s), ${String(
