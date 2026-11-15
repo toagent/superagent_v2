@@ -4,7 +4,7 @@ import { providerEventLineSchema } from '../../packages/workflows/src/schemas/pr
 import type { RunView } from './archon';
 import type { Plan, Pkg } from './plan';
 
-const BUDGET_MINUTES: Record<Pkg['size'], number> = { S: 20, M: 40, L: 60 };
+const BUDGET_MINUTES: Record<Pkg['size'], number> = { S: 30, M: 45, L: 60 };
 
 export interface NodeProgress {
   started_at: string | null;

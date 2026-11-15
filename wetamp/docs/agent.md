@@ -73,7 +73,7 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 
 - `deps` 声明包依赖；`milestone` 把包归入同一交付批次；
 - `max_net_lines` 限制非测试、非生成代码的净增行数；
-- `budget_min` 可为包内将军节点声明正整数分钟预算；缺省按 `size` 使用 S=20、M=40、L=60；
+- `budget_min` 可为包内将军节点声明正整数分钟预算；缺省按 `size` 使用 S=30、M=45、L=60；
 - `signoff:"human"` 声明人工签收；`review_reason` 保存用户要求独立评审的原话；
 - `environment` 在派发前运行环境检查，可位于顶层或包内；
 - `console` 选择评审路由池；`mode` 选择已支持的路由模式；

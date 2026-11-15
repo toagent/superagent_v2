@@ -60,7 +60,7 @@ test('从持久化 JSONL 投影在跑将军的时间预算与事件活跃度', (
     'code-core': {
       started_at: '2026-11-15T10:00:00Z',
       elapsed_s: 720,
-      budget_s: 1200,
+      budget_s: 1800,
       last_event_at: '2026-11-15T10:11:20Z',
       last_event_s: 40,
       event_count: 2,

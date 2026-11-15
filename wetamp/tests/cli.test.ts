@@ -1442,7 +1442,7 @@ describe('waitRun (archon stub)', () => {
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(response));
     writeFileSync(
       join(s.root, 'gen', 'plan.json'),
-      JSON.stringify({ packages: [{ id: 'core', size: 'S' }] })
+      JSON.stringify({ packages: [{ id: 'core', size: 'S', budget_min: 20 }] })
     );
     writeFileSync(
       join(output, 'logs', 'r.jsonl'),

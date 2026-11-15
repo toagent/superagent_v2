@@ -59,7 +59,7 @@ test('并行节点只唤醒一次，单节点取消后可从真实 CLI 续作', 
     processState = inspectProcess(owner.pid);
   if (processState.state !== 'online') throw new Error('fixture owner offline');
   // prettier-ignore
-  const plan = { repo, base_ref: 'main', budget: { weighted_tokens: 0 }, packages: ['core', 'api'].map(id => ({ id, title: id, goal: 'g', scope: { write: ['src/**'] }, accept: [{ cmd: 'true', timeout_s: 1 }], risk: 'G1', size: 'S' })) };
+  const plan = { repo, base_ref: 'main', budget: { weighted_tokens: 0 }, packages: ['core', 'api'].map(id => ({ id, title: id, goal: 'g', scope: { write: ['src/**'] }, accept: [{ cmd: 'true', timeout_s: 1 }], risk: 'G1', size: 'S', budget_min: 20 })) };
   writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
   writeFileSync(
     join(gen, '.archon/workflows/wf/wf.yaml'),
