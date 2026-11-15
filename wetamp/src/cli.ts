@@ -84,6 +84,12 @@ import { cockpit } from './board/cockpit';
 import { ENGINE_CHANGED } from './board/App';
 import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
+import {
+  nodeLeaseDecision,
+  nodeLeaseProgress,
+  writeNodeLeaseReport,
+  type NodeLeaseRecord,
+} from './node-lease';
 import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
 import { heartbeat, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type TickRecord, type TickStage } from './heartbeat';
@@ -194,7 +200,7 @@ import { secretsHealth } from './secrets/scan';
 import { auditTranscripts } from './secrets/audit';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
 import { abandoned } from './ledger-metrics';
-import { nodeProgress } from './node-progress';
+import { nodeProgress, packageForNode } from './node-progress';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
 import { ROUTE_ROLE, TIERS } from './roles';
 import { gc, scratchClean, type GcAction, type ScratchAction } from './gc';
@@ -437,6 +443,8 @@ export interface Ledger {
   auto_retries?: AutoRetry[];
   /** supervise-tick 的处置记录（最近 20 条）。 */
   dispositions?: Disposition[];
+  /** 将军节点当前尝试的时间租约；engine_run + node + started_at 隔离重试。 */
+  node_lease?: NodeLeaseRecord;
   intervened?: boolean;
   /** Append-only explicit decisions; absent on historical runs with unknown coverage. */
   intervention_events?: (Pick<Disposition, 'at' | 'action' | 'ok' | 'error'> & {
@@ -890,7 +898,9 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     reauthorize = reauthorizationHint(l, run, c),
-    action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
+    action = reauthorize ?? (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at
+      ? `superagent decide ${l.run_id} retry --pkg ${packageForNode(planOf(l), l.node_lease.node)?.id ?? '<id>'} --hint "根据租约交回证据继续"`
+      : reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
       : reason === 'target_checkout_changed' && l.delivery ? targetCheckoutAction(l, l.delivery)
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
@@ -987,6 +997,7 @@ function summary(l: Ledger, run: RunView, c: Classified): Record<string, unknown
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
     ...(l.reason ? { reason: l.reason } : {}),
+    ...(l.node_lease?.engine_run === run.id ? { node_lease: l.node_lease } : {}),
   };
 }
 
@@ -1020,6 +1031,8 @@ const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
 export function classifyRun(l: Ledger, run: RunView): Classified {
   const c = classify(run);
   if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
+  if (run.status === 'cancelled' && l.node_lease?.engine_run === run.id && l.node_lease.stopped_at)
+    return { state: heldState('gate'), exit: EXIT.held, node: l.node_lease.node };
   if (run.status === 'cancelled') return c;
   if (coderBudgetExceeded(run, c)) return { ...c, state: heldState('gate'), exit: EXIT.held };
   if ((run.status === 'failed' || run.status === 'paused') && c.node) {
@@ -2866,6 +2879,13 @@ function brief(l: Ledger, json = false, suffix: string[] = []): number {
   if (typeof s.next === 'string') lines.push(`blocked: ${String(s.reason)}；next: ${s.next}`);
   lines.push(`initiator: ${JSON.stringify(s.initiator)}`);
   if (l.adoptions?.length) lines.push(`adoption: ${JSON.stringify(l.adoptions.at(-1))}`);
+  if (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at) {
+    const pkg = packageForNode(planOf(l), l.node_lease.node)?.id ?? '<id>';
+    lines.push(
+      `lease: ${String(l.node_lease.budget_s)}s budget${l.node_lease.extended_at ? '（已续租）' : ''}；evidence: ${l.node_lease.evidence ?? 'missing'}`,
+      `next: superagent decide ${l.run_id} retry --pkg ${pkg} --hint "根据租约交回证据继续"`
+    );
+  }
   const history = l.adoptions?.at(-1)?.packages;
   // prettier-ignore
   if (history) lines.push(`history: ${Object.entries(history).map(([p, h]) => `${p} total=${String(Math.round(h.elapsed_ms / 1000))}s failed=${String(h.failed_rounds)} first=${h.first_failure?.reason ?? '-'}`).join('; ')}`);
@@ -4100,6 +4120,7 @@ function tick(
 
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
 export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
+  if (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at) return 'coder';
   if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
@@ -4118,6 +4139,7 @@ export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined
 }
 
 const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
+  if (l.node_lease?.engine_run === run.id && l.node_lease.stopped_at) return 'budget_exceeded';
   if (coderBudgetExceeded(run, c)) return 'coder_budget';
   const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
     reason?: unknown;
@@ -4377,6 +4399,71 @@ function dispose(
       ok: result.ok,
       ...(result.ok ? {} : { error: result.reason }),
     };
+  }
+  if (c.exit === EXIT.running) {
+    const plan = planOf(l),
+      roles = workflowRoles(l),
+      node = run.nodes?.find(
+        candidate => candidate.state === 'running' && roles?.get(candidate.nodeId) === 'coder'
+      ),
+      pkg = node ? packageForNode(plan, node.nodeId) : undefined,
+      progress = node ? nodeProgress(run, plan)[node.nodeId] : undefined;
+    if (node && pkg && progress) {
+      const lease = nodeLeaseDecision(
+        run,
+        { nodeId: node.nodeId, startedAt: node.startedAt, budget_s: progress.budget_s },
+        l.node_lease,
+        nodeLeaseProgress(l.run_id)
+      );
+      if (lease.action === 'extend') {
+        updateLedger(l, current => {
+          current.node_lease = lease.lease;
+        });
+        return record(l, 'lease_extended', {
+          run_id: l.run_id,
+          action: 'lease_extended',
+          ok: true,
+          node: node.nodeId,
+          budget_s: progress.budget_s,
+          limit_s: Math.floor(progress.budget_s * 1.5),
+        });
+      }
+      if (lease.action === 'stop') {
+        const report = writeNodeLeaseReport(
+            l.run_id,
+            run,
+            lease.lease,
+            lease.elapsed_s,
+            artifactsOf(run),
+            run.working_path ?? l.repo,
+            pkg.id
+          ),
+          stopped = cancelRun(run.id, run.status, l.repo);
+        if (stopped.ok)
+          updateLedger(l, current => {
+            current.node_lease = {
+              ...lease.lease,
+              stopped_at: new Date().toISOString(),
+              evidence: report,
+            };
+          });
+        return record(l, 'budget_exceeded', {
+          run_id: l.run_id,
+          action: 'lease_stop',
+          ok: stopped.ok,
+          node: node.nodeId,
+          evidence: report,
+          ...(stopped.ok
+            ? {}
+            : {
+                error:
+                  'error' in stopped && typeof stopped.error === 'string'
+                    ? stopped.error
+                    : 'cancel refused',
+              }),
+        });
+      }
+    }
   }
   const reauthorize = reauthorizationHint(l, run, c);
   if (reauthorize)

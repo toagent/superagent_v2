@@ -80,7 +80,8 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 - `request_ref` 关联外部请求；`caps` 收紧执行能力；
 - `scope.read_hint` 给出优先读取路径，不扩大写范围。
 
-完整结构以 `schemas/plan.schema.json` 为准。预算阈值用于观测和报告，不作为准入或停机条件。
+完整结构以 `schemas/plan.schema.json` 为准。将军节点到达时间预算后由 `supervise-tick`
+按近期工作树进展续租一次，否则精确停止 run 并保留工作树与交回证据。
 
 ## 评审
 
@@ -120,6 +121,7 @@ plan 包使用非空 `review_reason`。`risk:"G2"`、`mode:"strict"` 和 `review
 | `held:owner_unknown` / `owner_lost`                        | 执行 owner 不明确或已丢失  | 先对账，再 recover                              |
 | `held:recovery_admission_unknown` / `held:reclaim_pending` | 恢复接纳或回收续授权未确认 | 对账后 `recover --reconciled`；不确定就停下报告 |
 | `held:engine_suspect`                                      | 引擎判定与验收矛盾         | 看 `brief` 证据，按引擎缺陷处理，不重跑规避     |
+| `held:gate`（`budget_exceeded`）                           | 将军节点时间租约用尽       | 查看租约证据后按包带提示 retry                  |
 | `sync_conflict` / `target_advanced` / `review_stale`       | 实时目标 tip 无法直接组合  | 按 `next_action` 重同步或重验                   |
 
 重试可缩小到包并附修复提示：

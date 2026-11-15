@@ -50,7 +50,7 @@ const activityFor = (run: RunView): Map<string, { count: number; last: string | 
   }
 };
 
-const packageForNode = (plan: Plan, node: string): Pkg | undefined => {
+export const packageForNode = (plan: Plan, node: string): Pkg | undefined => {
   const direct = plan.packages.find(pkg =>
     ['code', 'repair'].some(prefix => node === `${prefix}-${pkg.id}`)
   );

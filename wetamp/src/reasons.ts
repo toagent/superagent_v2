@@ -217,7 +217,7 @@ const repaired = base
 export const REASONS: Reason[] = [
   deterministic('review_not_required', 'gate', 'engine', '验收通过且无需评审'),
   deterministic('land_target_unknown', 'needs', 'human', '合入缺少可验证的本地目标分支'),
-  deterministic('budget_exceeded', 'signoff', 'human', '净增行数超过工作包上限'),
+  deterministic('budget_exceeded', 'signoff', 'human', '工作包或节点预算已用尽'),
   entry('stalled', 'stalled', 'transient', 'coder', '编码节点工具调用长时间无进展'),
   entry('owner_unknown', 'auto_recover', 'transient', 'engine', '执行所有者无法确认'),
   entry(

@@ -90,6 +90,11 @@ packages/workflows/src/provider-attempts.ts
 packages/workflows/src/schemas/retry.ts
 packages/workflows/src/store-conformance.ts
 
+# WeTAMP-owned general node leases are enforced by supervise-tick without changing
+# Archon packages. Exhaustion uses the existing exact-run cancel channel and keeps
+# the worktree plus a deterministic handback report for package retry.
+wetamp/src/node-lease.ts
+
 # Selective upstream port: d0bb89df992f25dbac0b36e8a696a923d1c6d592
 # Kept only the postCreate config contract, validation, injectable executor, and
 # fresh-worktree setup-lock call. Omitted upstream audit events, run pre-creation,
