@@ -392,16 +392,19 @@ test('recent matching coded run requires adopt unless fresh is explicit', () => 
   });
   mkdirSync(s.ledger.gen_dir, { recursive: true });
   writeFileSync(join(s.ledger.gen_dir, 'plan.json'), readFileSync(path));
-  Object.assign(s.ledger, { plan: path, repo, branch: 'sa/sa1', started_at: new Date().toISOString() });
+  const now = Date.now();
+  Object.assign(s.ledger, { plan: path, repo, branch: 'sa/sa1', started_at: new Date(now - 3 * 60 * 60e3).toISOString() });
   writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
   const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
-  db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
-  db.run('insert into remote_agent_workflow_runs values (?, ?)', [s.ledger.archon_run_id, 'failed']);
-  expect(adoptCandidates(loadPlan(path))).toMatchObject([{ run_id: 'sa1', commits_ahead: 1 }]);
+  db.run('create table remote_agent_workflow_runs (id text primary key, status text, last_activity_at text, completed_at text)');
+  db.run('insert into remote_agent_workflow_runs values (?, ?, ?, ?)', [s.ledger.archon_run_id, 'failed', null, new Date(now - 10 * 60e3).toISOString()]);
+  expect(adoptCandidates(loadPlan(path), now)).toMatchObject([{ run_id: 'sa1', commits_ahead: 1 }]);
   s.ledger.branch = 'main'; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]);
-  s.ledger.branch = 'sa/sa1'; s.ledger.started_at = new Date(Date.now() - 2 * 60 * 60e3 - 1).toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]);
-  s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); db.run('update remote_agent_workflow_runs set status=?', ['completed']); expect(adoptCandidates(loadPlan(path))).toEqual([]);
-  delete (s.ledger as Partial<Ledger>).started_at; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); expect(adoptCandidates(loadPlan(path))).toEqual([]); s.ledger.started_at = new Date().toISOString(); writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); db.run('update remote_agent_workflow_runs set status=?', ['failed']); db.close();
+  s.ledger.branch = 'sa/sa1'; writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger)); db.run('update remote_agent_workflow_runs set completed_at=?', [new Date(now - 3 * 60 * 60e3).toISOString()]); expect(adoptCandidates(loadPlan(path), now)).toEqual([]);
+  db.run('update remote_agent_workflow_runs set status=?, last_activity_at=?', ['paused', new Date(now - 10 * 60e3).toISOString()]); expect(adoptCandidates(loadPlan(path), now)).toMatchObject([{ state: 'held:paused' }]);
+  db.run('update remote_agent_workflow_runs set last_activity_at=?', [new Date(now - 3 * 60 * 60e3).toISOString()]); expect(adoptCandidates(loadPlan(path), now)).toEqual([]);
+  db.run('update remote_agent_workflow_runs set status=?, completed_at=?', ['failed', null]); expect(adoptCandidates(loadPlan(path), now)).toEqual([]);
+  db.run('update remote_agent_workflow_runs set status=?, completed_at=?', ['failed', new Date().toISOString()]); db.close();
   const rejected = captured(() => main(['run', path, '--fake']));
   expect(JSON.parse(rejected.out)).toMatchObject({ plan_lint: { rejected: true }, adopt_candidates: [{ run_id: 'sa1' }] });
   const fresh = captured(() => main(['run', path, '--fake', '--fresh', '--allow-overlap', 'fixture']));
@@ -662,6 +665,13 @@ describe('parseArgs', () => {
       err.mockRestore();
     }
     expect(parseArgs(['report', '--json']).flags).toEqual({ json: true });
+    const web = Bun.spawnSync([process.execPath, join(import.meta.dir, '../src/cli.ts'), 'web'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, SUPERAGENT_ROLE: '' },
+    });
+    expect(web.exitCode).toBe(EXIT_USAGE);
+    expect(web.stderr.toString()).toContain('usage: superagent');
   });
   test('wait --timeout rejects NaN, Infinity and non-positive values with usage (64), before loading the ledger', () => {
     const err = spyOn(console, 'error').mockImplementation(() => undefined);
