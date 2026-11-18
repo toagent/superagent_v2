@@ -175,6 +175,7 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 - `superagent jobs --all` 查看登记作业；
 - `superagent models --mode auto` 查看路由模型；
 - `superagent report --since <YYYYMMDD|ISO>` 查看运行质量与效率口径；
+- 夜报在本机时间 02:00 后认领当天首轮，`superagent nightly-evolve` 可提前认领；`superagent report` 的 `latest_night_report` 指向最新文件。
 - `superagent debt list [--repo <path>] [--open] [--json]` 列出稳定债 ID；`superagent debt close <id>... --reason <text>` 显式关闭。计划包可用 `closes_debt: [<id>]` 在成功集成后关闭；
 - `superagent quota` 查看当前配额投影；
 - `superagent rollover start --reason "<reason>"` 创建会话换手令牌。

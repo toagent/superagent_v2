@@ -199,6 +199,7 @@ import { secretCommand } from './secrets/command';
 import { secretsHealth } from './secrets/scan';
 import { auditTranscripts } from './secrets/audit';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
+import { collect, evolve, latestNightReport } from './nightly-evolve';
 import { abandoned } from './ledger-metrics';
 import { nodeProgress, packageForNode } from './node-progress';
 import { jobCli, memoryReading, type MemoryReading } from './jobs';
@@ -3671,6 +3672,7 @@ interface MaintenanceTasks {
   memory: (asks: Asks) => unknown;
   gc: () => GcAction[];
   scratch: () => ScratchAction[];
+  nightly?: (now: number, force: boolean) => unknown;
 }
 
 export function maintenanceTick(
@@ -3679,7 +3681,19 @@ export function maintenanceTick(
     memory: memoryTick,
     gc,
     scratch: scratchClean,
-  }
+    nightly: (at, force) =>
+      evolve(
+        sa,
+        at,
+        () =>
+          collect(
+            ledgers().flatMap(l => ('error' in l ? [] : [l])),
+            at
+          ),
+        force
+      ),
+  },
+  forceNightly = false
 ): Record<string, unknown> {
   const held = lock(join(sa, 'maintenance.lock'));
   if (!held.ok) {
@@ -3721,6 +3735,10 @@ export function maintenanceTick(
       run('gc', tasks.gc);
     } else record.gc = { ok: true, duration_ms: 0, skipped: 'not-due' };
     run('scratch', tasks.scratch);
+    if (tasks.nightly) {
+      const night = run('nightly', () => tasks.nightly?.(Date.now(), forceNightly));
+      if (night === 'not-due' || night === 'already-claimed') delete record.nightly;
+    }
     const failed = Object.values(record).some(
       value => value && typeof value === 'object' && 'ok' in value && value.ok === false
     );
@@ -4865,6 +4883,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'scratch-clean', audience: 'operator', flags: ['session', 'dry-run'] },
   { command: 'supervise-tick', audience: 'operator', flags: ['schedule', 'runs', 'no-global'] },
   { command: 'maintenance-tick', audience: 'operator', flags: [] },
+  { command: 'nightly-evolve', audience: 'operator', flags: [] },
   { command: 'engine', audience: 'operator', positionals: ENGINE_ACTION_USAGE, flags: ['bootstrap-evidence', 'base'] },
   { command: 'heartbeat', audience: 'operator', flags: ['watch', 'cwd', 'all'] },
   { command: 'board', audience: 'operator', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
@@ -5612,6 +5631,9 @@ export function main(argv: string[]): number {
     case 'maintenance-tick':
       print(maintenanceTick());
       return 0;
+    case 'nightly-evolve':
+      print(maintenanceTick(undefined, undefined, true));
+      return 0;
     case 'engine': {
       const result = engineCommand([
         ...a._.slice(1),
@@ -5654,7 +5676,10 @@ export function main(argv: string[]): number {
       const r = report();
       const full = readUsage();
       const output = { ...r, full_usage: { label: '全量（ccusage）', ...usageSummary(full) } };
-      print(a.flags.full ? output : reportSummary(output));
+      print({
+        ...(a.flags.full ? output : reportSummary(output)),
+        latest_night_report: latestNightReport(home().sa),
+      });
       const usage = r.usage as { unreadable: string[] };
       return (r.unreadable as string[]).length || usage.unreadable.length ? 1 : 0;
     }

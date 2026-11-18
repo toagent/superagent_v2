@@ -1032,7 +1032,11 @@ describe('EV1 lifecycle, privacy and priors', () => {
     const before = memoryState().lessons.at(-1)!;
     maintainLessons(undefined, NOW);
     expect(memoryState().lessons.filter(l => l.status === 'trial')).toHaveLength(30);
-    expect(memoryState().lessons.at(-1)).toEqual({ ...before, status: 'retired' });
+    expect(memoryState().lessons.at(-1)).toEqual({
+      ...before,
+      status: 'retired',
+      status_at: curated_at,
+    });
   });
   test('curator rejects invalid edits, deduplicates ADD, and preserves feedback', () => {
     const e = episode(),

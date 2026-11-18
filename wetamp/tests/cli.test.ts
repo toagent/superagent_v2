@@ -3688,7 +3688,11 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
     const result = maintenanceTick();
     expect(existsSync(join(sa, 'memory/reflect-workspace'))).toBeFalse();
     expect(existsSync(join(sa, 'memory/fold-index.json'))).toBeTrue();
-    expect(Object.keys(result).sort()).toEqual(['at', 'gc', 'maintenance', 'memory', 'scratch']);
+    expect(
+      Object.keys(result)
+        .filter(key => key !== 'nightly')
+        .sort()
+    ).toEqual(['at', 'gc', 'maintenance', 'memory', 'scratch']);
     expect(JSON.parse(readFileSync(join(sa, 'maintenance.json'), 'utf8'))).toEqual(result);
   });
 });

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { archonJson } from './archon';
+import { archonJson, waitNotification } from './archon';
 import { caller, coord, repoScope, same } from './coord';
 import { reasonOf } from './reasons';
 import { redact } from './redact';
@@ -241,6 +241,62 @@ const reflectWorkspace = (): string => {
   return dir;
 };
 
+export const capNightlyOperations = (output: { operations?: unknown; reason?: unknown }) =>
+  Array.isArray(output.operations)
+    ? { ...output, operations: output.operations.slice(0, 3) }
+    : output;
+
+const launchReflection = (input: string, dir: string, config: string, query: Query) =>
+  query(
+    [
+      'workflow',
+      'run',
+      'memory-reflect',
+      input,
+      '--workflow-source',
+      join(WETAMP, 'templates'),
+      '--folder',
+      '--no-worktree',
+      '--detach',
+      '--config',
+      config,
+    ],
+    dir
+  );
+
+export function nightlyReflection(
+  input: string,
+  query: Query = archonJson
+): { operations?: unknown } {
+  const dir = reflectWorkspace(),
+    config = join(dir, 'nightly-config.yaml');
+  writeAtomic(
+    config,
+    JSON.stringify({ aliases: { '@sa-coder': runAliases('codex')['@sa-reviewer'] } })
+  );
+  const c = coord(),
+    scope = repoScope(dir);
+  const run = c.scoped(scope, () => {
+    const controller = c.claim(scope, caller()).controller;
+    return c.mutate(
+      scope,
+      controller,
+      () => launchReflection(input, dir, config, query),
+      controller.generation
+    );
+  });
+  if (run.ok !== true || typeof run.runId !== 'string') throw new Error('reflection launch failed');
+  waitNotification(run.runId, dir, 150);
+  const { status, events } = query(['workflow', 'get', run.runId, '--verbose', '--events'], dir);
+  const output: unknown =
+    Array.isArray(events) &&
+    (events as Event[]).find(e => e.event_type === 'node_completed' && e.step_name === 'reflect')
+      ?.data?.structured_output;
+  if (status !== 'completed' || !output || typeof output !== 'object')
+    throw new Error('reflection output unavailable');
+  return output;
+}
+
 /** Reconcile one durable Archon run. Queries precede launch, so crash replay is idempotent. */
 function reflectAttempt(e: Episode, now: number, query: Query): boolean {
   const dir = reflectWorkspace();
@@ -297,23 +353,8 @@ function reflectAttempt(e: Episode, now: number, query: Query): boolean {
     const owner = c.owner(scope);
     if (owner.owner && !same(owner.owner, who) && owner.presence.state !== 'offline') return false;
     const controller = c.claim(scope, who).controller,
-      launch = (): Record<string, unknown> =>
-        query(
-          [
-            'workflow',
-            'run',
-            'memory-reflect',
-            prefix(e.id) + reflectionInput(e),
-            '--workflow-source',
-            join(WETAMP, 'templates'),
-            '--folder',
-            '--no-worktree',
-            '--detach',
-            '--config',
-            configPath(dir),
-          ],
-          dir
-        );
+      launch = () =>
+        launchReflection(prefix(e.id) + reflectionInput(e), dir, configPath(dir), query);
     c.mutate(scope, controller, launch, controller.generation);
     return true;
   });

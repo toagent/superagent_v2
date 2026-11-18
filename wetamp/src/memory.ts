@@ -94,6 +94,8 @@ export type Lesson = Infer<typeof lessonSchema> & {
   created_at: string;
   last_hit: string;
   curated_at?: string;
+  source?: 'remote';
+  status_at?: string;
   exposures?: number;
   last_exposed_at?: string;
   exposure_outcomes?: number;
@@ -891,18 +893,18 @@ const matches = (l: Lesson, project: string, tag: string): boolean =>
 export const lessonControl = (run: string): boolean =>
   createHash('sha256').update(run).digest().readUInt32BE() / 2 ** 32 < LESSON_POLICY.control / 100;
 
-function wilson(l: Lesson): [number, number] {
-  const n = l.exposure_outcomes ?? 0;
+export function wilson(successes: number, n: number): [number, number] {
   if (!n) return [0, 1];
-  const p = (l.exposure_passes ?? 0) / n,
+  const p = successes / n,
     z = LESSON_POLICY.z,
     d = 1 + z ** 2 / n;
   const center = (p + z ** 2 / (2 * n)) / d;
   const radius = (z * Math.sqrt((p * (1 - p) + z ** 2 / (4 * n)) / n)) / d;
   return [p === 0 ? 0 : center - radius, p === 1 ? 1 : center + radius];
 }
+const lessonInterval = (l: Lesson) => wilson(l.exposure_passes ?? 0, l.exposure_outcomes ?? 0);
 const byUpper = (a: Lesson, b: Lesson): number =>
-  wilson(b)[1] - wilson(a)[1] || a.id.localeCompare(b.id);
+  lessonInterval(b)[1] - lessonInterval(a)[1] || a.id.localeCompare(b.id);
 
 export function injectMemory(plan: Plan, dir: string, run: string): Record<string, string[]> {
   const path = join(dir, 'learning.json');
@@ -1015,15 +1017,16 @@ export function maintainLessons(
       if (active(l) && (l.exposure_outcomes ?? 0) >= LESSON_POLICY.min) {
         const controls = outcomes.filter(p => p.control && matches(l, p.project, p.tag));
         const baseline = controls.length >= LESSON_POLICY.min ? rate(controls) : global;
-        const [lower, upper] = wilson(l);
+        const [lower, upper] = lessonInterval(l);
         if (upper < baseline) l.status = 'retired';
         else if (lower > baseline) l.status = 'stable';
+        if (l.status !== old.status) l.status_at = new Date(now).toISOString();
       }
       if (JSON.stringify(l) !== JSON.stringify(old)) changed.set(l.id, l);
       return active(l) ? [l] : [];
     });
     for (const l of pool.sort(byUpper).slice(LESSON_POLICY.pool))
-      changed.set(l.id, { ...l, status: 'retired' });
+      changed.set(l.id, { ...l, status: 'retired', status_at: new Date(now).toISOString() });
     return {
       lessons: [...changed.values()],
       ...(run

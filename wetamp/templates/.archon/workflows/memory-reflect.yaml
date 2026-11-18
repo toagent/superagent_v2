@@ -5,10 +5,6 @@ model: '@sa-coder'
 nodes:
   - id: reflect
     idle_timeout: 120000
-    retry:
-      max_attempts: 5
-      delay_ms: 1000
-      on_error: all
     prompt: $ARGUMENTS
     output_format:
       type: object
@@ -16,7 +12,6 @@ nodes:
       properties:
         operations:
           type: array
-          maxItems: 3
           items:
             type: object
             additionalProperties: false
