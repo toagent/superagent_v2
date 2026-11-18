@@ -56,6 +56,13 @@
     "description": "目标检出存在未提交改动"
   },
   {
+    "code": "target_advanced",
+    "hold": "gate",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "发布时目标分支已前进"
+  },
+  {
     "code": "reclaim_pending",
     "hold": "auto_recover",
     "determinism": "transient",

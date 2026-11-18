@@ -229,6 +229,7 @@ export const REASONS: Reason[] = [
   ),
   deterministic('rework', 'signoff', 'human', '人工签收拒绝后等待返工'),
   deterministic('target_dirty', 'approval', 'human', '目标检出存在未提交改动'),
+  entry('target_advanced', 'gate', 'transient', 'env', '发布时目标分支已前进'),
   entry('reclaim_pending', 'auto_recover', 'transient', 'engine', '回收续授权尚未完成'),
   entry('lock_timeout', 'environment', 'transient', 'env', '等待集成锁超时'),
   entry(

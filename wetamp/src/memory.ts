@@ -555,10 +555,27 @@ function evidenceRows(
   const art = confined(l, artifactsOf(run));
   if (!art) return [];
   return files(art)
-    .filter(f =>
-      /^(?!.*\.(coder|fingerprint|ledger)\.json$)(verify-|settle-|gate-|environment\.json$)/.test(f)
+    .filter(
+      f =>
+        /^(verify|settle|gate|final-accept)-|^environment\.json$/.test(f) &&
+        !/\.(coder|fingerprint|ledger)\.json$/.test(f)
     )
     .flatMap(file => {
+      if (file.startsWith('final-accept-')) {
+        const node = run.nodes?.find(
+          n => n.state === 'failed' && n.nodeId.split('.').at(-1) === file.slice(0, -'.json'.length)
+        );
+        if (run.status !== 'failed' || !node) return [];
+        const started = Date.parse(node.execution?.timing.startedAt ?? node.startedAt ?? '');
+        const duration = node.execution?.timing.durationMs ?? node.durationMs ?? NaN;
+        const parsed = evidenceSchema.safeParse(memoryJson<unknown>(join(art, file), null, l));
+        if (!parsed.success || !['fail', 'adjudicate'].some(d => d === parsed.data.disposition))
+          return [];
+        // Loop iterations and recovery overwrite the tag's receipt.
+        const written = statSync(join(art, file)).mtime.getTime();
+        if (!(written >= started && written <= started + duration)) return [];
+        return [{ file, data: parsed.data }];
+      }
       const raw = memoryJson<unknown>(join(art, file), null, l);
       // gate writes a nullable review independently of its mandatory decision object.
       if (raw === null && file.endsWith('.review.json')) return [];

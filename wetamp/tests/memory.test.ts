@@ -11,6 +11,7 @@ import {
   writeFileSync,
   statSync,
   symlinkSync,
+  utimesSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { testTimeout } from '@archon/paths/test-utils';
@@ -1681,6 +1682,37 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
         signature: 'evidence_conflict',
       });
   });
+  const finalAcceptEpisode = () => {
+    for (const file of ['verify-core.json', 'settle-core.json'])
+      writeFileSync(join(artifactsOf(raw), file), '{"ok":true,"failed":[],"reason":null}');
+    const node = { step_name: 'integrate-m1.final-accept-m1' };
+    const events = [
+      { ...node, event_type: 'node_started', created_at: ledger.started_at, data: {} },
+      { ...node, event_type: 'node_failed', data: { duration_ms: 60000, error: 'exit code 1' } },
+    ];
+    return foldEpisode(ledger, plan, { ...raw, nodes: undefined }, events, {}, NOW);
+  };
+  const writeFinalAccept = (milestone: string, at = NOW - 1000, hasReceipt = true) => {
+    const file = join(artifactsOf(raw), `final-accept-${milestone}.json`);
+    const receipt = { ...replay['project-port'], milestone, disposition: 'fail' };
+    writeFileSync(file, JSON.stringify(hasReceipt ? receipt : null));
+    utimesSync(file, at / 1000, at / 1000);
+  };
+  test('the failed nested final acceptance attempt explains a green package settlement', () => {
+    writeFinalAccept('m1');
+    const { category, signature } = finalAcceptEpisode();
+    expect([category, signature]).toEqual(['project', 'acceptance_failed']);
+  });
+  test('missing, null, stale and unrelated final acceptance receipts leave the conflict visible', () => {
+    expect(finalAcceptEpisode().signature).toBe('evidence_conflict');
+    writeFinalAccept('m1', undefined, false);
+    expect(finalAcceptEpisode().signature).toBe('evidence_conflict');
+    writeFinalAccept('m2');
+    for (const at of [NOW - 61000, NOW + 1000]) {
+      writeFinalAccept('m1', at);
+      expect(finalAcceptEpisode().signature).toBe('evidence_conflict');
+    }
+  });
   test('publish rejection explains a green terminal failure', () => {
     raw.nodes = [{ nodeId: 'publish-m1', state: 'failed' }];
     writeFileSync(
@@ -1691,14 +1723,14 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
     expect(foldEpisode(ledger, plan, raw, [], {}, NOW).reasons).not.toContain(
       'target_checkout_changed'
     );
-    writeFileSync(
-      join(artifactsOf(raw), 'publish-m1.json'),
-      JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
-    );
-    const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
-    expect(folded.reasons).toContain('target_checkout_changed');
-    expect(folded.category).toBe('transient');
-    expect(folded.signature).toBe('target_checkout_changed');
+    for (const reason of ['target_checkout_changed', 'target_advanced']) {
+      writeFileSync(
+        join(artifactsOf(raw), 'publish-m1.json'),
+        JSON.stringify({ status: 'rejected', reason })
+      );
+      const { category, signature } = foldEpisode(ledger, plan, raw, [], {}, NOW);
+      expect([category, signature]).toEqual(['transient', reason]);
+    }
   });
   test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
     mkdirSync(join(sa, 'jobs'));
