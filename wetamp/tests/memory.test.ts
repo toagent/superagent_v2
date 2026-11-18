@@ -101,6 +101,7 @@ beforeEach(() => {
     )
   ) as Plan;
   plan.packages[0].scope.write = ['src/cli.ts'];
+  plan.packages[0].goal = 'Refactor port allocation';
   plan.packages[0].accept = [{ cmd: 'bun test --port 39890', timeout_s: 30 }];
   ledger = {
     run_id: 'incident',
@@ -1024,7 +1025,39 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(injectMemory(plan, dir, runs.find(lessonControl)!)).toEqual({});
     expect(
       JSON.parse(readFileSync(join(dir, 'learning.json'), 'utf8')).selections.core
-    ).toMatchObject({ lesson_control: true, entries: [] });
+    ).toMatchObject({ lesson_control: true, lesson_control_ids: ['candidate'], entries: [] });
+  });
+  test('curated lessons require lexical overlap and rank it ahead of Wilson', () => {
+    const curated_at = new Date(NOW).toISOString();
+    const broad = { curated_at, applicability: 'all' as const, tier: 'role' as const };
+    plan.packages[0].title = '状态机';
+    plan.packages[0].goal = 'Review allocator';
+    plan.packages[0].scope.write = ['src/scheduler.py'];
+    seed(
+      lesson('a-weak', { ...broad, when: '状态变更' }),
+      lesson('b-zero', {
+        curated_at,
+        tier: 'type',
+        scope: 'python',
+        when: 'algebra',
+        do: 'matrix',
+      }),
+      lesson('c-strong', {
+        ...broad,
+        when: '状态机',
+        do: 'scheduler allocator',
+        exposure_outcomes: 9,
+        exposure_passes: 0,
+      }),
+      lesson('d-tagged', { curated_at, applicability: ['python'], when: 'allocator' }),
+      lesson('e-empty', { curated_at, applicability: [], when: 'allocator' }),
+      lesson('f-wrong-tag', { curated_at, applicability: ['docs'], when: 'allocator' })
+    );
+    expect(injectMemory(plan, root, 'next')).toEqual({ core: ['c-strong', 'a-weak', 'd-tagged'] });
+    plan.packages[0].scope.write = ['src/scheduler.ts'];
+    const other = join(root, 'other');
+    mkdirSync(other);
+    expect(injectMemory(plan, other, 'next')).toEqual({ core: ['c-strong', 'a-weak'] });
   });
   test('curated pool retires only the weakest upper bound above 30', () => {
     const curated_at = new Date(NOW).toISOString();
@@ -1223,86 +1256,94 @@ describe('EV1 lifecycle, privacy and priors', () => {
     }
     expect(readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8')).toBe(before);
   });
-  test('a paused archive folds once while terminal scoring reads final evidence', () => {
-    const curated_at = new Date(NOW).toISOString();
-    seed(lesson('phantom', { curated_at, tag: 'python' }), lesson('rendered', { curated_at }));
-    fakeValidation();
-    ledger.gen_dir = generate(plan, 'next', true).dir;
-    writeFileSync(
-      join(ledger.gen_dir, 'engine.json'),
-      JSON.stringify({ lessons: { core: ['phantom'] } })
-    );
-    const rendered = Bun.spawnSync(
-      [
-        process.execPath,
-        '--no-env-file',
-        join(ledger.gen_dir, '.archon/scripts/sa-context.ts'),
-        join(ledger.gen_dir, 'counter'),
-        ledger.gen_dir,
-        'core',
-      ],
-      { cwd: ledger.gen_dir, env: { ...process.env, ARTIFACTS_DIR: artifactsOf(raw) } }
-    );
-    expect(rendered.exitCode).toBe(0);
-    const held = {
-      ...raw,
-      status: 'paused',
-      nodes: undefined,
-      metadata: {
-        wait: {
-          nodeId: 'human',
-          kind: 'event',
-          event: 'sa.human',
-          resumeAt: new Date(NOW + 600000).toISOString(),
-          waitingSince: new Date(NOW - 31 * 60000).toISOString(),
-        },
-      },
-      events: [],
-    };
-    const stub = join(root, 'archon-held');
-    writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
-    const file = join(root, 'held.json');
-    writeFileSync(file, JSON.stringify(held));
-    process.env.SA_ARCHON_BIN = stub;
-    process.env.FAKE_EV1_RUN = file;
-    mkdirSync(join(sa, 'runs'));
-    writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
-    memoryTick({}, NOW, false);
-    const path = join(sa, 'memory/episodes/incident.json'),
-      archive = readFileSync(path, 'utf8');
-    expect(memoryState().lessons[0].harmful).toBe(0);
-    writeFileSync(
-      join(artifactsOf(raw), 'verify-core.json'),
-      JSON.stringify({ ok: false, reason: 'review_failed' })
-    );
-    writeFileSync(
-      file,
-      JSON.stringify({
-        ...held,
-        status: 'failed',
-        nodes: [{ nodeId: 'code-core', state: 'completed', startedAt: curated_at }],
-        completed_at: new Date(NOW).toISOString(),
-        events: [
-          {
-            event_type: 'node_failed',
-            step_name: 'verify-core',
-            created_at: new Date(NOW).toISOString(),
-            data: { error: 'review_failed', duration_ms: 60000 },
-          },
+  test.each([false, true])(
+    'terminal scoring reads final evidence and excludes temporary repos (%s)',
+    temporary => {
+      if (!temporary) plan.repo = ledger.repo = join(import.meta.dir, '../..');
+      const curated_at = new Date(NOW).toISOString();
+      seed(
+        lesson('phantom', { curated_at, tag: 'python', scope: plan.repo }),
+        lesson('rendered', { curated_at, scope: plan.repo, when: 'port' })
+      );
+      fakeValidation();
+      ledger.gen_dir = generate(plan, 'next', true).dir;
+      writeFileSync(
+        join(ledger.gen_dir, 'engine.json'),
+        JSON.stringify({ lessons: { core: ['phantom'] } })
+      );
+      const rendered = Bun.spawnSync(
+        [
+          process.execPath,
+          '--no-env-file',
+          join(ledger.gen_dir, '.archon/scripts/sa-context.ts'),
+          join(ledger.gen_dir, 'counter'),
+          ledger.gen_dir,
+          'core',
         ],
-      })
-    );
-    memoryTick({}, NOW + 5000, false);
-    memoryTick({}, NOW + 10000, false);
-    expect(readFileSync(path, 'utf8')).toBe(archive);
-    expect(memoryState().lessons[0]).toMatchObject({ helpful: 0, harmful: 0 });
-    expect(memoryState().entries.flatMap(e => e.hit_ids ?? [])).toEqual(['rendered']);
-    expect(memoryState().lessons[1]).toMatchObject({
-      exposures: 1,
-      last_exposed_at: curated_at,
-      harmful: 1,
-    });
-  });
+        { cwd: ledger.gen_dir, env: { ...process.env, ARTIFACTS_DIR: artifactsOf(raw) } }
+      );
+      expect(rendered.exitCode).toBe(0);
+      const held = {
+        ...raw,
+        status: 'paused',
+        nodes: undefined,
+        metadata: {
+          wait: {
+            nodeId: 'human',
+            kind: 'event',
+            event: 'sa.human',
+            resumeAt: new Date(NOW + 600000).toISOString(),
+            waitingSince: new Date(NOW - 31 * 60000).toISOString(),
+          },
+        },
+        events: [],
+      };
+      const stub = join(root, 'archon-held');
+      writeFileSync(stub, '#!/bin/sh\ncat "$FAKE_EV1_RUN"\n', { mode: 0o755 });
+      const file = join(root, 'held.json');
+      writeFileSync(file, JSON.stringify(held));
+      process.env.SA_ARCHON_BIN = stub;
+      process.env.FAKE_EV1_RUN = file;
+      mkdirSync(join(sa, 'runs'));
+      writeFileSync(join(sa, 'runs/incident.json'), JSON.stringify(ledger));
+      memoryTick({}, NOW, false);
+      const path = join(sa, 'memory/episodes/incident.json'),
+        archive = readFileSync(path, 'utf8');
+      expect(memoryState().lessons[0].harmful).toBe(0);
+      writeFileSync(
+        join(artifactsOf(raw), 'verify-core.json'),
+        JSON.stringify({ ok: false, reason: 'review_failed' })
+      );
+      writeFileSync(
+        file,
+        JSON.stringify({
+          ...held,
+          status: 'failed',
+          nodes: [{ nodeId: 'code-core', state: 'completed', startedAt: curated_at }],
+          completed_at: new Date(NOW).toISOString(),
+          events: [
+            {
+              event_type: 'node_failed',
+              step_name: 'verify-core',
+              created_at: new Date(NOW).toISOString(),
+              data: { error: 'review_failed', duration_ms: 60000 },
+            },
+          ],
+        })
+      );
+      memoryTick({}, NOW + 5000, false);
+      memoryTick({}, NOW + 10000, false);
+      expect(readFileSync(path, 'utf8')).toBe(archive);
+      expect(memoryState().lessons[0]).toMatchObject({ helpful: 0, harmful: 0 });
+      expect(memoryState().entries.flatMap(e => e.hit_ids ?? [])).toEqual(
+        temporary ? [] : ['rendered']
+      );
+      const scored = memoryState().lessons[1];
+      if (temporary) expect(scored).toMatchObject({ helpful: 0, harmful: 0 });
+      else expect(scored).toMatchObject({ exposures: 1, last_exposed_at: curated_at, harmful: 1 });
+      expect(scored.exposures).toBe(temporary ? undefined : 1);
+    }
+  );
   test('event CLI shape produces timeline and tick folds once, recomputes real history priors', () => {
     const model = loadTiers().tiers.general.pools.chatgpt[0],
       unavailable = { source: 'unavailable', reason: 'not_reported' };

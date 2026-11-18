@@ -18,11 +18,14 @@ import {
 } from './report';
 import {
   episodeOf,
+  lessonTrialEligible,
   lessonSources,
+  memoryLog,
   memoryOn,
   memoryState,
   memoryWrite,
   privateProject,
+  runIsFake,
   taskTag,
   wilson,
   type Lesson,
@@ -86,6 +89,13 @@ export function collect(ls: Ledger[], now: number): Sample[] {
     const ids = archonRunIds(ledger),
       latest = runs.get(ledger.archon_run_id);
     if (!latest) return [];
+    const e = episodeOf(ledger.run_id);
+    try {
+      if (!lessonTrialEligible(ledger.repo, e?.fake === true || runIsFake(ledger))) return [];
+    } catch {
+      memoryLog(`nightly: invalid engine evidence for ${ledger.run_id}`);
+      return [];
+    }
     const plan = planOf(ledger);
     if (clock(latest.completed_at ?? '') > now) return [];
     const run = { ...latest, nodes: buildNodeSummaries(latest.events) };
@@ -107,7 +117,6 @@ export function collect(ls: Ledger[], now: number): Sample[] {
     );
     const weights = accepted.flatMap(p => (typeof p.tokens === 'number' ? [p.tokens] : []));
     const elapsed = runElapsedOf(pair);
-    const e = episodeOf(ledger.run_id);
     return [
       {
         id: ledger.run_id,

@@ -175,13 +175,14 @@ test('nightly windows use report receipts and separate operator and superseded c
   const plan = join(sa, 'plan.json'), started_at = new Date(at(18, 1)).toISOString();
   const completed_at = new Date(at(18, 1, 10)).toISOString();
   const packages = ['core', 'missing'].map(id => ({ id, size: 'M', risk: 'G1', scope: { write: ['src/a.ts'] }, accept: [] }));
-  writeFileSync(plan, JSON.stringify({ repo: sa, packages }));
+  const repo = '/repos/nightly-fixture';
+  writeFileSync(plan, JSON.stringify({ repo, packages }));
   const dispatch = join(sa, 'gen/pass');
   mkdirSync(dispatch, { recursive: true });
   writeFileSync(join(dispatch, 'plan.json'), JSON.stringify({ packages: [{ ...packages[0], max_net_lines: 0 }] }));
   writeFileSync(join(dispatch, 'run-config.yaml'), JSON.stringify({ aliases: { '@sa-coder': { model: 'dispatch-model' } } }));
   const ledgers: Ledger[] = ['pass', 'fail', 'operator', 'superseded', 'replaced', 'successor'].map(id => ({
-    run_id: id, archon_run_id: id, plan, gen_dir: sa, repo: sa, workflow: 'fixture', started_at,
+    run_id: id, archon_run_id: id, plan, gen_dir: sa, repo, workflow: 'fixture', started_at,
     ...(id === 'pass' ? { delivery_result: { status: 'integrated', integrated: 'head' } } : {}),
     ...(['operator', 'superseded'].includes(id) ? { intervention_events: [{ action: 'cancel', ok: true, reason: id, at: completed_at, source: 'cli' }] } : {}),
     ...(id === 'successor' ? { adoptions: [{ from: 'replaced', to: id, reason: 'plan_replacement', at: completed_at }] } : {}),
@@ -219,6 +220,10 @@ test('nightly windows use report receipts and separate operator and superseded c
   expect(weekly.tokens).toMatchObject({ eligible: 3, denominator: 2, value: (Number(tokens[0]) + Number(tokens[2])) / 2 });
   const elapsed = (report.measurement as Record<string, { wall_clock_ms: number }>)['pass/pass'].wall_clock_ms;
   expect(weekly.elapsed.value).toBe(elapsed / 2);
+  expect(collect([{ ...ledgers[0], repo: sa }], at(18))).toEqual([]);
+  expect(collect([{ ...ledgers[0], repo: '/tmp/sa-scratch/probe' }], at(18))).toEqual([]);
+  writeFileSync(join(sa, 'engine.json'), '{"fake":true}');
+  expect(collect([ledgers[0]], at(18))).toEqual([]);
 });
 
 // prettier-ignore
@@ -384,6 +389,23 @@ test('memory import backs up the original bytes, records merge evidence and is i
   expect(main(['memory', 'import', file])).toBe(0);
   expect(readFileSync(log, 'utf8')).toBe(imported);
   expect(backups()).toHaveLength(1);
+  maintainLessons({
+    id: 'scored',
+    packages: [{ project: sa, tag: 'cli', ids: ['rep'], passed: true, control: false }],
+  });
+  const [scored] = memoryState().lessons;
+  const beforeScopeUpdate = readFileSync(log, 'utf8');
+  writeFileSync(file, JSON.stringify([{ ...row, applicability: ['python', 'docs'] }]));
+  expect(main(['memory', 'import', file])).toBe(0);
+  expect(memoryState().lessons[0]).toEqual({ ...scored, applicability: ['docs', 'python'] });
+  expect(backups().map(name => readFileSync(join(dir, name), 'utf8'))).toContain(beforeScopeUpdate);
+  writeFileSync(file, JSON.stringify([{ ...row, applicability: ['docs', 'python', 'docs'] }]));
+  expect(main(['memory', 'import', file])).toBe(0);
+  expect(backups()).toHaveLength(2);
+  writeFileSync(file, JSON.stringify([row]));
+  expect(main(['memory', 'import', file])).toBe(0);
+  expect(memoryState().lessons[0]).toEqual({ ...scored, applicability: ['docs', 'python'] });
+  expect(backups()).toHaveLength(2);
 });
 
 test('memory import rejects overflow before changing the store', () => {

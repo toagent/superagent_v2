@@ -47,6 +47,12 @@ export interface Learning {
   hash?: string;
   entries: LearningEntry[];
   lesson_control?: boolean;
+  lesson_control_ids?: string[];
+}
+export interface LessonExposure {
+  ids: string[];
+  control?: boolean;
+  eligible_ids?: string[];
 }
 const publication = () => join(home().sa, 'memory', 'publication.json');
 function owner(args: string[]): Record<string, unknown> {

@@ -10,7 +10,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
-import type { Learning } from '../../../src/learning';
+import type { Learning, LessonExposure } from '../../../src/learning';
 import type { CoderOutput } from '../../../src/contract';
 import { capabilityGuidance, resolveCapabilities } from './capabilities';
 import {
@@ -195,7 +195,7 @@ export function contextPack(
   gen: string,
   context: RoleContext,
   packages = context.execution.packages,
-  exposure?: { ids: string[]; control?: boolean }
+  exposure?: LessonExposure
 ): string {
   const plan = read(join(gen, 'plan.json')) as Plan | 'unknown';
   if (plan === 'unknown') throw new Error('context: missing plan');
@@ -245,7 +245,10 @@ export function contextPack(
     if (existsSync(hint)) sections.push(`## hint ${p.id}\n` + readFileSync(hint, 'utf8'));
     const selected = context.learning.packages[p.id];
     if (selected?.lesson_control !== undefined && context.execution.role !== 'review') {
-      if (exposure) exposure.control = selected.lesson_control;
+      if (exposure) {
+        exposure.control = selected.lesson_control;
+        if (selected.lesson_control_ids) exposure.eligible_ids = selected.lesson_control_ids;
+      }
       const rows = (selected.lesson_control ? [] : selected.entries)
         .filter(l => l.source === 'reflection')
         .map(l => {
@@ -448,7 +451,7 @@ if (import.meta.main) {
         }
         packPath = join(artifacts, 'contexts', `${node}.md`);
         mkdirSync(dirname(packPath), { recursive: true });
-        const exposure: { ids: string[]; control?: boolean } = { ids: [] };
+        const exposure: LessonExposure = { ids: [] };
         const markdown = contextPack(
           gen,
           context,

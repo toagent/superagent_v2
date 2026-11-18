@@ -11,6 +11,8 @@ import {
 import { basename, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { isPathInside } from '@archon/paths';
 import type { infer as Infer } from '../../packages/workflows/node_modules/zod';
 import { archonJson, getRun, lock, runRevision, type RunView } from './archon';
 import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
@@ -25,8 +27,14 @@ import { CLASSIFIED_HOLD_REASONS, reasonOf } from './reasons';
 import { redact } from './redact';
 import { caller, coord, repoScope } from './coord';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
-import { milestones, type Plan, type Pkg } from './plan';
-import { recallLearning, selectLearning, type Learning, type LearningEntry } from './learning';
+import { milestones, SCRATCH_ROOT, type Plan, type Pkg } from './plan';
+import {
+  recallLearning,
+  selectLearning,
+  type Learning,
+  type LearningEntry,
+  type LessonExposure,
+} from './learning';
 // Reuse the workflows package's existing schema dependency, as plan.ts does for Ajv.
 export const z: typeof import('../../packages/workflows/node_modules/zod').z = (
   createRequire(join(WETAMP, '..', 'packages/workflows/package.json'))(
@@ -70,6 +78,7 @@ export interface Episode {
   retro?: NonNullable<Ledger['retro']>;
 }
 const field = z.string().max(240);
+const applicabilitySchema = z.union([z.literal('all'), z.array(field.trim().min(1)).min(1)]);
 export const lessonSchema = z
   .object({
     tier: z.enum(['project', 'type', 'role']),
@@ -94,6 +103,7 @@ export type Lesson = Infer<typeof lessonSchema> & {
   created_at: string;
   last_hit: string;
   curated_at?: string;
+  applicability?: Infer<typeof applicabilitySchema>;
   source?: 'local' | 'remote' | 'curated';
   status_at?: string;
   exposures?: number;
@@ -135,6 +145,22 @@ export const privateProject = (p: string): boolean =>
   p.includes('_private') ||
   p.includes('Mobile Documents') ||
   redline.reason({ name: 'Read', input: { path: p }, cwd: process.cwd() }) !== null;
+export function lessonTrialEligible(project: string, fake = false): boolean {
+  if (fake || privateProject(project)) return false;
+  const real = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const resolved = real(project);
+  return ![tmpdir(), '/tmp', '/private/tmp', '/var/tmp', SCRATCH_ROOT].some(
+    root =>
+      isPathInside(root, project, { includeRoot: true }) ||
+      isPathInside(real(root), resolved, { includeRoot: true })
+  );
+}
 export const memoryLog = (why: string): void => {
   console.error(`memory: ${why}`);
 };
@@ -190,6 +216,8 @@ export function memoryJson<T>(path: string, fallback: T, owner?: Ledger): T {
   const file = owner ? confined(owner, path) : memoryPath(path);
   return file ? (JSON.parse(readFileSync(file, 'utf8')) as T) : fallback;
 }
+export const runIsFake = (ledger: Ledger): boolean =>
+  memoryJson<{ fake?: boolean }>(join(ledger.gen_dir, 'engine.json'), {}, ledger).fake === true;
 const files = (dir: string): string[] =>
   existsSync(dir)
     ? readdirSync(dir)
@@ -816,7 +844,7 @@ export function foldEpisode(
     risk: [...plan.packages].sort((a, b) => b.risk.localeCompare(a.risk))[0].risk,
     size: plan.packages.length === 1 ? plan.packages[0].size : 'L',
     model,
-    fake: memoryJson<{ fake?: boolean }>(join(l.gen_dir, 'engine.json'), {}, l).fake === true,
+    fake: runIsFake(l),
     duration_ms,
     p50_ratio: prior?.duration.p50 ? duration_ms / prior.duration.p50 : null,
     reasons,
@@ -908,6 +936,7 @@ export function selectLessons(
 }
 const LESSON_POLICY = {
   control: 20,
+  minOverlap: 1,
   perPack: 5,
   packBytes: 12000,
   pool: 30,
@@ -920,13 +949,42 @@ interface LessonObservation {
   tag: string;
   ids: string[];
   control: boolean;
+  eligible_ids?: string[];
   passed?: boolean;
   exposed_at?: string;
 }
 const curated = (l: Lesson): l is Lesson & { curated_at: string } =>
-  !!l.curated_at && (l.tier !== 'role' || l.source === 'curated');
-const matches = (l: Lesson, project: string, tag: string): boolean =>
+  !!l.curated_at && (l.tier !== 'role' || l.source === 'curated' || !!l.applicability);
+const matchesOriginalScope = (l: Lesson, project: string, tag: string): boolean =>
   l.tier === 'type' ? l.scope === tag : l.tag === tag && (l.tier === 'role' || l.scope === project);
+function matches(l: Lesson, project: string, tag: string): boolean {
+  if (l.applicability === 'all') return true;
+  if (l.applicability) {
+    const tags = tag.split('+');
+    return l.applicability.some(t => t === tag || tags.includes(t));
+  }
+  return matchesOriginalScope(l, project, tag);
+}
+// Older observations recorded only the original project and tag.
+const matchesControl = (l: Lesson, p: LessonObservation): boolean =>
+  p.eligible_ids?.includes(l.id) ?? matchesOriginalScope(l, p.project, p.tag);
+
+function lessonTerms(text: string): Set<string> {
+  const terms = new Set<string>();
+  const tokens =
+    text
+      .normalize('NFKC')
+      .toLowerCase()
+      .match(/\p{Script=Han}+|[a-z0-9]+/gu) ?? [];
+  for (const token of tokens) {
+    if (/^[a-z0-9]/.test(token)) terms.add(token);
+    else {
+      const chars = Array.from(token);
+      for (let i = 1; i < chars.length; i++) terms.add(chars[i - 1] + chars[i]);
+    }
+  }
+  return terms;
+}
 
 export function importLessons(file: string, now = Date.now()) {
   if (privateProject(file) || privateProject(realpathSync(file)))
@@ -937,6 +995,7 @@ export function importLessons(file: string, now = Date.now()) {
         id: field.min(1),
         merged_ids: z.array(field.min(1)),
         content: field.trim().min(1),
+        applicability: applicabilitySchema.optional(),
       })
     )
     .parse(JSON.parse(readFileSync(file, 'utf8')));
@@ -958,27 +1017,31 @@ export function importLessons(file: string, now = Date.now()) {
     for (const row of rows) {
       const old = find(row.id),
         evidence = [...new Set([...old.evidence, ...row.merged_ids])];
-      if (
+      const applicability = Array.isArray(row.applicability)
+        ? [...new Set(row.applicability)].sort()
+        : (row.applicability ?? old.applicability);
+      const recurate =
         old.source !== 'curated' ||
         old.do !== row.content ||
-        evidence.length !== old.evidence.length
-      ) {
-        const next: Lesson = {
-          ...old,
-          evidence,
-          do: row.content,
-          source: 'curated',
-          curated_at: at,
-          status: 'trial',
-          status_at: undefined,
-          helpful: 0,
-          harmful: 0,
-          votes: 0,
-          exposures: 0,
-          last_exposed_at: undefined,
-          exposure_outcomes: 0,
-          exposure_passes: 0,
-        };
+        evidence.length !== old.evidence.length;
+      if (recurate || JSON.stringify(applicability) !== JSON.stringify(old.applicability)) {
+        const next: Lesson = { ...old, applicability };
+        if (recurate)
+          Object.assign(next, {
+            evidence,
+            do: row.content,
+            source: 'curated',
+            curated_at: at,
+            status: 'trial',
+            status_at: undefined,
+            helpful: 0,
+            harmful: 0,
+            votes: 0,
+            exposures: 0,
+            last_exposed_at: undefined,
+            exposure_outcomes: 0,
+            exposure_passes: 0,
+          } satisfies Partial<Lesson>);
         all.set(next.id, next);
         changed.push(next);
         imported++;
@@ -1009,7 +1072,7 @@ export function lessonSources({ entries }: ReturnType<typeof memoryState>) {
     (['local', 'remote', 'curated'] as const).map(source => {
       const history = lessons.filter(l => l.source === source && curated(l)),
         rows = [...new Map(history.map(l => [l.id, l])).values()];
-      const controls = outcomes.filter(p => rows.some(l => matches(l, p.project, p.tag)));
+      const controls = outcomes.filter(p => rows.some(l => matchesControl(l, p)));
       const observed = rows.reduce((sum, l) => sum + (l.exposure_outcomes ?? 0), 0),
         passed = rows.reduce((sum, l) => sum + (l.exposure_passes ?? 0), 0),
         promoted = new Set(history.filter(l => l.status === 'stable').map(l => l.id)),
@@ -1077,30 +1140,47 @@ export function injectMemory(plan: Plan, dir: string, run: string): Record<strin
   }
   for (const p of plan.packages) {
     const selection = selections[p.id] ?? { status: 'disabled', data_only: true, entries: [] };
-    const candidates = project ? pool.filter(l => matches(l, project, taskTag(p.scope.write))) : [];
+    // Count matching terms, as stable learning recall does, using task text as the vocabulary.
+    const terms = lessonTerms([p.title, p.goal, ...p.scope.write].join('\n'));
+    const tag = taskTag(p.scope.write);
+    const candidates = project
+      ? pool
+          .filter(l => matches(l, project, tag))
+          .map(l => ({
+            l,
+            score: [...lessonTerms(l.when + '\n' + l.do)].filter(term => terms.has(term)).length,
+          }))
+          .filter(({ score }) => score >= LESSON_POLICY.minOverlap)
+          .sort((a, b) => b.score - a.score || byUpper(a.l, b.l))
+      : [];
     if (!candidates.length) {
       selections[p.id] = selection;
       continue;
     }
-    const control = lessonControl(run),
-      entries: LearningEntry[] = [];
-    if (!control)
-      for (const l of candidates) {
-        const entry: LearningEntry = {
-          id: l.id,
-          scope: `${l.tier}:${l.scope}`,
-          domain: 'engineering',
-          claim: l.do,
-          applies_when: l.when,
-          not_when: l.dont,
-          evidence: l.evidence,
-          source: 'reflection',
-          status: l.status === 'stable' ? 'active' : 'trial',
-        };
-        if (Buffer.byteLength(JSON.stringify([...entries, entry])) <= LESSON_POLICY.packBytes)
-          entries.push(entry);
-        if (entries.length === LESSON_POLICY.perPack) break;
-      }
+    const control = lessonControl(run);
+    const relevant: LearningEntry[] = [];
+    for (const { l } of candidates) {
+      const entry: LearningEntry = {
+        id: l.id,
+        scope:
+          l.applicability === 'all'
+            ? 'all'
+            : l.applicability
+              ? `type:${l.applicability.join(',')}`
+              : `${l.tier}:${l.scope}`,
+        domain: 'engineering',
+        claim: l.do,
+        applies_when: l.when,
+        not_when: l.dont,
+        evidence: l.evidence,
+        source: 'reflection',
+        status: l.status === 'stable' ? 'active' : 'trial',
+      };
+      if (Buffer.byteLength(JSON.stringify([...relevant, entry])) <= LESSON_POLICY.packBytes)
+        relevant.push(entry);
+      if (relevant.length === LESSON_POLICY.perPack) break;
+    }
+    const entries = control ? [] : relevant;
     for (const entry of selection.entries)
       if (
         entries.length < LESSON_POLICY.perPack &&
@@ -1112,6 +1192,7 @@ export function injectMemory(plan: Plan, dir: string, run: string): Record<strin
       ...(entries.length ? { status: 'available' } : {}),
       entries,
       lesson_control: control,
+      ...(control ? { lesson_control_ids: relevant.map(l => l.id) } : {}),
     };
   }
   const ids = Object.fromEntries(
@@ -1159,7 +1240,7 @@ export function maintainLessons(
         }
       }
       if (active(l) && (l.exposure_outcomes ?? 0) >= LESSON_POLICY.min) {
-        const controls = outcomes.filter(p => p.control && matches(l, p.project, p.tag));
+        const controls = outcomes.filter(p => p.control && matchesControl(l, p));
         const baseline = controls.length >= LESSON_POLICY.min ? rate(controls) : global;
         const [lower, upper] = lessonInterval(l);
         if (upper < baseline) l.status = 'retired';
@@ -1629,7 +1710,7 @@ export function memoryTick(
           emit(e);
         }
         if (['completed', 'failed', 'cancelled'].includes(raw.status)) {
-          if (!dryRun && !e.fake && !privateProject(plan.repo)) {
+          if (!dryRun && lessonTrialEligible(e.project, e.fake)) {
             const art = artifactsOf(raw);
             maintainLessons(
               {
@@ -1642,11 +1723,11 @@ export function memoryTick(
                   );
                   if (!executed) return [];
                   const pack = confined(l, join(art, 'contexts', `${node}.md`));
-                  const proof = memoryJson<{
-                    ids: string[];
-                    control?: boolean;
-                    sha: string;
-                  } | null>(join(art, 'contexts', `${node}.lessons.json`), null, l);
+                  const proof = memoryJson<(LessonExposure & { sha: string }) | null>(
+                    join(art, 'contexts', `${node}.lessons.json`),
+                    null,
+                    l
+                  );
                   const rendered =
                     proof &&
                     pack &&
@@ -1677,6 +1758,9 @@ export function memoryTick(
                       exposed_at: executed.startedAt,
                       ids: rendered ? proof.ids : [],
                       control: !!(rendered && proof.control),
+                      ...(rendered && proof.eligible_ids
+                        ? { eligible_ids: proof.eligible_ids }
+                        : {}),
                     },
                   ];
                 }),
