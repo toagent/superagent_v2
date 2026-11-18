@@ -1790,16 +1790,7 @@ export function generate(
         renderBrief(p, join(dir, 'hints', `${p.id}.md`), capsOf(plan, p), tiers.policy.test_budget)
     );
   }
-  const lessons = injectMemory(
-    plan,
-    dir,
-    definition.nodes as {
-      id: string;
-      command?: unknown;
-      model?: unknown;
-      with?: Record<string, unknown>;
-    }[]
-  );
+  const lessons = injectMemory(plan, dir, run);
   writeFileSync(
     join(dir, 'engine.json'),
     JSON.stringify({

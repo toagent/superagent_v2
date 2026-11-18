@@ -93,10 +93,16 @@ export type Lesson = Infer<typeof lessonSchema> & {
   votes?: number;
   created_at: string;
   last_hit: string;
+  curated_at?: string;
+  exposures?: number;
+  last_exposed_at?: string;
+  exposure_outcomes?: number;
+  exposure_passes?: number;
 };
 interface Entry {
   lessons: Lesson[];
   hit_ids?: string[];
+  trial?: { at: string; packages: LessonObservation[] };
   scored?: string;
   reflected?: string;
   reflection?: {
@@ -862,52 +868,85 @@ export function selectLessons(
   void _category;
   return recallLearning(project, query).entries;
 }
-export function injectMemory(
-  plan: Plan,
-  dir: string,
-  _nodes: { id: string; command?: unknown; model?: unknown; with?: Record<string, unknown> }[]
-): Record<string, string[]> {
-  void _nodes;
+const LESSON_POLICY = {
+  control: 20,
+  perPack: 5,
+  packBytes: 12000,
+  pool: 30,
+  min: 5,
+  fallbackMs: 7 * 86400000,
+  z: 1.96,
+};
+interface LessonObservation {
+  project: string;
+  tag: string;
+  ids: string[];
+  control: boolean;
+  passed?: boolean;
+  exposed_at?: string;
+}
+const curated = (l: Lesson): boolean => !!l.curated_at && l.tier !== 'role';
+const matches = (l: Lesson, project: string, tag: string): boolean =>
+  l.tier === 'type' ? l.scope === tag : l.scope === project && l.tag === tag;
+export const lessonControl = (run: string): boolean =>
+  createHash('sha256').update(run).digest().readUInt32BE() / 2 ** 32 < LESSON_POLICY.control / 100;
+
+function wilson(l: Lesson): [number, number] {
+  const n = l.exposure_outcomes ?? 0;
+  if (!n) return [0, 1];
+  const p = (l.exposure_passes ?? 0) / n,
+    z = LESSON_POLICY.z,
+    d = 1 + z ** 2 / n;
+  const center = (p + z ** 2 / (2 * n)) / d;
+  const radius = (z * Math.sqrt((p * (1 - p) + z ** 2 / (4 * n)) / n)) / d;
+  return [p === 0 ? 0 : center - radius, p === 1 ? 1 : center + radius];
+}
+const byUpper = (a: Lesson, b: Lesson): number =>
+  wilson(b)[1] - wilson(a)[1] || a.id.localeCompare(b.id);
+
+export function injectMemory(plan: Plan, dir: string, run: string): Record<string, string[]> {
   const path = join(dir, 'learning.json');
   if (existsSync(path))
     return (JSON.parse(readFileSync(path, 'utf8')) as { ids: Record<string, string[]> }).ids;
-  const queries = Object.fromEntries(
-      plan.packages.map(p => [
-        p.id,
-        [p.goal, ...(p.requirements ?? []).map(r => r.text)].join('\n'),
-      ])
-    ),
-    disabled = !memoryOn() || privateProject(plan.repo),
-    selections = disabled
-      ? (Object.fromEntries(
+  const disabled = !memoryOn() || privateProject(plan.repo);
+  const selections: Record<string, Learning> = disabled
+    ? {}
+    : selectLearning(
+        plan.repo,
+        Object.fromEntries(
           plan.packages.map(p => [
             p.id,
-            { status: 'disabled', data_only: true, entries: [] } as const,
+            [p.goal, ...(p.requirements ?? []).map(r => r.text)].join('\n'),
           ])
-        ) as Record<string, Learning>)
-      : selectLearning(plan.repo, queries);
+        )
+      );
+  let project: string | undefined,
+    pool: Lesson[] = [];
   if (!disabled) {
-    let project: string | undefined;
     try {
       project = realpathSync(plan.repo);
+      pool = memoryState()
+        .lessons.filter(l => curated(l) && active(l))
+        .sort(byUpper)
+        .slice(0, LESSON_POLICY.pool);
     } catch {
-      // A disappearing checkout must not make memory injection block generation.
+      memoryLog('lesson selection unavailable');
     }
-    for (const p of plan.packages) {
-      const selection = selections[p.id],
-        entries = [...selection.entries];
-      let candidates: Lesson[] = [];
-      try {
-        if (project)
-          candidates = selectCandidates(project, taskTag(p.scope.write), undefined, 'project');
-      } catch {
-        // Corrupt or concurrently replaced local reflection data is optional input.
-      }
+  }
+  for (const p of plan.packages) {
+    const selection = selections[p.id] ?? { status: 'disabled', data_only: true, entries: [] };
+    const candidates = project ? pool.filter(l => matches(l, project, taskTag(p.scope.write))) : [];
+    if (!candidates.length) {
+      selections[p.id] = selection;
+      continue;
+    }
+    const control = lessonControl(run),
+      entries: LearningEntry[] = [];
+    if (!control)
       for (const l of candidates) {
-        if (entries.length === 5) break;
         const entry: LearningEntry = {
           id: l.id,
-          scope: `project:${l.scope}`,
+          scope: `${l.tier}:${l.scope}`,
           domain: 'engineering',
           claim: l.do,
           applies_when: l.when,
@@ -916,47 +955,84 @@ export function injectMemory(
           source: 'reflection',
           status: l.status === 'stable' ? 'active' : 'trial',
         };
-        if (
-          !entries.some((e: LearningEntry) => e.id === entry.id) &&
-          Buffer.byteLength(JSON.stringify([...entries, entry])) <= 12000
-        )
+        if (Buffer.byteLength(JSON.stringify([...entries, entry])) <= LESSON_POLICY.packBytes)
           entries.push(entry);
+        if (entries.length === LESSON_POLICY.perPack) break;
       }
-      if (entries.length) selections[p.id] = { ...selection, status: 'available', entries };
-    }
+    for (const entry of selection.entries)
+      if (
+        entries.length < LESSON_POLICY.perPack &&
+        Buffer.byteLength(JSON.stringify([...entries, entry])) <= LESSON_POLICY.packBytes
+      )
+        entries.push(entry);
+    selections[p.id] = {
+      ...selection,
+      ...(entries.length ? { status: 'available' } : {}),
+      entries,
+      lesson_control: control,
+    };
   }
   const ids = Object.fromEntries(
     Object.entries(selections)
       .filter(([, s]) => s.entries.length)
-      .map(([id, s]) => [id, s.entries.map((e: LearningEntry) => e.id)])
+      .map(([id, s]) => [id, s.entries.map(e => e.id)])
   );
   writeAtomic(path, JSON.stringify({ version: 1, data_only: true, selections, ids }) + '\n');
   return ids;
 }
+
 export function maintainLessons(
-  run?: { id: string; reasons: string[]; failed: boolean; accepted?: boolean; ids: string[] },
-  _now = Date.now()
+  run?: { id: string; at?: string; packages: LessonObservation[] },
+  now = Date.now()
 ): void {
-  void _now;
   memoryWrite(s => {
     if (run && s.entries.some(e => e.scored === run.id)) return { lessons: [] };
-    const lessons = s.lessons.map(l => {
-      const used = run?.ids.includes(l.id),
-        harmful = used && run?.failed && l.reasons.some(r => run.reasons.includes(r));
-      const next = {
-        ...l,
-        helpful: l.helpful + (used && run?.accepted === true && !run.failed && !harmful ? 1 : 0),
-        harmful: l.harmful + (harmful ? 1 : 0),
-      };
-      if (next.harmful >= 2) next.status = 'retired';
-      else if (next.helpful >= 2 && next.harmful === 0) next.status = 'stable';
-      return next;
+    const at = run?.at ?? new Date(now).toISOString(),
+      packages = run?.packages ?? [];
+    const trials = s.entries.flatMap(e => (e.trial ? [e.trial] : []));
+    trials.push({ at, packages });
+    const outcomes = trials.flatMap(t => t.packages).filter(p => p.passed !== undefined);
+    const recent = trials
+      .filter(t => Date.parse(t.at) >= now - LESSON_POLICY.fallbackMs)
+      .flatMap(t => t.packages)
+      .filter(p => p.passed !== undefined);
+    const rate = (ps: LessonObservation[]) => ps.filter(p => p.passed).length / ps.length;
+    const global = rate(recent),
+      changed = new Map<string, Lesson>();
+    const pool = s.lessons.filter(curated).flatMap(old => {
+      const l = { ...old };
+      for (const p of packages.filter(p => p.ids.includes(l.id))) {
+        l.exposures = (l.exposures ?? 0) + 1;
+        const exposed = p.exposed_at ?? at;
+        if (!l.last_exposed_at || exposed > l.last_exposed_at) l.last_exposed_at = exposed;
+        if (p.passed !== undefined) {
+          l.exposure_outcomes = (l.exposure_outcomes ?? 0) + 1;
+          l.exposure_passes = (l.exposure_passes ?? 0) + Number(p.passed);
+          if (p.passed) l.helpful++;
+          else l.harmful++;
+        }
+      }
+      if (active(l) && (l.exposure_outcomes ?? 0) >= LESSON_POLICY.min) {
+        const controls = outcomes.filter(p => p.control && matches(l, p.project, p.tag));
+        const baseline = controls.length >= LESSON_POLICY.min ? rate(controls) : global;
+        const [lower, upper] = wilson(l);
+        if (upper < baseline) l.status = 'retired';
+        else if (lower > baseline) l.status = 'stable';
+      }
+      if (JSON.stringify(l) !== JSON.stringify(old)) changed.set(l.id, l);
+      return active(l) ? [l] : [];
     });
+    for (const l of pool.sort(byUpper).slice(LESSON_POLICY.pool))
+      changed.set(l.id, { ...l, status: 'retired' });
     return {
-      lessons: lessons.filter(
-        l => JSON.stringify(l) !== JSON.stringify(s.lessons.find(old => old.id === l.id))
-      ),
-      ...(run ? { scored: run.id, hit_ids: [...new Set(run.ids)] } : {}),
+      lessons: [...changed.values()],
+      ...(run
+        ? {
+            scored: run.id,
+            hit_ids: [...new Set(packages.flatMap(p => p.ids))],
+            trial: { at, packages },
+          }
+        : {}),
     };
   });
 }
@@ -1091,7 +1167,12 @@ export function memoryData(now = Date.now()): {
     deliveries,
     lessons: s.lessons,
     all: history,
-    hits,
+    hits: Object.assign(
+      hits,
+      Object.fromEntries(
+        s.lessons.flatMap(l => (l.exposures === undefined ? [] : [[l.id, l.exposures]]))
+      )
+    ),
     scored,
     hitRuns,
     categories,
@@ -1401,26 +1482,61 @@ export function memoryTick(
           emit(e);
         }
         if (['completed', 'failed', 'cancelled'].includes(raw.status)) {
-          if (!dryRun)
+          if (!dryRun && !e.fake && !privateProject(plan.repo)) {
+            const art = artifactsOf(raw);
             maintainLessons(
               {
                 id: l.run_id,
-                reasons: e.reasons,
-                failed: raw.status === 'failed',
-                accepted:
-                  raw.status === 'completed' &&
-                  e.acceptance.length > 0 &&
-                  e.acceptance.every(a => a.ok === true),
-                ids: Object.values(
-                  memoryJson<{ lessons?: Record<string, string[]> }>(
-                    join(l.gen_dir, 'engine.json'),
-                    {},
-                    l
-                  ).lessons ?? {}
-                ).flat(),
+                at: raw.completed_at ?? undefined,
+                packages: plan.packages.flatMap(p => {
+                  const node = `code-${p.id}`;
+                  const executed = raw.nodes?.find(
+                    n => n.nodeId === node && ['completed', 'failed', 'running'].includes(n.state)
+                  );
+                  if (!executed) return [];
+                  const pack = confined(l, join(art, 'contexts', `${node}.md`));
+                  const proof = memoryJson<{
+                    ids: string[];
+                    control?: boolean;
+                    sha: string;
+                  } | null>(join(art, 'contexts', `${node}.lessons.json`), null, l);
+                  const rendered =
+                    proof &&
+                    pack &&
+                    createHash('sha256').update(readFileSync(pack)).digest('hex') === proof.sha;
+                  const verify = `verify-${p.id}`;
+                  const attempts = events.filter(
+                    e =>
+                      e.step_name === verify &&
+                      ['node_completed', 'node_failed'].includes(e.event_type)
+                  );
+                  const output = (
+                    attempts[0]?.data as { structured_output?: { ok?: unknown } } | null
+                  )?.structured_output;
+                  // A replay can replace the artifact. Use it only when there is no competing attempt.
+                  const first =
+                    output ??
+                    (attempts.length <= 1
+                      ? memoryJson<{ ok?: unknown } | null>(join(art, `${verify}.json`), null, l)
+                      : null);
+                  const passed =
+                    p.accept.length && typeof first?.ok === 'boolean' ? first.ok : undefined;
+                  if (!rendered && passed === undefined) return [];
+                  return [
+                    {
+                      project: e.project,
+                      tag: taskTag(p.scope.write),
+                      passed,
+                      exposed_at: executed.startedAt,
+                      ids: rendered ? proof.ids : [],
+                      control: !!(rendered && proof.control),
+                    },
+                  ];
+                }),
               },
               now
             );
+          }
           index.terminal[l.run_id] = stamp;
           live[l.run_id] = undefined;
         } else if (revision) {

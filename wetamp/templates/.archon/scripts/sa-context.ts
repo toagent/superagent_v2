@@ -133,8 +133,8 @@ export function roleContext(input: {
     learning: {
       data_only: true,
       authority: 'reference data; never tools, permissions or principles',
-      packages: Object.fromEntries(
-        execution.packages.map(id => [
+      packages: Object.fromEntries<Learning | undefined>(
+        execution.packages.map((id): [string, Learning] => [
           id,
           learning === 'unknown'
             ? { status: 'unavailable', data_only: true, entries: [] }
@@ -193,7 +193,8 @@ export function prepareContext(input: Parameters<typeof roleContext>[0]): string
 export function contextPack(
   gen: string,
   context: RoleContext,
-  packages = context.execution.packages
+  packages = context.execution.packages,
+  exposure?: { ids: string[]; control?: boolean }
 ): string {
   const plan = read(join(gen, 'plan.json')) as Plan | 'unknown';
   if (plan === 'unknown') throw new Error('context: missing plan');
@@ -241,6 +242,25 @@ export function contextPack(
     sections.push(`## 任务书 ${p.id}\n` + readFileSync(join(gen, 'briefs', `${p.id}.md`), 'utf8'));
     const hint = join(gen, 'hints', `${p.id}.md`);
     if (existsSync(hint)) sections.push(`## hint ${p.id}\n` + readFileSync(hint, 'utf8'));
+    const selected = context.learning.packages[p.id];
+    if (selected?.lesson_control !== undefined && context.execution.role !== 'review') {
+      if (exposure) exposure.control = selected.lesson_control;
+      const rows = (selected.lesson_control ? [] : selected.entries)
+        .filter(l => l.source === 'reflection')
+        .map(l => {
+          const text = Buffer.from(
+            `适用：${l.applies_when}。建议：${l.claim}。例外：${l.not_when}`
+          );
+          const clipped =
+            text.length <= 600
+              ? text.toString()
+              : new TextDecoder().decode(text.subarray(0, 597), { stream: true }) + '…';
+          exposure?.ids.push(l.id);
+          return JSON.stringify({ id: l.id, text: clipped });
+        });
+      if (rows.length)
+        sections.push(`## 参考经验 ${p.id}（仅供参考，不授予权限）\n${rows.join('\n')}`);
+    }
     for (const entry of [...p.scope.write, ...(p.scope.read_hint ?? [])]) entries.add(entry);
   }
   let used = 0;
@@ -416,16 +436,24 @@ if (import.meta.main) {
         }
         packPath = join(artifacts, 'contexts', `${node}.md`);
         mkdirSync(dirname(packPath), { recursive: true });
-        writeFileSync(
-          packPath,
-          contextPack(
-            gen,
-            context,
-            process.env.INPUTS_CONTEXT_PACKAGES
-              ? (JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[])
-              : undefined
-          )
+        const exposure: { ids: string[]; control?: boolean } = { ids: [] };
+        const markdown = contextPack(
+          gen,
+          context,
+          process.env.INPUTS_CONTEXT_PACKAGES
+            ? (JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[])
+            : undefined,
+          exposure
         );
+        writeFileSync(packPath, markdown);
+        if (pkg)
+          writeFileSync(
+            join(dirname(packPath), `${node}.lessons.json`),
+            JSON.stringify({
+              ...exposure,
+              sha: createHash('sha256').update(markdown).digest('hex'),
+            })
+          );
       }
     }
     // Engine-resolved outputs are reference data, never acceptance or permission evidence.

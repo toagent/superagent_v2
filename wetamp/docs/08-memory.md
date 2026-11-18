@@ -23,7 +23,7 @@ audit count 不一致时拒绝，现有 publication 保持不变。
 超过上限时明确 unavailable，不截断后猜语义。
 
 controller 校验 schema、checksum、fingerprint、新鲜度、scope、shareable 与 expiry。每包选择
-数量和字节数有界，结果冻结到 `gen/learning.json`，`engine.json.lessons` 保存 ID 映射。
+每包最多 5 条、12,000 字节，选择结果冻结到 `gen/learning.json`。
 编码、修复与评审 manifest 消费同一选择。经验是 data-only：适用条件、排除条件、期限和证据
 不能授予工具、权限或原则。publication 后续变化不重写在途 run。
 
@@ -46,7 +46,12 @@ project scope 和已有 claim；不能替换证据中的作者、模型或事实
 
 保留 `memory-reflect` workflow 及其回执。有效操作写入候选。空输出或无有效操作只记
 `rejected`，反思失败终态记 `degraded`。回执仍记录 episode 和用量。
-经验评分继续更新候选状态。引擎事故继续写 mechanize 记录，历史 `lesson_*` 草稿保留。
+带 `curated_at` 的项目及任务类型经验按 Wilson 95% 区间上界排序。匹配同一 run 的包
+用 run ID 哈希统一分配 20% 对照。将军 Markdown 每条经验正文最多 600 字节。
+终态采集按包核对已执行编码节点的 Markdown 与曝光回执，采用 `verify` 的首次验收结果。
+满 5 个已知结果后，用同 scope 对照组通过率裁决。对照不足 5 个样本时，使用近 7 天全局
+首次通过率。区间完全高于基线晋升，完全低于基线退役。可注入池上限 30 条。
+历史未标记经验保留原状态。引擎事故继续写 mechanize 记录，历史 `lesson_*` 草稿保留。
 
 ## 完整性与恢复
 

@@ -136,17 +136,18 @@ v['checksum']=m.digest(v); print(json.dumps(v))`,
           helpful: 5 - i,
           harmful: 0,
           created_at: new Date().toISOString(),
+          curated_at: new Date().toISOString(),
           last_hit: new Date().toISOString(),
         })),
       }));
       writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
       const table = executionTable(plan, loadTiers());
       writeFileSync(join(gen, 'execution.json'), JSON.stringify(table));
-      expect(injectMemory(plan, gen, [])).toEqual(
+      expect(injectMemory(plan, gen, 'next')).toEqual(
         Object.fromEntries(
           plan.packages.map(p => [
             p.id,
-            ['qualified', ...Array.from({ length: 4 }, (_, i) => `reflection-${String(i + 1)}`)],
+            [...Array.from({ length: 4 }, (_, i) => `reflection-${String(i + 1)}`), 'qualified'],
           ])
         )
       );
@@ -176,14 +177,14 @@ v['checksum']=m.digest(v); print(json.dumps(v))`,
       }
       writeFileSync(publication, old.replace('Preserve complete', 'Tampered complete'));
       expect(recallLearning(root, 'contract').status).toBe('unavailable');
-      injectMemory(plan, gen, []);
+      injectMemory(plan, gen, 'next');
       expect(contexts.map(p => readFileSync(p, 'utf8'))).toEqual(bytes);
       rmSync(publication);
       const next = join(root, 'next');
       mkdirSync(next);
       writeFileSync(join(next, 'plan.json'), JSON.stringify(plan));
       writeFileSync(join(next, 'execution.json'), JSON.stringify(table));
-      expect(Object.values(injectMemory(plan, next, [])).flat()).toHaveLength(8);
+      expect(Object.values(injectMemory(plan, next, 'next')).flat()).toHaveLength(8);
       const [node] = Object.entries(table).find(([, e]) => e.role === 'code')!;
       expect(
         readFileSync(

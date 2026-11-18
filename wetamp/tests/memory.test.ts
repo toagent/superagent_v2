@@ -20,6 +20,7 @@ import {
   episodes,
   foldEpisode,
   injectMemory,
+  lessonControl,
   lintPlan,
   maintainLessons,
   memoryData,
@@ -42,6 +43,7 @@ import {
 import { curate, reconcileReflection, reflectOne, reflectionInput } from '../src/memory-reflect';
 import { artifactsOf, EXIT_USAGE, main, type Ledger } from '../src/cli';
 import { type RunView } from '../src/archon';
+import { contextPack, roleContext } from '../templates/.archon/scripts/sa-context';
 import { engineHash, generate } from '../src/generate';
 import { install, loadTiers, snapshotPolicy } from '../src/config';
 import { type Plan } from '../src/plan';
@@ -661,37 +663,41 @@ describe('EV1 incident replay', () => {
     const learned = memoryState().lessons[0];
     expect(learned.scope).toBe(root);
     expect(learned.status).toBe('trial');
+    const curated_at = new Date(NOW).toISOString();
     seed(
-      lesson('stable', { status: 'stable', helpful: 2 }),
-      lesson('engine', { category: 'engine', helpful: 9 }),
-      lesson('retired', { status: 'retired', helpful: 9 }),
-      lesson('foreign', { scope: join(root, 'other'), helpful: 9 })
+      lesson('stable', { status: 'stable', curated_at }),
+      lesson('type', {
+        tier: 'type',
+        scope: 'ts-cli',
+        category: 'plan',
+        curated_at,
+        do: '边界'.repeat(120),
+      }),
+      lesson('retired', { status: 'retired', curated_at }),
+      lesson('foreign', { scope: join(root, 'other'), curated_at })
     );
     const generated = generate(plan, 'next', true);
+    const context = roleContext({
+      gen: generated.dir,
+      artifacts: generated.dir,
+      node: 'code-core',
+      cwd: root,
+      base: 'base',
+      head: 'head',
+      environment: 'fixture',
+    });
+    const markdown = contextPack(generated.dir, context);
+    expect(markdown).toContain('stable');
+    expect(markdown).toContain('free');
+    const row = markdown.split('\n').find(line => line.startsWith('{"id":"type"'))!;
+    const text = JSON.parse(row).text;
+    expect(text).toContain('边界');
+    expect(text).toEndWith('…');
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(600);
+    expect(markdown).not.toContain(learned.id);
     expect(readFileSync(join(generated.dir, 'briefs/core.md'), 'utf8')).not.toContain(
       '选取空闲端口'
     );
-    const metadata = JSON.parse(readFileSync(join(generated.dir, 'engine.json'), 'utf8'));
-    expect(metadata.lessons.core).toEqual(['stable', learned.id]);
-    const entries = JSON.parse(readFileSync(join(generated.dir, 'learning.json'), 'utf8'))
-      .selections.core.entries;
-    expect(entries[0]).toMatchObject({ id: 'stable', source: 'reflection', status: 'active' });
-    const other = generate({ ...plan, repo: join(root, 'other') }, 'other', true);
-    expect(readFileSync(join(other.dir, 'briefs/core.md'), 'utf8')).not.toContain('选取空闲端口');
-    maintainLessons(
-      { id: 'next', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] },
-      NOW
-    );
-    maintainLessons(
-      { id: 'next', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] },
-      NOW
-    );
-    expect(memoryState().lessons[0].harmful).toBe(1);
-    maintainLessons(
-      { id: 'third', reasons: ['acceptance_failed'], failed: true, ids: [learned.id] },
-      NOW
-    );
-    expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' });
     expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(false);
     expect(selectLessons(root, 'ts-cli')).toHaveLength(0);
   });
@@ -831,7 +837,10 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(reflectionQueue(all, memoryState().entries, NOW).map(e => e.id)).toEqual(['b', 'x']);
   });
   test('reflection lessons enter data context without mutating briefs, commands or nodes', () => {
-    seed(lesson('trial'), lesson('stable', { status: 'stable', helpful: 100 }));
+    seed(
+      lesson('trial'),
+      lesson('stable', { status: 'stable', curated_at: new Date(NOW).toISOString() })
+    );
     const dir = join(root, 'unqualified');
     mkdirSync(join(dir, 'briefs'), { recursive: true });
     writeFileSync(join(dir, 'briefs/core.md'), 'original brief');
@@ -840,7 +849,7 @@ describe('EV1 budgets and deterministic matching', () => {
     ];
     const frozen = JSON.stringify(nodes);
     const before = readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8');
-    expect(injectMemory(plan, dir, nodes)).toEqual({ core: ['stable', 'trial'] });
+    expect(injectMemory(plan, dir, 'next')).toEqual({ core: ['stable'] });
     expect(selectLessons(root, 'ts-cli')).toEqual([]);
     expect(readFileSync(join(dir, 'briefs/core.md'), 'utf8')).toBe('original brief');
     expect(JSON.stringify(nodes)).toBe(frozen);
@@ -971,29 +980,59 @@ describe('EV1 lifecycle, privacy and priors', () => {
     ).toEqual(acceptanceFailure);
     expect(taskTag(['docs/a.md', 'src/b.ts', 'a.vue', 'c.ts'])).toBe('docs+ts-cli');
   });
-  test('feedback promotes helpful trials and retires harmful trials', () => {
+  test('Wilson feedback uses scoped controls, deduplicates replay and protects uncurated history', () => {
+    const curated_at = new Date(NOW).toISOString();
     seed(
-      lesson('winner'),
-      lesson('old', { last_hit: new Date(NOW - 31 * 86400000).toISOString() })
+      lesson('win', { curated_at }),
+      lesson('lose', { curated_at }),
+      lesson('middle', { curated_at }),
+      lesson('legacy', { harmful: 12 }),
+      lesson('fallback', { curated_at, scope: join(root, 'other') })
     );
-    for (const id of ['win1', 'win2'])
-      maintainLessons({ id, reasons: [], failed: false, accepted: true, ids: ['winner'] }, NOW);
-    expect(memoryState().lessons.find(l => l.id === 'winner')).toMatchObject({
-      helpful: 2,
-      status: 'stable',
-    });
-    for (const [id, failed] of [
-      ['cancelled', false],
-      ['unaccepted', false],
-      ['failed', true],
-    ] as const)
-      maintainLessons({ id, reasons: [], failed, ids: ['winner'] }, NOW);
-    expect(memoryState().lessons.find(l => l.id === 'winner')?.helpful).toBe(2);
-    expect(memoryState().lessons.find(l => l.id === 'old')?.status).toBe('trial');
-    seed(lesson('legacy', { status: 'stable' }));
+    const sample = (id: string, ids: string[], passed: boolean, control = false, project = root) =>
+      maintainLessons({ id, packages: [{ project, tag: 'ts-cli', ids, passed, control }] }, NOW);
+    for (let i = 0; i < 6; i++) {
+      sample('control-' + i, [], i < 3, true);
+      sample('global-' + i, [], true, false, join(root, 'other'));
+      sample('win-' + i, ['win', 'legacy'], true);
+      sample('lose-' + i, ['lose'], false);
+      sample('middle-' + i, ['middle'], i < 3);
+      sample('global-miss-' + i, [], false, false, join(root, 'other'));
+    }
+    sample('win-5', ['win'], true);
+    expect(memoryState().lessons.map(l => [l.id, l.status, l.exposures])).toEqual([
+      ['win', 'stable', 6],
+      ['lose', 'retired', 6],
+      ['middle', 'trial', 6],
+      ['legacy', 'trial', undefined],
+      ['fallback', 'trial', undefined],
+    ]);
+    expect(memoryState().lessons[0].last_exposed_at).toBe(curated_at);
+    for (let i = 0; i < 6; i++)
+      sample('fallback-' + i, ['fallback'], true, false, join(root, 'other'));
+    expect(memoryState().lessons.at(-1)?.status).toBe('stable');
+  });
+  test('lesson holdout is stable by run and near twenty percent', () => {
+    const runs = Array.from({ length: 1000 }, (_, i) => `lesson-trial-${i}`);
+    const assignments = runs.map(lessonControl);
+    expect(runs.map(lessonControl)).toEqual(assignments);
+    expect(assignments.filter(Boolean).length).toBeWithin(170, 231);
+    seed(lesson('candidate', { curated_at: new Date(NOW).toISOString() }));
+    const dir = join(root, 'control');
+    mkdirSync(dir);
+    expect(injectMemory(plan, dir, runs.find(lessonControl)!)).toEqual({});
+    expect(
+      JSON.parse(readFileSync(join(dir, 'learning.json'), 'utf8')).selections.core
+    ).toMatchObject({ lesson_control: true, entries: [] });
+  });
+  test('curated pool retires only the weakest upper bound above 30', () => {
+    const curated_at = new Date(NOW).toISOString();
+    seed(...Array.from({ length: 30 }, (_, i) => lesson('fresh-' + i, { curated_at })));
+    seed(lesson('weak', { curated_at, exposures: 4, exposure_passes: 0, exposure_outcomes: 4 }));
+    const before = memoryState().lessons.at(-1)!;
     maintainLessons(undefined, NOW);
-    expect(memoryState().lessons.find(l => l.id === 'legacy')?.status).toBe('stable');
-    expect(selectLessons(root, 'ts-cli')).toEqual([]);
+    expect(memoryState().lessons.filter(l => l.status === 'trial')).toHaveLength(30);
+    expect(memoryState().lessons.at(-1)).toEqual({ ...before, status: 'retired' });
   });
   test('curator rejects invalid edits, deduplicates ADD, and preserves feedback', () => {
     const e = episode(),
@@ -1180,11 +1219,26 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(readFileSync(join(sa, 'memory/lessons.jsonl'), 'utf8')).toBe(before);
   });
   test('a paused archive folds once while terminal scoring reads final evidence', () => {
-    seed(lesson('injected'));
+    const curated_at = new Date(NOW).toISOString();
+    seed(lesson('phantom', { curated_at, tag: 'python' }), lesson('rendered', { curated_at }));
+    fakeValidation();
+    ledger.gen_dir = generate(plan, 'next', true).dir;
     writeFileSync(
       join(ledger.gen_dir, 'engine.json'),
-      JSON.stringify({ lessons: { 'code-core': ['injected'] } })
+      JSON.stringify({ lessons: { core: ['phantom'] } })
     );
+    const rendered = Bun.spawnSync(
+      [
+        process.execPath,
+        '--no-env-file',
+        join(ledger.gen_dir, '.archon/scripts/sa-context.ts'),
+        join(ledger.gen_dir, 'counter'),
+        ledger.gen_dir,
+        'core',
+      ],
+      { cwd: ledger.gen_dir, env: { ...process.env, ARTIFACTS_DIR: artifactsOf(raw) } }
+    );
+    expect(rendered.exitCode).toBe(0);
     const held = {
       ...raw,
       status: 'paused',
@@ -1221,6 +1275,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
       JSON.stringify({
         ...held,
         status: 'failed',
+        nodes: [{ nodeId: 'code-core', state: 'completed', startedAt: curated_at }],
         completed_at: new Date(NOW).toISOString(),
         events: [
           {
@@ -1236,6 +1291,12 @@ describe('EV1 lifecycle, privacy and priors', () => {
     memoryTick({}, NOW + 10000, false);
     expect(readFileSync(path, 'utf8')).toBe(archive);
     expect(memoryState().lessons[0]).toMatchObject({ helpful: 0, harmful: 0 });
+    expect(memoryState().entries.flatMap(e => e.hit_ids ?? [])).toEqual(['rendered']);
+    expect(memoryState().lessons[1]).toMatchObject({
+      exposures: 1,
+      last_exposed_at: curated_at,
+      harmful: 1,
+    });
   });
   test('event CLI shape produces timeline and tick folds once, recomputes real history priors', () => {
     const model = loadTiers().tiers.general.pools.chatgpt[0],

@@ -29,6 +29,7 @@ test('read_hint maps primary checkout paths and reports missing worktree files',
     environment: 'unknown',
     environment_check: 'unknown',
     capabilities: { injected: [], unavailable: [] },
+    learning: { packages: {} },
   } as unknown as RoleContext;
   const pack = contextPack(gen, context);
   expect(pack).toContain('WORKTREE_SOURCE');

@@ -46,6 +46,7 @@ export interface Learning {
   checksum?: string;
   hash?: string;
   entries: LearningEntry[];
+  lesson_control?: boolean;
 }
 const publication = () => join(home().sa, 'memory', 'publication.json');
 function owner(args: string[]): Record<string, unknown> {
