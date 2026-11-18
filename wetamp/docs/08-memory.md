@@ -41,9 +41,12 @@ project scope 和已有 claim；不能替换证据中的作者、模型或事实
 候选自报。重试身份不明确时拒绝。propose 与 evaluate 产出的 prepared 仅表示待审；晋升仍需
 可信控制面的独立证据与评审。
 
-反思复用 `job exec` 的队列、内存准入、usage 与执行回执。状态区分 queued、running、
-produced、rejected、failed、interrupted；只有合法模型输出才记 reflected。崩溃后残留的
-queued/running 保持未完成，不猜 owner、不自动重派。未知 usage 保持 null，并保留预算预留。
+`maintenance-tick` 继续收集 episode、更新 priors 和 fold-index，并处理引擎事故 handoff。
+逐 episode 反思已从定时维护移除。`maintenance.json` 的常规任务为 memory、gc、scratch。
+
+保留 `memory-reflect` workflow 及其回执。有效操作写入候选。空输出或无有效操作只记
+`rejected`，反思失败终态记 `degraded`。回执仍记录 episode 和用量。
+经验评分继续更新候选状态。引擎事故继续写 mechanize 记录，历史 `lesson_*` 草稿保留。
 
 ## 完整性与恢复
 

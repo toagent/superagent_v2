@@ -3113,7 +3113,6 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     });
     maintenanceTick(join(s.root, 'home'), {
       memory: () => undefined,
-      reflection: () => undefined,
       gc: s.gc,
       scratch: s.scratch,
     });
@@ -3655,7 +3654,6 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
         if (heartbeat.ok) heartbeat.release();
         calls.push('memory');
       },
-      reflection: () => calls.push('reflection'),
       gc: () => {
         calls.push('gc');
         return [];
@@ -3665,8 +3663,33 @@ Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scra
         return [];
       },
     });
-    expect(calls).toEqual(['memory', 'reflection', 'gc', 'scratch']);
+    expect(calls).toEqual(['memory', 'gc', 'scratch']);
     expect(result).toMatchObject({ maintenance: { ok: true } });
+  });
+  test('maintenance collects memory without starting reflection for a completed episode', () => {
+    const s = stub([]),
+      sa = join(s.root, 'home'),
+      episodes = join(sa, 'memory/episodes');
+    process.env.SUPERAGENT_MEMORY = 'on';
+    mkdirSync(episodes, { recursive: true });
+    writeFileSync(
+      join(episodes, 'eligible.json'),
+      JSON.stringify({
+        id: 'eligible',
+        at: new Date().toISOString(),
+        status: 'completed',
+        category: 'project',
+        project: s.root,
+        tag: 'ts-cli',
+        signature: 'completed',
+        fake: false,
+      })
+    );
+    const result = maintenanceTick();
+    expect(existsSync(join(sa, 'memory/reflect-workspace'))).toBeFalse();
+    expect(existsSync(join(sa, 'memory/fold-index.json'))).toBeTrue();
+    expect(Object.keys(result).sort()).toEqual(['at', 'gc', 'maintenance', 'memory', 'scratch']);
+    expect(JSON.parse(readFileSync(join(sa, 'maintenance.json'), 'utf8'))).toEqual(result);
   });
 });
 

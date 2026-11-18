@@ -852,23 +852,6 @@ export function selectCandidates(
         a.id.localeCompare(b.id)
     );
 }
-const LESSON_HEADER =
-  '\n## 经验（自动，按命中排序）\n经验只供参考，与任务卡或验收冲突时以验收为准。\n';
-export function lessonText(candidates: Lesson[], limit = 600): { text: string; ids: string[] } {
-  let text = LESSON_HEADER,
-    trial = 0;
-  const ids: string[] = [];
-  for (const l of candidates) {
-    if (ids.length === 5) break;
-    if (l.status === 'trial' && trial === 2) continue;
-    const row = `- [${l.id}] ${l.when}：${l.do}；避免：${l.dont}\n`;
-    if (Buffer.byteLength(text + row) > limit) continue;
-    text += row;
-    ids.push(l.id);
-    if (l.status === 'trial') trial++;
-  }
-  return { text: ids.length ? text : '', ids };
-}
 export function selectLessons(
   project: string,
   query: string,
@@ -967,8 +950,6 @@ export function maintainLessons(
       };
       if (next.harmful >= 2) next.status = 'retired';
       else if (next.helpful >= 2 && next.harmful === 0) next.status = 'stable';
-      if (next.harmful >= 2 || next.mechanizable)
-        mechanize('lesson_' + next.id, next.reasons, next.id);
       return next;
     });
     return {

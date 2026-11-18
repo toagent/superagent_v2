@@ -20,7 +20,6 @@ import {
   episodes,
   foldEpisode,
   injectMemory,
-  lessonText,
   lintPlan,
   maintainLessons,
   memoryData,
@@ -649,7 +648,7 @@ describe('EV1 incident replay', () => {
             dont: 'busy',
             why: 'test',
             evidence: [e.id],
-            mechanizable: false,
+            mechanizable: true,
           },
         },
       ],
@@ -693,7 +692,7 @@ describe('EV1 incident replay', () => {
       NOW
     );
     expect(memoryState().lessons[0]).toMatchObject({ harmful: 2, status: 'retired' });
-    expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(true);
+    expect(existsSync(join(sa, 'memory/mechanize', `lesson_${learned.id}.json`))).toBe(false);
     expect(selectLessons(root, 'ts-cli')).toHaveLength(0);
   });
   test('derived roles and online owners cannot launch reflection; offline ownership recovers', () => {
@@ -744,7 +743,8 @@ describe('EV1 budgets and deterministic matching', () => {
       count: 5001,
     });
     expect(memoryState().entries.at(-1)).toMatchObject({
-      lessons: [{ evidence: [e.id], why: 'reflect error: workflow runs exit 17: raw stderr' }],
+      lessons: [],
+      result: 'reflect error: workflow runs exit 17: raw stderr',
       reflected: e.id,
       reflection: { episode: e.id, state: 'degraded', usage: null },
       tokens: 0,
@@ -783,33 +783,29 @@ describe('EV1 budgets and deterministic matching', () => {
     expect(reflectOne(NOW, exhausted.query)).toBe(true);
     expect(memoryState().entries.filter(e => e.reflected === failed.id)).toHaveLength(1);
     expect(memoryState().entries.at(-1)).toMatchObject({
-      lessons: [{ status: 'trial', evidence: [failed.id] }],
+      lessons: [],
+      result: 'Archon failed',
       reflection: { state: 'degraded' },
     });
   });
   test.each([
     ['invalid', { unexpected: true }],
     ['empty', { operations: [], reason: 'no evidence' }],
-  ])('invalid or empty reflection output gets an injectable fallback (%s)', (_, output) => {
-    fakeValidation();
+  ])('invalid or empty reflection output records rejection without a lesson (%s)', (_, output) => {
     const e = episode();
     saveEpisode(e);
     const harness = reflectionHarness(e, output);
     expect(reflectOne(NOW, harness.query)).toBe(true);
     harness.terminal('completed');
     expect(reflectOne(NOW, harness.query)).toBe(true);
-    const learned = memoryState().lessons[0];
-    expect(learned).toMatchObject({
-      tier: 'project',
-      scope: root,
-      tag: 'ts-cli',
-      status: 'trial',
-      evidence: [e.id],
+    expect(memoryState().lessons).toEqual([]);
+    expect(memoryState().entries.at(-1)).toMatchObject({
+      lessons: [],
+      reflected: e.id,
+      reflection: { state: 'rejected', usage: 10 },
+      tokens: 10,
     });
-    const generated = generate(plan, `fallback-${String(_)}`, true);
-    expect(
-      JSON.parse(readFileSync(join(generated.dir, 'learning.json'), 'utf8')).selections.core.entries
-    ).toContainEqual(expect.objectContaining({ id: learned.id, source: 'reflection' }));
+    expect(reflectOne(NOW, harness.query)).toBe(false);
   });
   test('daily ceiling leaves work queued and starts it next day', () => {
     mkdirSync(join(sa, 'memory'));
@@ -833,17 +829,6 @@ describe('EV1 budgets and deterministic matching', () => {
       reflection: { episode: 'a', state: 'rejected' },
     }));
     expect(reflectionQueue(all, memoryState().entries, NOW).map(e => e.id)).toEqual(['b', 'x']);
-  });
-  test('five lessons maximum, two trials maximum, Chinese byte estimate <=600', () => {
-    const stable = Array.from({ length: 6 }, (_, i) => lesson(`s${i}`, { status: 'stable' }));
-    expect(lessonText(stable).ids).toEqual(['s0', 's1', 's2', 's3', 's4']);
-    expect(lessonText([lesson('t1'), lesson('t2'), lesson('t3')]).ids).toEqual(['t1', 't2']);
-    const long = lessonText(
-      stable.map(l => ({ ...l, when: '中'.repeat(70), do: '中'.repeat(70) }))
-    );
-    expect(Buffer.byteLength(long.text)).toBeLessThanOrEqual(600);
-    expect(long.ids.length).toBeLessThan(5);
-    expect(lessonText([lesson('giant', { do: '中'.repeat(240) })]).ids).toHaveLength(0);
   });
   test('reflection lessons enter data context without mutating briefs, commands or nodes', () => {
     seed(lesson('trial'), lesson('stable', { status: 'stable', helpful: 100 }));
@@ -1010,7 +995,7 @@ describe('EV1 lifecycle, privacy and priors', () => {
     expect(memoryState().lessons.find(l => l.id === 'legacy')?.status).toBe('stable');
     expect(selectLessons(root, 'ts-cli')).toEqual([]);
   });
-  test('curator falls back after rejected edits, deduplicates ADD, and preserves feedback', () => {
+  test('curator rejects invalid edits, deduplicates ADD, and preserves feedback', () => {
     const e = episode(),
       valid = {
         tier: 'project',
@@ -1043,14 +1028,15 @@ describe('EV1 lifecycle, privacy and priors', () => {
         e,
         { operations: [{ op: 'EDIT', id: 'existing', lesson: { ...valid, scope: '/foreign' } }] },
         NOW
-      ).lessons[0]
-    ).toMatchObject({ id: `l-reflect-${e.id}`, status: 'trial' });
+      ).lessons
+    ).toEqual([]);
     expect(
       curate(e, { operations: [{ op: 'UPVOTE', id: 'existing' }] }, NOW).lessons[0]
     ).toMatchObject({ helpful: 0, votes: 1 });
-    expect(curate(e, { operations: [], reason: '无可复用经验' }, NOW).result).toContain(
-      '确定性保底'
-    );
+    expect(curate(e, { operations: [], reason: null }, NOW)).toEqual({
+      lessons: [],
+      result: '无可复用经验',
+    });
   });
   test('reflection output schema is recursively strict and typed', () => {
     // prettier-ignore

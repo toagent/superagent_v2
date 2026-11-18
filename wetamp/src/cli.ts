@@ -59,7 +59,6 @@ import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, OUTSIDE, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
 import { lintPlan, memoryTick, privateProject } from './memory';
-import { reconcileReflection } from './memory-reflect';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
   askKey,
@@ -3670,7 +3669,6 @@ interface TickMode {
 
 interface MaintenanceTasks {
   memory: (asks: Asks) => unknown;
-  reflection: () => unknown;
   gc: () => GcAction[];
   scratch: () => ScratchAction[];
 }
@@ -3679,7 +3677,6 @@ export function maintenanceTick(
   sa = home().sa,
   tasks: MaintenanceTasks = {
     memory: memoryTick,
-    reflection: reconcileReflection,
     gc,
     scratch: scratchClean,
   }
@@ -3718,7 +3715,6 @@ export function maintenanceTick(
       /* A corrupt ask cache must not block maintenance. */
     }
     run('memory', () => tasks.memory(asks));
-    run('reflection', tasks.reflection);
     const gcStamp = join(sa, 'gc-tick');
     if (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000) {
       writeAtomic(gcStamp, String(Date.now()));

@@ -637,7 +637,6 @@ test('maintenance-tick persists a 15-minute GC throttle while scratch cleanup ru
   const runMaintenance = (): void => {
     maintenanceTick(join(f.root, 'sa'), {
       memory: () => undefined,
-      reflection: () => undefined,
       gc: () => {
         collections++;
         return [];

@@ -106,7 +106,7 @@ export function curate(
   const decoded = reflectionResultSchema().safeParse(output);
   if (!decoded.success) {
     memoryLog('丢弃反思：输出 schema 不合格');
-    return fallback(e, now, '输出 schema 不合格');
+    return { lessons: [], result: '输出 schema 不合格' };
   }
   const all = new Map(memoryState().lessons.map(l => [l.id, l])),
     changed = new Map<string, Lesson>(),
@@ -192,38 +192,11 @@ export function curate(
     changed.set(next.id, next);
   }
   for (const why of rejected) memoryLog(`丢弃经验：${why}`);
+  const reason = decoded.data.reason?.trim();
   return changed.size
     ? { lessons: [...changed.values()], result: `提炼 ${String(changed.size)} 条` }
-    : fallback(e, now, decoded.data.reason ?? rejected.at(0) ?? '无可复用经验');
+    : { lessons: [], result: reason ? redact(reason) : (rejected[0] ?? '无可复用经验') };
 }
-const fallback = (e: Episode, now: number, why: string): { lessons: Lesson[]; result: string } => {
-  const reason = e.reasons.find(r => reasonOf(r)) ?? e.signature,
-    finding = e.findings.at(0) ?? e.acceptance.find(a => a.ok === false)?.cmd,
-    at = new Date(now).toISOString(),
-    lesson: Lesson = {
-      id: `l-reflect-${e.id}`,
-      tier: 'project',
-      scope: e.project,
-      tag: e.tag,
-      category: e.category,
-      reasons: e.reasons,
-      when: `${e.tag}: ${reason}`.slice(0, 240),
-      do: redact(`遇到该原因先检查${finding ? `：${finding}` : `结构化原因 ${reason}`}`).slice(
-        0,
-        240
-      ),
-      dont: '不要在缺少证据时重复同一修复',
-      why: redact(why).slice(0, 240),
-      evidence: [e.id],
-      mechanizable: false,
-      status: 'trial',
-      helpful: 0,
-      harmful: 0,
-      created_at: at,
-      last_hit: at,
-    };
-  return { lessons: [lesson], result: '提炼 1 条（确定性保底）' };
-};
 type Query = (args: string[], cwd?: string) => Record<string, unknown>;
 interface ReflectionRun {
   id: string;
@@ -282,7 +255,7 @@ function reflectAttempt(e: Episode, now: number, query: Query): boolean {
       candidate.user_message.startsWith(prefix(e.id))
   );
   if (run && ['completed', 'failed', 'cancelled'].includes(run.status)) {
-    let decoded = { lessons: [] as Lesson[], result: '' },
+    let decoded = { lessons: [] as Lesson[], result: `Archon ${run.status}` },
       usage: number | null = null;
     if (run.status === 'completed') {
       const detail = query(['workflow', 'get', run.id, '--verbose', '--events'], dir);
@@ -293,7 +266,7 @@ function reflectAttempt(e: Episode, now: number, query: Query): boolean {
       if (!complete) throw new Error(`memory-reflect ${run.id}: missing reflect output`);
       decoded = curate(e, complete.data?.structured_output, now);
       usage = usageOf(events);
-    } else decoded = fallback(e, now, `Archon ${run.status}`);
+    }
     memoryWrite(() => ({
       ...decoded,
       reflected: e.id,
@@ -361,7 +334,8 @@ export function reflectOne(now = Date.now(), query: Query = archonJson): boolean
     ).length;
     if (attempts < 3) return false;
     memoryWrite(() => ({
-      ...fallback(e, now, `reflect error: ${reason}`),
+      lessons: [],
+      result: `reflect error: ${reason}`.slice(0, 240),
       reflected: e.id,
       reflection: {
         episode: e.id,
@@ -384,7 +358,7 @@ export function reconcileReflection(
   try {
     return run(now);
   } catch {
-    memoryLog('reflection reconcile skipped; next tick retries');
+    memoryLog('reflection reconcile skipped; next invocation retries');
     return false;
   }
 }
