@@ -8,6 +8,7 @@ import { deliveryProjection, publishProjection } from './land';
 import { clock, firstPassOf, ms, planOf, callsOf } from './report';
 import {
   episodeOf,
+  lessonSources,
   memoryOn,
   memoryState,
   memoryWrite,
@@ -197,6 +198,10 @@ const localDay = (at: number) => {
   const d = new Date(at);
   return new Date(at - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 };
+const sources = ['remote', 'local'] as const;
+type Source = (typeof sources)[number];
+const modelState = () => ({ called: false, status: 'interrupted', duration_ms: 0 });
+
 export function latestNightReport(sa: string): string | undefined {
   const dir = join(sa, 'evolution');
   const file =
@@ -212,7 +217,10 @@ export function evolve(
   now: number,
   samples: () => Sample[],
   force = false,
-  reflect = nightlyReflection
+  reflect: (input: string, source: Source) => ReturnType<typeof nightlyReflection> = (
+    input,
+    source
+  ) => nightlyReflection(input, undefined, source)
 ) {
   if (!force && new Date(now).getHours() < 2) return 'not-due';
   const day = localDay(now),
@@ -220,13 +228,14 @@ export function evolve(
     path = join(dir, day + '.json');
   if (existsSync(path)) return 'already-claimed';
   mkdirSync(dir, { recursive: true });
-  const model = { called: false, status: 'interrupted', duration_ms: 0 };
+  const model = modelState(),
+    models = { remote: modelState(), local: modelState() };
   const save = (payload = {}) => {
-    writeAtomic(path, JSON.stringify({ day, ...payload, model }, null, 2) + '\n');
+    writeAtomic(path, JSON.stringify({ day, ...payload, model, models }, null, 2) + '\n');
   };
   save({ claimed_at: new Date(now).toISOString() });
   const stats = analyze(samples(), now),
-    candidates: Lesson[] = [];
+    candidates: (Lesson & { source: Source })[] = [];
   const safe = stats.attribution.filter(
     a => !a.group.startsWith('repo:') || !privateProject(a.group.slice(5))
   );
@@ -240,6 +249,7 @@ export function evolve(
       : [];
   });
   model.status = 'skipped';
+  for (const source of sources) models[source].status = 'skipped';
   if (memoryOn() && safe.length) {
     const template = readFileSync(join(WETAMP, 'templates', 'memory-reflect.md'), 'utf8');
     const input = () =>
@@ -262,54 +272,86 @@ export function evolve(
         })
       );
     while (examples.length && Buffer.byteLength(input()) > 24_000) examples.pop();
-    const started = Date.now();
-    try {
-      if (Buffer.byteLength(input()) > 24_000) throw new Error('reflection input too large');
-      model.called = true;
+    const prompt = input(),
+      started = Date.now();
+    const propose = (source: Source) => {
+      const state = models[source],
+        started = Date.now();
+      state.called = true;
+      state.status = 'interrupted';
       save({ ...stats, candidates });
-      const output = capNightlyOperations(reflect(input()));
-      if (Array.isArray(output.operations))
-        memoryWrite(state => {
-          for (const op of output.operations as ({
-            op?: string;
-            lesson?: { evidence?: string[] };
-          } | null)[]) {
-            if (op?.op !== 'ADD' || !Array.isArray(op.lesson?.evidence)) continue;
-            const episode = examples.find(e => op.lesson?.evidence?.includes(e.id));
-            if (!episode) continue;
-            const candidate = curate(episode, { ...output, operations: [op] }, now).lessons.at(0);
-            if (
-              !candidate ||
-              candidate.tier === 'role' ||
-              [...state.lessons, ...candidates].some(
-                l =>
-                  l.id === candidate.id ||
-                  (l.tag === candidate.tag && l.scope === candidate.scope && l.do === candidate.do)
-              )
-            )
-              continue;
-            candidates.push({
-              ...candidate,
-              source: 'remote',
-              curated_at: new Date(now).toISOString(),
-            });
-          }
-          return { lessons: candidates };
-        });
-      model.status = candidates.length ? 'produced' : 'rejected';
-    } catch {
+      try {
+        const output = capNightlyOperations(reflect(prompt, source));
+        if (!Array.isArray(output.operations)) throw new Error('invalid reflection operations');
+        state.status = 'rejected';
+        return output.operations as ({ op?: string; lesson?: { evidence?: string[] } } | null)[];
+      } catch {
+        state.status = 'failed';
+        return [];
+      } finally {
+        state.duration_ms = Date.now() - started;
+      }
+    };
+    if (Buffer.byteLength(prompt) <= 24_000) {
+      model.called = true;
+      const pending = { remote: propose('remote'), local: propose('local') };
+      try {
+        if (pending.remote.length || pending.local.length)
+          memoryWrite(state => {
+            const order = Number(day.slice(-2)) % 2 ? [...sources].reverse() : sources;
+            const next = (source: Source) => {
+              while (pending[source].length) {
+                const op = pending[source].shift();
+                if (op?.op !== 'ADD' || !Array.isArray(op.lesson?.evidence)) continue;
+                const episode = examples.find(e => op.lesson?.evidence?.includes(e.id));
+                if (!episode) continue;
+                const candidate = curate(episode, { operations: [op] }, now).lessons.at(0);
+                if (
+                  !candidate ||
+                  candidate.tier === 'role' ||
+                  [...state.lessons, ...candidates].some(
+                    l =>
+                      l.id === candidate.id ||
+                      (l.tag === candidate.tag &&
+                        l.scope === candidate.scope &&
+                        l.do === candidate.do)
+                  )
+                )
+                  continue;
+                candidates.push({ ...candidate, source, curated_at: new Date(now).toISOString() });
+                break;
+              }
+            };
+            while (candidates.length < 3 && (pending.remote.length || pending.local.length))
+              for (const source of order) if (candidates.length < 3) next(source);
+            return { lessons: candidates };
+          });
+        for (const candidate of candidates) models[candidate.source].status = 'produced';
+        model.status = candidates.length
+          ? 'produced'
+          : sources.every(source => models[source].status === 'failed')
+            ? 'failed'
+            : 'rejected';
+      } catch {
+        model.status = 'failed';
+        candidates.length = 0;
+      }
+    } else {
       model.status = 'failed';
-      candidates.length = 0;
-    } finally {
-      model.duration_ms = Date.now() - started;
     }
+    model.duration_ms = Date.now() - started;
   }
+  const state = memoryState();
   const statusIds = (status: Lesson['status']) =>
-    memoryState()
-      .lessons.filter(
-        l => l.status === status && l.status_at && localDay(Date.parse(l.status_at)) === day
-      )
+    state.lessons
+      .filter(l => l.status === status && l.status_at && localDay(Date.parse(l.status_at)) === day)
       .map(l => l.id);
-  save({ ...stats, candidates, promoted: statusIds('stable'), retired: statusIds('retired') });
+  save({
+    ...stats,
+    candidates,
+    sources: lessonSources(state),
+    promoted: statusIds('stable'),
+    retired: statusIds('retired'),
+  });
   return path;
 }

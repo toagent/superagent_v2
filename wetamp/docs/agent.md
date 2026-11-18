@@ -176,6 +176,8 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 - `superagent models --mode auto` 查看路由模型；
 - `superagent report --since <YYYYMMDD|ISO>` 查看运行质量与效率口径；
 - 夜报在本机时间 02:00 后认领当天首轮，`superagent nightly-evolve` 可提前认领；`superagent report` 的 `latest_night_report` 指向最新文件。
+- 夜报的 `models` 记录本地与远程提炼状态，`sources` 记录各来源试验结果。本地提炼通过 Archon 的 Pi provider，需要在 Pi 的 `models.json` 注册 `splash/qwen3.8-27b`，使用 `openai-completions` 和 `http://127.0.0.1:18081/v1`。本地注册缺失时，远程提炼仍可运行。
+- `superagent memory import <file>` 接收候选数组（`id`、`merged_ids`、`content`）。实际写入前备份经验账本，合并成员保留历史并退出注入。超过 30 条可注入经验时拒绝整批。
 - `superagent debt list [--repo <path>] [--open] [--json]` 列出稳定债 ID；`superagent debt close <id>... --reason <text>` 显式关闭。计划包可用 `closes_debt: [<id>]` 在成功集成后关闭；
 - `superagent quota` 查看当前配额投影；
 - `superagent rollover start --reason "<reason>"` 创建会话换手令牌。

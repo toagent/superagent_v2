@@ -58,7 +58,7 @@ export { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './l
 import type { Land } from '../templates/.archon/scripts/sa-check';
 import { confined, OUTSIDE, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
-import { lintPlan, memoryTick, privateProject } from './memory';
+import { importLessons, lintPlan, memoryTick, privateProject } from './memory';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
   askKey,
@@ -4876,7 +4876,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'reclaim', audience: 'operator', flags: ['json'] },
   { command: 'reauthorize', audience: 'operator', positionals: '<run>', flags: [] },
   { command: 'ntfy', audience: 'operator', positionals: 'pause|resume|status', flags: [] },
-  { command: 'memory', audience: 'operator', positionals: 'propose|publish', flags: [] },
+  { command: 'memory', audience: 'operator', positionals: 'propose|publish|import <file>', flags: [] },
   { command: 'usage', audience: 'operator', flags: ['since', 'repo', 'refresh'] },
   { command: 'console', audience: 'operator', positionals: 'start|stop|status|url', flags: ['open'] },
   { command: 'gc', audience: 'operator', flags: ['dry-run'] },
@@ -5685,7 +5685,9 @@ export function main(argv: string[]): number {
     }
     case 'memory':
       if (a.flags['dry-run']) {
-        console.error('usage: superagent memory propose <run> <request-json> | memory publish');
+        console.error(
+          'usage: superagent memory propose <run> <request-json> | memory publish | memory import <file>'
+        );
         return EXIT_USAGE;
       }
       if (a._[1] === 'propose') {
@@ -5701,7 +5703,18 @@ export function main(argv: string[]): number {
         print(result);
         return result.status === 'available' ? 0 : 1;
       }
-      console.error('usage: superagent memory propose <run> <request-json> | memory publish');
+      if (a._[1] === 'import' && a._.length === 3) {
+        try {
+          print(importLessons(a._[2]));
+          return 0;
+        } catch (e) {
+          console.error(`memory import: ${(e as Error).message}`);
+          return 1;
+        }
+      }
+      console.error(
+        'usage: superagent memory propose <run> <request-json> | memory publish | memory import <file>'
+      );
       return EXIT_USAGE;
     case 'health':
       return health(a.flags.cwd, a.flags.verbose, a.flags.days);

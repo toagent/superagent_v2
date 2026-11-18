@@ -1,13 +1,20 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
 import { lock } from '../src/archon';
-import { maintenanceTick } from '../src/cli';
+import { main, maintenanceTick } from '../src/cli';
 import { analyze, evolve, type Sample } from '../src/nightly-evolve';
 import { capNightlyOperations, nightlyReflection } from '../src/memory-reflect';
-import { memoryState } from '../src/memory';
+import { maintainLessons, memoryState, memoryWrite, type Lesson } from '../src/memory';
 
 const homes: string[] = [];
 const originalHome = process.env.SUPERAGENT_HOME;
@@ -101,11 +108,15 @@ test('one Archon launch fails while the night report and other maintenance tasks
         at(18),
         () => rows,
         false,
-        input =>
-          nightlyReflection(input, args => {
-            calls.push(args.slice(0, 3).join(' '));
-            throw Error('offline');
-          })
+        (input, source) =>
+          nightlyReflection(
+            input,
+            args => {
+              calls.push(source + ':' + args.slice(0, 3).join(' '));
+              throw Error('offline');
+            },
+            source
+          )
       ),
   };
   maintenanceTick(sa, tasks);
@@ -114,13 +125,15 @@ test('one Archon launch fails while the night report and other maintenance tasks
   expect(existsSync(path)).toBe(true);
   expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
     model: { called: true, status: 'failed' },
+    models: { local: { status: 'failed' }, remote: { status: 'failed' } },
     candidates: [],
   });
   expect(calls).toEqual([
     'memory',
     'gc',
     'scratch',
-    'workflow run memory-reflect',
+    'remote:workflow run memory-reflect',
+    'local:workflow run memory-reflect',
     'memory',
     'scratch',
   ]);
@@ -139,7 +152,7 @@ test('small groups are excluded and missing receipts stay unknown', () => {
   expect(result.last_24h.tokens).toMatchObject({ value: null, denominator: 0, eligible: 1 });
 });
 
-test('the fourth operation is ignored and validated candidates enter the persisted trial pool', () => {
+test('both workflow aliases contribute distinct trial candidates, alternating up to three', () => {
   expect(capNightlyOperations({ operations: [1, 2, 3, 4], reason: null })).toEqual({
     operations: [1, 2, 3],
     reason: null,
@@ -163,28 +176,115 @@ test('the fourth operation is ignored and validated candidates enter the persist
     ...Array.from({ length: 5 }, (_, i) => sample('bad' + i, sa, 0)),
     ...Array.from({ length: 30 }, (_, i) => sample('good' + i, 'good', 1)),
   ];
+  const query = (args: string[]) => {
+    if (args[1] === 'run') {
+      const alias = JSON.parse(readFileSync(args.at(-1)!, 'utf8')).aliases['@sa-coder'];
+      if (alias.provider === 'pi') expect(alias.model).toBe('splash/qwen3.8-27b');
+      return { ok: true, runId: alias.provider === 'pi' ? 'local' : 'remote' };
+    }
+    const ids = args[2] === 'local' ? [1, 4, 5, 6] : [1, 2, 3, 4];
+    const operations = ids.map(i => add(sa, 'action ' + i));
+    const data = { structured_output: { operations } };
+    const event = { event_type: 'node_completed', step_name: 'reflect', data };
+    return { status: 'completed', events: [event] };
+  };
   evolve(
     sa,
     at(18),
     () => rows,
     false,
-    () => ({
-      operations: [1, 2, 3, 4].map(i => ({
-        op: 'ADD',
-        lesson: {
-          tier: 'project',
-          scope: sa,
-          when: 'when',
-          do: 'action ' + i,
-          dont: '',
-          why: '',
-          evidence: ['bad0'],
-          mechanizable: false,
-        },
-      })),
-    })
+    (input, source) => nightlyReflection(input, query, source, () => {})
   );
-  expect(memoryState().lessons.map(l => [l.do, l.status, l.source, Boolean(l.curated_at)])).toEqual(
-    [1, 2, 3].map(i => ['action ' + i, 'trial', 'remote', true])
-  );
+  const lessons = memoryState().lessons;
+  expect(lessons.map(l => [l.do, l.source])).toEqual([
+    ['action 1', 'remote'],
+    ['action 4', 'local'],
+    ['action 2', 'remote'],
+  ]);
+  expect(lessons.every(l => l.status === 'trial' && l.curated_at)).toBe(true);
+  const local = memoryState().lessons.find(l => l.source === 'local')!;
+  const scope = { project: sa, tag: 'cli' };
+  const packages = [
+    { ...scope, ids: [local.id], passed: true, control: false },
+    { ...scope, ids: [], passed: false, control: true },
+  ];
+  maintainLessons({ id: 'trial', packages }, at(18, 3));
+  const reflect = (_input: string, source: string) => {
+    if (source === 'local') throw Error('offline');
+    return { operations: [add(sa, 'remaining')] };
+  };
+  const next = evolve(sa, at(19), () => rows, false, reflect);
+  expect(JSON.parse(readFileSync(next, 'utf8'))).toMatchObject({
+    models: { local: { status: 'failed' }, remote: { status: 'produced' } },
+    candidates: [{ do: 'remaining', source: 'remote' }],
+    sources: {
+      local: { selected: 1, pass_rate_delta: 1 },
+      remote: { selected: 3, pass_rate_delta: null },
+    },
+  });
+});
+
+const add = (scope: string, action: string) => {
+  const evidence = ['bad0'];
+  const lesson = {
+    tier: 'project' as const,
+    scope,
+    when: 'trigger',
+    do: action,
+    dont: '',
+    why: '',
+    evidence,
+    mechanizable: false,
+  };
+  return { op: 'ADD', lesson };
+};
+const stored = (scope: string, id: string): Lesson => ({
+  ...add(scope, 'old').lesson,
+  id,
+  tag: 'cli',
+  category: 'project',
+  reasons: [],
+  status: 'trial',
+  helpful: 0,
+  harmful: 0,
+  created_at: '2026-11-17',
+  last_hit: '2026-11-17',
+});
+const importFixture = () => {
+  const sa = home(),
+    dir = join(sa, 'memory');
+  return { sa, log: join(dir, 'lessons.jsonl'), file: join(sa, 'import.json'), dir };
+};
+
+test('memory import backs up the original bytes, records merge evidence and is idempotent', () => {
+  const { sa, dir, log, file } = importFixture();
+  memoryWrite(() => ({ lessons: [stored(sa, 'rep'), stored(sa, 'merged')] }));
+  const original = readFileSync(log, 'utf8');
+  const row = { id: 'rep', merged_ids: ['merged'], content: 'rewritten' };
+  writeFileSync(file, JSON.stringify([row]));
+  expect(main(['memory', 'import', file])).toBe(0);
+  const backups = () => readdirSync(dir).filter(name => name.endsWith('.bak'));
+  expect(backups()).toHaveLength(1);
+  expect(readFileSync(join(dir, backups()[0]), 'utf8')).toBe(original);
+  const [rep, merged] = memoryState().lessons;
+  expect(rep.do).toBe(row.content);
+  expect(rep.source).toBe('curated');
+  expect(rep.curated_at).toBeTruthy();
+  expect(rep.evidence).toEqual(['bad0', 'merged']);
+  expect(merged.status).toBe('retired');
+  const imported = readFileSync(log, 'utf8');
+  expect(main(['memory', 'import', file])).toBe(0);
+  expect(readFileSync(log, 'utf8')).toBe(imported);
+  expect(backups()).toHaveLength(1);
+});
+
+test('memory import rejects overflow before changing the store', () => {
+  const { sa, log, file } = importFixture();
+  const lessons = Array.from({ length: 31 }, (_, i) => stored(sa, 'l' + i));
+  memoryWrite(() => ({ lessons }));
+  const original = readFileSync(log, 'utf8');
+  const rows = lessons.map(({ id }) => ({ id, merged_ids: [], content: 'new' }));
+  writeFileSync(file, JSON.stringify(rows));
+  expect(main(['memory', 'import', file])).toBe(1);
+  expect(readFileSync(log, 'utf8')).toBe(original);
 });

@@ -676,6 +676,8 @@ test('review guidance and generated reason registry use their typed owners', () 
     expect(guidance).toContain('最后一条回复只输出');
     expect(guidance).toContain('会使冒烟/验收命令失败');
     expect(guidance).toContain('medium/low 一律写入 `debt`');
+    expect(guidance.includes('`full_diff`')).toBe(name === 'sa-review-delta.md');
+    expect(guidance.includes('`carry_over` 在增量轮')).toBe(name === 'sa-review-delta.md');
   }
   for (const name of ['sa-code.md', 'sa-repair.md', 'sa-fix.md']) {
     const guidance = readFileSync(

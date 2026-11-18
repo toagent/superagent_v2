@@ -94,7 +94,7 @@ export type Lesson = Infer<typeof lessonSchema> & {
   created_at: string;
   last_hit: string;
   curated_at?: string;
-  source?: 'remote';
+  source?: 'local' | 'remote' | 'curated';
   status_at?: string;
   exposures?: number;
   last_exposed_at?: string;
@@ -220,14 +220,33 @@ export function memoryState(): { lessons: Lesson[]; entries: Entry[] } {
     lessons: [...new Map(entries.flatMap(e => e.lessons).map(l => [l.id, l])).values()],
   };
 }
-export function memoryWrite(fn: (state: ReturnType<typeof memoryState>) => Entry): void {
+export function memoryWrite(fn: (state: ReturnType<typeof memoryState>) => Entry): void;
+export function memoryWrite(
+  fn: (state: ReturnType<typeof memoryState>) => Entry,
+  backup: true
+): string | undefined;
+export function memoryWrite(
+  fn: (state: ReturnType<typeof memoryState>) => Entry,
+  backup = false
+): string | undefined {
   mkdirSync(root(), { recursive: true });
   const held = lock(join(root(), 'store.lock'));
   if (!held.ok) throw new Error('store busy');
   try {
     const entry = fn(memoryState());
-    if (entry.lessons.length || entry.scored || entry.reflected || entry.reflection || entry.day)
-      appendFileSync(join(root(), 'lessons.jsonl'), JSON.stringify(entry) + '\n');
+    if (entry.lessons.length || entry.scored || entry.reflected || entry.reflection || entry.day) {
+      const path = join(root(), 'lessons.jsonl'),
+        line = JSON.stringify(entry) + '\n';
+      if (!backup) appendFileSync(path, line);
+      else {
+        const before = readFileSync(path, 'utf8'),
+          copy = path + '.' + crypto.randomUUID() + '.bak';
+        writeAtomic(copy, before);
+        writeAtomic(path, before + (before.endsWith('\n') ? '' : '\n') + line);
+        return copy;
+      }
+    }
+    return undefined;
   } finally {
     held.release();
   }
@@ -904,9 +923,113 @@ interface LessonObservation {
   passed?: boolean;
   exposed_at?: string;
 }
-const curated = (l: Lesson): boolean => !!l.curated_at && l.tier !== 'role';
+const curated = (l: Lesson): l is Lesson & { curated_at: string } =>
+  !!l.curated_at && (l.tier !== 'role' || l.source === 'curated');
 const matches = (l: Lesson, project: string, tag: string): boolean =>
-  l.tier === 'type' ? l.scope === tag : l.scope === project && l.tag === tag;
+  l.tier === 'type' ? l.scope === tag : l.tag === tag && (l.tier === 'role' || l.scope === project);
+
+export function importLessons(file: string, now = Date.now()) {
+  if (privateProject(file) || privateProject(realpathSync(file)))
+    throw new Error('禁止读取该候选文件');
+  const rows = z
+    .array(
+      z.object({
+        id: field.min(1),
+        merged_ids: z.array(field.min(1)),
+        content: field.trim().min(1),
+      })
+    )
+    .parse(JSON.parse(readFileSync(file, 'utf8')));
+  const ids = rows.flatMap(row => [row.id, ...row.merged_ids]);
+  if (new Set(ids).size !== ids.length) throw new Error('候选或合并 ID 重复');
+  const at = new Date(now).toISOString();
+  let imported = 0,
+    merged = 0;
+  const backup = memoryWrite(state => {
+    const all = new Map(state.lessons.map(l => [l.id, l])),
+      changed: Lesson[] = [];
+    const find = (id: string) => {
+      const lesson = all.get(id);
+      if (!lesson) throw new Error(`找不到经验 ID ${id}`);
+      if (lesson.tier === 'project' && privateProject(lesson.scope))
+        throw new Error(`经验 ${id} 属于受保护范围`);
+      return lesson;
+    };
+    for (const row of rows) {
+      const old = find(row.id),
+        evidence = [...new Set([...old.evidence, ...row.merged_ids])];
+      if (
+        old.source !== 'curated' ||
+        old.do !== row.content ||
+        evidence.length !== old.evidence.length
+      ) {
+        const next: Lesson = {
+          ...old,
+          evidence,
+          do: row.content,
+          source: 'curated',
+          curated_at: at,
+          status: 'trial',
+          status_at: undefined,
+          helpful: 0,
+          harmful: 0,
+          votes: 0,
+          exposures: 0,
+          last_exposed_at: undefined,
+          exposure_outcomes: 0,
+          exposure_passes: 0,
+        };
+        all.set(next.id, next);
+        changed.push(next);
+        imported++;
+      }
+      for (const id of row.merged_ids) {
+        const lesson = find(id);
+        if (!active(lesson)) continue;
+        const next: Lesson = { ...lesson, status: 'retired', status_at: at };
+        all.set(id, next);
+        changed.push(next);
+        merged++;
+      }
+    }
+    const count = [...all.values()].filter(l => curated(l) && active(l)).length;
+    if (changed.length && count > LESSON_POLICY.pool)
+      throw new Error(`可注入经验 ${String(count)} 条，超过上限 ${String(LESSON_POLICY.pool)} 条`);
+    return { lessons: changed };
+  }, true);
+  return { imported, merged, backup: backup ?? null };
+}
+
+export function lessonSources({ entries }: ReturnType<typeof memoryState>) {
+  const outcomes = entries
+    .flatMap(e => e.trial?.packages ?? [])
+    .filter(p => p.control && p.passed !== undefined);
+  const lessons = entries.flatMap(e => e.lessons);
+  return Object.fromEntries(
+    (['local', 'remote', 'curated'] as const).map(source => {
+      const history = lessons.filter(l => l.source === source && curated(l)),
+        rows = [...new Map(history.map(l => [l.id, l])).values()];
+      const controls = outcomes.filter(p => rows.some(l => matches(l, p.project, p.tag)));
+      const observed = rows.reduce((sum, l) => sum + (l.exposure_outcomes ?? 0), 0),
+        passed = rows.reduce((sum, l) => sum + (l.exposure_passes ?? 0), 0),
+        promoted = new Set(history.filter(l => l.status === 'stable').map(l => l.id)),
+        retired = new Set(history.filter(l => l.status === 'retired').map(l => l.id));
+      return [
+        source,
+        {
+          selected: rows.length,
+          adjudicated: new Set([...promoted, ...retired]).size,
+          promoted: promoted.size,
+          retired: retired.size,
+          pass_rate_delta:
+            observed && controls.length
+              ? passed / observed - controls.filter(p => p.passed).length / controls.length
+              : null,
+        },
+      ];
+    })
+  );
+}
 export const lessonControl = (run: string): boolean =>
   createHash('sha256').update(run).digest().readUInt32BE() / 2 ** 32 < LESSON_POLICY.control / 100;
 
@@ -1020,7 +1143,11 @@ export function maintainLessons(
       changed = new Map<string, Lesson>();
     const pool = s.lessons.filter(curated).flatMap(old => {
       const l = { ...old };
-      for (const p of packages.filter(p => p.ids.includes(l.id))) {
+      for (const p of packages.filter(
+        p =>
+          p.ids.includes(l.id) &&
+          (!p.exposed_at || Date.parse(p.exposed_at) >= Date.parse(l.curated_at))
+      )) {
         l.exposures = (l.exposures ?? 0) + 1;
         const exposed = p.exposed_at ?? at;
         if (!l.last_exposed_at || exposed > l.last_exposed_at) l.last_exposed_at = exposed;

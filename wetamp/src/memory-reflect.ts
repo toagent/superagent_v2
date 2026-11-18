@@ -266,14 +266,17 @@ const launchReflection = (input: string, dir: string, config: string, query: Que
 
 export function nightlyReflection(
   input: string,
-  query: Query = archonJson
+  query: Query = archonJson,
+  source: 'local' | 'remote' = 'remote',
+  wait: (id: string, cwd: string, seconds: number) => unknown = waitNotification
 ): { operations?: unknown } {
   const dir = reflectWorkspace(),
-    config = join(dir, 'nightly-config.yaml');
-  writeAtomic(
-    config,
-    JSON.stringify({ aliases: { '@sa-coder': runAliases('codex')['@sa-reviewer'] } })
-  );
+    config = join(dir, `nightly-${source}-config.yaml`),
+    alias =
+      source === 'local'
+        ? { provider: 'pi', model: 'splash/qwen3.8-27b' }
+        : runAliases('codex')['@sa-reviewer'];
+  writeAtomic(config, JSON.stringify({ aliases: { '@sa-coder': alias } }));
   const c = coord(),
     scope = repoScope(dir);
   const run = c.scoped(scope, () => {
@@ -286,7 +289,7 @@ export function nightlyReflection(
     );
   });
   if (run.ok !== true || typeof run.runId !== 'string') throw new Error('reflection launch failed');
-  waitNotification(run.runId, dir, 150);
+  wait(run.runId, dir, 150);
   const { status, events } = query(['workflow', 'get', run.runId, '--verbose', '--events'], dir);
   const output: unknown =
     Array.isArray(events) &&
