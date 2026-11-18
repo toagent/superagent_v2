@@ -10,7 +10,7 @@ const { tiers, policy } = require('../tiers.json');
 const { parse } = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 const stopGate = require('./stop-gate.cjs');
-const { withState, once } = require('./hook-state.cjs');
+const { withState, once, bunExecutable } = require('./hook-state.cjs');
 const dispatch = require('./dispatch-context.cjs');
 const redline = require('./redline.cjs');
 const { resolvePath, within, saHome } = redline;
@@ -253,6 +253,26 @@ function decide(payload, client, env = process.env) {
     if (event === 'SessionStart') {
       const result = require('./scratch.cjs').start(payload, client, env);
       require('./heartbeat-panel.cjs').ensurePanel(payload, env);
+      const home = saHome(env);
+      if (
+        payload.source === 'resume' &&
+        typeof payload.session_id === 'string' &&
+        payload.session_id.trim() &&
+        ['coord/claims', 'runs'].some(dir => fs.existsSync(path.join(home, dir)))
+      ) {
+        const renewed = spawnSync(
+          bunExecutable(),
+          [path.join(__dirname, '../src/coord/resume.ts'), client],
+          {
+            input: payload.session_id,
+            env: { ...env, SUPERAGENT_HOME: home, ARCHON_HOME: env.ARCHON_HOME || path.join(home, 'archon') },
+            stdio: ['pipe', 'ignore', 'ignore'],
+            timeout: 3000,
+          }
+        );
+        if (renewed.status !== 0)
+          return { ...result, systemMessage: 'SUPERAGENT advisory：归属续约失败，会话可继续启动。' };
+      }
       return result;
     }
     if (event === 'Stop') require('./heartbeat-panel.cjs').ensurePanel(payload, env);

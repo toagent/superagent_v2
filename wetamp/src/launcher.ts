@@ -10,7 +10,7 @@ export interface Launcher {
   pid_start?: string;
 }
 export const { launcher, cliOf } = createRequire(import.meta.url)('../hooks/live.cjs') as {
-  launcher: (home: string) => Launcher | undefined;
+  launcher: (home: string, env?: NodeJS.ProcessEnv) => Launcher | undefined;
   cliOf: (argv: string[]) => { kind: Launcher['client']; headless: boolean } | null;
 };
 

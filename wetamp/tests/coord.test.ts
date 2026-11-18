@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import * as launchers from '../src/launcher';
 import { join } from 'node:path';
 import { testTimeout } from '@archon/paths/test-utils';
@@ -1889,6 +1890,125 @@ function renewalFixture() {
   });
   return { ...s, old, evidence, actual: new Coordination({ sa: s.sa, runs: () => [] }) };
 }
+
+function resumeHookFixture(client: 'claude' | 'codex' = 'claude') {
+  const s = setup(),
+    archon = join(s.sa, 'archon');
+  const session_id = randomUUID();
+  const old = { ...a, client, session_id, pid: 99_999_999, pid_start: 'exited' };
+  const launch = join(s.root, client);
+  const start = (source = 'resume', session: string = session_id) => {
+    const run = Bun.spawnSync([process.execPath, launch, source, session], {
+      env: {
+        ...process.env,
+        BUN_INSTALL: '',
+        SUPERAGENT_HOME: s.sa,
+        ARCHON_HOME: archon,
+        SUPERAGENT_ROLE: '',
+        AI_DISPATCH_ROLE: '',
+        TWIN_AGENT_REMOTE: '',
+        ORCA_PANE_KEY: '',
+        DATABASE_URL: '',
+        CLAUDE_ENV_FILE: '',
+        PATH: `${process.execPath.replace(/\/[^/]+$/, '')}:${process.env.PATH}`,
+      },
+      cwd: s.repo,
+    });
+    expect(run.exitCode).toBe(0);
+    return JSON.parse(run.stdout.toString());
+  };
+  writeFileSync(
+    launch,
+    `
+    import { repoScope, Coordination } from ${JSON.stringify(join(import.meta.dir, '../src/coord/index.ts'))};
+    const [source, session_id] = process.argv.slice(2);
+    const cwd = process.cwd(), sa = process.env.SUPERAGENT_HOME;
+    const p = Bun.spawnSync(['node', ${JSON.stringify(join(import.meta.dir, '../hooks/guard.cjs'))}, ${JSON.stringify(client)}], {
+      stdin: Buffer.from(JSON.stringify({source, session_id, cwd, hook_event_name:'SessionStart'}))
+    });
+    let view;
+    try { view = new Coordination({sa}).owner(repoScope(cwd)); } catch {}
+    console.log(JSON.stringify({pid:process.pid, exit:p.exitCode, output:JSON.parse(p.stdout.toString() || 'null'), view}));
+  `
+  );
+  return { ...s, old, archon, start };
+}
+
+test('native resume renews repo and only the original session’s nonterminal runs', () => {
+  for (const client of ['claude', 'codex'] as const) {
+    const s = resumeHookFixture(client);
+    s.c.claim(s.scope, s.old);
+    mkdirSync(s.archon);
+    mkdirSync(join(s.sa, 'runs'));
+    const db = new Database(join(s.archon, 'archon.db'));
+    db.exec('CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT)');
+    const runs = ['running', 'completed', 'failed', 'cancelled', 'foreign', 'taken'];
+    for (const id of runs) {
+      db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?)').run(
+        id,
+        ['foreign', 'taken'].includes(id) ? 'running' : id
+      );
+      const l = {
+        repo: s.repo,
+        run_id: id,
+        archon_run_id: id,
+        launcher: id === 'foreign' ? { ...s.old, session_id: 'foreign-launch' } : s.old,
+      };
+      writeFileSync(join(s.sa, 'runs', id + '.json'), JSON.stringify(l));
+      if (id === 'taken') s.c.claim(runScope(l), s.old);
+      s.c.claim(runScope(l), id === 'taken' ? b : s.old, id === 'taken');
+    }
+    db.close();
+    const messages = s.c.messages();
+    const { pid, exit, view } = s.start();
+    expect(exit).toBe(0);
+    expect(view).toMatchObject({
+      owner: { client, session_id: s.old.session_id, pid },
+      generation: 2,
+      presence: { state: 'online' },
+    });
+    expect(typeof view.owner.pid_start).toBe('string');
+    expect(view.evidence).toContain('same-session-renewal');
+    const scopeOf = (id: string) => runScope({ repo: s.repo, run_id: id });
+    for (const scope of [s.scope, scopeOf('running')])
+      expect(req('../hooks/coord.cjs').admission(s.sa, scope, view.owner, 2).generation).toBe(2);
+    for (const id of runs.slice(1))
+      expect(s.c.owner(scopeOf(id)).generation).toBe(id === 'taken' ? 2 : 1);
+    expect(s.c.messages()).toEqual(messages);
+  }
+});
+
+test('native resume ignores live, missing identity, and different session owners', () => {
+  const s = resumeHookFixture();
+  const protectedScopes = [
+    { ...s.old, pid: a.pid, pid_start: a.pid_start },
+    { ...s.old, session_id: undefined },
+    { ...s.old, session_id: 'other' },
+  ].map(owner => {
+    const scope = repoScope(gitRepo(tmp()));
+    s.c.claim(scope, owner);
+    return scope;
+  });
+  s.c.claim(s.scope, s.old);
+  expect(s.start('startup').view.generation).toBe(1);
+  expect(s.start('resume', 'another-session').view.generation).toBe(1);
+  s.start();
+  for (const scope of protectedScopes) expect(s.c.owner(scope).generation).toBe(1);
+});
+
+test('native resume reports renewal failure, keeps SessionStart output, and retries on resume', () => {
+  const s = resumeHookFixture();
+  s.c.claim(s.scope, s.old);
+  const file = join(s.sa, 'coord/claims', hooks.hash(s.scope) + '.json');
+  const original = readFileSync(file);
+  writeFileSync(file, '{');
+  const { exit, output } = s.start();
+  expect(exit).toBe(0);
+  expect(output.systemMessage).toContain('归属续约失败');
+  expect(output.hookSpecificOutput.additionalContext).toContain('scratch');
+  writeFileSync(file, original);
+  expect(s.start().view.generation).toBe(2);
+});
 
 test('same-session renewal writes a new lease and history without takeover; stale leases stay fenced', () => {
   const s = renewalFixture();

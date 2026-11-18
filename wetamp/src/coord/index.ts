@@ -134,6 +134,7 @@ export const scopeRepoName = (scope: Scope): string => {
 export const ownerLabel = (who: Identity | null): string =>
   who ? `${who.client} ${who.session_id?.slice(0, 8) ?? `pid:${String(who.pid)}`}` : '无主';
 export const ACK_TIMEOUT_MS = 15 * 60_000;
+const SAME_SESSION_RENEWAL = 'same-session-renewal';
 // Keep operator-facing queues bounded and observable without inventing another lock protocol.
 export const QUEUE_WAIT: Readonly<{
   timeoutMs: number;
@@ -442,6 +443,7 @@ export class Coordination {
           }));
     const view = shared.resolveOwner(scope, claims, runs);
     if (!view.owner && !view.conflicts.length) view.evidence.push('no owner');
+    if (claims[0]?.reason === SAME_SESSION_RENEWAL) view.evidence.push(SAME_SESSION_RENEWAL);
     return {
       scope,
       ...view,
@@ -520,8 +522,10 @@ export class Coordination {
     };
     if (renewal && !old && view.owner)
       c.history.unshift({ owner: view.owner, generation: view.generation, at, reason });
+    // Publish a renewal claim only once its lease is durable, so an interrupted write can retry.
+    if (renewal && who) this.save('leases', this.leaseKey(scope, who), { generation });
     this.save('claims', shared.hash(scope), c);
-    if (who) this.save('leases', this.leaseKey(scope, who), { generation: c.generation });
+    if (!renewal && who) this.save('leases', this.leaseKey(scope, who), { generation });
     for (const previous of view.owner ? [view.owner] : view.conflicts)
       if (notify && !renewal && !same(previous, who))
         this.notice('takeover', scope, who ?? previous, previous, c.generation, reason);
@@ -697,39 +701,82 @@ export class Coordination {
       });
     });
   }
+  private renewOwner(scope: Scope, who: Identity, view: ReturnType<Coordination['owner']>) {
+    const old = view.owner;
+    if (
+      old?.session_id &&
+      old.pid_start &&
+      !same(old, who) &&
+      old.session_id === who.session_id &&
+      old.client === who.client &&
+      old.host === who.host &&
+      who.host === hostname() &&
+      who.pid_start &&
+      view.presence.state === 'offline' &&
+      inspectProcess(who.pid).start === who.pid_start &&
+      !shared
+        .files<Claim>(this.d.sa, 'claims')
+        .some(
+          c =>
+            c.owner?.client === who.client &&
+            c.owner.session_id === who.session_id &&
+            !same(c.owner, old) &&
+            !same(c.owner, who) &&
+            this.d.presence(c.owner).state !== 'offline'
+        )
+    )
+      return this.transfer(scope, who, SAME_SESSION_RENEWAL, true);
+    return undefined;
+  }
+  renewSession(who: Identity): void {
+    // Resolve each owner again under both claim locks. An explicit release or intervening claim wins.
+    const matches = (owner?: Identity | null) =>
+      owner?.session_id === who.session_id && owner?.client === who.client;
+    const active = (run: RunRef, status?: string) => {
+      const origin = run.launcher?.session_id ? run.launcher : run.controller;
+      return (
+        matches(origin) &&
+        ['pending', 'running', 'paused'].includes(status ?? '') &&
+        shared.isRunOwnershipEvidence(run, status)
+      );
+    };
+    const statuses = this.d.statuses();
+    const runs = this.d
+      .runs()
+      .flatMap(run => (active(run, statuses?.get(run.archon_run_id)) ? [runScope(run)] : []));
+    const repos = new Set(runs.map(r => r.repo));
+    for (const { scope, owner } of shared.files<Claim>(this.d.sa, 'claims'))
+      if (scope.kind === 'repo' && matches(owner)) repos.add(scope.id);
+    const scopes: Scope[] = [...Array.from(repos, id => ({ kind: 'repo' as const, id })), ...runs];
+    for (const scope of scopes) {
+      const renew = () => {
+        if (scope.kind === 'run') {
+          const ledger = this.d.runs(scope.id).at(0);
+          if (!ledger || shared.repoScope(ledger.repo)?.id !== scope.repo) return undefined;
+          if (!active(ledger, this.d.status(ledger))) return undefined;
+        }
+        return this.renewOwner(scope, who, this.owner(scope));
+      };
+      this.scoped(scope, () => this.locked(renew, 250), 250);
+    }
+  }
   admit(scope: Scope, who: Identity, expected?: number): Controller {
     const admit = (): Controller =>
       this.locked(() => {
         let view = this.owner(scope);
-        const previous = view.owner;
         // Only the native launcher evidence can authorize a process-lifetime change.
         if (
           this.scopes.has(this.scopeLock(scope)) &&
-          previous &&
-          !same(previous, who) &&
-          previous.session_id &&
-          previous.pid_start &&
-          previous.session_id === who.session_id &&
-          previous.client === who.client &&
-          previous.host === who.host &&
-          who.host === hostname() &&
-          who.pid_start &&
-          same(launcher(this.d.sa), who) &&
-          view.presence.state === 'offline' &&
-          inspectProcess(who.pid).start === who.pid_start &&
+          view.owner &&
+          !same(view.owner, who) &&
           (expected === undefined || expected === view.generation) &&
-          !shared
-            .files<Claim>(this.d.sa, 'claims')
-            .some(
-              c =>
-                c.owner?.client === who.client &&
-                c.owner.session_id === who.session_id &&
-                !same(c.owner, who) &&
-                this.d.presence(c.owner).state !== 'offline'
-            )
+          same(launcher(this.d.sa), who)
         ) {
-          expected = this.transfer(scope, who, 'same-session-renewal', true).generation;
-          view = this.owner(scope);
+          const renewed = this.renewOwner(scope, who, view);
+          if (renewed) {
+            expected = renewed.generation;
+            view = this.owner(scope);
+          }
         }
         return shared.admission(this.d.sa, scope, who, expected, join(this.d.sa, 'archon'), view);
       });

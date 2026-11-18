@@ -3,19 +3,19 @@ const fs = require('node:fs'),
   path = require('node:path'),
   crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const bunExecutable = () =>
+  [
+    process.env.BUN_INSTALL && path.join(process.env.BUN_INSTALL, 'bin/bun'),
+    path.join(require('node:os').homedir(), '.bun/bin/bun'),
+    '/opt/homebrew/bin/bun',
+  ].find(p => p && fs.existsSync(p)) || 'bun';
 // Keep one inode and retain the inherited open file description in the caller.
 // The kernel releases this lock on close/SIGKILL; elapsed time never steals it.
 function withLock(file, fn) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const fd = fs.openSync(`${file}.lock`, 'a', 0o600);
   try {
-    const bun =
-      [
-        process.env.BUN_INSTALL && path.join(process.env.BUN_INSTALL, 'bin/bun'),
-        path.join(require('node:os').homedir(), '.bun/bin/bun'),
-        '/opt/homebrew/bin/bun',
-      ].find(p => p && fs.existsSync(p)) || 'bun';
-    const locked = spawnSync(bun, [path.join(__dirname, 'flock.ts')], {
+    const locked = spawnSync(bunExecutable(), [path.join(__dirname, 'flock.ts')], {
       stdio: ['ignore', 'ignore', 'pipe', fd],
       timeout: 7000,
     });
@@ -69,4 +69,4 @@ function once(state, namespace, payload, fn, replay = true) {
   state.events[key] = result;
   return result;
 }
-module.exports = { withLock, withState, atomicWrite, once };
+module.exports = { withLock, withState, atomicWrite, once, bunExecutable };
