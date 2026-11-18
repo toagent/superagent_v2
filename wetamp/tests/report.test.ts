@@ -1375,7 +1375,13 @@ test('consolidation metrics use titles, first-round evidence and typed engine re
     ).toEqual({
       window: { since: '2026-10-13', until: '2026-10-20' },
       fix_commit_share: { matching: 2, commits: 3, ratio: 2 / 3 },
-      first_pass_rate: { passed: 1, known: 2, unknown: 0, ratio: 1 / 2 },
+      first_pass_rate: {
+        passed: 1,
+        known: 2,
+        unknown: 0,
+        ratio: 1 / 2,
+        excluded: { operator: 0, superseded: 0 },
+      },
       engine_failure_count: 1,
     });
   } finally {

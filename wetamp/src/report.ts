@@ -8,6 +8,7 @@ import {
   measurementOf,
   metricsOf,
   firstPassOf,
+  runElapsedOf,
 } from './ledger-metrics';
 export {
   clock,
@@ -17,6 +18,7 @@ export {
   firstPassOf,
   measurementOf,
   metricsOf,
+  runElapsedOf,
 } from './ledger-metrics';
 import { snapshotOf } from './board/data';
 import { decisionsFromSnapshot } from './decisions';
@@ -118,6 +120,7 @@ export interface Event {
     provider?: string;
     provider_failure?: { class?: string };
     failure_kind?: string;
+    cancel_reason?: string;
   };
 }
 
@@ -318,29 +321,43 @@ const group = (calls: Call[], key: (c: Call) => string): Record<string, unknown>
 };
 
 // prettier-ignore
-function tokenValue(pairs: Pair[], calls: Call[]): Record<string, unknown> {
+export function acceptedPackageTokens({ ledger, run }: Pair, calls: Call[], missing = false) {
+  if (run instanceof Error) return [];
+  const plan = planOf(ledger); if (!plan) return [];
+  const art = artifactsOf(run), gates = evidenceGates(ledger, art);
+  return plan.packages.flatMap(p => {
+    const gate = gates.filter(f => f.startsWith(`gate-${p.milestone ?? 'm1'}-r`)).at(-1);
+    const decision = decisionOf(gate ? evidenceJson(ledger, art, gate) : evidenceJson(ledger, art, `settle-${p.id}.json`) ?? evidenceJson(ledger, art, `verify-${p.id}.json`));
+    if (!decision || !['advance', 'debt'].includes(decision.kind)) return [];
+    const own = calls.filter(c => c.run === ledger.run_id && (c.node === `code-${p.id}` || c.node === `repair-${p.id}`));
+    const weights = own.map(c => typeof c.tokens?.input === 'number' && typeof c.tokens.output === 'number' ? c.tokens.input - (c.tokens.cacheRead ?? 0) + c.tokens.output : null);
+    const known = !missing && own.length > 0 && weights.every(v => v !== null);
+    const tokens = known ? weights.reduce<number>((n, v) => n + v, 0) : 'unknown' as const;
+    const model = own.at(0)?.model.replace(/\(pinned\)$/, '') ?? null;
+    const main_node = known ? own[weights.indexOf(Math.max(...weights))]?.node ?? 'unknown' : 'unknown';
+    return [{ p, repo: plan.repo, tokens, model, main_node }];
+  });
+}
+
+// prettier-ignore
+function tokenValue(pairs: Pair[], calls: Call[], missing: Record<string, number>): Record<string, unknown> {
   let priors: Record<string, { tokens?: { p50?: number; p90?: number } }> = {};
   try { priors = JSON.parse(readFileSync(join(home().sa, 'memory/priors.json'), 'utf8')) as typeof priors; } catch { /* Missing priors stay unknown. */ }
-  const packages = pairs.flatMap(({ ledger, run }) => {
-    if (run instanceof Error) return [];
-    const plan = planOf(ledger); if (!plan) return [];
-    const art = artifactsOf(run), gates = evidenceGates(ledger, art);
-    return plan.packages.flatMap(p => {
-      const gate = gates.filter(f => f.startsWith(`gate-${p.milestone ?? 'm1'}-r`)).at(-1);
-      const decision = decisionOf(gate ? evidenceJson(ledger, art, gate) : evidenceJson(ledger, art, `settle-${p.id}.json`) ?? evidenceJson(ledger, art, `verify-${p.id}.json`));
-      if (!decision || !['advance', 'debt'].includes(decision.kind)) return [];
-      const own = calls.filter(c => c.run === ledger.run_id && (c.node === `code-${p.id}` || c.node === `repair-${p.id}`));
-      const weights = own.map(c => typeof c.tokens?.input === 'number' && typeof c.tokens.output === 'number' ? c.tokens.input - (c.tokens.cacheRead ?? 0) + c.tokens.output : null);
-      const known = own.length > 0 && weights.every(v => v !== null);
-      const tokens = known ? weights.reduce<number>((n, v) => n + v, 0) : 'unknown';
-      const model = own.at(0)?.model.replace(/\(pinned\)$/, '') ?? null;
-      const matches = Object.entries(priors).filter(([key]) => { try { const [repo, , size, risk, priorModel] = JSON.parse(key) as unknown[]; return repo === plan.repo && size === p.size && risk === p.risk && priorModel === model; } catch { return false; } });
+  const byRun = new Map<string, Call[]>();
+  for (const call of calls) {
+    const group = byRun.get(call.run);
+    if (group) group.push(call);
+    else byRun.set(call.run, [call]);
+  }
+  const packages = pairs.flatMap(pair => {
+    const id = pair.ledger.run_id;
+    return acceptedPackageTokens(pair, byRun.get(id) ?? [], Boolean(missing[id])).map(({ p, repo, tokens, model, main_node }) => {
+      const matches = Object.entries(priors).filter(([key]) => { try { const [priorRepo, , size, risk, priorModel] = JSON.parse(key) as unknown[]; return priorRepo === repo && size === p.size && risk === p.risk && priorModel === model; } catch { return false; } });
       const [priorKey, prior] = matches.length === 1 ? matches[0] : ['unknown', undefined];
       const p50 = typeof prior?.tokens?.p50 === 'number' ? prior.tokens.p50 : 'unknown', p90 = typeof prior?.tokens?.p90 === 'number' ? prior.tokens.p90 : 'unknown';
-      const main = known ? own[weights.indexOf(Math.max(...weights))]?.node ?? 'unknown' : 'unknown';
-      return [{ run_id: ledger.run_id, package: p.id, tokens, prior_key: priorKey, p50, p90,
+      return { run_id: id, package: p.id, tokens, prior_key: priorKey, p50, p90,
         p50_ratio: typeof tokens === 'number' && typeof p50 === 'number' && p50 > 0 ? tokens / p50 : 'unknown',
-        p90_ratio: typeof tokens === 'number' && typeof p90 === 'number' && p90 > 0 ? tokens / p90 : 'unknown', main_node: main }];
+        p90_ratio: typeof tokens === 'number' && typeof p90 === 'number' && p90 > 0 ? tokens / p90 : 'unknown', main_node };
     });
   });
   return { packages, anomalies: packages.filter(p => typeof p.tokens === 'number' && typeof p.p90 === 'number' && p.tokens > p.p90 * 2).map(p => ({ run_id: p.run_id, package: p.package, tokens: p.tokens, p90: p.p90, main_node: p.main_node })) };
@@ -372,12 +389,50 @@ const REASON_RECORDING_SINCE = Date.parse('2026-10-11T17:56:55.000Z');
 const missingReason = (at?: string | null): 'legacy' | 'unrecorded' =>
   at != null && Date.parse(at) < REASON_RECORDING_SINCE ? 'legacy' : 'unrecorded';
 
+const cancelIntervention = (ledger: Ledger) =>
+  ledger.intervention_events?.filter(e => e.action === 'cancel' && e.ok).at(-1);
+
+export function replacedRuns(ledgers: Ledger[]): Set<string> {
+  return new Set(
+    ledgers.flatMap(l =>
+      (l.adoptions ?? []).flatMap(a => (a.reason === 'plan_replacement' && a.to ? [a.from] : []))
+    )
+  );
+}
+
+export function reportFirstPassOf(
+  pair: Pair & { run: (RunView & { events?: Event[] }) | Error },
+  replaced: ReadonlySet<string>
+) {
+  const { ledger, run } = pair;
+  if (run instanceof Error) return 'unknown';
+  if (!['completed', 'failed', 'cancelled'].includes(run.status)) return 'active';
+  if (
+    replaced.has(run.id) ||
+    (ledger.rejected === run.id &&
+      ledger.intervention_events?.some(
+        e => e.action === 'abandon' && e.ok && e.reason === 'superseded'
+      ))
+  )
+    return 'superseded';
+  if (run.status === 'cancelled') {
+    const cancel = cancelIntervention(ledger);
+    if (cancel?.reason === 'superseded' || cancel?.reason === 'replaced') return 'superseded';
+    const nativeCancel = run.events?.filter(e => e.event_type === 'workflow_cancelled').at(-1);
+    const operator = cancel
+      ? cancel.origin !== 'engine'
+      : !ledger.reason && !ledger.rejected && nativeCancel?.data?.cancel_reason === 'operator';
+    if (operator) return 'operator';
+  }
+  return firstPassOf(pair);
+}
+
 export function cancellationStats(pairs: Pair[]): Record<string, number> {
   const reasons: Record<string, number> = {};
   for (const { ledger, run } of pairs) {
     if (run instanceof Error || run.status !== 'cancelled') continue;
     const reason =
-      ledger.intervention_events?.filter(e => e.action === 'cancel' && e.ok).at(-1)?.reason ??
+      cancelIntervention(ledger)?.reason ??
       (ledger.reason === 'deadline'
         ? 'deadline'
         : ledger.rejected
@@ -563,7 +618,8 @@ export function consolidationMetrics(
   titles: string[] | null,
   window: { since: string; until: string }
 ): Record<string, unknown> {
-  const first = pairs.map(pair => firstPassOf(pair));
+  const replaced = replacedRuns(pairs.map(p => p.ledger));
+  const first = pairs.map(pair => reportFirstPassOf(pair, replaced));
   let engine_failures = 0;
   for (const { ledger, run } of pairs) {
     if (run instanceof Error) continue;
@@ -593,7 +649,11 @@ export function consolidationMetrics(
     first_pass_rate: {
       passed: known.filter(Boolean).length,
       known: known.length,
-      unknown: first.length - known.length,
+      unknown: first.filter(value => value === 'unknown').length,
+      excluded: {
+        operator: first.filter(value => value === 'operator').length,
+        superseded: first.filter(value => value === 'superseded').length,
+      },
       ratio: known.length ? known.filter(Boolean).length / known.length : 'unknown',
     },
     engine_failure_count: engine_failures,
@@ -819,7 +879,7 @@ export function buildReport(
     metrics: metricsOf(snapshot.rows, snapshot.summary, Date.now()),
     cancellations,
     interventions: interventionStats(ls),
-    token_value: tokenValue(pairs, calls),
+    token_value: tokenValue(pairs, calls, missingGenerations),
     demands: { ...demandStats(pairs, calls, sessions.sessions.filter(s => !learning.includes(s)), jobs.jobs.filter(j => !j.title.startsWith('memory-reflect:')), missingGenerations, evidenceFor), shared_learning: investmentOf([], learning, jobs.jobs.filter(j => j.title.startsWith('memory-reflect:') && !learning.some(s => s.owner?.job_id === j.id)).length) },
     critical_path: paths,
     measurement,
@@ -871,7 +931,7 @@ export function buildReport(
       typeof t.longest_silence_closed_by === 'object' &&
       t.longest_silence_closed_by.type === 'warning' && t.longest_silence_closed_by.code === 'codex.will_retry'
       ? [{ start: clock(t.longest_silence_at), end: clock(t.longest_silence_at) + t.longest_silence_ms }] : []);
-    const elapsed = run instanceof Error ? 'unknown' : ms(l.started_at, run.completed_at ?? undefined) ?? 'unknown';
+    const elapsed = runElapsedOf(pair) ?? 'unknown';
     const completeTiming = ids.every(id => Array.isArray(timings[`${l.run_id}/${id}`])) && timing.length > 0 && timing.every(t => t.longest_silence_ms !== 'unknown');
     const union: typeof intervals = [];
     for (const i of intervals.sort((a, b) => a.start - b.start)) {

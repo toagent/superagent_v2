@@ -29,6 +29,8 @@ export const ms = (a?: string, b?: string): number | null => {
   const delta = a && b ? clock(b) - clock(a) : NaN;
   return Number.isFinite(delta) && delta >= 0 ? delta : null;
 };
+export const runElapsedOf = ({ ledger, run }: Pair): number | null =>
+  run instanceof Error ? null : ms(ledger.started_at, run.completed_at ?? undefined);
 
 /** Historical events without origin remain operator interventions; never infer from prose. */
 export const interventionCount = (l: Ledger): number | undefined =>
@@ -137,10 +139,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
   return { status: 'measured', elapsed_ms: end - clock(run.started_at ?? ''), recorded_elapsed_ms: elapsed, clock_precision_ms: precision, path, segments, critical_path_ms: segments.filter(s => s.phase !== 'unclassified_wait').reduce((s,r) => s + r.ms, 0), reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
 }
 
-export function firstPassOf(
-  pair: Pair,
-  stats: Record<string, unknown> = summarize([pair], false)
-): boolean | 'unknown' {
+export function firstPassOf(pair: Pair, stats?: Record<string, unknown>): boolean | 'unknown' {
   const { ledger, run } = pair;
   if (run instanceof Error) return 'unknown';
   if (run.status !== 'completed') return false;
@@ -166,6 +165,7 @@ export function firstPassOf(
   } catch {
     return 'unknown';
   }
+  stats ??= summarize([pair], false);
   const gates = Object.entries(stats).filter(([k]) => k.startsWith('rounds:'));
   if (
     !count ||

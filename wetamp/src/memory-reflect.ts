@@ -6,6 +6,8 @@ import { caller, coord, repoScope, same } from './coord';
 import { reasonOf } from './reasons';
 import { redact } from './redact';
 import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
+import { artifactsOf } from './ledger';
+import { normalizeTokens, type ReportTokens } from './usage';
 import {
   z,
   episodes,
@@ -246,6 +248,19 @@ export const capNightlyOperations = (output: { operations?: unknown; reason?: un
     ? { ...output, operations: output.operations.slice(0, 3) }
     : output;
 
+export const decodeNightlyOutput = (output: unknown) =>
+  reflectionResultSchema().safeParse(
+    output && typeof output === 'object' && !Array.isArray(output)
+      ? capNightlyOperations(output)
+      : output
+  );
+
+interface NightlyReflection {
+  output?: unknown;
+  failure?: 'failed' | 'no_output' | 'schema_invalid';
+  evidence?: { model: string; tokens: number | null; run_id?: string; evidence_path?: string };
+}
+
 const launchReflection = (input: string, dir: string, config: string, query: Query) =>
   query(
     [
@@ -269,7 +284,7 @@ export function nightlyReflection(
   query: Query = archonJson,
   source: 'local' | 'remote' = 'remote',
   wait: (id: string, cwd: string, seconds: number) => unknown = waitNotification
-): { operations?: unknown } {
+): NightlyReflection {
   const dir = reflectWorkspace(),
     config = join(dir, `nightly-${source}-config.yaml`),
     alias =
@@ -279,25 +294,72 @@ export function nightlyReflection(
   writeAtomic(config, JSON.stringify({ aliases: { '@sa-coder': alias } }));
   const c = coord(),
     scope = repoScope(dir);
-  const run = c.scoped(scope, () => {
-    const controller = c.claim(scope, caller()).controller;
-    return c.mutate(
-      scope,
-      controller,
-      () => launchReflection(input, dir, config, query),
-      controller.generation
+  const evidence: NonNullable<NightlyReflection['evidence']> = { model: alias.model, tokens: null };
+  try {
+    const run = c.scoped(scope, () => {
+      const controller = c.claim(scope, caller()).controller;
+      return c.mutate(
+        scope,
+        controller,
+        () => launchReflection(input, dir, config, query),
+        controller.generation
+      );
+    });
+    if (run.ok !== true || typeof run.runId !== 'string') return { failure: 'failed', evidence };
+    evidence.run_id = run.runId;
+    if (typeof run.logPath === 'string') evidence.evidence_path = run.logPath;
+    wait(run.runId, dir, 150);
+    const { status, events, output_root } = query(
+      ['workflow', 'get', run.runId, '--verbose', '--events'],
+      dir
     );
-  });
-  if (run.ok !== true || typeof run.runId !== 'string') throw new Error('reflection launch failed');
-  wait(run.runId, dir, 150);
-  const { status, events } = query(['workflow', 'get', run.runId, '--verbose', '--events'], dir);
-  const output: unknown =
-    Array.isArray(events) &&
-    (events as Event[]).find(e => e.event_type === 'node_completed' && e.step_name === 'reflect')
-      ?.data?.structured_output;
-  if (status !== 'completed' || !output || typeof output !== 'object')
-    throw new Error('reflection output unavailable');
-  return output;
+    if (typeof output_root === 'string' && output_root)
+      evidence.evidence_path = artifactsOf({ id: run.runId, output_root, status: 'completed' });
+    const receipts = (Array.isArray(events) ? (events as Event[]) : []).filter(
+      e =>
+        e.step_name === 'reflect' && ['node_completed', 'node_failed'].includes(e.event_type ?? '')
+    );
+    const last = receipts.at(-1)?.data;
+    const model = (
+      last?.binding as
+        | { model?: { requested?: string; resolved?: { source: string; value?: string } } }
+        | undefined
+    )?.model;
+    evidence.model =
+      (model?.resolved?.source === 'provider' ? model.resolved.value : undefined) ??
+      model?.requested ??
+      evidence.model;
+    const totals = receipts.map(({ data }) => {
+      const spend = data?.spend as
+        | { tokens?: { source: string; value?: ReportTokens } }
+        | undefined;
+      const raw =
+        spend?.tokens?.source === 'provider'
+          ? spend.tokens.value
+          : !spend
+            ? (data?.tokens as ReportTokens | undefined)
+            : undefined;
+      const tokens = raw && normalizeTokens(raw);
+      return typeof tokens?.input === 'number' && typeof tokens.output === 'number'
+        ? tokens.input + tokens.output
+        : null;
+    });
+    if (totals.length && totals.every(t => t !== null))
+      evidence.tokens = totals.reduce((sum, t) => sum + t, 0);
+    if (status === 'completed') return { output: last?.structured_output, evidence };
+    if (last?.failure_kind === 'output_contract') {
+      // Archon shares one failure kind for missing and invalid structured output.
+      const missing =
+        typeof last.error === 'string' &&
+        last.error.startsWith(
+          "Node 'reflect': output_format declared but the provider returned no schema-valid structured output."
+        );
+      return { failure: missing ? 'no_output' : 'schema_invalid', evidence };
+    }
+    return { failure: 'failed', evidence };
+  } catch {
+    return { failure: 'failed', evidence };
+  }
 }
 
 /** Reconcile one durable Archon run. Queries precede launch, so crash replay is idempotent. */

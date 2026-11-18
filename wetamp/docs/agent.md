@@ -176,7 +176,10 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 - `superagent models --mode auto` 查看路由模型；
 - `superagent report --since <YYYYMMDD|ISO>` 查看运行质量与效率口径；
 - 夜报在本机时间 02:00 后认领当天首轮，`superagent nightly-evolve` 可提前认领；`superagent report` 的 `latest_night_report` 指向最新文件。
+- 夜报复用 `report` 的终态首次通过判定、验收通过包的加权 token 和逻辑 run 耗时。首次通过率单列操作者取消和被取代的 run。每包耗时是已集成 run 的总耗时除以包数。
+- `attribution` 只使用派单时的特征。验收命令数和写范围 glob 数分为 0、1–3、4+ 三档。`failure_reasons` 按首次未通过 run 的包数统计原因占比，同一个包可计入多个原因。
 - 夜报的 `models` 记录本地与远程提炼状态，`sources` 记录各来源试验结果。本地提炼通过 Archon 的 Pi provider，需要在 Pi 的 `models.json` 注册 `splash/qwen3.8-27b`，使用 `openai-completions` 和 `http://127.0.0.1:18081/v1`。本地注册缺失时，远程提炼仍可运行。
+- 每个提炼来源记录 `no_output`、`schema_invalid`、`all_filtered`、`produced` 或执行状态，以及候选数量、过滤原因、模型、token 回执和工作流证据路径。缺失的用量回执保留为 `null`。
 - `superagent memory import <file>` 接收候选数组（`id`、`merged_ids`、`content`）。实际写入前备份经验账本，合并成员保留历史并退出注入。超过 30 条可注入经验时拒绝整批。
 - `superagent debt list [--repo <path>] [--open] [--json]` 列出稳定债 ID；`superagent debt close <id>... --reason <text>` 显式关闭。计划包可用 `closes_debt: [<id>]` 在成功集成后关闭；
 - `superagent quota` 查看当前配额投影；

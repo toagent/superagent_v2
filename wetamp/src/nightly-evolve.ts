@@ -2,10 +2,20 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildNodeSummaries } from '../../packages/cli/src/commands/workflow';
 import { archonRunIds, reportRuns } from './archon';
-import { WETAMP, writeAtomic } from './config';
+import { home, WETAMP, writeAtomic } from './config';
+import { confined } from './board/workflow';
 import type { Ledger } from './ledger';
 import { deliveryProjection, publishProjection } from './land';
-import { clock, firstPassOf, ms, planOf, callsOf } from './report';
+import type { Pkg } from './plan';
+import {
+  acceptedPackageTokens,
+  callsOf,
+  clock,
+  planOf,
+  replacedRuns,
+  reportFirstPassOf,
+  runElapsedOf,
+} from './report';
 import {
   episodeOf,
   lessonSources,
@@ -13,10 +23,11 @@ import {
   memoryState,
   memoryWrite,
   privateProject,
+  taskTag,
   wilson,
   type Lesson,
 } from './memory';
-import { capNightlyOperations, curate, nightlyReflection } from './memory-reflect';
+import { curate, decodeNightlyOutput, nightlyReflection } from './memory-reflect';
 import { redact } from './redact';
 
 const DAY = 86_400_000;
@@ -25,60 +36,95 @@ export interface Sample {
   at: number;
   repo: string;
   first: number | null;
-  integrated: boolean;
-  sizes: string[];
-  roles: string[];
+  excluded?: 'operator' | 'superseded' | 'active';
+  packages: number;
+  groups: string[];
   reasons: string[];
   tokens: number | null;
+  tokenPackages: number;
+  measuredTokenPackages: number;
   elapsed: number | null;
+  elapsedPackages: number;
 }
+const bucket = (n: number) => (n === 0 ? '0' : n <= 3 ? '1-3' : '4+');
+function dispatchGroups(ledger: Ledger): string[] {
+  // Continuations set gen_dir to the new generation. Use the original dispatch snapshot.
+  const gen_dir = join(home().sa, 'gen', ledger.run_id);
+  const plan = planOf({ ...ledger, gen_dir, plan: join(gen_dir, 'plan.json') });
+  const groups = (plan?.packages ?? []).flatMap((p: Partial<Pkg>) => [
+    ...(p.size ? [`size:${p.size}`] : []),
+    ...(p.risk ? [`risk:${p.risk}`] : []),
+    ...(Array.isArray(p.accept) ? [`accept_count:${bucket(p.accept.length)}`] : []),
+    ...(p.max_net_lines === undefined ? ['max_net_lines:no'] : ['max_net_lines:yes']),
+    ...(Array.isArray(p.scope?.write)
+      ? [`tag:${taskTag(p.scope.write)}`, `write_globs:${bucket(p.scope.write.length)}`]
+      : []),
+  ]);
+  // Legacy recoveries can overwrite the original run-config.yaml in place.
+  if (ledger.adoptions?.some(a => a.reason !== 'plan_replacement')) return groups;
+  try {
+    const path = confined({ ...ledger, gen_dir }, join(gen_dir, 'run-config.yaml'));
+    if (path) {
+      const config = Bun.YAML.parse(readFileSync(path, 'utf8')) as
+        | { aliases?: { '@sa-coder'?: { model?: string } } }
+        | null
+        | undefined;
+      const model = config?.aliases?.['@sa-coder']?.model;
+      if (model) groups.push(`model:${model}`);
+    }
+  } catch {
+    // Older or collected run snapshots have no pinned model evidence.
+  }
+  return groups;
+}
+
 export function collect(ls: Ledger[], now: number): Sample[] {
   if (!ls.length) return [];
   const runs = reportRuns(new Date(now - 8 * DAY).toISOString(), new Date(now).toISOString());
+  const replaced = replacedRuns(ls);
   return ls.flatMap(ledger => {
     const ids = archonRunIds(ledger),
       latest = runs.get(ledger.archon_run_id);
-    const initial = runs.get(ids[0]);
-    if (!initial || !latest || !['completed', 'failed', 'cancelled'].includes(latest.status))
-      return [];
+    if (!latest) return [];
     const plan = planOf(ledger);
-    if (!plan?.packages.length || clock(latest.completed_at ?? '') > now) return [];
+    if (clock(latest.completed_at ?? '') > now) return [];
     const run = { ...latest, nodes: buildNodeSummaries(latest.events) };
-    const integrated = Boolean(
-      deliveryProjection(ledger)?.integrated ?? publishProjection(ledger, run)?.integrated
-    );
-    const sizes = plan.packages.map(p => p.size);
+    const pair = { ledger, run };
+    const first = reportFirstPassOf(pair, replaced);
+    const integrated =
+      first !== 'active' &&
+      Boolean(deliveryProjection(ledger)?.integrated ?? publishProjection(ledger, run)?.integrated);
+    const packages = plan?.packages.length ?? 0;
     const calls = callsOf(
       ledger.run_id,
       ids.flatMap(id => runs.get(id)?.events ?? []),
       plan
     );
-    const weights = calls.map(({ tokens: t }) =>
-      t?.input === undefined || t.output === undefined
-        ? null
-        : t.input - (t.cacheRead ?? 0) + t.output
+    const accepted = acceptedPackageTokens(
+      pair,
+      calls,
+      ids.some(id => !runs.has(id))
     );
-    const elapsed = ms(initial.started_at ?? undefined, latest.completed_at ?? undefined);
-    const first = firstPassOf({ ledger, run });
+    const weights = accepted.flatMap(p => (typeof p.tokens === 'number' ? [p.tokens] : []));
+    const elapsed = runElapsedOf(pair);
     const e = episodeOf(ledger.run_id);
     return [
       {
         id: ledger.run_id,
-        at: clock(initial.started_at ?? ''),
+        at: clock(latest.started_at ?? ''),
         repo: ledger.repo,
-        first: first === 'unknown' ? null : Number(first),
-        sizes,
-        integrated,
+        first: typeof first === 'boolean' ? Number(first) : null,
+        ...(first === 'operator' || first === 'superseded' || first === 'active'
+          ? { excluded: first }
+          : {}),
+        packages,
+        groups: dispatchGroups(ledger),
         reasons: e?.reasons ?? [],
-        roles: [...new Set(calls.map(c => c.role))],
-        tokens:
-          integrated &&
-          ids.every(id => runs.has(id)) &&
-          weights.length &&
-          weights.every(w => w !== null)
-            ? weights.reduce((a, b) => a + b, 0) / sizes.length
-            : null,
-        elapsed: integrated && elapsed !== null ? elapsed / sizes.length : null,
+        tokens: weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : null,
+        tokenPackages: accepted.length,
+        measuredTokenPackages: weights.length,
+        elapsed: integrated && packages && elapsed !== null ? elapsed / packages : null,
+        elapsedPackages: integrated ? packages : 0,
       },
     ];
   });
@@ -89,11 +135,17 @@ const tally = (rows: Sample[], metric: (typeof metrics)[number]) => {
     denominator = 0,
     eligible = 0;
   for (const row of rows) {
-    const count = metric === 'first' ? 1 : row.integrated ? row.sizes.length : 0;
+    const count =
+      metric === 'first'
+        ? Number(!row.excluded)
+        : metric === 'tokens'
+          ? row.tokenPackages
+          : row.elapsedPackages;
     eligible += count;
     if (row[metric] === null) continue;
-    numerator += row[metric] * count;
-    denominator += count;
+    const measured = metric === 'tokens' ? row.measuredTokenPackages : count;
+    numerator += row[metric] * measured;
+    denominator += measured;
   }
   return {
     numerator,
@@ -102,6 +154,12 @@ const tally = (rows: Sample[], metric: (typeof metrics)[number]) => {
     coverage: eligible ? denominator / eligible : null,
     status: eligible && denominator === eligible ? 'complete' : 'insufficient_coverage',
     value: denominator ? numerator / denominator : null,
+    ...(metric === 'first' && {
+      excluded: {
+        operator: rows.filter(r => r.excluded === 'operator').length,
+        superseded: rows.filter(r => r.excluded === 'superseded').length,
+      },
+    }),
   };
 };
 export function analyze(rows: Sample[], now: number) {
@@ -152,12 +210,7 @@ export function analyze(rows: Sample[], now: number) {
       const baseline = measured.filter(adverse).length / measured.length;
       const groups = new Map<string, Sample[]>();
       for (const r of measured)
-        for (const key of new Set([
-          `repo:${r.repo}`,
-          ...r.reasons.map(v => `reason:${v}`),
-          ...r.sizes.map(v => `size:${v}`),
-          ...r.roles.map(v => `role:${v}`),
-        ])) {
+        for (const key of new Set([`repo:${r.repo}`, ...r.groups])) {
           const members = groups.get(key);
           if (members) members.push(r);
           else groups.set(key, [r]);
@@ -169,11 +222,7 @@ export function analyze(rows: Sample[], now: number) {
         const interval = wilson(k, n);
         if (n < 5 || interval[0] <= baseline) return [];
         const category =
-          metric === 'tokens'
-            ? '浪费 token'
-            : metric === 'elapsed' || /^(role:|reason:.*(?:review|repair|hold|rework))/.test(group)
-              ? '协同失败'
-              : '影响完成度';
+          metric === 'tokens' ? '浪费 token' : metric === 'elapsed' ? '协同失败' : '影响完成度';
         return [
           {
             metric,
@@ -192,7 +241,20 @@ export function analyze(rows: Sample[], now: number) {
     })
     .sort((a, b) => b.impact - a.impact)
     .slice(0, 3);
-  return { last_24h, last_7d, deviation, attribution };
+  const failures = weekly.filter(r => r.first === 0);
+  const denominator = failures.reduce((sum, row) => sum + row.packages, 0);
+  const counts = new Map<string, number>();
+  for (const { packages, reasons } of failures) {
+    if (!packages) continue;
+    for (const reason of new Set(reasons)) counts.set(reason, (counts.get(reason) ?? 0) + packages);
+  }
+  const failure_reasons = {
+    denominator,
+    reasons: Object.fromEntries(
+      [...counts].map(([reason, count]) => [reason, { count, share: count / denominator }])
+    ),
+  };
+  return { last_24h, last_7d, deviation, attribution, failure_reasons };
 }
 const localDay = (at: number) => {
   const d = new Date(at);
@@ -200,7 +262,19 @@ const localDay = (at: number) => {
 };
 const sources = ['remote', 'local'] as const;
 type Source = (typeof sources)[number];
-const modelState = () => ({ called: false, status: 'interrupted', duration_ms: 0 });
+const modelState = () => ({
+  called: false,
+  status: 'interrupted',
+  duration_ms: 0,
+  model: null as string | null,
+  tokens: null as number | null,
+  run_id: null as string | null,
+  evidence_path: null as string | null,
+  reason: null as string | null,
+  proposed: 0,
+  produced: 0,
+  filtered: {} as Record<string, number>,
+});
 
 export function latestNightReport(sa: string): string | undefined {
   const dir = join(sa, 'evolution');
@@ -228,7 +302,7 @@ export function evolve(
     path = join(dir, day + '.json');
   if (existsSync(path)) return 'already-claimed';
   mkdirSync(dir, { recursive: true });
-  const model = modelState(),
+  const model = { called: false, status: 'interrupted', duration_ms: 0 },
     models = { remote: modelState(), local: modelState() };
   const save = (payload = {}) => {
     writeAtomic(path, JSON.stringify({ day, ...payload, model, models }, null, 2) + '\n');
@@ -281,12 +355,39 @@ export function evolve(
       state.status = 'interrupted';
       save({ ...stats, candidates });
       try {
-        const output = capNightlyOperations(reflect(prompt, source));
-        if (!Array.isArray(output.operations)) throw new Error('invalid reflection operations');
-        state.status = 'rejected';
-        return output.operations as ({ op?: string; lesson?: { evidence?: string[] } } | null)[];
+        const { output, evidence, failure } = reflect(prompt, source);
+        Object.assign(state, evidence);
+        const proposed = (output as { operations?: unknown } | null)?.operations;
+        state.proposed = Array.isArray(proposed) ? proposed.length : 0;
+        if (failure || output === undefined) {
+          state.status = failure ?? 'no_output';
+          state.reason =
+            state.status === 'failed'
+              ? '提炼工作流执行失败'
+              : state.status === 'schema_invalid'
+                ? '工作流拒绝了输出结构'
+                : '模型未返回结构化输出';
+          return [];
+        }
+        const decoded = decodeNightlyOutput(output);
+        if (!decoded.success) {
+          state.status = 'schema_invalid';
+          state.reason = '提炼输出结构不合格';
+          return [];
+        }
+        const { operations, reason } = decoded.data;
+        state.status = operations.length ? 'all_filtered' : 'no_output';
+        state.reason = reason?.trim()
+          ? redact(reason.trim())
+          : operations.length
+            ? null
+            : '模型返回空候选';
+        if (state.proposed > operations.length)
+          state.filtered.source_limit = state.proposed - operations.length;
+        return operations as ({ op?: string; lesson?: { evidence?: string[] } } | null)[];
       } catch {
         state.status = 'failed';
+        state.reason = '提炼工作流执行失败';
         return [];
       } finally {
         state.duration_ms = Date.now() - started;
@@ -295,6 +396,10 @@ export function evolve(
     if (Buffer.byteLength(prompt) <= 24_000) {
       model.called = true;
       const pending = { remote: propose('remote'), local: propose('local') };
+      const discard = (source: Source, reason: string) => {
+        const counts = models[source].filtered;
+        counts[reason] = (counts[reason] ?? 0) + 1;
+      };
       try {
         if (pending.remote.length || pending.local.length)
           memoryWrite(state => {
@@ -302,13 +407,22 @@ export function evolve(
             const next = (source: Source) => {
               while (pending[source].length) {
                 const op = pending[source].shift();
-                if (op?.op !== 'ADD' || !Array.isArray(op.lesson?.evidence)) continue;
+                if (op?.op !== 'ADD' || !Array.isArray(op.lesson?.evidence)) {
+                  discard(source, 'invalid_or_unsupported_operation');
+                  continue;
+                }
                 const episode = examples.find(e => op.lesson?.evidence?.includes(e.id));
-                if (!episode) continue;
-                const candidate = curate(episode, { operations: [op] }, now).lessons.at(0);
+                if (!episode) {
+                  discard(source, 'evidence_missing');
+                  continue;
+                }
+                const curated = curate(episode, { operations: [op] }, now);
+                const candidate = curated.lessons.at(0);
+                if (!candidate || candidate.tier === 'role') {
+                  discard(source, candidate ? 'unsupported_tier' : curated.result);
+                  continue;
+                }
                 if (
-                  !candidate ||
-                  candidate.tier === 'role' ||
                   [...state.lessons, ...candidates].some(
                     l =>
                       l.id === candidate.id ||
@@ -316,8 +430,10 @@ export function evolve(
                         l.scope === candidate.scope &&
                         l.do === candidate.do)
                   )
-                )
+                ) {
+                  discard(source, 'duplicate');
                   continue;
+                }
                 candidates.push({ ...candidate, source, curated_at: new Date(now).toISOString() });
                 break;
               }
@@ -326,14 +442,24 @@ export function evolve(
               for (const source of order) if (candidates.length < 3) next(source);
             return { lessons: candidates };
           });
-        for (const candidate of candidates) models[candidate.source].status = 'produced';
-        model.status = candidates.length
-          ? 'produced'
-          : sources.every(source => models[source].status === 'failed')
-            ? 'failed'
-            : 'rejected';
+        for (const source of sources) {
+          if (pending[source].length)
+            models[source].filtered.candidate_limit = pending[source].length;
+          models[source].produced = candidates.filter(c => c.source === source).length;
+          if (models[source].produced) models[source].status = 'produced';
+        }
+        const statuses = sources.map(source => models[source].status);
+        model.status =
+          ['produced', 'all_filtered', 'schema_invalid', 'no_output', 'failed'].find(status =>
+            statuses.includes(status)
+          ) ?? 'failed';
       } catch {
         model.status = 'failed';
+        for (const source of sources) {
+          if (models[source].status !== 'all_filtered') continue;
+          models[source].status = 'failed';
+          models[source].reason = '经验写入失败';
+        }
         candidates.length = 0;
       }
     } else {
