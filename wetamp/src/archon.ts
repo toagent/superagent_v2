@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { archonMutation, coord } from './coord';
 import { WETAMP, home } from './config';
 import type { Ledger } from './cli';
-import { executionOwnership, unknownEffects } from './recovery';
+import { executionOwnership, recoveryAdmissionAction, unknownEffects } from './recovery';
 import type { RunWaitResult } from '../../packages/core/src/services/run-attention-watch';
 
 export interface Exec {
@@ -509,7 +509,7 @@ export function admitRun(): Admission {
 export function recover(
   ...args: Parameters<typeof resumeExecution> extends [unknown, ...infer Rest] ? Rest : never
 ): ReturnType<typeof resumeExecution> {
-  return resumeExecution(
+  const result = resumeExecution(
     {
       root: home().archon,
       inspectProcess,
@@ -522,6 +522,9 @@ export function recover(
     },
     ...args
   );
+  if (!result.ok && result.reason === 'recovery_admission_unknown')
+    result.action = recoveryAdmissionAction(args[5]?.operatorId ?? args[0]);
+  return result;
 }
 
 /** 脱离本进程的 archon 子进程（signal/wake 会在调用进程内执行剩余 DAG）；输出追加到 log。 */

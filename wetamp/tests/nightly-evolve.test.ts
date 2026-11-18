@@ -91,6 +91,20 @@ test('local 02:00, same-day claim, restart, following day, and explicit entry sh
   expect(days).toEqual([at(18, 10), at(19), at(20, 1)]);
 });
 
+test('explicit nightly entry refreshes a claimed report and returns its path', () => {
+  const sa = home();
+  const path = evolve(sa, Date.now(), () => [], true);
+  if (path === 'not-due' || path === 'already-claimed') throw Error(path);
+  writeFileSync(path, '{}');
+  const output = Bun.spawnSync(
+    [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'nightly-evolve'],
+    { env: { ...process.env, HOME: sa, SUPERAGENT_HOME: sa, ARCHON_HOME: join(sa, 'archon') } }
+  );
+  expect(output.exitCode, output.stderr.toString()).toBe(0);
+  expect(readFileSync(path, 'utf8')).not.toBe('{}');
+  expect(JSON.parse(output.stdout.toString())).toMatchObject({ nightly: { ok: true, path } });
+});
+
 test('one Archon launch fails while the night report and other maintenance tasks survive', () => {
   const sa = home(),
     calls: string[] = [];

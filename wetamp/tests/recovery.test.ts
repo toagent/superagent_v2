@@ -65,6 +65,74 @@ test('recover refuses a deleted working_path before admission or launch', () => 
   }
 });
 
+test('explicit recover archives a failed launch only with a local offline owner', () => {
+  const root = tmp(),
+    repo = gitRepo(root),
+    home = join(root, 'home');
+  const admissions = join(home, 'archon/execution-admissions');
+  const journal = join(admissions, 'old.json'),
+    result = journal + '-result';
+  mkdirSync(admissions, { recursive: true });
+  mkdirSync(join(home, 'runs'));
+  const env = { ...process.env };
+  Object.assign(process.env, {
+    ...fixtureEnv(),
+    SUPERAGENT_HOME: home,
+    ARCHON_HOME: join(home, 'archon'),
+  });
+  const run = {
+    id: 'old',
+    status: 'failed',
+    metadata: { execution_owner: { host: hostname(), pid: process.pid } },
+  };
+  const transport = spyOn(archonModule, 'archon').mockImplementation(args => ({
+    code: 0,
+    out: JSON.stringify(args[1] === 'get' ? run : { ok: true }),
+    err: '',
+  }));
+  const output = spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const controller = coordination
+      .coord()
+      .claim(coordination.repoScope(repo), coordination.caller()).controller;
+    // prettier-ignore
+    const ledger = { run_id: 'operator', archon_run_id: 'old', repo, gen_dir: root, branch: 'sa/operator',
+      workflow: 'sa-operator', engine_hash: engineHash(), started_at: '', controller };
+    writeFileSync(join(home, 'runs/operator.json'), JSON.stringify(ledger));
+    writeFileSync(join(root, 'plan.json'), JSON.stringify({ packages: [] }));
+    // prettier-ignore
+    const claim = () => writeFileSync(journal, JSON.stringify({
+      token: 'failed-launch', owner: run.metadata.execution_owner, started_at: null,
+    }));
+    const finish = (code: number) => {
+      writeFileSync(result, JSON.stringify({ code, out: '', err: '' }));
+      utimesSync(result, new Date(), new Date(Date.now() + 1000));
+    };
+    claim();
+    expect(main(['recover', 'operator'])).toBe(EXIT.held);
+    finish(1);
+    expect(main(['recover', 'operator'])).toBe(EXIT.held);
+    const held = JSON.parse(output.mock.calls.at(-1)?.[0] ?? '{}');
+    main(['brief', 'operator']);
+    expect(output.mock.calls.at(-1)?.[0]).toContain(held.action);
+    expect(output.mock.calls.at(-1)?.[0]).not.toContain('decide operator retry');
+    run.metadata.execution_owner.pid = 99_999_999;
+    claim();
+    utimesSync(result, new Date(), new Date(0));
+    expect(main(['recover', 'operator'])).toBe(EXIT.held);
+    finish(0);
+    expect(main(['recover', 'operator'])).toBe(EXIT.held);
+    finish(1);
+    expect(main(['recover', 'operator'])).toBe(0);
+    expect(readFileSync(journal, 'utf8')).not.toContain('failed-launch');
+    expect(existsSync(result)).toBe(false);
+  } finally {
+    transport.mockRestore();
+    output.mockRestore();
+    process.env = env;
+  }
+});
+
 test('recover resumes when working_path was not recorded', () => {
   // prettier-ignore
   const root = tmp(), repo = gitRepo(root), home = join(root, 'home'), dir = join(root, 'stub');

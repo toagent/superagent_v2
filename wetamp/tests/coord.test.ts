@@ -1943,6 +1943,9 @@ test('native resume renews repo and only the original session’s nonterminal ru
     const db = new Database(join(s.archon, 'archon.db'));
     db.exec('CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT)');
     const runs = ['running', 'completed', 'failed', 'cancelled', 'foreign', 'taken'];
+    const gen_dir = join(s.root, 'gen');
+    mkdirSync(gen_dir);
+    writeFileSync(join(gen_dir, 'delivery-authorization.json'), '{}');
     for (const id of runs) {
       db.query('INSERT INTO remote_agent_workflow_runs VALUES (?, ?)').run(
         id,
@@ -1950,6 +1953,7 @@ test('native resume renews repo and only the original session’s nonterminal ru
       );
       const l = {
         repo: s.repo,
+        gen_dir,
         run_id: id,
         archon_run_id: id,
         launcher: id === 'foreign' ? { ...s.old, session_id: 'foreign-launch' } : s.old,
@@ -1974,6 +1978,14 @@ test('native resume renews repo and only the original session’s nonterminal ru
       expect(req('../hooks/coord.cjs').admission(s.sa, scope, view.owner, 2).generation).toBe(2);
     for (const id of runs.slice(1))
       expect(s.c.owner(scopeOf(id)).generation).toBe(id === 'taken' ? 2 : 1);
+    for (const id of runs.slice(1))
+      expect(existsSync(join(s.sa, 'coord/authorizations', id + '.json'))).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(s.sa, 'coord/authorizations/running.json'), 'utf8'))
+    ).toMatchObject({
+      run: { pid, generation: 2 },
+      repo: { pid, generation: 2 },
+    });
     expect(s.c.messages()).toEqual(messages);
   }
 });

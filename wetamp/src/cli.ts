@@ -70,10 +70,12 @@ import {
 } from './cockpit-signals';
 import { inspectProcess, launcher, type Launcher } from './launcher';
 import {
+  archiveFailedAdmission,
   claimCancelledExecution,
   executionOwnership,
   ownershipUnknown,
   recoveryAdmissionUnknown,
+  recoveryAdmissionAction,
   recoverySnapshot,
 } from './recovery';
 // prettier-ignore
@@ -916,7 +918,7 @@ function targetCheckoutAction(l: Ledger, delivery: DeliveryTarget): string {
 
 // prettier-ignore
 function terminalProjection(l: Ledger, run: RunView, c: Classified) {
-  if (c.exit === EXIT.running) return { delivery_state: 'pending' as const };
+  if (c.exit === EXIT.running) return { delivery_state: 'pending' as const, receipt: undefined };
   const art = artifactsOf(run),
     node = run.nodes?.find(n => n.nodeId === c.node),
     landError = [...(l.intervention_events ?? [])]
@@ -941,7 +943,8 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
     blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
     reauthorize = reauthorizationHint(l, run, c),
-    action = reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
+    action = c.state === 'held:recovery_admission_unknown' ? recoveryAdmissionAction(l.run_id)
+      : reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
       : reason === 'target_checkout_changed' && l.delivery ? targetCheckoutAction(l, l.delivery)
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
@@ -952,7 +955,11 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}`
       : c.state === 'abandoned' ? 'none' : '读 evidence_path');
   const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
-  return { delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action } };
+  return {
+    delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action },
+    ...(c.state === 'held:recovery_admission_unknown' ? { action } : c.state === 'held:owner_unknown'
+      ? { action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.` } : {}),
+  };
 }
 
 function reauthorizationHint(l: Ledger, run: RunView, c: Classified): string | undefined {
@@ -1047,11 +1054,6 @@ function summary(
     })),
     ...receiptFields,
     ...(outOfScope.length ? { out_of_scope: outOfScope } : {}),
-    ...(c.state === 'held:owner_unknown' || c.state === 'held:recovery_admission_unknown'
-      ? {
-          action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.`,
-        }
-      : {}),
     recoveries: l.recoveries?.length ?? 0,
     auto_retries: l.auto_retries?.length ?? 0,
     ...(needs.length ? { needs } : {}),
@@ -2479,7 +2481,10 @@ function resumeRun(
         undefined,
         reconciled,
         evidenceFile,
-        () => clearAutoRecoverPause(l)
+        run => {
+          if (action === 'recover') archiveFailedAdmission(home().archon, run, lastJson);
+          return clearAutoRecoverPause(l);
+        }
       ),
     undefined,
     () => started
@@ -3738,6 +3743,8 @@ export function maintenanceTick(
     if (tasks.nightly) {
       const night = run('nightly', () => tasks.nightly?.(Date.now(), forceNightly));
       if (night === 'not-due' || night === 'already-claimed') delete record.nightly;
+      else if (forceNightly && typeof night === 'string')
+        record.nightly = { ...(record.nightly as object), path: night };
     }
     const failed = Object.values(record).some(
       value => value && typeof value === 'object' && 'ok' in value && value.ok === false
@@ -4472,7 +4479,10 @@ function dispose(
       ok: false,
       held: true,
       state: c.state,
-      next: `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
+      next:
+        c.state === 'held:recovery_admission_unknown'
+          ? recoveryAdmissionAction(l.run_id)
+          : `Inspect archon workflow get ${run.id} --verbose; resolve ownership or abandon explicitly.`,
     };
   if (c.state === 'owner_lost') {
     const askPaused = (): Action =>
@@ -5480,7 +5490,13 @@ export function main(argv: string[]): number {
             undefined,
             undefined,
             undefined,
-            a.flags.reconciled
+            a.flags.reconciled,
+            verb === 'recover'
+              ? current => {
+                  archiveFailedAdmission(home().archon, current, lastJson);
+                  return undefined;
+                }
+              : undefined
           )
         );
         print({ run_id: id, ...res });

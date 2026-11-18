@@ -309,7 +309,7 @@ export function evolve(
   const day = localDay(now),
     dir = join(sa, 'evolution'),
     path = join(dir, day + '.json');
-  if (existsSync(path)) return 'already-claimed';
+  if (!force && existsSync(path)) return 'already-claimed';
   mkdirSync(dir, { recursive: true });
   const model = { called: false, status: 'interrupted', duration_ms: 0 },
     models = { remote: modelState(), local: modelState() };

@@ -92,6 +92,29 @@ describe('install.sh', () => {
     for (const d of ['gen', 'runs']) expect(readdirSync(home)).toContain(d);
   });
 
+  test('Codex worker follows the current engine after its first snapshot is retired', () => {
+    const home = tmp(),
+      engine = join(home, 'engine'),
+      current = join(engine, 'current');
+    for (const version of ['first', 'second']) {
+      const worker = join(engine, version, 'wetamp/bin/codex-worker');
+      mkdirSync(dirname(worker), { recursive: true });
+      writeFileSync(worker, version, { mode: 0o755 });
+    }
+    symlinkSync('first', current);
+    runInstall(home);
+    const config = Bun.YAML.parse(readFileSync(join(home, 'archon/config.yaml'), 'utf8')) as {
+      assistants: { codex: { codexBinaryPath: string } };
+    };
+    const path = config.assistants.codex.codexBinaryPath;
+    expect(path).toBe(join(current, 'wetamp/bin/codex-worker'));
+    expect(readFileSync(path, 'utf8')).toBe('first');
+    rmSync(current);
+    symlinkSync('second', current);
+    rmSync(join(engine, 'first'), { recursive: true });
+    expect(readFileSync(path, 'utf8')).toBe('second');
+  });
+
   test('jail policy renders QuickLook and trust rules, and skips unavailable cache', () => {
     const home = tmp(),
       bin = join(home, 'bin'),

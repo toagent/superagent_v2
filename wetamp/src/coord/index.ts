@@ -506,7 +506,7 @@ export class Coordination {
     return shared.hash([scope, identity.key(who)]);
   }
   // prettier-ignore
-  private transfer(scope: Scope, who: Identity | null, reason: string, renewal = false, notify = true): Claim {
+  private transfer(scope: Scope, who: Identity | null, reason: string, renewal = false, notify = true, beforeClaim?: (controller: Controller) => void): Claim {
     const old = this.claimOf(scope),
       view = this.owner(scope),
       at = new Date(this.d.now()).toISOString();
@@ -523,7 +523,10 @@ export class Coordination {
     if (renewal && !old && view.owner)
       c.history.unshift({ owner: view.owner, generation: view.generation, at, reason });
     // Publish a renewal claim only once its lease is durable, so an interrupted write can retry.
-    if (renewal && who) this.save('leases', this.leaseKey(scope, who), { generation });
+    if (renewal && who) {
+      this.save('leases', this.leaseKey(scope, who), { generation });
+      beforeClaim?.({ ...who, generation });
+    }
     this.save('claims', shared.hash(scope), c);
     if (!renewal && who) this.save('leases', this.leaseKey(scope, who), { generation });
     for (const previous of view.owner ? [view.owner] : view.conflicts)
@@ -677,22 +680,23 @@ export class Coordination {
     );
   }
   reauthorize(run: RunRef, who: Identity): DeliveryReauthorization {
+    return this.mutate(runScope(run), who, controller => this.writeAuthorization(run, controller));
+  }
+  private writeAuthorization(run: RunRef, controller: Controller): DeliveryReauthorization {
     const genDir = run.gen_dir;
     if (!genDir || !/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(run.run_id))
       throw new Error('reauthorize: invalid run ledger');
-    return this.mutate(runScope(run), who, runController => {
-      const repository = this.owner(repoScope(run.repo));
-      if (!repository.owner) throw new Error('reauthorize: repository contact unavailable');
-      const original = readFileSync(join(genDir, 'delivery-authorization.json'));
-      const authorization = {
-        run: runController,
-        repo: { ...repository.owner, generation: repository.generation },
-        original_sha256: createHash('sha256').update(original).digest('hex'),
-        at: new Date(this.d.now()).toISOString(),
-      };
-      this.save('authorizations', run.run_id, authorization);
-      return authorization;
-    });
+    const repository = this.owner(repoScope(run.repo));
+    if (!repository.owner) throw new Error('reauthorize: repository contact unavailable');
+    const original = readFileSync(join(genDir, 'delivery-authorization.json'));
+    const authorization = {
+      run: controller,
+      repo: { ...repository.owner, generation: repository.generation },
+      original_sha256: createHash('sha256').update(original).digest('hex'),
+      at: new Date(this.d.now()).toISOString(),
+    };
+    this.save('authorizations', run.run_id, authorization);
+    return authorization;
   }
   release(scope: Scope, who: Identity): void {
     this.mutate(scope, who, () => {
@@ -701,7 +705,12 @@ export class Coordination {
       });
     });
   }
-  private renewOwner(scope: Scope, who: Identity, view: ReturnType<Coordination['owner']>) {
+  private renewOwner(
+    scope: Scope,
+    who: Identity,
+    view: ReturnType<Coordination['owner']>,
+    run?: RunRef
+  ) {
     const old = view.owner;
     if (
       old?.session_id &&
@@ -725,7 +734,10 @@ export class Coordination {
             this.d.presence(c.owner).state !== 'offline'
         )
     )
-      return this.transfer(scope, who, SAME_SESSION_RENEWAL, true);
+      return this.transfer(scope, who, SAME_SESSION_RENEWAL, true, false, controller => {
+        if (run?.gen_dir && existsSync(join(run.gen_dir, 'delivery-authorization.json')))
+          this.writeAuthorization(run, controller);
+      });
     return undefined;
   }
   renewSession(who: Identity): void {
@@ -754,6 +766,7 @@ export class Coordination {
           const ledger = this.d.runs(scope.id).at(0);
           if (!ledger || shared.repoScope(ledger.repo)?.id !== scope.repo) return undefined;
           if (!active(ledger, this.d.status(ledger))) return undefined;
+          return this.renewOwner(scope, who, this.owner(scope), ledger);
         }
         return this.renewOwner(scope, who, this.owner(scope));
       };

@@ -3,6 +3,7 @@ import {
   accessSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -24,7 +25,12 @@ export interface Alias {
 }
 export const WETAMP = join(import.meta.dir, '..');
 /** Archon worker 的 Codex 二进制：前置 exec_profiles 的 -c 保留原生 MCP。 */
-export const CODEX_WORKER = join(WETAMP, 'bin', 'codex-worker');
+function codexWorkerPath(sa = process.env.SUPERAGENT_HOME): string {
+  const current = sa && join(sa, 'engine', 'current');
+  return current && lstatSync(current, { throwIfNoEntry: false })
+    ? join(current, 'wetamp', 'bin', 'codex-worker')
+    : join(WETAMP, 'bin', 'codex-worker');
+}
 
 export function home(): { sa: string; archon: string } {
   const sa = process.env.SUPERAGENT_HOME;
@@ -366,7 +372,7 @@ export function aliasDrift(repo?: string, t = loadTiers()): string[] {
   return drift;
 }
 
-export function mergeConfig(current: unknown, t: Tiers): Obj {
+export function mergeConfig(current: unknown, t: Tiers, sa?: string): Obj {
   const aliases = renderAliases(t);
   assertAuthorNotReviewer(aliases);
   const cfg = { ...obj(current) };
@@ -384,22 +390,24 @@ export function mergeConfig(current: unknown, t: Tiers): Obj {
   const assistants = obj(cfg.assistants);
   cfg.assistants = {
     ...assistants,
-    codex: { ...obj(assistants.codex), codexBinaryPath: CODEX_WORKER },
+    codex: { ...obj(assistants.codex), codexBinaryPath: codexWorkerPath(sa) },
   };
   return cfg;
 }
 
 /** 全局 config.yaml 的 codexBinaryPath 须指向可执行的 codex-worker；返回问题描述（health 拒绝）。 */
 export function codexWorkerProblem(): string | null {
-  const f = join(home().archon, 'config.yaml');
+  const { sa, archon } = home();
+  const worker = codexWorkerPath(sa);
+  const f = join(archon, 'config.yaml');
   const raw = existsSync(f) ? readFileSync(f, 'utf8') : '';
   const got = obj(obj(obj(raw ? Bun.YAML.parse(raw) : null).assistants).codex).codexBinaryPath;
-  if (got !== CODEX_WORKER)
-    return `${f}: assistants.codex.codexBinaryPath is ${String(got)}, want ${CODEX_WORKER}`;
+  if (got !== worker)
+    return `${f}: assistants.codex.codexBinaryPath is ${String(got)}, want ${worker}`;
   try {
-    accessSync(CODEX_WORKER, constants.X_OK);
+    accessSync(worker, constants.X_OK);
   } catch {
-    return `${CODEX_WORKER} is not executable`;
+    return `${worker} is not executable`;
   }
   return null;
 }
@@ -422,7 +430,7 @@ export function install(t = loadTiers()): string[] {
   const cfgPath = join(archon, 'config.yaml');
   const raw = existsSync(cfgPath) ? readFileSync(cfgPath, 'utf8') : '';
   const before = raw ? Bun.YAML.parse(raw) : null;
-  const next = mergeConfig(before, t);
+  const next = mergeConfig(before, t, sa);
   if (JSON.stringify(before) !== JSON.stringify(next)) {
     if (raw)
       copyFileSync(cfgPath, `${cfgPath}.bak-${new Date().toISOString().replace(/[:.]/g, '')}`);

@@ -3,12 +3,14 @@ import { authoredNodeId, captureDelivery, landEvidence, publishRecoverable } fro
 import { inspectProcess } from './launcher';
 import { home } from './config';
 import { Database } from 'bun:sqlite';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync, renameSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
-import type { RunView } from './archon';
+import type { Exec, RunView } from './archon';
 import {
   executionOwnership as ownership,
   ownershipUnknown as unknown,
+  sameRecoveryOwner,
   unknownEffects as engineUnknownEffects,
   type RecoveryAdmission,
 } from '@archon/workflows/execution-lifecycle';
@@ -20,6 +22,60 @@ export {
 } from '@archon/workflows/execution-lifecycle';
 export const executionOwnership = (run: RunView) => ownership(run, inspectProcess);
 export const ownershipUnknown = (run: RunView) => unknown(run, inspectProcess);
+
+export const recoveryAdmissionAction = (id: string): string =>
+  `核实启动回执和原执行进程。启动失败且进程退出后，运行 superagent recover ${id}`;
+
+/** Called inside Archon's admission lock, after controller and run guards pass. */
+export function archiveFailedAdmission(
+  root: string,
+  run: RunView,
+  parseAck: (text: string) => { ok?: unknown } | null
+): void {
+  if (!['failed', 'paused'].includes(run.status) || !/^[\w-]+$/.test(run.id)) return;
+  const recorded = run.metadata?.execution_admission ?? run.metadata?.superagent_recovery;
+  if (recorded && sameRecoveryOwner(run, recorded)) return;
+
+  const journal = join(root, 'execution-admissions', `${run.id}.json`);
+  const result = `${journal}-result`;
+  let claim: RecoveryAdmission | null;
+  try {
+    const admitted = lstatSync(journal, { bigint: true });
+    const finished = lstatSync(result, { bigint: true });
+    // The existing Archon sidecar has no token. It must postdate this exact journal.
+    if (!admitted.isFile() || !finished.isFile() || finished.mtimeNs <= admitted.mtimeNs) return;
+    claim = JSON.parse(readFileSync(journal, 'utf8')) as RecoveryAdmission | null;
+    const launch = JSON.parse(readFileSync(result, 'utf8')) as Exec | null;
+    if (
+      !claim?.token ||
+      typeof claim.token !== 'string' ||
+      claim.started_at !== (run.started_at ?? null) ||
+      !sameRecoveryOwner(run, claim) ||
+      !launch ||
+      !Number.isInteger(launch.code) ||
+      launch.code <= 0 ||
+      launch.code >= 128 ||
+      typeof launch.out !== 'string' ||
+      typeof launch.err !== 'string' ||
+      parseAck(launch.out)?.ok === true
+    )
+      return;
+  } catch {
+    return; // Missing or unreadable evidence leaves the engine fence intact.
+  }
+  const owner = claim.owner;
+  if (
+    owner?.host !== hostname() ||
+    !Number.isSafeInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    inspectProcess(owner.pid).state !== 'offline'
+  )
+    return;
+
+  const archive = `${journal}.archived-${crypto.randomUUID()}`;
+  renameSync(journal, archive);
+  renameSync(result, `${archive}-result`);
+}
 
 /** Claim the already-reconciled cancelled row without widening native resume semantics. */
 export function claimCancelledExecution(run: RunView, claim: RecoveryAdmission): boolean {
