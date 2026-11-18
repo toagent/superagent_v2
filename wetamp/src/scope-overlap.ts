@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { home } from './config';
 import { coord, repoScope } from './coord';
 import { loadLedger } from './ledger';
+import { abandoned } from './ledger-metrics';
 import { loadPlan, type Plan } from './plan';
 import { redact } from './redact';
 
@@ -19,6 +20,7 @@ export function scopeOverlaps(plan: Plan): { run_id: string; paths: string[]; er
     return ids.flatMap<{ run_id: string; paths: string[]; error?: string }>(run => {
       try {
         const ledger = loadLedger(run);
+        if (abandoned(ledger)) return [];
         if (!statSync(ledger.repo, { throwIfNoEntry: false })) return [];
         try {
           if (repoScope(ledger.repo).id !== scope) return [];
