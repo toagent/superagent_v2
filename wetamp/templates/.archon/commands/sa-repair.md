@@ -42,4 +42,4 @@ $INPUTS.prior_work
 正常完成时 `status` 填 `done`、`error_class` 填 null；`unverified`/`deviations`/`needs` 没有就填空数组。只在假执行器/mock 上验证过的行为、没跑过的验收、凭推断的结论都写入 `unverified`；与卡片/plan 不一致的做法及原因写入 `deviations`。
 
 过程中正常调用工具读取、修改、测试、提交；全部完成后，最后一条回复只输出符合 output_format 的紧凑 JSON，字符串字段简短，不粘贴 diff、日志或源码。
-仅当范围/契约冲突无法靠完成最小必要改动解决（如净增行数约束与目标冲突、任务契约自相矛盾）且需要操作者裁决时，返回 `status: blocked`、`error_class: scope_violation`（任务契约自身矛盾用 `plan_invalid`），并填写非空 `needs: [{cap: "scope_decision", why: "冲突双方与证据", minimal_ask: "最小裁决问题"}]`。此情形允许 blocked，引擎停止 repair 并保留裁决请求；不要伪装成产品缺陷或 redline。
+仅当范围/契约冲突无法靠完成最小必要改动解决（如任务书中的净增行数上限与目标冲突、任务契约自相矛盾）且需要操作者裁决时，返回 `status: blocked`、`error_class: scope_violation`（任务契约自身矛盾用 `plan_invalid`），并填写非空 `needs: [{cap: "scope_decision", why: "冲突双方与证据", minimal_ask: "最小裁决问题"}]`。此情形允许 blocked，引擎停止 repair 并保留裁决请求；不要伪装成产品缺陷或 redline。

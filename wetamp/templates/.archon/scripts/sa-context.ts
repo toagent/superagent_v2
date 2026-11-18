@@ -15,6 +15,7 @@ import type { CoderOutput } from '../../../src/contract';
 import { capabilityGuidance, resolveCapabilities } from './capabilities';
 import {
   readAttempt,
+  netLineInputsPath,
   environmentIdentity,
   projectEnvironment,
   type Accept,
@@ -347,6 +348,17 @@ if (import.meta.main) {
     const artifacts = process.env.ARTIFACTS_DIR ?? '';
     if (!artifacts && (pkg || review || contextNode || process.env.INPUTS_HANDOFF === '1'))
       throw new Error('context: ARTIFACTS_DIR missing');
+    if (pkg && process.env.INPUTS_GENERATED_PATHS) {
+      mkdirSync(dirname(counter), { recursive: true });
+      writeFileSync(
+        netLineInputsPath(counter),
+        JSON.stringify([
+          process.env.INPUTS_SCOPE_BASE,
+          process.env.INPUTS_TARGET_TIP,
+          JSON.parse(process.env.INPUTS_GENERATED_PATHS),
+        ])
+      );
+    }
     if (pkg || review || contextNode) {
       const git = Bun.spawnSync(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], {
         stdout: 'pipe',

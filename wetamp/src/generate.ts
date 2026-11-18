@@ -16,12 +16,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { RECOVERY_TIMEOUT_MS } from '../templates/.archon/scripts/env-precheck';
 import { REASONS } from './reasons';
 import { injectMemory } from './memory';
 import {
   attemptPath,
+  netLineInputsPath,
   CHECK_AUX_BUDGET_MS,
   PROCESS_TREE_RECOVERY_MS,
   RESOURCE_WAIT_BUDGET_S,
@@ -290,10 +291,16 @@ export function buildWorkflow(
       }
     ),
   ];
-  const attemptInputs = (counter: string, pkg = '', review = '', gate = ''): Node => ({
+  const attemptInputs = (
+    counter: string,
+    pkg = '',
+    review = '',
+    gate = '',
+    extra: Node = {}
+  ): Node => ({
     script: 'sa-context',
     runtime: 'bun',
-    with: { counter, gen, pkg, review, ...(gate ? { gate } : {}) },
+    with: { counter, gen, pkg, review, ...(gate ? { gate } : {}), ...extra },
   });
   const repairResourceWrappers = {
     heavy_test_wrapper: `sh -c '. "$1"; shift; heavy_exec "$@"' sh '${join(
@@ -1002,9 +1009,25 @@ export function buildWorkflow(
       const packageStart = ruler ?? prev;
       const pkgAttempt = `package-attempt-${p.id}`;
       const pkgAttemptHandle = output<ContextOutput>(pkgAttempt);
+      const changeInputs = {
+        scope_base: scopeBase,
+        target_tip: ref.required(syncReadyHandle, 'target_tip'),
+      };
+      const budgetInputs =
+        p.max_net_lines === undefined
+          ? {}
+          : {
+              generated_paths: JSON.stringify(GENERATED_OUTPUT_PATHS),
+            };
       nodes.push({
         id: pkgAttempt,
-        ...attemptInputs(attemptPath(gen, `pkg/${p.id}`), p.id),
+        ...attemptInputs(
+          attemptPath(gen, `pkg/${p.id}`),
+          p.id,
+          '',
+          '',
+          p.max_net_lines === undefined ? {} : { ...changeInputs, ...budgetInputs }
+        ),
         depends_on: [packageStart],
         always_run: true,
         output_format: contextOutputFormat,
@@ -1064,16 +1087,15 @@ export function buildWorkflow(
         pkgs: p.id,
         scope_pkgs,
         base,
-        scope_base: scopeBase,
+        ...changeInputs,
         review_base: reviewBase,
         delta_base: ref.required(previousHandle, 'head'),
         ...(p.max_net_lines === undefined
           ? {}
           : {
               run_base: runBase,
-              generated_paths: JSON.stringify(GENERATED_OUTPUT_PATHS),
             }),
-        target_tip: ref.required(syncReadyHandle, 'target_tip'),
+        ...budgetInputs,
         sync_generation: ref.required(syncReadyHandle, 'generation'),
         risk: p.risk,
         milestone: m.id,
@@ -1581,6 +1603,8 @@ const fakeReview = (r: number): string => {
   return `echo '${JSON.stringify(out)}'`;
 };
 
+const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
+
 /** 单趟替换：计划文本里出现的 `{{x}}` 不会被再次展开。 */
 export function renderBrief(
   p: Pkg,
@@ -1592,6 +1616,12 @@ export function renderBrief(
     xs?.length ? xs.map(x => `- \`${x}\``).join('\n') : '- （无）';
   const coderAccept = p.accept.filter(check => !check.resource);
   const engineAccept = p.accept.filter(check => check.resource);
+  const gen = dirname(dirname(hint));
+  const netLines =
+    p.max_net_lines === undefined
+      ? ''
+      : `净增行数上限：${String(p.max_net_lines)}。包开始后，在 worktree 根目录运行下列命令，先暂存需计入的新文件。\n\n` +
+        `\`bun ${quote(join(gen, '.archon/scripts/sa-check.ts'))} net-lines ${quote(netLineInputsPath(attemptPath(gen, `pkg/${p.id}`)))}\`\n\n`;
   const vars: Partial<Record<string, string>> = {
     id: p.id,
     title: p.title,
@@ -1599,6 +1629,7 @@ export function renderBrief(
     size: p.size,
     test_cases: String(testBudget[p.size].cases),
     test_lines: String(testBudget[p.size].lines),
+    net_lines: netLines,
     goal:
       p.goal +
       (p.requirements
@@ -1828,7 +1859,6 @@ export function generate(
     if (tiers.routing.reviewer.by_risk?.[risk]) aliases[`@sa-reviewer-${risk}`] = reviewer(risk);
   }
   const worker = join(dir, 'codex-worker');
-  const quote = (s: string): string => "'" + s.replaceAll("'", "'\\''") + "'";
   writeFileSync(
     worker,
     `#!/usr/bin/env bash\nSA_POLICY_PATH=${quote(join(dir, 'policy.json'))} exec ${quote(

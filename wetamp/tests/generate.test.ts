@@ -1904,6 +1904,66 @@ describe('buildWorkflow', () => {
 });
 
 describe('renderBrief', () => {
+  test('renders the shared net-line counter only for a declared budget, including zero', () => {
+    const p = { ...fixture.packages[0], max_net_lines: 0 };
+    const caps = capsOf(fixture, p, []);
+    const brief = renderBrief(p, '/GEN/hints/core.md', caps);
+    expect(brief).toContain('净增行数上限：0');
+    expect(brief).toContain(
+      "bun '/GEN/.archon/scripts/sa-check.ts' net-lines '/GEN/attempts/.packages/core.net-lines.json'"
+    );
+
+    const unlimited = renderBrief({ ...p, max_net_lines: undefined }, '/GEN/hints/core.md', caps);
+    expect(unlimited).not.toContain('净增行数上限');
+    expect(unlimited).not.toContain(' net-lines ');
+  });
+  test('counts staged source against the verifier baseline and exclusions', () => {
+    const gen = tmp(),
+      repo = gitRepo(tmp());
+    const plan = structuredClone(fixture);
+    const p = plan.packages[0];
+    p.max_net_lines = 2;
+    const start = sh('git rev-parse HEAD', repo).trim();
+    sh('echo upstream > upstream.txt && git add upstream.txt && git commit -qm upstream', repo);
+    const tip = sh('git rev-parse HEAD', repo).trim();
+    const nodes = nodesOf(buildWorkflow(plan, milestones(plan), 'budget', gen, false, NOW));
+    const producer = nodes.find(n => n.id === 'package-attempt-core')!;
+    const verify = nodes.find(n => n.id === 'verify-core')!;
+    expect(verify.with).toMatchObject({
+      scope_base: producer.with!.scope_base,
+      target_tip: producer.with!.target_tip,
+      generated_paths: producer.with!.generated_paths,
+    });
+    fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
+    fs.copyFileSync(
+      join(WETAMP, '../packages/workflows/src/provider-attempts.ts'),
+      join(gen, '.archon/scripts/policy-attempts.ts')
+    );
+    fs.writeFileSync(join(gen, 'plan.json'), JSON.stringify(plan));
+    fs.writeFileSync(
+      join(gen, 'execution.json'),
+      JSON.stringify(executionTable(plan, loadTiers()))
+    );
+    fs.mkdirSync(join(gen, 'briefs'));
+    fs.writeFileSync(
+      join(gen, 'briefs/core.md'),
+      renderBrief(p, join(gen, 'hints/core.md'), capsOf(plan, p, []))
+    );
+    const result = runAttempt(
+      { ...producer, with: { ...producer.with, scope_base: start, target_tip: tip } },
+      repo,
+      gen
+    );
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    const pack = readFileSync(JSON.parse(result.stdout.toString()).context_pack_path, 'utf8');
+    const cmd = /^\`(bun .* net-lines .*)\`$/m.exec(pack)![1];
+    sh(
+      "mkdir -p tests wetamp/src && printf 'one\\ntwo\\n' > core.txt && echo test > tests/core.ts && echo generated > wetamp/src/plan-types.generated.ts && git add core.txt tests/core.ts wetamp/src/plan-types.generated.ts",
+      repo
+    );
+    expect(sh(cmd, repo).trim()).toBe('2');
+  });
+
   test('takes the S package test limit from tiers policy', () => {
     const p = fixture.packages[0];
     const limit = loadTiers().policy.test_budget.S;

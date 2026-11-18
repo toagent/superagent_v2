@@ -1190,6 +1190,12 @@ export const netLinesFromNumstat = (raw: string, generated: readonly string[]): 
 export const budgetExceeded = (limit: number | undefined, used: number): boolean =>
   limit !== undefined && used > limit;
 
+const gitNetLineBudget = (base: string, generated: readonly string[], ...target: string[]) =>
+  netLineBudgetFromNumstat(
+    git('diff', '--numstat', '-z', '--no-renames', base, ...target, '--'),
+    generated
+  );
+
 function lineBudget(
   pkgs: Pkg[],
   tag: string,
@@ -1200,10 +1206,7 @@ function lineBudget(
   const generated = json('GENERATED_PATHS');
   if (!Array.isArray(generated) || generated.some(path => typeof path !== 'string'))
     throw new Error('generated_paths must be a string array');
-  const lines = netLineBudgetFromNumstat(
-    git('diff', '--numstat', '-z', '--no-renames', base, 'HEAD', '--'),
-    generated as string[]
-  );
+  const lines = gitNetLineBudget(base, generated as string[], 'HEAD');
   return { ...lines, limit: pkgs[0].max_net_lines };
 }
 
@@ -2865,6 +2868,7 @@ export function budgetUsage(
 /** A leading dot cannot be a schema-valid milestone; legacy milestone paths stay intact. */
 export const attemptPath = (dir: string, scope: string): string =>
   join(dir, 'attempts', ...(scope.startsWith('pkg/') ? ['.packages', scope.slice(4)] : [scope]));
+export const netLineInputsPath = (counter: string): string => `${counter}.net-lines.json`;
 
 /** Absent counters mean zero; malformed or unreadable counters must never become retry state. */
 export function readAttempt(path: string): number {
@@ -3654,8 +3658,17 @@ if (import.meta.main) {
   };
   const fn = kinds[env('KIND')];
   try {
-    if (!fn) throw new Error(`sa-check: unknown INPUTS_KIND ${env('KIND')}`);
-    await fn();
+    if (process.argv[2] === 'net-lines') {
+      const [start, tip, generated] = JSON.parse(readFileSync(process.argv[3], 'utf8')) as [
+        string,
+        string,
+        string[],
+      ];
+      console.log(gitNetLineBudget(scopeBase(start, tip), generated).used);
+    } else {
+      if (!fn) throw new Error(`sa-check: unknown INPUTS_KIND ${env('KIND')}`);
+      await fn();
+    }
   } catch (error) {
     const engine_error = error instanceof Error ? error.message : String(error);
     emit({ ok: false, disposition: 'fail', reason: 'engine_suspect', engine_error });
