@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { createRequire } from 'node:module';
 import {
   chmodSync,
@@ -35,6 +36,7 @@ import { ownerLost } from '../src/archon';
 import * as native from '../src/archon';
 import * as landing from '../src/land';
 import { main, scopeOverlaps, waitRun, type Ledger } from '../src/cli';
+import { loadPlan } from '../src/plan';
 import { fixturePlan, gitRepo, sh, tmp } from './helpers';
 
 const req = createRequire(import.meta.url);
@@ -1596,6 +1598,44 @@ test('parallel runs claim independently of the online repository contact and fen
   s.c.claim(first, b, true, 'operator request');
   expect(() => s.c.mutate(first, a, () => true, controller.generation)).toThrow('fencing');
   expect(s.c.mutate(second, b, () => true)).toBe(true);
+});
+
+test.each(['abandoned', 'unmarked'])('scope overlap for a paused run: %s', state => {
+  const s = setup();
+  isolated(s);
+  process.env.DATABASE_URL = '';
+  process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+  const ledger = registered(s);
+  const plan = loadPlan(fixturePlan(s.root, s.repo));
+  mkdirSync(process.env.ARCHON_HOME!, { recursive: true });
+  const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
+  db.run('create table remote_agent_workflow_runs (id text primary key, status text)');
+  db.run('insert into remote_agent_workflow_runs values (?, ?)', [ledger.archon_run_id, 'paused']);
+  db.close();
+  if (state === 'abandoned') {
+    ledger.rejected = ledger.archon_run_id;
+    ledger.intervention_events = [
+      {
+        action: 'abandon',
+        at: ledger.started_at,
+        actor: ledger.controller,
+        reason: 'fixture',
+        source: 'commander',
+        origin: 'operator',
+        ok: true,
+      },
+    ];
+  }
+  const ledgerFile = join(s.sa, 'runs', ledger.run_id + '.json');
+  writeFileSync(ledgerFile, JSON.stringify(ledger));
+  const paths = [...new Set(plan.packages.flatMap(pkg => pkg.scope.write))];
+  const overlap = [{ run_id: ledger.run_id, paths }];
+  expect(scopeOverlaps(plan)).toEqual(state === 'abandoned' ? [] : overlap);
+  writeFileSync(ledgerFile, JSON.stringify({ ...ledger, repo: s.root }));
+  const error = expect.stringContaining('coord: not a repository');
+  expect(scopeOverlaps(plan)).toEqual(
+    state === 'abandoned' ? [] : [{ run_id: ledger.run_id, paths: [], error }]
+  );
 });
 
 test('scope overlap reports unreadable state and DATABASE_URL without treating either as clear', () => {
