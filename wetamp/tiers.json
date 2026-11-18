@@ -155,7 +155,7 @@
       "name": "将军",
       "purpose": "编码：ChatGPT 池为主力；Claude 池仅 plan mode single:claude；实现、验收、修复一次性闭环。",
       "pools": {
-        "chatgpt": ["gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
+        "chatgpt": ["gpt-6.2-sol", "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
         "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]
       }
     }
@@ -170,6 +170,7 @@
     },
     "coder": {
       "models": [
+        "gpt-6.2-sol",
         "gpt-5.6-sol",
         "gpt-6.1-sol",
         "claude-opus-5",
@@ -204,6 +205,7 @@
   },
   "model_aliases": {},
   "pricing": {
+    "gpt-6.2-sol": null,
     "gpt-6.1-sol": null,
     "gpt-6-sol": null,
     "gpt-6-astra": null,
