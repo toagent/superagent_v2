@@ -105,7 +105,7 @@ test('explicit nightly entry refreshes a claimed report and returns its path', (
   expect(JSON.parse(output.stdout.toString())).toMatchObject({ nightly: { ok: true, path } });
 });
 
-test('one Archon launch fails while the night report and other maintenance tasks survive', () => {
+test('Archon launch and query failures retain their stage and available evidence', () => {
   const sa = home(),
     calls: string[] = [];
   const rows = [
@@ -133,9 +133,12 @@ test('one Archon launch fails while the night report and other maintenance tasks
             input,
             args => {
               calls.push(source + ':' + args.slice(0, 3).join(' '));
+              if (source === 'local' && args[1] === 'run')
+                return { ok: true, runId: 'local', logPath: join(sa, 'launch.log') };
               throw Error('offline');
             },
-            source
+            source,
+            () => {}
           )
       ),
   };
@@ -145,7 +148,15 @@ test('one Archon launch fails while the night report and other maintenance tasks
   expect(existsSync(path)).toBe(true);
   expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
     model: { called: true, status: 'failed' },
-    models: { local: { status: 'failed' }, remote: { status: 'failed' } },
+    models: {
+      local: {
+        status: 'failed',
+        reason: '查询提炼工作流失败',
+        run_id: 'local',
+        evidence_path: join(sa, 'launch.log'),
+      },
+      remote: { status: 'failed', reason: '启动提炼工作流失败', run_id: null },
+    },
     candidates: [],
   });
   expect(calls).toEqual([
@@ -154,6 +165,7 @@ test('one Archon launch fails while the night report and other maintenance tasks
     'scratch',
     'remote:workflow run memory-reflect',
     'local:workflow run memory-reflect',
+    'local:workflow get local',
     'memory',
     'scratch',
   ]);
@@ -258,7 +270,8 @@ test('empty, invalid and filtered reflection output retains diagnostics and surv
     candidates: [], models: {
       remote: { status: 'all_filtered', proposed: 1, produced: 0, filtered: { evidence_missing: 1 },
         model: 'fixture-model', tokens: 15, evidence_path: join(sa, 'artifacts/runs/remote') },
-      local: { status: 'schema_invalid', proposed: 0, produced: 0 },
+      local: { status: 'schema_invalid', proposed: 0, produced: 0, run_id: 'local',
+        evidence_path: join(sa, 'artifacts/runs/local'), reason: '工作流拒绝了输出结构（output_contract）' },
     },
   });
   const empty = evolve(sa, at(19), () => rows, false, () => ({ output: { operations: [], reason: '无可复用经验' } }));
@@ -288,17 +301,20 @@ test('both workflow aliases contribute distinct trial candidates, alternating up
   const sa = home(),
     dir = join(sa, 'memory', 'episodes');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, 'bad0.json'),
-    JSON.stringify({
-      id: 'bad0',
-      project: sa,
-      tag: 'cli',
-      category: 'project',
-      reasons: [],
-      incidents: [],
-    })
-  );
+  const evidence = ['bad3', 'bad2', 'bad1', 'bad0'];
+  for (const id of [...evidence, 'bad4', 'good0']) {
+    const foreign = id === 'bad4';
+    writeFileSync(
+      join(dir, id + '.json'),
+      JSON.stringify({
+        id,
+        project: foreign ? join(sa, 'foreign') : sa,
+        tag: foreign || id === 'bad3' ? 'docs' : 'cli',
+        category: id === 'bad0' ? 'project' : 'role',
+        reasons: [],
+      })
+    );
+  }
   const rows = [
     ...Array.from({ length: 5 }, (_, i) => sample('bad' + i, sa, 0)),
     ...Array.from({ length: 30 }, (_, i) => sample('good' + i, 'good', 1)),
@@ -310,7 +326,8 @@ test('both workflow aliases contribute distinct trial candidates, alternating up
       return { ok: true, runId: alias.provider === 'pi' ? 'local' : 'remote' };
     }
     const ids = args[2] === 'local' ? [1, 4, 5, 6] : [1, 2, 3, 4];
-    const operations = ids.map(i => add(sa, 'action ' + i));
+    const operations = ids.map(i => add(sa, 'action ' + i, evidence));
+    if (args[2] === 'local') operations[1] = add('cli', 'action 4', evidence.slice(1), 'type');
     const data = { structured_output: { operations } };
     const event = { event_type: 'node_completed', step_name: 'reflect', data };
     return { status: 'completed', events: [event] };
@@ -329,6 +346,11 @@ test('both workflow aliases contribute distinct trial candidates, alternating up
     ['action 2', 'remote'],
   ]);
   expect(lessons.every(l => l.status === 'trial' && l.curated_at)).toBe(true);
+  expect(lessons.map(l => [l.tier, l.evidence, l.category])).toEqual([
+    ['project', evidence, 'project'],
+    ['type', evidence.slice(1), 'project'],
+    ['project', evidence, 'project'],
+  ]);
   const local = memoryState().lessons.find(l => l.source === 'local')!;
   const scope = { project: sa, tag: 'cli' };
   const packages = [
@@ -336,25 +358,34 @@ test('both workflow aliases contribute distinct trial candidates, alternating up
     { ...scope, ids: [], passed: false, control: true },
   ];
   maintainLessons({ id: 'trial', packages }, at(18, 3));
+  const invalid = ['good0', 'bad4'].map(id => add(sa, id, ['bad0', id]));
   const reflect = (_input: string, source: string) => {
-    if (source === 'local') throw Error('offline');
-    return { output: { operations: [add(sa, 'remaining')] } };
+    const operations =
+      source === 'local'
+        ? [...invalid, add('general', 'role', undefined, 'role')]
+        : [add(sa, 'remaining'), add('cli', 'different tag', ['bad0', 'bad3'], 'type')];
+    return { output: { operations } };
   };
   const next = evolve(sa, at(19), () => rows, false, reflect);
   expect(JSON.parse(readFileSync(next, 'utf8'))).toMatchObject({
-    models: { local: { status: 'failed' }, remote: { status: 'produced' } },
+    models: { local: { status: 'all_filtered' }, remote: { status: 'produced' } },
     candidates: [{ do: 'remaining', source: 'remote' }],
     sources: {
       local: { selected: 1, pass_rate_delta: 1 },
       remote: { selected: 3, pass_rate_delta: null },
     },
   });
+  expect(memoryState().lessons).toHaveLength(4);
 });
 
-const add = (scope: string, action: string) => {
-  const evidence = ['bad0'];
+const add = (
+  scope: string,
+  action: string,
+  evidence = ['bad0'],
+  tier: Lesson['tier'] = 'project'
+) => {
   const lesson = {
-    tier: 'project' as const,
+    tier,
     scope,
     when: 'trigger',
     do: action,

@@ -364,18 +364,19 @@ export function evolve(
       state.status = 'interrupted';
       save({ ...stats, candidates });
       try {
-        const { output, evidence, failure } = reflect(prompt, source);
+        const { output, evidence, failure, reason: failureReason } = reflect(prompt, source);
         Object.assign(state, evidence);
         const proposed = (output as { operations?: unknown } | null)?.operations;
         state.proposed = Array.isArray(proposed) ? proposed.length : 0;
         if (failure || output === undefined) {
           state.status = failure ?? 'no_output';
           state.reason =
-            state.status === 'failed'
+            failureReason ??
+            (state.status === 'failed'
               ? '提炼工作流执行失败'
               : state.status === 'schema_invalid'
                 ? '工作流拒绝了输出结构'
-                : '模型未返回结构化输出';
+                : '模型未返回结构化输出');
           return [];
         }
         const decoded = decodeNightlyOutput(output);
@@ -425,7 +426,7 @@ export function evolve(
                   discard(source, 'evidence_missing');
                   continue;
                 }
-                const curated = curate(episode, { operations: [op] }, now);
+                const curated = curate(episode, { operations: [op] }, now, examples);
                 const candidate = curated.lessons.at(0);
                 if (!candidate || candidate.tier === 'role') {
                   discard(source, candidate ? 'unsupported_tier' : curated.result);

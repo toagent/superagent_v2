@@ -1096,6 +1096,11 @@ describe('EV1 lifecycle, privacy and priors', () => {
         NOW
       ).lessons
     ).toHaveLength(1);
+    const foreign = { op: 'ADD', lesson: { ...valid, evidence: [e.id, 'another-episode'] } };
+    expect(curate(e, { operations: [foreign] }, NOW).lessons).toEqual([]);
+    expect(
+      curate({ ...e, incidents: ['another-episode'] }, { operations: [foreign] }, NOW).lessons
+    ).toHaveLength(1);
     seed(lesson('existing'));
     expect(curate(e, { operations: [{ op: 'ADD', lesson: valid }] }, NOW).lessons[0].id).toBe(
       'existing'

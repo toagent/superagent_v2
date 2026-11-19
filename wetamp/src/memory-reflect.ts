@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { nodeFailureKindSchema } from '../../packages/workflows/src/schemas/node-execution';
 import { archonJson, waitNotification } from './archon';
 import { caller, coord, repoScope, same } from './coord';
 import { reasonOf } from './reasons';
@@ -103,7 +104,8 @@ export function reflectionInput(e: Episode): string {
 export function curate(
   e: Episode,
   output: unknown,
-  now: number
+  now: number,
+  nightlyExamples?: readonly Episode[]
 ): { lessons: Lesson[]; result: string } {
   const decoded = reflectionResultSchema().safeParse(output);
   if (!decoded.success) {
@@ -144,13 +146,17 @@ export function curate(
       continue;
     }
     const candidate = op.lesson,
-      scopeOK =
+      scopeMatches = (episode: Episode) =>
         candidate.tier === 'project'
-          ? candidate.scope === e.project
+          ? candidate.scope === episode.project
           : candidate.tier === 'type'
-            ? candidate.scope === e.tag
+            ? candidate.scope === episode.tag
             : ['general', 'strategist', 'commander'].includes(candidate.scope);
-    if (!scopeOK || candidate.evidence.some(v => v !== e.id && !e.incidents.includes(v))) {
+    const hasEvidence = (id: string) =>
+      nightlyExamples
+        ? nightlyExamples.some(sample => sample.id === id && scopeMatches(sample))
+        : id === e.id || e.incidents.includes(id);
+    if (!scopeMatches(e) || candidate.evidence.some(id => !hasEvidence(id))) {
       rejected.push('scope 或 evidence 不属于本 episode');
       continue;
     }
@@ -258,6 +264,7 @@ export const decodeNightlyOutput = (output: unknown) =>
 interface NightlyReflection {
   output?: unknown;
   failure?: 'failed' | 'no_output' | 'schema_invalid';
+  reason?: string;
   evidence?: { model: string; tokens: number | null; run_id?: string; evidence_path?: string };
 }
 
@@ -285,17 +292,18 @@ export function nightlyReflection(
   source: 'local' | 'remote' = 'remote',
   wait: (id: string, cwd: string, seconds: number) => unknown = waitNotification
 ): NightlyReflection {
-  const dir = reflectWorkspace(),
-    config = join(dir, `nightly-${source}-config.yaml`),
-    alias =
-      source === 'local'
-        ? { provider: 'pi', model: 'splash/qwen3.8-27b' }
-        : runAliases('codex')['@sa-reviewer'];
-  writeAtomic(config, JSON.stringify({ aliases: { '@sa-coder': alias } }));
-  const c = coord(),
-    scope = repoScope(dir);
-  const evidence: NonNullable<NightlyReflection['evidence']> = { model: alias.model, tokens: null };
+  let evidence: NightlyReflection['evidence'];
   try {
+    const dir = reflectWorkspace(),
+      config = join(dir, `nightly-${source}-config.yaml`),
+      alias =
+        source === 'local'
+          ? { provider: 'pi', model: 'splash/qwen3.8-27b' }
+          : runAliases('codex')['@sa-reviewer'];
+    evidence = { model: alias.model, tokens: null };
+    writeAtomic(config, JSON.stringify({ aliases: { '@sa-coder': alias } }));
+    const c = coord(),
+      scope = repoScope(dir);
     const run = c.scoped(scope, () => {
       const controller = c.claim(scope, caller()).controller;
       return c.mutate(
@@ -305,7 +313,8 @@ export function nightlyReflection(
         controller.generation
       );
     });
-    if (run.ok !== true || typeof run.runId !== 'string') return { failure: 'failed', evidence };
+    if (run.ok !== true || typeof run.runId !== 'string')
+      return { failure: 'failed', reason: '启动提炼工作流失败', evidence };
     evidence.run_id = run.runId;
     if (typeof run.logPath === 'string') evidence.evidence_path = run.logPath;
     wait(run.runId, dir, 150);
@@ -347,18 +356,17 @@ export function nightlyReflection(
     if (totals.length && totals.every(t => t !== null))
       evidence.tokens = totals.reduce((sum, t) => sum + t, 0);
     if (status === 'completed') return { output: last?.structured_output, evidence };
-    if (last?.failure_kind === 'output_contract') {
-      // Archon shares one failure kind for missing and invalid structured output.
-      const missing =
-        typeof last.error === 'string' &&
-        last.error.startsWith(
-          "Node 'reflect': output_format declared but the provider returned no schema-valid structured output."
-        );
-      return { failure: missing ? 'no_output' : 'schema_invalid', evidence };
-    }
-    return { failure: 'failed', evidence };
+    const kind = nodeFailureKindSchema.safeParse(last?.failure_kind);
+    const invalidOutput = kind.data === 'output_contract';
+    const stage = invalidOutput ? '工作流拒绝了输出结构' : '提炼工作流执行失败';
+    return {
+      failure: invalidOutput ? 'schema_invalid' : 'failed',
+      reason: kind.success ? `${stage}（${kind.data}）` : stage,
+      evidence,
+    };
   } catch {
-    return { failure: 'failed', evidence };
+    const reason = evidence?.run_id ? '查询提炼工作流失败' : '启动提炼工作流失败';
+    return { failure: 'failed', reason, evidence };
   }
 }
 
