@@ -49,6 +49,46 @@ test('plan draft CLI consumes the brief and writes a Gemini opt-in plan', async 
   } finally { server.stop(true); }
 });
 // prettier-ignore
+test('plan draft CLI returns one JSON receipt when native fallback logs', async () => {
+  const dir = tmp(), repo = join(dir, 'repo'), brief = join(dir, 'brief'), out = join(dir, 'plan.json');
+  expect(Bun.spawnSync(['git', 'init', '-q', repo]).exitCode).toBe(0);
+  writeFileSync(brief, '规划回执测试');
+  const plan = planFor(repo), preload = join(dir, 'native-fixture.ts');
+  const providers = join(import.meta.dir, '../../packages/providers/src');
+  const sdk = JSON.stringify(Bun.resolveSync('@anthropic-ai/claude-agent-sdk', providers));
+  writeFileSync(preload, `
+    import { AppServerConnection } from ${JSON.stringify(join(providers, 'codex/app-server.ts'))};
+    import { createFakeAppServer } from ${JSON.stringify(join(providers, 'test/codex-app-server-fake.ts'))};
+    import { mock } from 'bun:test';
+    const sdk = await import(${sdk});
+    mock.module(${sdk}, () => ({ ...sdk, async *query() {
+      yield { type: 'result', subtype: 'success', session_id: 'fixture', is_error: false, result: ${JSON.stringify(JSON.stringify(plan))} };
+    } }));
+    const spawner = createFakeAppServer(() => ({ completion: { status: 'failed' } }));
+    const start = AppServerConnection.start.bind(AppServerConnection);
+    AppServerConnection.start = (binary, args, env, _, keys) => start(binary, args, env, spawner, keys);
+  `);
+  let requests = 0;
+  const fetch = () => new Response(null, { status: ++requests === 1 ? 429 : 503 });
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch });
+  try {
+    const proc = trackTestChild(Bun.spawn([process.execPath, '--preload', preload, 'src/cli.ts', 'plan', 'draft', brief, out], {
+      env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, SUPERAGENT_HOME: dir,
+        ARCHON_HOME: dir, SUPERAGENT_WRITE_ROOTS: dir, DATABASE_URL: '', LOG_LEVEL: 'info',
+        AGY_LLM_GATEWAY_URL: server.url.href, AGY_LLM_GATEWAY_API_KEY: 'test-fixture' },
+      stdout: 'pipe', stderr: 'pipe',
+    }));
+    const [exit, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect({ receipt: JSON.parse(stdout), exit }).toMatchObject({ exit: 0, receipt: { ok: true, path: out, execution: [
+      { provider: 'gemini', status: 'failed', error: 'gateway HTTP 429' },
+      { provider: 'gemini', status: 'failed', error: 'gateway HTTP 503' },
+      { provider: 'codex', status: 'failed' }, { provider: 'codex', status: 'failed' }, { provider: 'claude', status: 'completed' },
+    ] } });
+    expect(stderr).toContain('codex.turn_ended_without_completion');
+    expect(JSON.parse(readFileSync(out, 'utf8'))).toMatchObject({ ...plan, gemini_review: true });
+  } finally { server.stop(true); }
+});
+// prettier-ignore
 test('formal review consumes frozen evidence, records Gemini and switches on failure', async () => {
   const dir = tmp(), node = 'review-m1-r1', artifacts = join(dir, 'artifacts/runs/run');
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', dir, '-c', 'user.name=Fixture',

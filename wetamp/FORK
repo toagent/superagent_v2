@@ -68,6 +68,7 @@ packages/provider-contract/src/events.ts
 packages/provider-contract/src/plugin/wire.ts
 packages/providers/package.json
 packages/providers/src/claude/provider.test.ts
+# Gemini native planning fallback isolates Claude title-generation from native MCP.
 packages/providers/src/claude/provider.ts
 packages/providers/src/codex/provider.test.ts
 packages/providers/src/codex/provider.ts
@@ -86,6 +87,7 @@ packages/workflows/src/execution-lifecycle.ts
 packages/workflows/src/loader.test.ts
 packages/workflows/src/policy-dispatch.test.ts
 packages/workflows/src/policy-dispatch.ts
+# Gemini formal review writes to the shared provider attempt ledger.
 packages/workflows/src/provider-attempts.ts
 packages/workflows/src/schemas/retry.ts
 packages/workflows/src/store-conformance.ts

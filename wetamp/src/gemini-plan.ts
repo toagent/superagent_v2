@@ -1,5 +1,6 @@
 import { existsSync, linkSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { setLogDestination } from '@archon/paths';
 import { ClaudeProvider, CodexProvider } from '@archon/providers/in-process';
 import { loadTiers, resolveRoute, routeState, WETAMP } from './config';
 import { geminiTurn, privateRolePath, roleFile, roleText, settledRoleResult } from './gemini-role';
@@ -7,6 +8,8 @@ import { validatePlan, type Plan } from './plan';
 import type { PolicyAttempt } from '../templates/.archon/scripts/policy-attempts';
 
 export async function draftPlan(brief: string, output: string) {
+  // Native providers can log while the CLI reserves stdout for the receipt.
+  setLogDestination('stderr');
   const file = join(realpathSync(dirname(output)), basename(output));
   if (privateRolePath(file) || existsSync(file))
     throw new Error('plan draft: output path unavailable');
