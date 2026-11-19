@@ -18,7 +18,10 @@ test('CLI usage separates agent and operator surfaces', () => {
   const find = (values: string[], command: string): string | undefined =>
     values.find(value => value === `  ${command}` || value.startsWith(`  ${command} `));
   expect(lines[0]).toBe('usage: superagent <command> [options]');
-  expect(Buffer.byteLength(USAGE)).toBeLessThanOrEqual(2300);
+  // 文档行是检出绝对路径，长度随检出位置变化（候选复验检出比主检出长），不计入预算。
+  const budgeted = lines.filter(line => !line.startsWith('  文档：')).join('\n');
+  expect(lines.length - budgeted.split('\n').length).toBe(1);
+  expect(Buffer.byteLength(budgeted)).toBeLessThanOrEqual(2200);
   for (const entry of CLI_COMMAND_USAGE) {
     const line = find(lines, entry.command);
     if (entry.audience === 'operator') expect(line).toBeUndefined();
