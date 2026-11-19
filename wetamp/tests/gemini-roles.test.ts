@@ -12,7 +12,7 @@ import { installPolicyExecutor, wrapPolicyProvider } from '../src/policy-executo
 import { geminiTurn } from '../src/gemini-role';
 import { freezeContext } from '../templates/.archon/scripts/sa-context';
 import * as ledger from '../templates/.archon/scripts/policy-attempts';
-import { tmp } from './helpers';
+import { tmp, trackTestChild } from './helpers';
 // prettier-ignore
 function gatewayEnv(dir: string, url: string) {
   const env = { ARCHON_HOME: dir, SUPERAGENT_HOME: dir, SUPERAGENT_WRITE_ROOTS: dir, AGY_LLM_GATEWAY_URL: url, AGY_LLM_GATEWAY_API_KEY: 'test-fixture' };
