@@ -133,6 +133,7 @@ export function providerOf(model: string): Alias['provider'] {
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: {
+    gemini?: { command: string[]; review: string[] };
     budget: { claude_daily_usd: number; claude_medium_usd: number; codex_warning_usd: number };
     commander: { by_console: Record<Console, string[]> };
     coder: { models: string[] };
@@ -215,6 +216,13 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))
       throw new Error(`tiers.routing.commander.by_console.${c}: expected models for ${c}`);
   }
+  if (t.routing.gemini !== undefined)
+    for (const role of ['command', 'review'] as const) {
+      const models = obj(t.routing.gemini)[role];
+      if (!Array.isArray(models) || !models.length ||
+          models.some(m => typeof m !== 'string' || !/^gemini-[a-z0-9%-]+$/.test(m)))
+        throw new Error(`tiers.routing.gemini.${role}: expected Gemini models`);
+    }
   return t;
 }
 
@@ -262,7 +270,8 @@ export function resolveRoute(
   risk: Pkg['risk'] = 'G1',
   round = 1,
   authors: string[] = [],
-  state: RouteState = HEALTHY_ROUTE
+  state: RouteState = HEALTHY_ROUTE,
+  allowEmpty = false
 ): Route {
   if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
     throw new Error(`unsupported routing mode: ${mode}`);
@@ -282,7 +291,7 @@ export function resolveRoute(
     .filter(
       a => (role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
-  if (!candidates.length)
+  if (!candidates.length && !allowEmpty)
     throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
   return { candidates, effort };
 }

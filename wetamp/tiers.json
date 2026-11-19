@@ -161,6 +161,10 @@
     }
   },
   "routing": {
+    "gemini": {
+      "command": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"],
+      "review": ["gemini-4-neon-%68igh", "gemini-4-neon-%78high"]
+    },
     "budget": { "claude_daily_usd": 3000, "claude_medium_usd": 2000, "codex_warning_usd": 500 },
     "commander": {
       "by_console": {

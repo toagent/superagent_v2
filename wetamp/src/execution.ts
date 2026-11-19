@@ -158,7 +158,8 @@ export function executionRoute(
   mode: string | undefined,
   descriptor: ExecutionDescriptor,
   authors: string[] = [],
-  state?: RouteState
+  state?: RouteState,
+  allowEmpty = false
 ) {
   return resolveRoute(
     tiers,
@@ -168,7 +169,8 @@ export function executionRoute(
     descriptor.risk,
     descriptor.round,
     authors,
-    state
+    state,
+    allowEmpty
   );
 }
 

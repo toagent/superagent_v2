@@ -1702,6 +1702,12 @@ export class ClaudeProvider implements IAgentProvider {
         }
       }
 
+      if (
+        requestOptions?.purpose === 'title-generation' &&
+        requestOptions.nodeConfig?.allowed_tools?.length === 0
+      )
+        options.strictMcpConfig = true;
+
       options.systemPrompt = withPerRequestSystemPrompt(options.systemPrompt);
 
       // Register in-process native tools (e.g. manage_run) as an archon MCP server,

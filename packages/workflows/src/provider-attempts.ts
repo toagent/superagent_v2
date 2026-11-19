@@ -7,7 +7,7 @@ import type { ProviderFailureClass, TokenUsage } from '@archon/provider-contract
 export interface PolicyAttempt {
   id: string;
   node: string;
-  provider: 'codex' | 'claude';
+  provider: 'codex' | 'claude' | 'gemini';
   model: string;
   resolved?: string;
   rerouted_models?: string[]; // Codex tracking reservation; absent on untracked legacy attempts.
@@ -38,7 +38,7 @@ function validAttempt(value: unknown): boolean {
     !value.node ||
     typeof value.model !== 'string' ||
     !value.model ||
-    !['codex', 'claude'].includes(String(value.provider)) ||
+    !['codex', 'claude', 'gemini'].includes(String(value.provider)) ||
     !['started', 'completed', 'failed'].includes(String(value.status)) ||
     (value.resolved !== undefined && (typeof value.resolved !== 'string' || !value.resolved)) ||
     (value.rerouted_models !== undefined &&

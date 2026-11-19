@@ -213,6 +213,13 @@ export function buildWorkflow(
   if (plan.deadline !== undefined && Date.parse(plan.deadline) <= now)
     throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
+  const reviewModel = (risk: Pkg['risk']) =>
+    plan.gemini_review
+      ? { model: '@sa-gemini-review', mutates_checkout: false }
+      : {
+          retry: { on_error: 'transient' },
+          model: tiers.routing.reviewer.by_risk?.[risk] ? `@sa-reviewer-${risk}` : '@sa-reviewer',
+        };
   const executions = executionTable(plan, tiers);
   const maxRounds = reviewRoundLimit(tiers.policy);
   const evidenceScopeBase = (path: string | undefined): string | undefined => {
@@ -741,11 +748,8 @@ export function buildWorkflow(
           ? { bash: fakeReview(round) }
           : {
               command: 'sa-review-delta',
-              retry: { on_error: 'transient' },
-              model: tiers.routing.reviewer.by_risk?.[m.risk]
-                ? `@sa-reviewer-${m.risk}`
-                : '@sa-reviewer',
-              ...execution(reviewContract),
+              ...reviewModel(m.risk),
+              ...(!plan.gemini_review ? execution(reviewContract) : {}),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
@@ -1367,11 +1371,8 @@ export function buildWorkflow(
           ? { bash: fakeReview(r) }
           : {
               command: r === 1 ? 'sa-review' : 'sa-review-delta',
-              retry: { on_error: 'transient' },
-              model: tiers.routing.reviewer.by_risk?.[m.risk]
-                ? `@sa-reviewer-${m.risk}`
-                : '@sa-reviewer',
-              ...execution(`review-${t}`),
+              ...reviewModel(m.risk),
+              ...(!plan.gemini_review ? execution(`review-${t}`) : {}),
               idle_timeout: REVIEW_IDLE_MS,
               with: {
                 milestone: m.id,
@@ -1844,6 +1845,8 @@ export function generate(
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
+  const gemini = plan.gemini_review ? tiers.routing.gemini?.review[0] : undefined;
+  if (plan.gemini_review && !gemini) throw new Error('Gemini review routing is unavailable');
   const reviewer = (risk: Pkg['risk']) =>
     resolveRoute(
       tiers,
@@ -1868,7 +1871,10 @@ export function generate(
   chmodSync(worker, 0o755);
   const runConfig = YAML.stringify(
     {
-      aliases,
+      aliases: {
+        ...aliases,
+        ...(gemini ? { '@sa-gemini-review': { provider: 'gemini', model: gemini } } : {}),
+      },
       env: { SA_POLICY_PATH: join(dir, 'policy.json') },
       assistants: { codex: { codexBinaryPath: worker } },
     },

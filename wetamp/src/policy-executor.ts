@@ -5,10 +5,11 @@ import { createRequire } from 'node:module';
 import type {
   IAgentProvider,
   MessageChunk,
+  ResultChunk,
   SendQueryOptions,
 } from '../../packages/providers/src/types';
 import { isEffortRung } from '../../packages/provider-contract/src/effort';
-import { getRegistration } from '@archon/providers';
+import { getRegistration, isRegisteredProvider, registerProvider } from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
 import { routeState, type Alias, type Tiers } from './config';
 import { claudeOutcomeTrips, recordClaudeOutcome, type ClaudeOutcome } from './claude-health';
@@ -21,6 +22,10 @@ import {
   effectiveRisk,
 } from '../templates/.archon/scripts/sa-check';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
+import { geminiCapabilities, reviewWithGemini, type GeminiReview } from './gemini-review';
+import { settledRoleResult } from './gemini-role';
+import { validateStructuredOutput } from '@archon/workflows/structured-output';
+import { reviewerOutputFormat } from './contract';
 
 const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cjs') as {
   loadPolicy: (path: string) => ReturnType<typeof import('./config').snapshotPolicy>;
@@ -35,6 +40,7 @@ interface Execution extends Omit<DispatchExecution<Alias>, 'usage'> {
   floor: number;
   events(): Events;
   role?: string;
+  gemini?: GeminiReview;
 }
 /** Delivery policy supplies limits and evidence; Archon owns every dispatch and receipt. */
 export function executePolicy(
@@ -62,7 +68,7 @@ function runtimeExecution(
   cwd: string,
   options: SendQueryOptions,
   sendQuery: IAgentProvider['sendQuery'],
-  provider: Alias['provider'],
+  provider: Alias['provider'] | 'gemini',
   sendQueryFor: NonNullable<Execution['sendQueryFor']>
 ): Execution {
   const policy = loadPolicy(path),
@@ -70,9 +76,17 @@ function runtimeExecution(
   const plan = JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')) as Plan;
   const node = options.nodeConfig?.nodeId;
   if (!node) throw new Error('policy: node id missing');
+  const gemini = provider === 'gemini';
+  const resync = gemini && node.startsWith('review-resync-');
+  const contract = resync ? node.replace('review-resync-', 'review-') : node;
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
-  const route = executionForNode(table, node, tiers);
+  const route = executionForNode(table, contract, tiers);
+  if (
+    gemini &&
+    (!plan.gemini_review || route.role !== 'review' || options.nodeConfig?.requiresExactSession)
+  )
+    throw new Error('policy: Gemini requires an opted-in fresh review');
   const archonHome = process.env.ARCHON_HOME;
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
   const db = new Database(join(archonHome, 'archon.db'), { readonly: true });
@@ -111,7 +125,8 @@ function runtimeExecution(
             .get(id);
           if (!prior) throw new Error('policy: author ancestry missing');
           return { ...prior, events: readEvents(id) };
-        }
+        },
+        resync
       );
       if (!identities.length || identities.some(a => !a.model))
         throw new Error('policy: author_unknown');
@@ -131,16 +146,15 @@ function runtimeExecution(
   const artifacts = join(run.output_root, 'artifacts', 'runs', run.id);
   if (route.role === 'review' || route.round > 1) {
     const rounds = route.role === 'review' ? route.round : route.round - 1;
-    route.risk = effectiveRisk(
-      route.risk,
-      Array.from(
-        { length: rounds },
-        (_, i) =>
-          JSON.parse(
-            readFileSync(join(artifacts, `diff-${route.milestone}-r${String(i + 1)}.json`), 'utf8')
-          ) as { risk?: string }
-      )
-    );
+    const prefix = resync ? 'diff-resync' : 'diff';
+    const evidence = Array.from({ length: rounds }, (_, i) => {
+      const tag =
+        resync && i === 0
+          ? `final-accept-${route.milestone}`
+          : `${prefix}-${route.milestone}-r${String(i + 1)}`;
+      return JSON.parse(readFileSync(join(artifacts, `${tag}.json`), 'utf8')) as { risk?: string };
+    });
+    route.risk = effectiveRisk(route.risk, evidence);
   }
   const state = routeState(tiers, plan.mode),
     candidates = executionRoute(
@@ -149,9 +163,21 @@ function runtimeExecution(
       plan.mode,
       route,
       authors,
-      state
+      state,
+      gemini
     ).candidates;
   let claudeAvailable = plan.mode === 'single:claude' || state.claude.state === 'up';
+  const nativeProvider = gemini ? (candidates[0]?.provider ?? 'codex') : provider;
+  const nativeSend: typeof sendQueryFor = candidate =>
+    gemini
+      ? validatedReview((...args) => sendQueryFor(candidate)(...args))
+      : sendQueryFor(candidate);
+  // prettier-ignore
+  const review = gemini ? {
+    models: policy.routing.gemini?.review ?? [],
+    network: route.caps.every(c => c.network) && policy.sandbox.network,
+    authors, contract,
+  } : undefined;
   return {
     node,
     role: route.role,
@@ -162,9 +188,10 @@ function runtimeExecution(
     events: () => events,
     requestedModel: options.model,
     requiresExactSession: options.nodeConfig?.requiresExactSession,
-    provider,
-    sendQuery,
-    sendQueryFor,
+    provider: nativeProvider,
+    sendQuery: gemini && candidates[0] ? nativeSend(candidates[0]) : sendQuery,
+    sendQueryFor: nativeSend,
+    gemini: review,
     ...(state.claude.state !== 'up' || candidates.some(candidate => candidate.provider === 'claude')
       ? { available: (candidate: Alias) => candidate.provider !== 'claude' || claudeAvailable }
       : {}),
@@ -195,25 +222,55 @@ function runtimeExecution(
     },
     options: candidate => {
       if (!isEffortRung(candidate.effort)) throw new Error('policy: unsupported effort');
+      // prettier-ignore
+      const assistantConfig = candidate.provider === 'codex'
+        ? { codexBinaryPath: join(dir, 'codex-worker'), webSearchMode: 'disabled' }
+        : options.assistantConfig;
       return {
         ...options,
         model: candidate.model,
         fallbackModel: undefined,
+        ...(gemini
+          ? { purpose: 'title-generation' as const, nativeTools: undefined, assistantConfig }
+          : {}),
         nodeConfig: {
           ...options.nodeConfig,
           denied_tools: undefined,
           sandbox: undefined,
           mcp: undefined,
           ...executionNode(route, candidate),
+          ...(gemini ? { allowed_tools: [] } : {}),
         },
       };
     },
   };
 }
+
+function validatedReview(send: IAgentProvider['sendQuery']): IAgentProvider['sendQuery'] {
+  return async function* (prompt, cwd, _resume, options) {
+    let result = await settledRoleResult(send(prompt, cwd, undefined, options));
+    if (!result) return;
+    if (!result.isError && !result.failure) {
+      if (
+        !validateStructuredOutput(result.structuredOutput, reviewerOutputFormat).valid ||
+        (result.structuredOutput as { status: string }).status === 'INCOMPLETE'
+      )
+        result = {
+          type: 'result',
+          tokens: result.tokens,
+          isError: true,
+          failure: { class: 'transient', evidence: 'native reviewer returned invalid output' },
+        };
+      else result = { ...result, text: undefined, sessionId: undefined, resumed: undefined };
+    }
+    yield result;
+    yield { type: 'settled' };
+  };
+}
 /** Decorate the registered factories while retaining native credential/config parsers and provider IDs. */
 export function wrapPolicyProvider(
   native: IAgentProvider,
-  provider: Alias['provider'],
+  provider: Alias['provider'] | 'gemini',
   sendQueryFor: NonNullable<Execution['sendQueryFor']> = candidate => {
     const native = nativeFactories[candidate.provider]?.();
     if (!native) throw new Error('policy: native failover factory missing');
@@ -225,18 +282,76 @@ export function wrapPolicyProvider(
     const path = options?.env?.SA_POLICY_PATH;
     if (!path || !options.nodeConfig?.nodeId || options.purpose === 'title-generation')
       return send(prompt, cwd, resume, options);
-    return executePolicy(
-      runtimeExecution(path, cwd, options, send, provider, sendQueryFor),
-      prompt,
-      cwd,
-      resume
-    );
+    const runtime = runtimeExecution(path, cwd, options, send, provider, sendQueryFor);
+    if (runtime.gemini) {
+      if (resume !== undefined) throw new Error('policy: Gemini review cannot resume a session');
+      return reviewWithGemini(
+        runtime.gemini,
+        runtime.node,
+        runtime.artifacts,
+        cwd,
+        prompt,
+        options.abortSignal,
+        material => finalReviewFallback(runtime, material, cwd, options.abortSignal)
+      );
+    }
+    return executePolicy(runtime, prompt, cwd, resume);
   };
   return native;
 }
+
+async function* finalReviewFallback(
+  runtime: Execution,
+  prompt: string,
+  cwd: string,
+  signal?: AbortSignal
+): AsyncGenerator<MessageChunk> {
+  try {
+    for await (const chunk of executePolicy(runtime, prompt, cwd)) {
+      signal?.throwIfAborted();
+      yield chunk.type === 'result' && (chunk.isError || chunk.failure)
+        ? failedReview(chunk.tokens)
+        : chunk;
+    }
+    return;
+  } catch {
+    signal?.throwIfAborted();
+  }
+  yield failedReview();
+  yield { type: 'settled' };
+}
+
+const failedReview = (tokens?: ResultChunk['tokens']): ResultChunk => ({
+  type: 'result',
+  isError: true,
+  tokens,
+  failure: { class: 'unknown', evidence: 'all eligible review attempts failed' },
+});
 const nativeFactories: Partial<Record<Alias['provider'], () => IAgentProvider>> = {};
 export function installPolicyExecutor(): void {
   registerBuiltinProviders();
+  // prettier-ignore
+  if (!isRegisteredProvider('gemini'))
+    registerProvider({
+      id: 'gemini', displayName: 'Gemini Neon', builtIn: true,
+      capabilities: geminiCapabilities,
+      credentials: {
+        kind: 'static',
+        specs: [{ vendor: 'antigravity', displayName: 'Antigravity gateway', kinds: ['ambient'] }],
+        vendorFor: () => 'antigravity',
+      },
+      parseConfig: raw => {
+        if (Object.keys(raw).length)
+          throw new Error('Gemini review uses the native gateway environment');
+        return {};
+      },
+      factory: () => wrapPolicyProvider({
+        getType: () => 'gemini',
+        getCapabilities: () => geminiCapabilities,
+        checkCredential: () => Promise.resolve({ state: 'not_checked', source: 'native' }),
+        sendQuery() { throw new Error('Gemini is available only to opted-in review nodes'); },
+      }, 'gemini'),
+    });
   for (const provider of ['codex', 'claude'] as const) {
     const registration = getRegistration(provider),
       factory = nativeFactories[provider] ?? registration.factory;

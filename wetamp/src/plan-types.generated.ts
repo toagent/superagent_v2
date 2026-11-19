@@ -153,6 +153,10 @@ export interface Plan {
    * Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude
    */
   console?: 'claude' | 'codex';
+  /**
+   * Prefer Gemini for the formal review nodes of this plan
+   */
+  gemini_review?: true;
   caps?: Caps1;
 }
 /**

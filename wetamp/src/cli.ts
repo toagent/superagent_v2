@@ -2113,6 +2113,7 @@ function startRun(planPath: string, a: Args): number {
             throw new Error('adopt: package id and milestone must match the old plan');
           if (
             (oldPlan.console ?? 'claude') !== (plan.console ?? 'claude') ||
+            oldPlan.gemini_review !== plan.gemini_review ||
             (oldPlan.mode ?? 'auto') !== (plan.mode ?? 'auto')
           )
             throw new Error('adopt: new plan AI configuration conflicts with the adopted run');
@@ -4854,7 +4855,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt', 'fresh'], operatorFlags: ['fake', 'lint-override'] },
   { command: 'retro', audience: 'agent', positionals: '<run>', flags: ['effect', 'improve'] },
-  { command: 'plan', audience: 'agent', positionals: 'check <file>', flags: [], operatorFlags: ['lint-override'] },
+  { command: 'plan', audience: 'agent', positionals: 'check <file> | draft <brief> <output>', flags: [], operatorFlags: ['lint-override'] },
   { command: 'debt', audience: 'agent', positionals: 'list|close <id>...', flags: ['repo', 'open', 'reason', 'diagnose'] },
   { command: 'wait', audience: 'agent', positionals: '<run>...', flags: ['timeout'] },
   { command: 'status', audience: 'agent', positionals: '<run>', flags: [] },
@@ -6172,6 +6173,13 @@ async function runCli(): Promise<void> {
       );
     }
     if (verb === 'console') return await exitCli(await (await import('./web/server')).webCli(argv));
+    if (verb === 'plan' && argv[1] === 'draft') {
+      assertEngineAccess(argv);
+      if (argv.length !== 4) throw new Error('usage: superagent plan draft <brief> <output>');
+      const result = await (await import('./gemini-plan')).draftPlan(argv[2], argv[3]);
+      print(result);
+      return await exitCli(result.ok ? 0 : 1);
+    }
     if (verb === 'job' || verb === 'jobs') return await exitCli(await jobCli(argv));
     if (verb === 'work') return await exitCli(await (await import('./work')).workCli(argv));
     if (verb === 'rollover') {

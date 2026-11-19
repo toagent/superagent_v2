@@ -233,6 +233,10 @@
       "enum": ["claude", "codex"],
       "description": "Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude"
     },
+    "gemini_review": {
+      "const": true,
+      "description": "Prefer Gemini for the formal review nodes of this plan"
+    },
     "caps": {
       "$ref": "#/$defs/caps",
       "description": "Worker capabilities for every package; default all allowed (docs/00-architecture.md caps)"

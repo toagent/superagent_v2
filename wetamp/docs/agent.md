@@ -83,6 +83,18 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 完整结构以 `schemas/plan.schema.json` 为准。将军节点到达时间预算后由 `supervise-tick`
 按近期工作树进展续租一次；超限只写交回报告并唤醒一次 `wait`，不会取消或暂停 run。
 
+## 单次使用 Gemini Neon
+
+```bash
+superagent plan draft task.md plan.json > plan.receipt.json && superagent plan check plan.json
+```
+
+任务书须含仓库绝对路径、基线与可发给网关的材料。检查计划后执行 `superagent run plan.json`。
+已有 plan 可加 `"gemini_review": true` 来启用正式评审。将军沿用原路由。
+进程继承 `AGY_LLM_GATEWAY_URL` 和已注入的 `AGY_LLM_GATEWAY_API_KEY` 或 `ANTIGRAVITY_API_KEY`。
+军师只接收冻结任务材料、diff 和验收日志，检测到受限材料即失败。网关不可用或候选耗尽时切换至
+该角色现有合格候选。元帅回执写 stdout，军师回执写入 run 的 `policy-attempts.json`。
+
 ## 评审
 
 只有实际 diff 命中 `tiers.json` 的 `policy.risk_paths`，或用户本轮明确要求时才触发独立

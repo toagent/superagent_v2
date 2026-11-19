@@ -2925,6 +2925,7 @@ export function attemptIdentity(
   if (!attempt) return identityOf(binding);
   if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
+  if (attempt.provider === 'gemini') return { model: attempt.model, strength: 'pinned' };
   // absent tracking on an interrupted legacy attempt cannot prove its author model.
   return attempt.provider === 'codex' &&
     (attempt.status === 'completed' || attempt.rerouted_models !== undefined)
@@ -2939,7 +2940,8 @@ export function readAuthorEvidence(
   pkgs: string[],
   milestone: string | string[],
   _reviewRounds: number,
-  load: (id: string) => AuthorRun
+  load: (id: string) => AuthorRun,
+  includeResync = false
 ): Ident[] {
   const authors: Ident[] = [],
     seen = new Set<string>(),
@@ -2952,7 +2954,8 @@ export function readAuthorEvidence(
     return (
       pkgs.some(p => name === `code-${p}` || name === `repair-${p}`) ||
       [milestone].flat().some(m => {
-        const prefix = `fix-${m}-r`,
+        const prefix =
+            includeResync && name.startsWith('fix-resync-') ? `fix-resync-${m}-r` : `fix-${m}-r`,
           round = name.startsWith(prefix) ? name.slice(prefix.length) : '';
         return (
           round.length > 0 &&

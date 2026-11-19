@@ -74,7 +74,10 @@ export const isWithinWriteRoots = (path: string, roots = writeRoots()): boolean 
 };
 
 export function loadPlan(path: string, roots = writeRoots()): Plan {
-  const data = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  return validatePlan(JSON.parse(readFileSync(path, 'utf8')) as unknown, roots);
+}
+
+export function validatePlan(data: unknown, roots = writeRoots()): Plan {
   // Ignore the retired wire field before validation, including legacy hard budgets.
   if (
     data &&
@@ -209,7 +212,7 @@ export function milestones(plan: Plan): Milestone[] {
       packages: group,
       risk,
       human: group.some(p => p.signoff === 'human'),
-      review: group.some(p => Boolean(p.review_reason?.trim())),
+      review: plan.gemini_review === true || group.some(p => Boolean(p.review_reason?.trim())),
     };
   });
 }
