@@ -3,16 +3,19 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ClaudeProvider, CodexProvider } from '@archon/providers/in-process';
-import { getRegistration } from '@archon/providers';
-import { buildWorkflow } from '../src/generate';
+import { getRegistration, parseProviderRunModel } from '@archon/providers';
+import { loadWorkflowRunConfigFile } from '../../packages/core/src/config/run-config';
+import { buildWorkflow, generate } from '../src/generate';
+import * as archon from '../src/archon';
 import { loadTiers, snapshotPolicy } from '../src/config';
+import * as coord from '../src/coord';
 import { draftPlan } from '../src/gemini-plan';
 import { milestones, type Plan } from '../src/plan';
 import { installPolicyExecutor, wrapPolicyProvider } from '../src/policy-executor';
 import { geminiTurn } from '../src/gemini-role';
 import { freezeContext } from '../templates/.archon/scripts/sa-context';
 import * as ledger from '../templates/.archon/scripts/policy-attempts';
-import { tmp, trackTestChild } from './helpers';
+import { gitRepo, tmp, trackTestChild } from './helpers';
 // prettier-ignore
 function gatewayEnv(dir: string, url: string) {
   const env = { ARCHON_HOME: dir, SUPERAGENT_HOME: dir, SUPERAGENT_WRITE_ROOTS: dir, AGY_LLM_GATEWAY_URL: url, AGY_LLM_GATEWAY_API_KEY: 'test-fixture' };
@@ -28,6 +31,44 @@ const planFor = (repo: string): Plan => ({
 const geminiReply = (value: unknown, model = 'gemini-fixture', finishReason = 'STOP') => ({
   modelVersion: model || undefined,
   candidates: [{ finishReason, content: { parts: [{ text: JSON.stringify(value) }] } }],
+});
+
+test('Gemini registration validates models and assistant defaults', async () => {
+  installPolicyExecutor();
+  const { parseConfig, capabilities, factory } = getRegistration('gemini');
+  const models = loadTiers().routing.gemini!.review;
+  for (const model of models) expect(parseProviderRunModel('gemini', model)).toBe(model);
+  expect(() => parseProviderRunModel('gemini', 'claude-sonnet')).toThrow();
+  expect(parseConfig({}, 'run')).toEqual({});
+  expect(parseConfig({}, 'snapshot')).toEqual({});
+  expect(parseConfig({ model: models[0] }, 'snapshot')).toEqual({ model: models[0] });
+  for (const raw of [{ model: '' }, { model: undefined }, { model: models[0], extra: true }])
+    expect(() => parseConfig(raw, 'run')).toThrow();
+  const provider = factory();
+  expect(capabilities).toMatchObject({ sessionResume: false, structuredOutput: 'enforced' });
+  const status = await provider.checkCredential({ env: {}, signal: new AbortController().signal });
+  expect(status).toEqual({ state: 'not_checked', source: 'native' });
+  expect(() => provider.sendQuery('review', '.')).toThrow('opted-in review nodes');
+});
+
+test('generated Gemini review alias passes Archon run-config validation', async () => {
+  installPolicyExecutor();
+  const repo = gitRepo(tmp());
+  const clean = coord.cleanEngine;
+  const engine = spyOn(coord, 'cleanEngine').mockImplementation(() => clean(repo));
+  const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
+  try {
+    const plan = planFor(repo);
+    const native = await loadWorkflowRunConfigFile(generate(plan, 'native-review').config);
+    const { layer } = await loadWorkflowRunConfigFile(
+      generate({ ...plan, gemini_review: true }, 'gemini-review').config
+    );
+    expect(native.layer.aliases).not.toHaveProperty('@sa-gemini-review');
+    expect(layer.aliases?.['@sa-gemini-review']?.model).toBe(loadTiers().routing.gemini!.review[0]);
+  } finally {
+    validation.mockRestore();
+    engine.mockRestore();
+  }
 });
 // prettier-ignore
 test('plan draft switches vendors and publishes nothing on exhaustion', async () => {

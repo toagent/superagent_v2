@@ -9,9 +9,14 @@ import type {
   SendQueryOptions,
 } from '../../packages/providers/src/types';
 import { isEffortRung } from '../../packages/provider-contract/src/effort';
-import { getRegistration, isRegisteredProvider, registerProvider } from '@archon/providers';
+import {
+  getRegistration,
+  InvalidProviderRunConfigError,
+  isRegisteredProvider,
+  registerProvider,
+} from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
-import { routeState, type Alias, type Tiers } from './config';
+import { isGeminiModel, routeState, type Alias, type Tiers } from './config';
 import { claudeOutcomeTrips, recordClaudeOutcome, type ClaudeOutcome } from './claude-health';
 import { readExecutionTable, executionForNode, executionRoute, executionNode } from './execution';
 import { type Plan } from './plan';
@@ -341,9 +346,14 @@ export function installPolicyExecutor(): void {
         vendorFor: () => 'antigravity',
       },
       parseConfig: raw => {
-        if (Object.keys(raw).length)
+        const keys = Reflect.ownKeys(raw);
+        if (keys.length === 0) return {};
+        if (keys.length !== 1 || keys[0] !== 'model')
           throw new Error('Gemini review uses the native gateway environment');
-        return {};
+        const { model } = raw;
+        if (!isGeminiModel(model))
+          throw new InvalidProviderRunConfigError('model', 'expected a Gemini model name');
+        return { model };
       },
       factory: () => wrapPolicyProvider({
         getType: () => 'gemini',

@@ -196,6 +196,9 @@ export function effortFor(
   return v;
 }
 
+export const isGeminiModel = (model: unknown): model is string =>
+  typeof model === 'string' && /^gemini-[a-z0-9%-]+$/.test(model);
+
 // prettier-ignore
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   const t = JSON.parse(readFileSync(path, 'utf8')) as Tiers;
@@ -219,8 +222,7 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
   if (t.routing.gemini !== undefined)
     for (const role of ['command', 'review'] as const) {
       const models = obj(t.routing.gemini)[role];
-      if (!Array.isArray(models) || !models.length ||
-          models.some(m => typeof m !== 'string' || !/^gemini-[a-z0-9%-]+$/.test(m)))
+      if (!Array.isArray(models) || !models.length || !models.every(isGeminiModel))
         throw new Error(`tiers.routing.gemini.${role}: expected Gemini models`);
     }
   return t;
