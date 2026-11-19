@@ -2925,7 +2925,6 @@ export function attemptIdentity(
   if (!attempt) return identityOf(binding);
   if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
-  if (attempt.provider === 'gemini') return { model: attempt.model, strength: 'pinned' };
   // absent tracking on an interrupted legacy attempt cannot prove its author model.
   return attempt.provider === 'codex' &&
     (attempt.status === 'completed' || attempt.rerouted_models !== undefined)

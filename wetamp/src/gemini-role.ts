@@ -47,7 +47,7 @@ export async function geminiTurn(
   prompt: string,
   signal?: AbortSignal,
   timeoutMs = 60_000
-): Promise<{ value: unknown; model?: string }> {
+): Promise<{ value: unknown; model: string }> {
   const base = process.env.AGY_LLM_GATEWAY_URL;
   const credential = [process.env.AGY_LLM_GATEWAY_API_KEY, process.env.ANTIGRAVITY_API_KEY].find(
     Boolean
@@ -84,8 +84,17 @@ export async function geminiTurn(
     void response.body?.cancel().catch(() => undefined);
     throw new Error(`gateway HTTP ${String(response.status)}`);
   }
+  const overflow = new Error('gateway response exceeds limit');
   try {
-    const reply = (await response.json()) as {
+    let bytes = 0;
+    const limiter = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytes += chunk.byteLength;
+        if (bytes > MAX_BYTES) throw overflow;
+        controller.enqueue(chunk);
+      },
+    });
+    const reply = (await new Response(response.body?.pipeThrough(limiter)).json()) as {
       error?: unknown;
       modelVersion?: string;
       candidates?: {
@@ -98,14 +107,12 @@ export async function geminiTurn(
     const parts = candidate.content?.parts?.filter(part => !part.thought);
     if (!parts?.length || parts.some(part => typeof part.text !== 'string')) throw new Error();
     const value: unknown = JSON.parse(roleText(parts.map(part => part.text).join('')));
-    const model =
-      typeof reply.modelVersion === 'string' &&
-      /^gemini-[a-z0-9.-]+$/i.test(reply.modelVersion) &&
-      !collectCredentialValues(process.env).some(secret => reply.modelVersion?.includes(secret))
-        ? reply.modelVersion
-        : undefined;
+    const model = reply.modelVersion;
+    if (typeof model !== 'string' || !/^gemini-[a-z0-9.-]+$/i.test(model)) throw new Error();
+    roleText(model);
     return { value, model };
-  } catch {
+  } catch (error) {
+    if (error === overflow) throw error;
     throw new Error(timeout.aborted ? 'gateway timeout' : 'gateway invalid result');
   }
 }

@@ -97,25 +97,23 @@ export async function* reviewWithGemini(
   fallback: (prompt: string) => AsyncGenerator<MessageChunk>
 ): AsyncGenerator<MessageChunk> {
   signal?.throwIfAborted();
-  let material: string | undefined;
+  let material: string;
   try {
     material = roleText(
       prompt + '\n\n' + reviewMaterial(artifacts, cwd, review.contract, node !== review.contract)
     );
   } catch (error) {
-    if (error instanceof RestrictedRoleInput) {
-      yield {
-        type: 'result',
-        isError: true,
-        failure: { class: 'unknown', evidence: 'review evidence is restricted' },
-      };
-      yield { type: 'settled' };
-      return;
-    }
+    const status = 'INCOMPLETE';
+    const notes = error instanceof RestrictedRoleInput ? '评审材料受限' : '评审材料缺失或无效';
+    yield {
+      type: 'result',
+      structuredOutput: { status, notes, findings: [], fixture_confirmations: [], debt: [] },
+    };
+    yield { type: 'settled' };
+    return;
   }
   const attempts = readPolicyAttempts(artifacts);
   for (const model of review.network ? new Set(review.models) : []) {
-    if (!material) break;
     signal?.throwIfAborted();
     if (review.authors.includes(model) || review.authors.includes(decodeURIComponent(model)))
       continue;
@@ -134,7 +132,7 @@ export async function* reviewWithGemini(
       if (
         validateStructuredOutput(reply.value, reviewerOutputFormat).valid &&
         (reply.value as { status: string }).status !== 'INCOMPLETE' &&
-        (!reply.model || !review.authors.includes(reply.model))
+        !review.authors.includes(reply.model)
       )
         result = reply;
     } catch (error) {
@@ -146,12 +144,11 @@ export async function* reviewWithGemini(
     writePolicyAttempts(artifacts, attempts);
     signal?.throwIfAborted();
     if (result) {
-      const resolvedModel = result.model ? { id: result.model } : undefined;
       yield {
         type: 'result',
         structuredOutput: result.value,
         stopReason: 'end_turn',
-        resolvedModel,
+        resolvedModel: { id: result.model },
       };
       yield { type: 'settled' };
       return;
@@ -162,15 +159,11 @@ export async function* reviewWithGemini(
       message: JSON.stringify({ node, model, reason }),
     };
   }
-  const reason = review.network
-    ? material
-      ? 'attempts_exhausted'
-      : 'evidence_unavailable'
-    : 'network_denied';
+  const reason = review.network ? 'attempts_exhausted' : 'network_denied';
   yield {
     type: 'warning',
     code: 'superagent.gemini_review_fallback',
     message: JSON.stringify({ node, reason }),
   };
-  yield* fallback(material ?? prompt);
+  yield* fallback(material);
 }
