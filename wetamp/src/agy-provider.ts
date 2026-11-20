@@ -183,7 +183,6 @@ async function* runAgy(
   let model: string | undefined;
   let terminal: Record<string, unknown> | undefined;
   let invalid = false;
-  let toolFailed = false;
   let result: ResultChunk;
   try {
     for await (const line of lines) {
@@ -242,7 +241,6 @@ async function* runAgy(
       if (active) continue;
       // agy 把 hook 拒绝也报告为普通 TOOL_ERROR，且可能以 SUCCESS 退出。
       const failed = body.state !== 'DONE' || info?.error != null;
-      toolFailed ||= failed;
       if (tools.get(index) !== 'active') continue;
       tools.set(index, 'done');
       const value = info?.output ?? object(info?.error)?.message;
@@ -265,7 +263,7 @@ async function* runAgy(
         failure('transient', `agy 进程异常退出（${String(child.signalCode ?? code)}）`)
       );
     else if (invalid) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
-    else if (!result.isError && (toolFailed || [...tools.values()].includes('active')))
+    else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
     const detail = string(terminal?.error)?.trim();
     if (result.failure && detail) result.failure.evidence += `：${detail.slice(0, 1000)}`;
