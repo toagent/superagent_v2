@@ -187,7 +187,7 @@ test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
     expect(call('write_to_file', { TargetFile, File: '~/.netrc' })).toMatchObject({
       decision: 'deny',
     });
-  expect(call('grep_search', { Query: '_private', SearchPath: '' })).toEqual({});
+  expect(call('grep_search', { Query: '_private', SearchPath: '' })).toEqual({ decision: 'allow' });
 });
 
 test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
@@ -220,17 +220,22 @@ test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
 
 test('agy 放行普通操作、第三方包路径及未处理事件', () => {
   const { call, home } = agyFixture();
+  const allow = { decision: 'allow' };
   for (const [file, kind] of privatePathCases)
-    if (kind === null) expect(call('read_file', { Path: join(home, file) })).toEqual({});
-  expect(call('write_to_file', { TargetFile: 'a.ts', CodeContent: '~/.aws/credentials' })).toEqual(
-    {}
-  );
-  expect(call('grep_search', { SearchPath: '.', Query: '_private' })).toEqual({});
-  expect(call('run_command', { CommandLine: 'grep _private src', Cwd: '' })).toEqual({});
-  expect(call('run_command', { CommandLine: '' })).toEqual({});
-  expect(call('read_file', { Path: '' })).toEqual({});
-  expect(call('read_file', {})).toEqual({});
+    if (kind === null) expect(call('read_file', { Path: join(home, file) })).toEqual(allow);
+  expect(call('write_to_file', { TargetFile: 'a.ts', CodeContent: '~/.netrc' })).toEqual(allow);
+  expect(call('grep_search', { SearchPath: '.', Query: '_private' })).toEqual(allow);
+  expect(call('run_command', { CommandLine: 'grep _private src', Cwd: '' })).toEqual(allow);
+  expect(call('run_command', { CommandLine: '' })).toEqual(allow);
+  expect(call('read_file', { Path: '' })).toEqual(allow);
+  expect(call('read_file', {})).toEqual(allow);
   expect(call('read_file', { Path: '_private' }, 'PostToolUse')).toEqual({});
+});
+
+test('agy 收到非法 JSON 时仅向 stderr 输出护栏提示', () => {
+  const p = Bun.spawnSync(['node', join(HOOKS, 'guard.cjs'), 'agy'], { stdin: Buffer.from('{') });
+  expect([p.exitCode, p.stdout.toString()]).toEqual([0, '']);
+  expect(p.stderr.toString()).toContain('护栏内部异常，本次已放行');
 });
 
 type Redline = {

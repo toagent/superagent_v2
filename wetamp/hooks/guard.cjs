@@ -406,7 +406,8 @@ async function decideAgy(payload, env = process.env) {
     onAdvisory: code => process.stderr.write(`SUPERAGENT advisory：${code}\n`),
   });
   if (reason) return { decision: 'deny', reason };
-  if (!firewallInstalled(env)) return {};
+  // agy 的 PreToolUse 必须返回 decision，空对象会被视为拒绝。
+  if (!firewallInstalled(env)) return { decision: 'allow' };
   if (shell && !shell.startsWith(REDACT_PREFIX))
     return { decision: 'allow', overwrite: { CommandLine: `${REDACT_PREFIX} ${shell}` } };
   const alternative = '改用终端命令，输出会经过秘密遮蔽';
@@ -416,7 +417,7 @@ async function decideAgy(payload, env = process.env) {
     const why = agyReadReason(args?.[redline.AGY_PATH_FIELDS.get(name)], cwd, env);
     if (why) return { decision: 'deny', reason: redline.message('读取文件', why, alternative) };
   }
-  return {};
+  return { decision: 'allow' };
 }
 
 if (require.main === module)
@@ -467,7 +468,7 @@ if (require.main === module)
     } catch {
       const systemMessage = 'SUPERAGENT advisory：护栏内部异常，本次已放行。';
       if (client === 'agy') process.stderr.write(systemMessage + '\n');
-      process.stdout.write(JSON.stringify(client === 'agy' ? {} : { systemMessage }) + '\n');
+      else process.stdout.write(JSON.stringify({ systemMessage }) + '\n');
     }
   })();
 module.exports = { decide, derivedBy, sessionRole, isChild };

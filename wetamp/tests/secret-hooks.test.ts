@@ -91,20 +91,21 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
   for (const input of [undefined, '', 'synthetic-heuristic-value'])
     expect(prompt(input)).toEqual({});
   expect(prompt('synthetic-secret-value', false)).toEqual({});
+  const allow = { decision: 'allow' };
   const wrapped = tool('run_command', { CommandLine: 'echo ok', Cwd: cwd });
   expect(wrapped).toEqual({
     decision: 'allow',
     overwrite: { CommandLine: '. ~/.wetamp/jail/sa-redact.sh; echo ok' },
   });
-  expect(tool('run_command', wrapped.overwrite)).toEqual({});
-  expect(tool('run_command', { CommandLine: 'echo ok' }, false)).toEqual({});
+  expect(tool('run_command', wrapped.overwrite)).toEqual(allow);
+  expect(tool('run_command', { CommandLine: 'echo ok' }, false)).toEqual(allow);
   writeFileSync(`${cwd}/plain.txt`, 'hello');
   writeFileSync(`${cwd}/fixture.txt`, 'synthetic-heuristic-value');
   for (const [name, field] of [
     ['read_file', 'Path'],
     ['view_file', 'AbsolutePath'],
   ] as const) {
-    expect(tool(name, { [field]: 'plain.txt' })).toEqual({});
+    expect(tool(name, { [field]: 'plain.txt' })).toEqual(allow);
     for (const file of ['fixture.txt', '', 'missing.txt'])
       expect(tool(name, { [field]: file })).toMatchObject({ decision: 'deny' });
   }
@@ -115,7 +116,7 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
         decision: 'deny',
         reason: expect.stringContaining('终端命令'),
       });
-    else expect(result).toEqual({});
+    else expect(result).toEqual(allow);
   }
   for (const [result, reason] of [
     [tool('read_file', { Path: '~/.ssh/id_ed25519' }), 'ssh 私钥'],
@@ -123,5 +124,5 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
     [tool('run_command'), '无法识别终端命令参数'],
   ] as const)
     expect(result).toMatchObject({ decision: 'deny', reason: expect.stringContaining(reason) });
-  expect(tool('invoke_subagent')).toEqual({});
+  expect(tool('invoke_subagent')).toEqual(allow);
 });
