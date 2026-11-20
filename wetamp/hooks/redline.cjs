@@ -59,10 +59,19 @@ function secretKind(abs, env) {
     const root = path.join(home, ...segs).toLowerCase();
     return p === root || p.startsWith(root + '/');
   };
-  const privateDir = p.split('/').indexOf('_private');
-  // 豁免仅适用于所有 node_modules 段都位于首个 _private 之前的路径。
-  const nodeModules = p.split('/').lastIndexOf('node_modules');
-  if (privateDir !== -1 && (nodeModules === -1 || nodeModules > privateDir)) return '_private';
+  const segments = p.split('/');
+  const privateDir = segments.indexOf('_private');
+  // uv 缓存之外，豁免要求所有包目录段均位于首个 _private 之前。
+  const lastPackage = Math.max(
+    segments.lastIndexOf('node_modules'),
+    segments.lastIndexOf('site-packages')
+  );
+  if (
+    privateDir !== -1 &&
+    (lastPackage === -1 || lastPackage > privateDir) &&
+    !under(['.cache', 'uv'])
+  )
+    return '_private';
   if (under(['.ssh']) && p !== path.join(home, '.ssh')) {
     const base = path.basename(p);
     if (!base.endsWith('.pub') && !SSH_PUBLIC.includes(base)) return 'ssh 私钥';

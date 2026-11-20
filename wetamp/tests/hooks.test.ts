@@ -156,17 +156,23 @@ test('第三方包 _private 豁免与内核模板一致', () => {
   const home = tmp();
   const template = readFileSync(join(HOOKS, '../jail/ai-deny.sb.tmpl'), 'utf8');
   const filters = template.split('__SECRET_OS_DENIES__')[1].split('\n;')[0];
+  const homeRegex = home.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
   const regexes = Array.from(
     filters.matchAll(/\(regex #"([^"]+)"\)/g),
-    ([, source]) => new RegExp(source)
+    ([, source]) =>
+      new RegExp(
+        source.replace('__HOME_REGEX__', () => homeRegex),
+        'i'
+      )
   );
-  expect(regexes).toHaveLength(3);
-  const [privateDir, packagePrivate, privatePackage] = regexes;
+  expect(regexes).toHaveLength(4);
+  const [uvCache, privateDir, packagePrivate, privatePackage] = regexes;
   for (const [file, expected] of privatePathCases) {
     const target = join(home, file);
     const kind = redline.secretKind(target, { HOME: home });
     const denied =
-      (privateDir.test(target) && !packagePrivate.test(target)) || privatePackage.test(target);
+      !uvCache.test(target) &&
+      ((privateDir.test(target) && !packagePrivate.test(target)) || privatePackage.test(target));
     expect([kind, denied], file).toEqual([expected, kind === '_private']);
   }
   // 2026-11-20 真实 seatbelt 实测，本机对目录名按大小写不敏感匹配。

@@ -6,9 +6,12 @@
   (regex #"^__HOME_REGEX__/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]")
 __SECRET_OS_DENIES__
   (require-all
-    (regex #"(^|/)_[pP][rR][iI][vV][aA][tT][eE](/|$)")
-    (require-not (regex #"/node_modules/([^/]*/)*_[pP][rR][iI][vV][aA][tT][eE](/|$)")))
-  (regex #"(^|/)_[pP][rR][iI][vV][aA][tT][eE]/([^/]*/)*node_modules(/|$)"))
+    (require-not (regex #"^__HOME_REGEX__/[.]cache/uv/"))
+    (require-any
+      (require-all
+        (regex #"(^|/)_[pP][rR][iI][vV][aA][tT][eE](/|$)")
+        (require-not (regex #"/(node_modules|site-packages)/([^/]*/)*_[pP][rR][iI][vV][aA][tT][eE](/|$)")))
+      (regex #"(^|/)_[pP][rR][iI][vV][aA][tT][eE]/([^/]*/)*(node_modules|site-packages)(/|$)"))))
 ; Keychain search list/default keychain writes go through cfprefsd, bypassing file rules.
 (deny user-preference-write (preference-domain "com.apple.security"))
 __SECRET_EXEC_DENIES__

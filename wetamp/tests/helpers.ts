@@ -32,6 +32,15 @@ export const privatePathCases = [
   ['Library/Mobile Documents/node_modules/pkg/_private/a', 'iCloud'],
   ['.password-store/node_modules/pkg/_private/a', '凭据文件'],
   ['Library/Safari/node_modules/pkg/_private/a', '凭据文件'],
+  ['work/repo/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py', null],
+  ['.cache/uv/.tmpAbC123/numpy/testing/_private', null],
+  ['.cache/uv/archive-v0/abc/numpy/testing/_private/utils.py', null],
+  ['work/_private/proj/.venv/lib/python3.12/site-packages/pkg/index.py', '_private'],
+  ['work/site-packages/pkg/_private/sub/site-packages/dep/a', '_private'],
+  ['work/x/site-packages_bak/_private/a', '_private'],
+  ['.cache/uvx/numpy/_private/a', '_private'],
+  ['work/.cache/uv/pkg/_private/a', '_private'],
+  ['Library/Mobile Documents/site-packages/pkg/_private/a', 'iCloud'],
 ] as const;
 
 let sandboxed: boolean | undefined;
