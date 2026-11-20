@@ -126,14 +126,45 @@ test('回放事件，校验工作目录、环境、原始模型标识和结构�
   ]);
 });
 
+test('递归翻译可空属性并还原省略值', async () => {
+  const f = fixture();
+  const provider = createAgyProvider({ executable: f.executable });
+  const row = { type: 'object', required: ['label'] };
+  const schema = {
+    type: 'object',
+    required: ['reason', 'rows'],
+    properties: {
+      reason: { type: ['string', 'null'], enum: ['failed', null] },
+      rows: { type: 'array', items: { ...row, properties: { label: { enum: ['ok', null] } } } },
+    },
+  };
+  const rows = [{}, { label: 'ok' }, { label: null }];
+  const result = { status: 'SUCCESS', structured_output: { rows } };
+  writeFileSync(f.output, JSON.stringify({ event: 'result', result }));
+  const outputFormat = { type: 'json_schema' as const, schema };
+  const options = { model, env: f.env, outputFormat };
+  const chunks = await collect(provider.sendQuery('检查', f.cwd, undefined, options));
+  const args = readFileSync(join(f.home, 'args'), 'utf8').split('\n');
+  const translated = JSON.parse(args[args.indexOf('--json-schema') + 1]);
+  expect(translated.required).toEqual(['rows']);
+  expect(translated.properties.reason).toEqual({ type: 'string', enum: ['failed'] });
+  expect(translated.properties.rows.items.required).toEqual([]);
+  expect(translated.properties.rows.items.properties.label.enum).toEqual(['ok']);
+  const structuredOutput = { reason: null, rows: [{ label: null }, ...rows.slice(1)] };
+  expect(chunks.at(-2)).toMatchObject({ structuredOutput });
+});
+
 test('没有输出、空回执、非成功状态、坏行、非零退出均结算为失败', async () => {
   const f = fixture();
   const provider = createAgyProvider({ executable: f.executable, hooksPath: f.hooksPath });
   const success = readFileSync(f.output, 'utf8');
+  const error = `schema rejected ${f.env.AGY_LLM_GATEWAY_API_KEY} ${'x'.repeat(2000)}`;
+  const failed = JSON.stringify({ event: 'result', result: { status: 'ERROR', error } });
   const cases = [
     ['', '0', '未收到结果'],
     ['{"event":"result","result":{"status":"SUCCESS","response":" "}}', '0', '未产生输出'],
-    ['{"event":"result","result":{"status":"ERROR","response":"partial"}}', '0', 'ERROR'],
+    [failed, '0', 'ERROR'],
+    [failed, '3', '3'],
     ['{\n' + success, '0', '无效事件'],
     [success, '7', '7'],
   ] as const;
@@ -145,7 +176,13 @@ test('没有输出、空回执、非成功状态、坏行、非零退出均结�
         env: { ...f.env, FIXTURE_EXIT: exit },
       })
     );
-    expect(chunks.at(-2)).toMatchObject({
+    const result = chunks.at(-2);
+    if (output === failed && result?.type === 'result') {
+      const detail = `schema rejected [REDACTED] ${'x'.repeat(2000)}`.slice(0, 1000);
+      expect(result.failure?.evidence).toEndWith(detail);
+      expect(result.failure?.class).toBe(exit === '0' ? 'unknown' : 'transient');
+    }
+    expect(result).toMatchObject({
       type: 'result',
       isError: true,
       failure: { class: expect.any(String), evidence: expect.stringContaining(evidence) },

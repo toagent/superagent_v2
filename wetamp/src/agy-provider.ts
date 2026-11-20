@@ -38,6 +38,45 @@ const string = (value: unknown): string | undefined =>
 const count = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 
+const allowsNull = (schema: Record<string, unknown>): boolean =>
+  (Array.isArray(schema.type) && schema.type.includes('null')) ||
+  (Array.isArray(schema.enum) && schema.enum.includes(null));
+const withoutNull = (values: unknown, nil: unknown): unknown[] | undefined =>
+  Array.isArray(values) ? values.filter(value => value !== nil) : undefined;
+
+function translateSchema(schema?: Record<string, unknown>): void {
+  if (!schema) return;
+  translateSchema(object(schema.items));
+  const properties = object(schema.properties) ?? {};
+  for (const [key, rawField] of Object.entries(properties)) {
+    const field = object(rawField);
+    if (field && allowsNull(field)) {
+      const types = withoutNull(field.type, 'null');
+      const choices = withoutNull(field.enum, null);
+      if (types) field.type = types.length === 1 ? types[0] : types;
+      if (choices) field.enum = choices;
+      if (field.type === 'null' || types?.length === 0 || choices?.length === 0)
+        Reflect.deleteProperty(properties, key);
+      if (Array.isArray(schema.required))
+        schema.required = schema.required.filter(name => name !== key);
+    }
+    translateSchema(field);
+  }
+}
+
+function restoreNulls(value: unknown, schema?: Record<string, unknown>): void {
+  if (!schema) return;
+  if (Array.isArray(value)) for (const item of value) restoreNulls(item, object(schema.items));
+  const target = object(value);
+  if (!target) return;
+  const missing = { value: null, enumerable: true, writable: true, configurable: true };
+  for (const [key, rawField] of Object.entries(object(schema.properties) ?? {})) {
+    const field = object(rawField);
+    if (Object.hasOwn(target, key)) restoreNulls(target[key], field);
+    else if (field && allowsNull(field)) Object.defineProperty(target, key, missing);
+  }
+}
+
 function hasManagedHook(path: string, env: NodeJS.ProcessEnv, home: string): boolean {
   try {
     // 已安装的 hook 路径可能属于控制端检出，执行器则在固定版本快照中运行。
@@ -228,6 +267,8 @@ async function* runAgy(
     else if (invalid) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && (toolFailed || [...tools.values()].includes('active')))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
+    const detail = string(terminal?.error)?.trim();
+    if (result.failure && detail) result.failure.evidence += `：${detail.slice(0, 1000)}`;
   } finally {
     signal?.removeEventListener('abort', stop);
     lines.close();
@@ -238,6 +279,7 @@ async function* runAgy(
   for (const [index, state] of tools)
     if (state === 'active')
       yield { type: 'tool_call_update', toolCallId: String(index), status: 'cancelled' };
+  if (!result.isError) restoreNulls(result.structuredOutput, object(options?.outputFormat?.schema));
   yield result.isError ? { ...result, text: undefined, structuredOutput: undefined } : result;
   yield { type: 'settled' };
 }
@@ -273,8 +315,11 @@ export function createAgyProvider(
         return;
       }
       const args = ['--print', prompt, '--output-format', 'stream-json', '--model', model];
-      if (options?.outputFormat)
-        args.push('--json-schema', JSON.stringify(options.outputFormat.schema));
+      if (options?.outputFormat) {
+        const schema: unknown = JSON.parse(JSON.stringify(options.outputFormat.schema));
+        translateSchema(object(schema));
+        args.push('--json-schema', JSON.stringify(schema));
+      }
       args.push('--dangerously-skip-permissions');
       yield* runAgy(
         executable,
