@@ -3,7 +3,14 @@ import { basename, dirname, join } from 'node:path';
 import { setLogDestination } from '@archon/paths';
 import { ClaudeProvider, CodexProvider } from '@archon/providers/in-process';
 import { loadTiers, resolveRoute, routeState, WETAMP } from './config';
-import { geminiTurn, privateRolePath, roleFile, roleText, settledRoleResult } from './gemini-role';
+import {
+  GeminiGatewayError,
+  geminiTurn,
+  privateRolePath,
+  roleFile,
+  roleText,
+  settledRoleResult,
+} from './gemini-role';
 import { validatePlan, type Plan } from './plan';
 import type { PolicyAttempt } from '../templates/.archon/scripts/policy-attempts';
 
@@ -73,8 +80,8 @@ export async function draftPlan(brief: string, output: string) {
       if (resolved) roleText(resolved);
     } catch (error) {
       const reason =
-        error instanceof Error && /^gateway [a-zA-Z0-9 ]+$/.test(error.message)
-          ? error.message
+        error instanceof GeminiGatewayError
+          ? error.reason
           : 'planner failed or returned an invalid plan';
       execution.push({ provider, model, status: 'failed', error: reason });
       continue;

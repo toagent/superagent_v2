@@ -5,6 +5,10 @@ import type { MessageChunk, ResultChunk } from '../../packages/providers/src/typ
 
 const MAX_BYTES = 1_000_000;
 export class RestrictedRoleInput extends Error {}
+// prettier-ignore
+export type GeminiGatewayErrorReason = 'gateway unavailable' | 'gateway timeout' | 'gateway request failed' | `gateway HTTP ${number}` | 'gateway response exceeds limit' | 'gateway invalid result';
+// prettier-ignore
+export class GeminiGatewayError extends Error { constructor(readonly reason: GeminiGatewayErrorReason) { super(reason); } }
 export const privateRolePath = (path: string): boolean =>
   /(?:^|[\\/])(?:_private|\.git|\.ssh|\.aws|\.gnupg|\.env[^/]*|Library\/Mobile Documents|Library\/CloudStorage\/iCloud[^/]*|[^/]+\.(?:pem|key|p12|pfx)|\.netrc|\.npmrc|\.pypirc|(?:auth|credentials?|secrets?)\.json)(?:$|[\\/])/i.test(
     path
@@ -52,7 +56,7 @@ export async function geminiTurn(
   const credential = [process.env.AGY_LLM_GATEWAY_API_KEY, process.env.ANTIGRAVITY_API_KEY].find(
     Boolean
   );
-  if (!base || !credential) throw new Error('gateway unavailable');
+  if (!base || !credential) throw new GeminiGatewayError('gateway unavailable');
   const url = new URL(base);
   if (
     (url.protocol !== 'https:' &&
@@ -78,13 +82,15 @@ export async function geminiTurn(
     }),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   }).catch(() => {
-    throw new Error(timeout.aborted ? 'gateway timeout' : 'gateway request failed');
+    throw new GeminiGatewayError(timeout.aborted ? 'gateway timeout' : 'gateway request failed');
   });
   if (response.status !== 200) {
     void response.body?.cancel().catch(() => undefined);
-    throw new Error(`gateway HTTP ${String(response.status)}`);
+    throw new GeminiGatewayError(
+      `gateway HTTP ${String(response.status)}` as `gateway HTTP ${number}`
+    );
   }
-  const overflow = new Error('gateway response exceeds limit');
+  const overflow = new GeminiGatewayError('gateway response exceeds limit');
   try {
     let bytes = 0;
     const limiter = new TransformStream<Uint8Array, Uint8Array>({
@@ -113,6 +119,6 @@ export async function geminiTurn(
     return { value, model };
   } catch (error) {
     if (error === overflow) throw error;
-    throw new Error(timeout.aborted ? 'gateway timeout' : 'gateway invalid result');
+    throw new GeminiGatewayError(timeout.aborted ? 'gateway timeout' : 'gateway invalid result');
   }
 }

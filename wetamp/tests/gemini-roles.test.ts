@@ -12,7 +12,7 @@ import * as coord from '../src/coord';
 import { draftPlan } from '../src/gemini-plan';
 import { milestones, validatePlan, type Plan } from '../src/plan';
 import { installPolicyExecutor, wrapPolicyProvider } from '../src/policy-executor';
-import { geminiTurn } from '../src/gemini-role';
+import { GeminiGatewayError, geminiTurn } from '../src/gemini-role';
 import { freezeContext } from '../templates/.archon/scripts/sa-context';
 import * as ledger from '../templates/.archon/scripts/policy-attempts';
 import { gitRepo, tmp, trackTestChild } from './helpers';
@@ -246,4 +246,43 @@ test('Gemini opt-in preserves the coder and default review', () => {
   const [native, optIn] = [nodes(plan), nodes({ ...plan, gemini_review: true })].map(list => Object.fromEntries(list.map(node => [node.id, node])));
   expect(native['review-m1-r1'].model).toBe('@sa-reviewer'); expect(optIn['review-m1-r1']).toMatchObject({ model: '@sa-gemini-review', mutates_checkout: false });
   expect(optIn['code-core']).toEqual(native['code-core']); expect(optIn['review-m1-r1'].when).not.toContain('review_required');
+});
+// prettier-ignore
+test('geminiTurn reports typed GeminiGatewayError reasons', async () => {
+  const dir = tmp(); let mode = 'timeout';
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch() {
+    if (mode === 'timeout') { await Bun.sleep(60); return new Response(); }
+    if (mode === 'http') return new Response(null, { status: 503 });
+    return Response.json({ candidates: [{ finishReason: 'MAX_TOKENS' }] });
+  } });
+  const restore = gatewayEnv(dir, server.url.href);
+  const catchErr = (timeoutMs = 20) => geminiTurn('gemini-fixture', 'p', undefined, timeoutMs).then(() => null, e => e);
+  try {
+    for (const [m, expected] of [['timeout', 'gateway timeout'], ['invalid', 'gateway invalid result'], ['http', 'gateway HTTP 503']] as const) {
+      mode = m;
+      const err = await catchErr();
+      expect(err).toBeInstanceOf(GeminiGatewayError);
+      expect((err as GeminiGatewayError).reason).toBe(expected);
+      expect((err as Error).message).toBe(expected);
+    }
+    server.stop(true);
+    const err = await catchErr(200);
+    expect(err).toBeInstanceOf(GeminiGatewayError);
+    expect((err as GeminiGatewayError).reason).toBe('gateway request failed');
+  } finally { restore(); server.stop(true); }
+});
+// prettier-ignore
+test('draftPlan keeps gateway reasons and ignores spoofed gateway Error', async () => {
+  const dir = tmp(), brief = join(dir, 'brief'); writeFileSync(brief, 'spoof-brief');
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('not-json') });
+  const restore = gatewayEnv(dir, server.url.href);
+  const fakes = [CodexProvider, ClaudeProvider].map(provider => spyOn(provider.prototype, 'sendQuery').mockImplementation(async function* () {
+    throw new Error('gateway spoofed');
+  }));
+  try {
+    const { ok, execution } = await draftPlan(brief, join(dir, 'plan.json'));
+    expect(ok).toBe(false);
+    expect(execution.filter(a => a.provider === 'gemini').every(a => a.error === 'gateway invalid result')).toBe(true);
+    expect(execution.filter(a => a.provider !== 'gemini').every(a => a.error === 'planner failed or returned an invalid plan')).toBe(true);
+  } finally { fakes.forEach(fake => fake.mockRestore()); restore(); server.stop(true); }
 });

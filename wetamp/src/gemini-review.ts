@@ -5,6 +5,7 @@ import type { MessageChunk, ProviderCapabilities } from '@archon/providers';
 import { validateStructuredOutput } from '@archon/workflows/structured-output';
 import { reviewerOutputFormat } from './contract';
 import {
+  GeminiGatewayError,
   geminiTurn,
   privateRolePath,
   RestrictedRoleInput,
@@ -136,8 +137,7 @@ export async function* reviewWithGemini(
       )
         result = reply;
     } catch (error) {
-      if (error instanceof Error && /^gateway [a-zA-Z0-9 ]+$/.test(error.message))
-        reason = error.message;
+      if (error instanceof GeminiGatewayError) reason = error.reason;
     }
     attempt.status = result && !signal?.aborted ? 'completed' : 'failed';
     if (attempt.status === 'failed') attempt.failure = 'transient';
