@@ -51,7 +51,7 @@ function fixture() {
   return { home, cwd, env, output, executable, hooksPath };
 }
 
-test('工具拒绝后进程退出 0 且报告 SUCCESS，仍结算失败', async () => {
+test('工具拒绝后进程退出 0 且报告 SUCCESS，结算成功并保留失败事件', async () => {
   const f = fixture();
   copyFileSync(join(fixtures, 'denied.ndjson'), f.output);
   const chunks = await collect(
@@ -67,7 +67,8 @@ test('工具拒绝后进程退出 0 且报告 SUCCESS，仍结算失败', async 
     'settled',
   ]);
   expect(chunks[1]).toMatchObject({ status: 'failed', toolCallId: '2' });
-  expect(chunks[2]).toMatchObject({ isError: true, failure: { class: 'unknown' } });
+  expect(chunks[2]).toMatchObject({ type: 'result', text: 'OK' });
+  expect(chunks[2]).not.toHaveProperty('isError');
 });
 
 async function collect(stream: ReturnType<ReturnType<typeof createAgyProvider>['sendQuery']>) {
@@ -154,12 +155,13 @@ test('递归翻译可空属性并还原省略值', async () => {
   expect(chunks.at(-2)).toMatchObject({ structuredOutput });
 });
 
-test('没有输出、空回执、非成功状态、坏行、非零退出均结算为失败', async () => {
+test('没有输出、空回执、非成功状态、坏行、非零退出或工具未完成均结算为失败', async () => {
   const f = fixture();
   const provider = createAgyProvider({ executable: f.executable, hooksPath: f.hooksPath });
   const success = readFileSync(f.output, 'utf8');
   const error = `schema rejected ${f.env.AGY_LLM_GATEWAY_API_KEY} ${'x'.repeat(2000)}`;
   const failed = JSON.stringify({ event: 'result', result: { status: 'ERROR', error } });
+  const [active, , terminal] = readFileSync(join(fixtures, 'denied.ndjson'), 'utf8').split('\n');
   const cases = [
     ['', '0', '未收到结果'],
     ['{"event":"result","result":{"status":"SUCCESS","response":" "}}', '0', '未产生输出'],
@@ -167,6 +169,7 @@ test('没有输出、空回执、非成功状态、坏行、非零退出均结�
     [failed, '3', '3'],
     ['{\n' + success, '0', '无效事件'],
     [success, '7', '7'],
+    [`${active}\n${terminal}`, '0', 'agy 工具步骤失败或未完成'],
   ] as const;
   for (const [output, exit, evidence] of cases) {
     writeFileSync(f.output, output);
