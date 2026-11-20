@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   answerNtfyDecision,
+  coordinationDecisions,
   DecisionError,
   DecisionStore,
   type DecisionReceipt,
@@ -17,7 +18,8 @@ import {
   superviseTickRunning,
   syncDecisionChannel,
 } from '../src/cli';
-import { caller, coord } from '../src/coord';
+import { caller, coord, Coordination, repoScope } from '../src/coord';
+import { gitRepo } from './helpers';
 // prettier-ignore
 import { answerNtfyLocally, askNtfy, claimNtfyHealthEvent, publishPendingNtfy, queueNtfyAlert, supersedeNtfyDecisions, syncNtfy, type NtfyConfig } from '../src/ntfy';
 
@@ -222,6 +224,39 @@ describe('ntfy decision channel', () => {
     expect(f.posts.slice(0, 5).map(post => withoutHeader(post.body.title))).toEqual([...Array(5)].map((_, i) => `Decision ${i}`));
     await syncDecisionChannel(f.config, inbox, undefined, 5); now += 3_600_001; await publishPendingNtfy(f.config);
     expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(7);
+  });
+  test('到期问询跨 tick 不补发，COORD 仍保留本地待决事项', async () => {
+    const initial = Date.now(), f = fixture(initial), scope = repoScope(gitRepo(f.root));
+    let now = initial;
+    f.config.now = () => now;
+    const registry = new Coordination({ sa: f.root, runs: () => [], now: () => now, presence: () => ({ state: 'unknown' }) });
+    registry.handoff(scope, { ...caller(true), client: 'codex' }, {
+      kind: 'task', title: '待处理交接', body: '需要决定', evidence: [], severity: 'urgent',
+    }, 0, false);
+    now += 16 * 60_000;
+    registry.tick(() => ({ status: 'pending' }));
+    const inbox = async () => ({ decisions: coordinationDecisions(registry), unknown: [] });
+    const id = (await inbox()).decisions[0]!.id;
+    const ask = askNtfy({ ...f.request('coord'), callback: { kind: 'decision', id }, dedupe_key: `decision:${id}` }, f.config);
+    const offline = (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch;
+    await expect(publishPendingNtfy({ ...f.config, fetch: offline })).rejects.toThrow('ntfy publish unavailable');
+    await publishPendingNtfy(f.config);
+    now = initial + 3_601_000;
+    await syncDecisionChannel(f.config, inbox);
+    expect(Object.keys(f.state().decisions)).toEqual([ask]);
+    expect(f.state().decisions[ask]?.status).toBe('expired');
+    now = initial; // 即使时钟回拨，已持久化的过期状态仍然有效。
+    await syncDecisionChannel(f.config, inbox);
+    expect(f.posts.filter(post => post.body.topic === 'sa-decisions')).toHaveLength(1);
+    expect((await inbox()).decisions.map(decision => decision.id)).toEqual([id]);
+  });
+  test('到期但尚未结算的待发问询不会重试', async () => {
+    const initial = Date.now(), f = fixture(initial), id = 'pending-expiry';
+    const ask = askNtfy({ ...f.request(id), callback: { kind: 'decision', id }, dedupe_key: `decision:${id}` }, f.config);
+    f.config.now = () => initial + 3_600_001;
+    await publishPendingNtfy(f.config);
+    expect(f.posts).toHaveLength(0);
+    expect(f.state().decisions[ask]?.status).toBe('pending');
   });
   test('withdraws stale decision callbacks before publishing while preserving live work', async () => {
     const f = fixture(Date.now()), decision = (id: string) => ({ id, run: id, engine: '', node: '', pause: '', question: `${id}：detail`, reason: 'reason', context: 'context', options: f.request('x').options.map(option => ({ ...option, consequence: option.consequence ?? option.label })) });

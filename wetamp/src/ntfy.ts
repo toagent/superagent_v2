@@ -308,9 +308,17 @@ function validateAsk(request: NtfyAsk, now: number): void {
     throw new Error('ntfy ask default must name an option');
 }
 
-export function askNtfy(request: NtfyAsk, supplied: Partial<NtfyConfig> = {}): string {
+const isDecisionChannelAsk = ({ callback, dedupe_key }: NtfyAsk): boolean =>
+  callback.kind === 'decision' && dedupe_key === `decision:${callback.id}`;
+
+export function askNtfy(
+  request: NtfyAsk,
+  supplied: Partial<NtfyConfig> = {},
+  { reuseExpired = false } = {}
+): string {
   const config = { ...defaultConfig(), ...supplied };
-  validateAsk(request, config.now());
+  const now = config.now();
+  validateAsk(request, now);
   const guard = stateLock(config.statePath);
   if (!guard.ok) throw new Error('ntfy state busy');
   try {
@@ -319,8 +327,11 @@ export function askNtfy(request: NtfyAsk, supplied: Partial<NtfyConfig> = {}): s
       ? Object.values(state.decisions).find(
           decision =>
             decision.dedupe_key === request.dedupe_key &&
-            decision.status === 'pending' &&
-            Date.parse(decision.expires_at) > config.now()
+            ((decision.status === 'pending' && Date.parse(decision.expires_at) > now) ||
+              (reuseExpired &&
+                isDecisionChannelAsk(decision) &&
+                (decision.status === 'expired' ||
+                  (decision.status === 'pending' && Date.parse(decision.expires_at) <= now))))
         )
       : undefined;
     if (existing) return existing.id;
@@ -587,6 +598,7 @@ async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
   const decisionLimitedKeys: string[] = [];
   for (const decision of Object.values(state.decisions)) {
     if (decision.status !== 'pending' || decision.delivery !== 'pending') continue;
+    if (isDecisionChannelAsk(decision) && Date.parse(decision.expires_at) <= now) continue;
     const key = `decision:${decision.id}:${decision.red_phase ?? 'normal'}`;
     if (state.sent[key]) {
       decision.delivery = 'sent';

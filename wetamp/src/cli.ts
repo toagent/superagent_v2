@@ -3822,6 +3822,7 @@ export async function syncDecisionChannel(
     ? [...enabled.slice(start), ...enabled.slice(0, start)].slice(0, newDecisionLimit)
     : enabled;
   for (const decision of selected) {
+    // 用户 2026-11-21 决定：过期的申请不再推送。
     askNtfy(
       {
         title: decision.question,
@@ -3838,7 +3839,8 @@ export async function syncDecisionChannel(
         callback: { kind: 'decision', id: decision.id },
         dedupe_key: `decision:${decision.id}`,
       },
-      supplied
+      supplied,
+      { reuseExpired: true }
     );
   }
   const lastSelected = selected.at(-1);
