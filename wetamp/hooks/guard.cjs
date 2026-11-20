@@ -410,7 +410,7 @@ async function decideAgy(payload, env = process.env) {
   if (shell && !shell.startsWith(REDACT_PREFIX))
     return { decision: 'allow', overwrite: { CommandLine: `${REDACT_PREFIX} ${shell}` } };
   const alternative = '改用终端命令，输出会经过秘密遮蔽';
-  if (name === 'grep_search' || !AGY_BUILTINS.has(name))
+  if ((name === 'grep_search' || !AGY_BUILTINS.has(name)) && derivedBy(payload, 'agy', env))
     return { decision: 'deny', reason: redline.message('执行工具', '无法预扫或遮蔽工具输出', alternative) };
   if (name === 'read_file' || name === 'view_file') {
     const why = agyReadReason(args?.[redline.AGY_PATH_FIELDS.get(name)], cwd, env);
