@@ -136,11 +136,14 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
   writeFileSync(settings, JSON.stringify({ userSetting: 'native', hooks: {} }));
   const guard = stableInstallation(root);
   const before = readFileSync(plugin, 'utf8');
+  const bin = join(root, '.local/bin');
+  symlinkSync(process.execPath, join(bin, 'bun'));
   const install = (args: string[]) =>
     Bun.spawnSync([process.execPath, join(WETAMP, 'src/install-hooks.ts'), ...args], {
       env: {
         ...process.env,
         HOME: root,
+        PATH: `${bin}:/usr/bin:/bin`,
         SUPERAGENT_HOME: join(root, 'sa'),
         CLAUDE_CONFIG_DIR: join(root, '.claude'),
         CODEX_HOME: join(root, '.codex'),
@@ -154,9 +157,15 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
   expect(install(['--dry-run']).exitCode).toBe(0);
   expect(readFileSync(plugin, 'utf8')).toBe(before);
   expect(existsSync(join(root, 'sa/backups'))).toBe(false);
+  const skipped = install([]);
+  expect(skipped.exitCode).toBe(0);
+  expect(skipped.stdout.toString()).toContain('agy: 未找到 agy 或 ~/.gemini，跳过');
+  expect(existsSync(join(root, '.gemini'))).toBe(false);
+  writeFileSync(join(bin, 'agy'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const installed = install([]);
   expect(installed.stderr.toString()).toBe('');
   expect(installed.exitCode).toBe(0);
+  expect(existsSync(join(root, '.gemini/config/hooks.json'))).toBe(true);
   expect(readFileSync(plugin, 'utf8')).toBe(openCodeGuard(guard));
   expect(readFileSync(wrapper, 'utf8')).toContain('git-guardrail.cjs');
   expect(statSync(wrapper).mode & 0o100).toBe(0o100);

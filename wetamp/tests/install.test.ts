@@ -245,6 +245,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
   function sandbox(): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
     const home = tmp();
     stableInstall(home);
+    mkdirSync(join(home, '.gemini'));
     rmSync(join(home, 'stable-engine/wetamp/hooks/git-guardrail.cjs'));
     symlinkSync(
       join(WETAMP, 'hooks/git-guardrail.cjs'),
@@ -281,6 +282,44 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         }
       ).hooks
     ).map(([e, gs]) => [e, ...gs.flatMap(g => g.hooks.map(h => h.command))]);
+
+  test('agy 合并空文件和旧配置，备份原文，重装及清除可重入', () => {
+    const handler = { type: 'command', command: `${V2('guard.cjs')} agy`, timeout: 30 };
+    const superagent = {
+      PreToolUse: [{ matcher: '*', hooks: [handler] }],
+      PreInvocation: [handler],
+    };
+    const user = { custom: { enabled: false, Stop: [{ command: 'mine' }] }, extra: null };
+    for (const initial of [
+      '',
+      JSON.stringify(user),
+      JSON.stringify({ ...user, superagent: { enabled: false, PreInvocation: [] } }),
+    ]) {
+      const { home, sh } = sandbox();
+      const file = join(home, '.gemini/config/hooks.json');
+      const backups = join(home, '.superagent/backups');
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, initial);
+      expect(sh('--hooks', '--dry-run').out).toContain(`+++ ${file}`);
+      expect(readFileSync(file, 'utf8')).toBe(initial);
+      expect(existsSync(join(dirname(file), 'hooks.json.lock'))).toBe(false);
+      expect(existsSync(backups)).toBe(false);
+      expect(sh('--hooks').code).toBe(0);
+      const once = readFileSync(file, 'utf8');
+      expect(JSON.parse(once)).toEqual({ ...(initial ? user : {}), superagent });
+      const [stamp] = readdirSync(backups);
+      expect(readFileSync(join(backups, stamp, 'agy/hooks.json'), 'utf8')).toBe(initial);
+      expect(sh('--hooks').code).toBe(0);
+      expect(readFileSync(file, 'utf8')).toBe(once);
+      expect(sh('--purge-v1', '--dry-run').out).toContain(`+++ ${file}`);
+      expect(readFileSync(file, 'utf8')).toBe(once);
+      expect(sh('--purge-v1').code).toBe(0);
+      const purged = readFileSync(file, 'utf8');
+      expect(JSON.parse(purged)).toEqual(initial ? user : {});
+      expect(sh('--purge-v1').code).toBe(0);
+      expect(readFileSync(file, 'utf8')).toBe(purged);
+    }
+  });
 
   test('Claude iCloud deny merges idempotently and preserves existing permissions', () => {
     const { home, sh } = sandbox();
