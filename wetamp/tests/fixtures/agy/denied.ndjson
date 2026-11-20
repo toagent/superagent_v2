@@ -1,0 +1,3 @@
+{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"sample.txt"}}}}
+{"event":"step_update","step_update":{"step_index":2,"state":"ERROR","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"sample.txt"},"error":{"type":"TOOL_ERROR","message":"fixture-denied"}}}}
+{"event":"result","result":{"status":"SUCCESS","response":"OK"}}
