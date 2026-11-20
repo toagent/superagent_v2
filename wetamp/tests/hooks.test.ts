@@ -169,6 +169,9 @@ test('第三方包 _private 豁免与内核模板一致', () => {
       (privateDir.test(target) && !packagePrivate.test(target)) || privatePackage.test(target);
     expect([kind, denied], file).toEqual([expected, kind === '_private']);
   }
+  // 2026-11-20 真实 seatbelt 实测，本机对目录名按大小写不敏感匹配。
+  const uppercase = join(home, 'work/x/NODE_MODULES/_PRIVATE/a');
+  expect(redline.secretKind(uppercase, { HOME: home }), uppercase).toBeNull();
 });
 function boundary() {
   const home = tmp(),

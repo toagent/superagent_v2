@@ -29,7 +29,6 @@ export const privatePathCases = [
   ['work/_private/proj/node_modules/pkg/_private/a', '_private'],
   ['work/node_modules/pkg/_private/sub/node_modules/dep/a', '_private'],
   ['work/x/node_modules_bak/_private/a', '_private'],
-  ['work/x/NODE_MODULES/_PRIVATE/a', '_private'],
   ['Library/Mobile Documents/node_modules/pkg/_private/a', 'iCloud'],
   ['.password-store/node_modules/pkg/_private/a', '凭据文件'],
   ['Library/Safari/node_modules/pkg/_private/a', '凭据文件'],

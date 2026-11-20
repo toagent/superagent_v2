@@ -1,5 +1,6 @@
 (version 1)
 (allow default)
+; 本机真实 seatbelt 实测按大小写不敏感匹配正则，保留字符类以在区分大小写的卷上仍能拒绝受保护路径。
 (deny file-read* file-write*
   (subpath "__HOME_LITERAL__/Library/Mobile Documents")
   (regex #"^__HOME_REGEX__/Library/CloudStorage/[iI][cC][lL][oO][uU][dD]")

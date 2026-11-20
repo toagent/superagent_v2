@@ -77,12 +77,12 @@ describe('ai-jail', () => {
       });
     for (const file of blocked) {
       const read = run('/bin/cat', file);
-      expect(read.exitCode).not.toBe(0);
-      expect(read.stderr.toString()).toMatch(/Operation not permitted/);
+      expect(read.exitCode, file).not.toBe(0);
+      expect(read.stderr.toString(), file).toMatch(/Operation not permitted/);
       const write = run('/bin/sh', '-c', 'printf changed > "$1"', 'sh', file);
-      expect(write.exitCode).not.toBe(0);
-      expect(write.stderr.toString()).toMatch(/Operation not permitted/);
-      expect(readFileSync(file, 'utf8')).toBe('before');
+      expect(write.exitCode, file).not.toBe(0);
+      expect(write.stderr.toString(), file).toMatch(/Operation not permitted/);
+      expect(readFileSync(file, 'utf8'), file).toBe('before');
     }
     for (const [file] of privatePathCases.filter(([, kind]) => kind === null)) {
       const target = join(home, file.endsWith('/_private') ? file + '/a' : file);
