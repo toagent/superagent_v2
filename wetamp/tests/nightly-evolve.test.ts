@@ -96,9 +96,10 @@ test('explicit nightly entry refreshes a claimed report and returns its path', (
   const path = evolve(sa, Date.now(), () => [], true);
   if (path === 'not-due' || path === 'already-claimed') throw Error(path);
   writeFileSync(path, '{}');
+  const env = { ...process.env, HOME: sa, SUPERAGENT_HOME: sa, ARCHON_HOME: join(sa, 'archon') };
   const output = Bun.spawnSync(
     [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'nightly-evolve'],
-    { env: { ...process.env, HOME: sa, SUPERAGENT_HOME: sa, ARCHON_HOME: join(sa, 'archon') } }
+    { env: { ...env, TZ: Intl.DateTimeFormat().resolvedOptions().timeZone } }
   );
   expect(output.exitCode, output.stderr.toString()).toBe(0);
   expect(readFileSync(path, 'utf8')).not.toBe('{}');
