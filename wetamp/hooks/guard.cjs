@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// superagent V2 guard for Claude Code / Codex hooks: `node guard.cjs claude|codex`.
+// superagent V2 guard: `node guard.cjs claude|codex|agy`.
 // Unknown effects and parser/internal failures are visible advisories, never a hold.
 const fs = require('node:fs'),
   path = require('node:path'),
@@ -349,12 +349,33 @@ function decide(payload, client, env = process.env) {
   );
 }
 
+async function decideAgy(payload) {
+  if (payload?.hookEventName !== 'PreToolUse') return {};
+  const { name, args = {} } = payload.toolCall || {};
+  const cwd =
+    typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+  const command = name === 'run_command';
+  const shell = command && typeof args?.CommandLine === 'string' ? args.CommandLine : undefined;
+  const workdir = command && typeof args?.Cwd === 'string' ? path.resolve(cwd, args.Cwd) : cwd;
+  if (shell) await redline.init();
+  const reason = redline.reason({
+    client: 'agy', name, cwd, root: shell ? gitRoot(cwd) : null, shell: shell || undefined,
+    input: command ? { workdir } : args || {},
+    onAdvisory: code => process.stderr.write(`SUPERAGENT advisory：${code}\n`),
+  });
+  return reason ? { decision: 'deny', reason } : {};
+}
+
 if (require.main === module)
   (async () => {
+    const client = process.argv[2];
     try {
-      const client = process.argv[2];
-      if (!['claude', 'codex'].includes(client)) throw new Error('usage: guard.cjs claude|codex');
+      if (!['claude', 'codex', 'agy'].includes(client)) throw new Error('usage: guard.cjs claude|codex|agy');
       const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+      if (client === 'agy') {
+        process.stdout.write(JSON.stringify(await decideAgy(payload)) + '\n');
+        return;
+      }
       let inbox = [];
       try {
         inbox =
@@ -391,9 +412,9 @@ if (require.main === module)
       }
       if (output) process.stdout.write(JSON.stringify(output) + '\n');
     } catch {
-      process.stdout.write(
-        JSON.stringify({ systemMessage: 'SUPERAGENT advisory：护栏内部异常，本次已放行。' }) + '\n'
-      );
+      const systemMessage = 'SUPERAGENT advisory：护栏内部异常，本次已放行。';
+      if (client === 'agy') process.stderr.write(systemMessage + '\n');
+      process.stdout.write(JSON.stringify(client === 'agy' ? {} : { systemMessage }) + '\n');
     }
   })();
 module.exports = { decide, derivedBy, sessionRole, isChild };
