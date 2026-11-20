@@ -162,6 +162,28 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
   expect(skipped.stdout.toString()).toContain('agy: 未找到 agy 或 ~/.gemini，跳过');
   expect(existsSync(join(root, '.gemini'))).toBe(false);
   writeFileSync(join(bin, 'agy'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const codex = join(root, '.codex/hooks.json');
+  const agy = join(root, '.gemini/config/hooks.json');
+  mkdirSync(join(codex, '..'), { recursive: true });
+  writeFileSync(codex, '{}\n');
+  const snapshot = () =>
+    [settings, codex, plugin, wrapper].map(file => [
+      readFileSync(file, 'utf8'),
+      statSync(file).mtimeMs,
+    ]);
+  const otherClients = snapshot();
+  for (const value of [[], [''], ['invalid']]) {
+    const rejected = install(['--only', ...value]);
+    expect(rejected.exitCode).not.toBe(0);
+    expect(rejected.stderr.toString()).toContain('--only');
+  }
+  expect(install(['--only', 'agy', '--dry-run']).stdout.toString()).toContain(agy);
+  expect(existsSync(agy)).toBe(false);
+  expect(install(['--only', 'agy']).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(agy, 'utf8')).superagent).toHaveProperty('PreToolUse');
+  expect(install(['--only', 'agy', '--purge-v1']).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(agy, 'utf8'))).toEqual({});
+  expect(snapshot()).toEqual(otherClients);
   const installed = install([]);
   expect(installed.stderr.toString()).toBe('');
   expect(installed.exitCode).toBe(0);
@@ -272,19 +294,22 @@ test('A-11: merged hook groups retain user handlers, unrelated fields and all-ha
       {
         matcher: 'Edit',
         userField: true,
-        hooks: [{ command }, { command: 'user-edit-hook', custom: 'retained' }],
+        hooks: [{ command }, { command: 'user-edit-hook', onFailure: 'block' }],
       },
-      { hooks: [{ command, timeout: 42, userSetting: true }] },
+      { hooks: [{ command, timeout: 42, userSetting: true, onFailure: 'block' }] },
     ],
   };
   const merged = mergeHooks(hooks, 'claude');
   expect(merged.PreToolUse[0]).toEqual({
     matcher: 'Edit',
     userField: true,
-    hooks: [{ command: 'user-edit-hook', custom: 'retained' }],
+    hooks: [{ command: 'user-edit-hook', onFailure: 'block' }],
   });
   const own = merged.PreToolUse.flatMap(g => g.hooks ?? []).filter(h => h.command === command);
-  expect(own).toEqual([{ command, timeout: 42, userSetting: true, onFailure: 'block' }]);
+  expect(own).toEqual([{ command, timeout: 42, userSetting: true }]);
+  for (const event of ['PreToolUse', 'UserPromptSubmit'])
+    for (const group of mergeHooks({}, 'claude')[event])
+      for (const hook of group.hooks ?? []) expect(hook).not.toHaveProperty('onFailure');
   expect(mergeHooks(merged, 'claude')).toEqual(merged);
 });
 

@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { parseArgs } from 'node:util';
 import { WETAMP } from './config';
 import { createRequire } from 'node:module';
 const { withLock, atomicWrite } = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
@@ -32,7 +33,9 @@ interface Group {
   [k: string]: unknown;
 }
 type Hooks = Record<string, Group[]>;
-type Client = 'claude' | 'codex';
+const INSTALL_CLIENTS = ['claude', 'codex', 'opencode', 'agy'] as const;
+type InstallClient = (typeof INSTALL_CLIENTS)[number];
+type Client = Exclude<InstallClient, 'opencode' | 'agy'>;
 
 // V1 的 checkout 与 release 安装都算 V1：只改写其一会让同一事件挂两份 guard
 const V1_HOOKS =
@@ -114,15 +117,10 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
         const key = `${condition(g)}\0${next}`;
         if (seen.has(key)) return [];
         seen.add(key);
-        return [
-          {
-            ...h,
-            command: next,
-            ...(client === 'claude' && ['PreToolUse', 'UserPromptSubmit'].includes(event)
-              ? { onFailure: 'block' }
-              : {}),
-          },
-        ];
+        const handler: Handler = { ...h, command: next };
+        // 遵循 guard.cjs 的失败放行约定，避免 hook 进程故障锁死会话。
+        delete handler.onFailure;
+        return [handler];
       });
       return kept.length || !g.hooks.length ? [{ ...g, hooks: kept }] : [];
     });
@@ -134,18 +132,7 @@ export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
   for (const [event, command] of wanted(client)) {
     const list = (out[event] ??= []);
     if (!list.some(g => condition(g) === ALL && g.hooks?.some(h => h.command === command)))
-      list.push({
-        hooks: [
-          {
-            type: 'command',
-            command,
-            timeout: 30,
-            ...(client === 'claude' && ['PreToolUse', 'UserPromptSubmit'].includes(event)
-              ? { onFailure: 'block' }
-              : {}),
-          },
-        ],
-      });
+      list.push({ hooks: [{ type: 'command', command, timeout: 30 }] });
   }
   // A managed all-events handler already covers its matcher-scoped copies. Keep
   // unrelated handlers and their group/handler fields; do not execute ours twice.
@@ -366,14 +353,17 @@ function installOpenCode(dryRun: boolean, stamp: string): string {
 }
 
 /** 返回 diff 文本（dry-run 不写）；写入前把原文件复制到 backups/hooks-<UTC>/。目标不存在时按空文件补齐并创建。 */
-export function installHooks(dryRun: boolean, purge = false): string {
+export function installHooks(dryRun: boolean, purge = false, only?: InstallClient): string {
   let out = '';
   const stamp = utc();
-  if (!purge) installedOpenCodeGuard();
+  const openCode = !purge && (!only || only === 'opencode');
+  if (openCode) installedOpenCodeGuard();
   const agyHome = join(homedir(), '.gemini');
   const agyInstalled =
-    !!statSync(agyHome, { throwIfNoEntry: false })?.isDirectory() || Bun.which('agy') !== null;
+    (!only || only === 'agy') &&
+    (!!statSync(agyHome, { throwIfNoEntry: false })?.isDirectory() || Bun.which('agy') !== null);
   for (const [client, file] of Object.entries(paths(agyHome)) as [Client | 'agy', string][]) {
+    if (only && client !== only) continue;
     if (client === 'agy' && !agyInstalled) {
       out += 'agy: 未找到 agy 或 ~/.gemini，跳过\n';
       continue;
@@ -399,7 +389,7 @@ export function installHooks(dryRun: boolean, purge = false): string {
     if (dryRun) update();
     else withLock(file, update);
   }
-  return out + (purge ? '' : installOpenCode(dryRun, stamp));
+  return out + (openCode ? installOpenCode(dryRun, stamp) : '');
 }
 
 /** V1 文件残留：带 managed 标记的子代理、release/state 目录、V1 checkout（--hooks 产生的 V2 install.json 所在目录除外）。 */
@@ -437,7 +427,17 @@ export function purgeV1(dryRun: boolean): string {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
+  const { values } = parseArgs({
+    args,
+    strict: false,
+    options: { only: { type: 'string', multiple: true } },
+  });
+  const only = INSTALL_CLIENTS.find(client => client === values.only?.[0]);
+  if (values.only !== undefined && (!only || values.only.length !== 1))
+    throw new Error(`--only 必须指定一个客户端：${INSTALL_CLIENTS.join(', ')}`);
   const dry = args.includes('--dry-run');
-  const out = args.includes('--purge-v1') ? purgeV1(dry) : installHooks(dry);
+  const purge = args.includes('--purge-v1');
+  // 限定客户端时只清理其 hook 条目，避免移动跨客户端共享的 V1 残留。
+  const out = purge && !only ? purgeV1(dry) : installHooks(dry, purge, only);
   process.stdout.write(out || 'hooks: no changes\n');
 }

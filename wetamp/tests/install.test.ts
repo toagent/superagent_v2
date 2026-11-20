@@ -405,7 +405,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const { home, sh } = sandbox();
     const settings = join(home, '.claude', 'settings.json');
     mkdirSync(dirname(settings), { recursive: true });
-    const g = (c: string): unknown => ({ hooks: [{ type: 'command', command: c, timeout: 30 }] });
+    const g = (c: string, onFailure?: 'block'): unknown => ({
+      hooks: [{ type: 'command', command: c, timeout: 30, onFailure }],
+    });
     const before =
       JSON.stringify(
         {
@@ -413,8 +415,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
           hooks: {
             PreToolUse: [
               g('rtk hook claude'),
-              g(`${V1(home, 'guard.cjs')} claude`),
-              g(`${V2('guard.cjs')} claude`),
+              g(`${V1(home, 'guard.cjs')} claude`, 'block'),
+              g(`${V2('guard.cjs')} claude`, 'block'),
             ],
             Stop: [g(`${V1(home, 'guard.cjs')} claude`)],
           },
@@ -428,6 +430,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(dry.out).toContain(`+++ ${settings}`);
     expect(readFileSync(settings, 'utf8')).toBe(before);
     expect(sh('--hooks').code).toBe(0);
+    expect(readFileSync(settings, 'utf8')).not.toContain('"onFailure"');
     const after = cmds(settings);
     expect(after.find(([e]) => e === 'PreToolUse')).toEqual([
       'PreToolUse',
