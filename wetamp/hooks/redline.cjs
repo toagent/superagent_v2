@@ -35,6 +35,7 @@ const NON_FILESYSTEM_TOOLS = new Set([
 ]);
 const AGY_PATH_FIELDS = new Map([
   ['read_file', 'Path'],
+  ['edit_file', 'Path'],
   ['view_file', 'AbsolutePath'],
   ['write_to_file', 'TargetFile'],
   ['replace_file_content', 'TargetFile'],

@@ -163,6 +163,7 @@ test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
   const { call } = agyFixture();
   for (const [name, key] of Object.entries({
     read_file: 'Path',
+    edit_file: 'Path',
     view_file: 'AbsolutePath',
     write_to_file: 'TargetFile',
     replace_file_content: 'TargetFile',

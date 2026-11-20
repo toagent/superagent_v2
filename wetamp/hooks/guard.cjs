@@ -348,12 +348,12 @@ function decide(payload, client, env = process.env) {
   );
 }
 
-// 官方 Hooks 工具清单，外加 CLI 实际使用的 read_file（在 AGY_PATH_FIELDS 中）。
+// 官方 Hooks 工具清单及 CLI 实际上报的 read_file、edit_file、finish。
 const AGY_BUILTINS = new Set([
   ...redline.AGY_PATH_FIELDS.keys(),
   'search_web', 'read_url_content', 'run_command', 'manage_task', 'schedule',
   'list_permissions', 'ask_permission', 'invoke_subagent', 'define_subagent',
-  'send_message', 'manage_subagents', 'ask_question', 'generate_image',
+  'send_message', 'manage_subagents', 'ask_question', 'generate_image', 'finish',
 ]);
 const AGY_READ_LIMIT = 1024 * 1024;
 function agyReadReason(file, cwd, env) {

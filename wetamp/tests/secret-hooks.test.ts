@@ -80,6 +80,7 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
     expect(result.exitCode).toBe(0);
     return JSON.parse(result.stdout.toString()) as {
       decision?: string;
+      reason?: string;
       overwrite?: { CommandLine: string };
     };
   };
@@ -109,16 +110,24 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
     for (const file of ['fixture.txt', '', 'missing.txt'])
       expect(tool(name, { [field]: file })).toMatchObject({ decision: 'deny' });
   }
+  expect([
+    tool('edit_file', { Path: `${cwd}/plain.txt` }),
+    tool('edit_file', { Path: `${cwd}/fixture.txt` }),
+    tool('finish'),
+    hook({ hookEventName: 'PreToolUse', toolCall: { name: 'finish' } }),
+  ]).toEqual([allow, allow, allow, allow]);
   for (const name of ['grep_search', 'mcp__fixture__read']) {
     const result = tool(name, name === 'grep_search' ? { SearchPath: '.', Query: 'hello' } : {});
     if (role)
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         decision: 'deny',
-        reason: expect.stringContaining('终端命令'),
+        reason:
+          '已拦截：执行工具。原因：无法预扫或遮蔽工具输出。可以：改用终端命令，输出会经过秘密遮蔽。',
       });
     else expect(result).toEqual(allow);
   }
   for (const [result, reason] of [
+    [tool('edit_file', { Path: `${cwd}/work/a/_private/b/a` }), '（_private）'],
     [tool('read_file', { Path: '~/.ssh/id_ed25519' }), 'ssh 私钥'],
     [tool('run_command', { CommandLine: 'git push --force' }), 'git force push'],
     [tool('run_command'), '无法识别终端命令参数'],
