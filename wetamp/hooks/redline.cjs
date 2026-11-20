@@ -53,13 +53,17 @@ const BROWSER = [
 ];
 // 绝对路径命中的红线类别，未命中为 null。APFS 默认大小写不敏感，按小写比较。
 function secretKind(abs, env) {
-  const p = path.normalize(abs).toLowerCase(),
+  const normalized = path.normalize(abs),
+    p = normalized.toLowerCase(),
     home = path.normalize(homeOf(env)).toLowerCase();
   const under = segs => {
     const root = path.join(home, ...segs).toLowerCase();
     return p === root || p.startsWith(root + '/');
   };
-  if (p.split('/').includes('_private')) return '_private';
+  const privateDir = p.split('/').indexOf('_private');
+  // 豁免仅适用于所有 node_modules 段都位于首个 _private 之前的路径。
+  const nodeModules = normalized.split('/').lastIndexOf('node_modules');
+  if (privateDir !== -1 && (nodeModules === -1 || nodeModules > privateDir)) return '_private';
   if (under(['.ssh']) && p !== path.join(home, '.ssh')) {
     const base = path.basename(p);
     if (!base.endsWith('.pub') && !SSH_PUBLIC.includes(base)) return 'ssh 私钥';

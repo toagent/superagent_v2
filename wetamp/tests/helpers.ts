@@ -17,6 +17,24 @@ import { trackTestRoot } from './preload';
 
 export { trackTestChild } from './preload';
 
+export const privatePathCases = [
+  [
+    'work/repo/node_modules/.pnpm/workbox-core@7.4.0/node_modules/workbox-core_tmp_1/_private',
+    null,
+  ],
+  ['work/repo/node_modules/workbox-core/_private/logger.js', null],
+  ['work/repo/packages/x/node_modules/pkg/_private/a', null],
+  ['work/a/_private/b/a', '_private'],
+  ['work/_private/proj/node_modules/pkg/index.js', '_private'],
+  ['work/_private/proj/node_modules/pkg/_private/a', '_private'],
+  ['work/node_modules/pkg/_private/sub/node_modules/dep/a', '_private'],
+  ['work/x/node_modules_bak/_private/a', '_private'],
+  ['work/x/NODE_MODULES/_PRIVATE/a', '_private'],
+  ['Library/Mobile Documents/node_modules/pkg/_private/a', 'iCloud'],
+  ['.password-store/node_modules/pkg/_private/a', '凭据文件'],
+  ['Library/Safari/node_modules/pkg/_private/a', '凭据文件'],
+] as const;
+
 let sandboxed: boolean | undefined;
 export const alreadySandboxed = (): boolean =>
   (sandboxed ??=

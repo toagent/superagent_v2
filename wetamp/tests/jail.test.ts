@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { alreadySandboxed, tmp } from './helpers';
+import { alreadySandboxed, privatePathCases, tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
 const INSTALL = join(WETAMP, 'scripts/install.sh');
@@ -36,6 +36,15 @@ const seatbeltTitle = alreadySandboxed()
   : 'real seatbelt denies iCloud and deep _private while allowing ordinary files and nested entry';
 
 describe('ai-jail', () => {
+  test('渲染后的 profile 可由 sandbox-exec 编译', () => {
+    if (process.platform !== 'darwin') return;
+    const home = tmp();
+    install(home);
+    const profile = join(home, '.wetamp/jail/ai-deny.sb');
+    const result = Bun.spawnSync(['/usr/bin/sandbox-exec', '-f', profile, '/usr/bin/true']);
+    expect(result.exitCode, result.stderr.toString()).toBe(alreadySandboxed() ? 71 : 0);
+  });
+
   seatbeltTest(seatbeltTitle, () => {
     if (process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec')) return;
     const home = tmp(),
@@ -44,7 +53,7 @@ describe('ai-jail', () => {
       blocked = [
         join(home, 'Library/Mobile Documents/a'),
         join(home, 'Library/CloudStorage/iCloudDrive/a'),
-        join(home, 'work/a/_private/b/a'),
+        ...privatePathCases.filter(([, kind]) => kind !== null).map(([file]) => join(home, file)),
         join(cache, 'com.apple.quicklook.ThumbnailsAgent/a'),
       ],
       canaryDir = join(home, 'work/canary/_private'),
@@ -72,7 +81,14 @@ describe('ai-jail', () => {
       expect(read.stderr.toString()).toMatch(/Operation not permitted/);
       const write = run('/bin/sh', '-c', 'printf changed > "$1"', 'sh', file);
       expect(write.exitCode).not.toBe(0);
+      expect(write.stderr.toString()).toMatch(/Operation not permitted/);
       expect(readFileSync(file, 'utf8')).toBe('before');
+    }
+    for (const [file] of privatePathCases.filter(([, kind]) => kind === null)) {
+      const target = join(home, file.endsWith('/_private') ? file + '/a' : file);
+      expect(run('/bin/mkdir', '-p', dirname(target)).exitCode, file).toBe(0);
+      expect(run('/bin/sh', '-c', 'printf ok > "$1"', 'sh', target).exitCode, file).toBe(0);
+      expect(run('/bin/cat', target).stdout.toString(), file).toBe('ok');
     }
     const trust = join(home, '.vault-bridge/trust/key'),
       request = join(home, '.vault-bridge/requests/request.json');

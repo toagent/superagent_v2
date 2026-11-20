@@ -166,6 +166,7 @@ function render(raw: string, client: Client, purge: boolean): string {
     const permissions = (doc.permissions ??= {});
     // Official file rules use ~/ for HOME and ** for recursive matching.
     // Edit covers Write too; Write(path) is not consulted by Claude Code.
+    // Claude 的 deny glob 无法表达 node_modules 例外，故保留更严格的规则。
     const rules = ['Read', 'Edit'].flatMap(tool =>
       [
         '~/Library/Mobile Documents',

@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { gitRepo, tmp } from './helpers';
+import { gitRepo, privatePathCases, tmp } from './helpers';
 import { testTimeout } from '@archon/paths/test-utils';
 await (
   createRequire(import.meta.url)('../hooks/redline.cjs') as { init: () => Promise<unknown> }
@@ -139,6 +139,7 @@ const edit = (repo: string, k: number): object => ({
 const bash = (command: string): object => ({ tool_name: 'Bash', tool_input: { command } });
 
 type Redline = {
+  secretKind: (file: string, env: Record<string, string>) => string | null;
   reason: (options: {
     client?: string;
     name?: string;
@@ -151,6 +152,24 @@ type Redline = {
   }) => string | null;
 };
 const redline = createRequire(import.meta.url)('../hooks/redline.cjs') as Redline;
+test('第三方包 _private 豁免与内核模板一致', () => {
+  const home = tmp();
+  const template = readFileSync(join(HOOKS, '../jail/ai-deny.sb.tmpl'), 'utf8');
+  const filters = template.split('__SECRET_OS_DENIES__')[1].split('\n;')[0];
+  const regexes = Array.from(
+    filters.matchAll(/\(regex #"([^"]+)"\)/g),
+    ([, source]) => new RegExp(source)
+  );
+  expect(regexes).toHaveLength(3);
+  const [privateDir, packagePrivate, privatePackage] = regexes;
+  for (const [file, expected] of privatePathCases) {
+    const target = join(home, file);
+    const kind = redline.secretKind(target, { HOME: home });
+    const denied =
+      (privateDir.test(target) && !packagePrivate.test(target)) || privatePackage.test(target);
+    expect([kind, denied], file).toEqual([expected, kind === '_private']);
+  }
+});
 function boundary() {
   const home = tmp(),
     repo = gitRepo(tmp());
