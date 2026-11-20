@@ -1706,28 +1706,26 @@ test.each([
     if (scenario === 'relative') writeFileSync(join(s.repo, l.plan), readFileSync(plan));
   }
   writeFileSync(join(s.sa, 'runs', l.run_id + '.json'), JSON.stringify(l));
+  const terminal = {
+    ...l,
+    repo: s.root, // 保留非 Git 目录，验证终态 run 不会因仓库判定产生警告。
+    gen_dir: join(s.root, 'terminal'),
+    delivery_result: undefined,
+    plan: join(s.root, 'terminal.json'),
+  };
+  writeFileSync(terminal.plan, readFileSync(plan));
   writeFileSync(
     join(s.sa, 'runs', 'failed.json'),
     JSON.stringify({
-      ...l,
+      ...terminal,
       run_id: 'failed',
-      repo: s.root, // Existing non-repository: terminal filtering must precede git.
-      delivery_result: undefined,
       archon_run_id: 'failed-engine',
       state: 'failed',
-      plan: 'missing.json',
     })
   );
   writeFileSync(
     join(s.sa, 'runs', 'completed.json'),
-    JSON.stringify({
-      ...l,
-      run_id: 'completed',
-      repo: s.root,
-      delivery_result: undefined,
-      archon_run_id: 'completed-engine',
-      plan: 'missing.json',
-    })
+    JSON.stringify({ ...terminal, run_id: 'completed', archon_run_id: 'completed-engine' })
   );
   const { Database } = await import('bun:sqlite');
   mkdirSync(process.env.ARCHON_HOME!, { recursive: true });
@@ -1786,6 +1784,7 @@ test.each([
       expect(result.overlap_warnings).toEqual(
         expect.arrayContaining([expect.objectContaining({ run_id: l.run_id })])
       );
+      if (scenario === 'overlap') expect(result.overlap_warnings).toHaveLength(1);
       if (['unknown', 'unreadable', 'state-unreadable'].includes(scenario))
         expect(result.overlap_warnings[0].error).toBeString();
       expect(launch).not.toHaveBeenCalled();
