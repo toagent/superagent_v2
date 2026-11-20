@@ -192,6 +192,11 @@ test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
 
 test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
   const { call, home } = agyFixture();
+  for (const args of [{ Command: 'ls' }, {}, { CommandLine: null }])
+    expect(call('run_command', args), JSON.stringify(args)).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringContaining('无法识别终端命令参数'),
+    });
   for (const CommandLine of [
     'cat ~/.ssh/id_ed25519',
     'op item list',

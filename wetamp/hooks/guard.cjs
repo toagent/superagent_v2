@@ -396,6 +396,8 @@ async function decideAgy(payload, env = process.env) {
     typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
   const command = name === 'run_command';
   const shell = command && typeof args?.CommandLine === 'string' ? args.CommandLine : undefined;
+  if (command && shell === undefined)
+    return { decision: 'deny', reason: redline.message('执行终端命令', '无法识别终端命令参数', '使用字符串类型的 CommandLine 后重试') };
   const workdir = command && typeof args?.Cwd === 'string' ? path.resolve(cwd, args.Cwd) : cwd;
   if (shell) await redline.init();
   const reason = redline.reason({
