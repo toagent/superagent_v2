@@ -138,6 +138,88 @@ const edit = (repo: string, k: number): object => ({
 });
 const bash = (command: string): object => ({ tool_name: 'Bash', tool_input: { command } });
 
+function agyFixture() {
+  const home = tmp(),
+    repo = gitRepo(tmp());
+  return {
+    home,
+    repo,
+    call: (name: string, args: object, hookEventName = 'PreToolUse') =>
+      run(
+        'guard.cjs',
+        'agy',
+        {
+          hookEventName,
+          conversationId: 'fixture',
+          cwd: repo,
+          toolCall: { id: 'call-1', name, args },
+        },
+        { HOME: home, SUPERAGENT_HOME: home }
+      ),
+  };
+}
+
+test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
+  const { call } = agyFixture();
+  for (const [name, key] of Object.entries({
+    read_file: 'Path',
+    view_file: 'AbsolutePath',
+    write_to_file: 'TargetFile',
+    replace_file_content: 'TargetFile',
+    multi_replace_file_content: 'TargetFile',
+    list_dir: 'DirectoryPath',
+    find_by_name: 'SearchDirectory',
+    grep_search: 'SearchPath',
+  })) {
+    expect(call(name, { [key]: '_private' }), name).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringContaining('（_private）'),
+    });
+  }
+  expect(call('mcp__files__read', { targets: [{ doc: '~/.aws/credentials' }] })).toMatchObject({
+    decision: 'deny',
+    reason: expect.stringContaining('（凭据文件）'),
+  });
+});
+
+test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
+  const { call, home } = agyFixture();
+  for (const CommandLine of [
+    'cat ~/.ssh/id_ed25519',
+    'op item list',
+    'security find-generic-password',
+    'git push --force origin x',
+    'git reset --hard',
+    'rm -rf .',
+  ]) {
+    expect(call('run_command', { CommandLine }), CommandLine).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringMatching(/^已拦截：.+。原因：.+。可以：.+。$/),
+    });
+  }
+  expect(call('run_command', { CommandLine: 'cat .ssh/id_ed25519', Cwd: home })).toMatchObject({
+    decision: 'deny',
+  });
+  expect(call('run_command', { CommandLine: 'rm -rf .', Cwd: '' })).toMatchObject({
+    decision: 'deny',
+  });
+});
+
+test('agy 放行普通操作、第三方包路径及未处理事件', () => {
+  const { call, home } = agyFixture();
+  for (const [file, kind] of privatePathCases)
+    if (kind === null) expect(call('read_file', { Path: join(home, file) })).toEqual({});
+  expect(call('write_to_file', { TargetFile: 'a.ts', CodeContent: '~/.aws/credentials' })).toEqual(
+    {}
+  );
+  expect(call('grep_search', { SearchPath: '.', Query: '_private' })).toEqual({});
+  expect(call('run_command', { CommandLine: 'grep _private src', Cwd: '' })).toEqual({});
+  expect(call('run_command', { CommandLine: '' })).toEqual({});
+  expect(call('read_file', { Path: '' })).toEqual({});
+  expect(call('read_file', {})).toEqual({});
+  expect(call('read_file', { Path: '_private' }, 'PostToolUse')).toEqual({});
+});
+
 type Redline = {
   secretKind: (file: string, env: Record<string, string>) => string | null;
   reason: (options: {

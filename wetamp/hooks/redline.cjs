@@ -33,6 +33,16 @@ const NON_FILESYSTEM_TOOLS = new Set([
   'EnterPlanMode',
   'ToolSearch',
 ]);
+const AGY_PATH_FIELDS = new Map([
+  ['read_file', 'Path'],
+  ['view_file', 'AbsolutePath'],
+  ['write_to_file', 'TargetFile'],
+  ['replace_file_content', 'TargetFile'],
+  ['multi_replace_file_content', 'TargetFile'],
+  ['list_dir', 'DirectoryPath'],
+  ['find_by_name', 'SearchDirectory'],
+  ['grep_search', 'SearchPath'],
+]);
 const expand = (word, env) =>
   word.replace(/^~(?=\/|$)/, homeOf(env)).replace(/\$\{HOME\}|\$HOME\b/g, homeOf(env));
 
@@ -247,7 +257,10 @@ function reason({
   try {
     // Shell strings are interpreted by the parser; quoted prose is not executed.
     if (shell === undefined) {
-      const paths = microEdit.isEdit(client, name)
+      const field = client === 'agy' ? AGY_PATH_FIELDS.get(name) : undefined;
+      const paths = client === 'agy'
+        ? field ? strings(input[field]) : null
+        : microEdit.isEdit(client, name)
         ? client === 'codex'
           ? microEdit.patchEdits(input).map(edit => edit.file)
           : [input.file_path || input.notebook_path]
@@ -267,7 +280,8 @@ function reason({
             );
           }
         }
-      return paths || NON_FILESYSTEM_TOOLS.has(name) ? null : privacy(strings(input), cwd, env);
+      if (paths || (client !== 'agy' && NON_FILESYSTEM_TOOLS.has(name))) return null;
+      return privacy(strings(input), cwd, env);
     }
     let analysisFailed = false;
     const result = require('./shell-ast.cjs').analyze(

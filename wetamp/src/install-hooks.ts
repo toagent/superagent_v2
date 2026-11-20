@@ -1,4 +1,4 @@
-// 三端 hook 条目与 V1 残留。只动 superagent 自己的 handler（V1 路径或本 wetamp/hooks/），其他 hooks 原样保留；
+// 客户端 hook 条目与 V1 残留。只动 superagent 受管条目，其他 hooks 原样保留；
 // 真正写入/移动前先备份到 $SUPERAGENT_HOME/backups/；--dry-run 只打印统一 diff 或清单。
 import {
   cpSync,
@@ -45,7 +45,7 @@ const envOr = (key: string, fallback: string): string => {
   return v !== undefined && v !== '' ? v : fallback;
 };
 const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
-const cmd = (file: string, client?: Client): string =>
+const cmd = (file: string, client?: Client | 'agy'): string =>
   `node ${quote(V2_HOOKS + file)}${client ? ` ${client}` : ''}`;
 
 /** 延续 V1 事件清单与顺序：guard 五个事件；两端另有 advisory 两个。 */
@@ -74,9 +74,10 @@ export function wanted(client: Client): [string, string][] {
   ];
 }
 
-const paths = (): Record<Client, string> => ({
+const paths = (agyHome: string): Record<Client | 'agy', string> => ({
   claude: join(envOr('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')), 'settings.json'),
   codex: join(envOr('CODEX_HOME', join(homedir(), '.codex')), 'hooks.json'),
+  agy: join(agyHome, 'config/hooks.json'),
 });
 const ours = (h: Handler): boolean =>
   typeof h.command === 'string' && (isV1(h.command) || h.command.includes(V2_HOOKS));
@@ -195,6 +196,18 @@ function render(raw: string, client: Client, purge: boolean): string {
   return (
     JSON.stringify({ ...doc, hooks: next }, null, 2) + (!raw || raw.endsWith('\n') ? '\n' : '')
   );
+}
+
+function renderAgy(raw: string, purge: boolean): string {
+  const doc = JSON.parse(raw || '{}') as Record<string, unknown> | null;
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc))
+    throw new Error('agy hooks.json 必须是 JSON 对象');
+  const handler = { type: 'command', command: cmd('guard.cjs', 'agy'), timeout: 30 };
+  const managed = { PreToolUse: [{ matcher: '*', hooks: [handler] }], PreInvocation: [handler] };
+  if (JSON.stringify(doc.superagent) === JSON.stringify(purge ? undefined : managed)) return raw;
+  if (purge) delete doc.superagent;
+  else doc.superagent = managed;
+  return JSON.stringify(doc, null, 2) + '\n';
 }
 
 const utc = (): string => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
@@ -354,18 +367,28 @@ export function installHooks(dryRun: boolean, purge = false): string {
   let out = '';
   const stamp = utc();
   if (!purge) installedOpenCodeGuard();
-  for (const [client, file] of Object.entries(paths()) as [Client, string][]) {
+  const agyHome = join(homedir(), '.gemini');
+  const agyInstalled =
+    !!statSync(agyHome, { throwIfNoEntry: false })?.isDirectory() || Bun.which('agy') !== null;
+  for (const [client, file] of Object.entries(paths(agyHome)) as [Client | 'agy', string][]) {
+    if (client === 'agy' && !agyInstalled) {
+      out += 'agy: 未找到 agy 或 ~/.gemini，跳过\n';
+      continue;
+    }
+    if (client === 'agy' && purge && !existsSync(file)) continue;
     const update = (): void => {
       const exists = existsSync(file);
       if (!exists && purge) return;
       const raw = exists ? readFileSync(file, 'utf8') : '';
-      const next = render(raw, client, purge);
+      const next = client === 'agy' ? renderAgy(raw, purge) : render(raw, client, purge);
       if (next === raw) return;
       out += diff(file, raw, next);
       if (dryRun) return;
       if (exists) {
-        const dir = join(backups(), `${purge ? 'v1' : 'hooks'}-${stamp}`, client);
+        let dir = join(backups(), `${purge ? 'v1' : 'hooks'}-${stamp}`, client);
         mkdirSync(dir, { recursive: true });
+        if (client === 'agy' && existsSync(join(dir, basename(file))))
+          dir = mkdtempSync(join(dir, 'backup-'));
         cpSync(file, join(dir, basename(file)));
       }
       atomicWrite(file, next);
