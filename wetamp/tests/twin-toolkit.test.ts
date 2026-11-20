@@ -160,7 +160,7 @@ describe.skipIf(!present)('twin-toolkit superagent 探针与比对段', () => {
 
   /** 抽出比对段，给定本机/远端探针结果，返回输出行与漂移维度。 */
   function compare(L: object, R: object) {
-    const block = slice('if "superagent" in DIMS:', '\n# 三端受管协议区块');
+    const block = slice('if "superagent" in DIMS:', '\n# ');
     const py = `import json, sys\nL, R = json.loads(sys.argv[1]), json.loads(sys.argv[2])\nDIMS = {"superagent"}\nLABEL = "开发机"\nSUPERAGENT_RECEIPT_REL = "r"\nlines, drift = [], []\n${block}\nprint(json.dumps({"lines": lines, "drift": drift}))\n`;
     const p = Bun.spawnSync([
       'python3',
