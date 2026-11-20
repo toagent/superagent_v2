@@ -1,8 +1,41 @@
 import { expect, test } from 'bun:test';
-import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  copyFileSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { buildSecrets } from '../src/secrets/build';
 import { tmp } from './helpers';
+
+test('zsh flushes output from a final external command before exiting', async () => {
+  const dir = tmp();
+  await buildSecrets(dir);
+  const script = join(import.meta.dir, '../secrets/sa-redact.sh');
+  const command = `. "$1"; /bin/sh -c 'echo STDOUT; echo STDERR >&2; exit 7'`;
+  const output = join(dir, 'output');
+  const stdout = openSync(output, 'w');
+  try {
+    const result = Bun.spawnSync(['zsh', '-f', '-c', command, 'zsh', script], {
+      env: {
+        HOME: dir,
+        PATH: process.env.PATH,
+        SA_REDACT_CJS: join(dir, 'sa-redact.cjs'),
+        SA_GITLEAKS_CONFIG: join(import.meta.dir, '../secrets/gitleaks.toml'),
+      },
+      stdout,
+      stderr: 'inherit',
+    });
+    expect(readFileSync(output, 'utf8')).toBe('STDOUT\nSTDERR\n');
+    expect(result.exitCode).toBe(7);
+  } finally {
+    closeSync(stdout);
+  }
+});
 
 // The shell is the subject: clients read output the moment the shell exits, so the sourced helper
 // must have flushed the redactor by then (an unwaited process substitution loses the output).

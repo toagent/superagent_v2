@@ -19,4 +19,8 @@ __sa_finish() {
   while [ ! -e "$__sa_done" ] && [ "$__sa_i" -lt 500 ]; do sleep 0.01; __sa_i=$((__sa_i + 1)); done
   /bin/rm -f "$__sa_done"
 }
-if [ -n "${ZSH_VERSION:-}" ]; then zshexit_functions+=(__sa_finish); else trap __sa_finish EXIT; fi
+if [ -n "${ZSH_VERSION:-}" ]; then
+  # zsh 会用末尾的外部命令替换自身并跳过 zshexit_functions。
+  trap : EXIT
+  zshexit_functions+=(__sa_finish)
+else trap __sa_finish EXIT; fi
