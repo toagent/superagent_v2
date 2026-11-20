@@ -99,7 +99,7 @@ superagent plan draft task.md plan.json > plan.receipt.json && superagent plan c
 
 在 plan 顶层设置 `"mode": "single:gemini"`。用 `superagent models --mode single:gemini`
 查看候选，通过 `superagent run plan.json` 派发。启动需要 PATH 上的 `agy`、已安装且匹配的
-superagent `PreToolUse` hook、`AGY_LLM_GATEWAY_URL` 及已注入的 `AGY_LLM_GATEWAY_API_KEY`
+引擎受管的 `PreToolUse` hook、`AGY_LLM_GATEWAY_URL` 及已注入的 `AGY_LLM_GATEWAY_API_KEY`
 或 `ANTIGRAVITY_API_KEY`。任一前提缺失时节点报错。
 
 `agy` 每次开启新会话，修复通过任务卡和已有工作交接。护栏会拒绝结果无法遮蔽的工具。
