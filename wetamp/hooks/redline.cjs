@@ -259,7 +259,7 @@ function reason({
     if (shell === undefined) {
       const field = client === 'agy' ? AGY_PATH_FIELDS.get(name) : undefined;
       const paths = client === 'agy'
-        ? field ? strings(input[field]) : null
+        ? field ? strings(input[field]).filter(value => value.trim()) : []
         : microEdit.isEdit(client, name)
         ? client === 'codex'
           ? microEdit.patchEdits(input).map(edit => edit.file)
@@ -280,7 +280,7 @@ function reason({
             );
           }
         }
-      if (paths || (client !== 'agy' && NON_FILESYSTEM_TOOLS.has(name))) return null;
+      if (client === 'agy' ? paths.length : paths || NON_FILESYSTEM_TOOLS.has(name)) return null;
       return privacy(strings(input), cwd, env);
     }
     let analysisFailed = false;
@@ -358,6 +358,7 @@ function reason({
 }
 const init = () => require('./shell-ast.cjs').init();
 module.exports = {
+  AGY_PATH_FIELDS,
   init,
   reason,
   expand,

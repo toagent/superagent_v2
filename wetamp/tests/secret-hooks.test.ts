@@ -65,3 +65,50 @@ test('prompt skips heuristics while tool output redacts them and managed prompts
     hookSpecificOutput: { suppressOriginalPrompt: true },
   });
 });
+
+test('agy 防火墙拦截入站秘密、改写 shell 并检查原生读取', () => {
+  const cwd = tmp(),
+    scan = scanner();
+  const hook = (payload: object, active = true) => {
+    const result = Bun.spawnSync(['node', 'hooks/guard.cjs', 'agy'], {
+      stdin: Buffer.from(JSON.stringify({ cwd, ...payload })),
+      env: { ...process.env, HOME: cwd, SA_SECRET_SCAN_MODULE: active ? scan : '' },
+    });
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout.toString()) as {
+      decision?: string;
+      overwrite?: { CommandLine: string };
+    };
+  };
+  const prompt = (lastUserInput?: string, active = true) =>
+    hook({ hookEventName: 'PreInvocation', lastUserInput }, active);
+  const tool = (name: string, args: object = {}, active = true) =>
+    hook({ hookEventName: 'PreToolUse', toolCall: { name, args } }, active);
+  expect(prompt('synthetic-secret-value')).toMatchObject({ terminationBehavior: 'terminate' });
+  for (const input of [undefined, '', 'synthetic-heuristic-value'])
+    expect(prompt(input)).toEqual({});
+  expect(prompt('synthetic-secret-value', false)).toEqual({});
+  const wrapped = tool('run_command', { CommandLine: 'echo ok', Cwd: cwd });
+  expect(wrapped).toEqual({
+    decision: 'allow',
+    overwrite: { CommandLine: '. ~/.wetamp/jail/sa-redact.sh; echo ok' },
+  });
+  expect(tool('run_command', wrapped.overwrite)).toEqual({});
+  expect(tool('run_command', { CommandLine: 'echo ok' }, false)).toEqual({});
+  writeFileSync(`${cwd}/plain.txt`, 'hello');
+  writeFileSync(`${cwd}/fixture.txt`, 'synthetic-heuristic-value');
+  for (const [name, field] of [
+    ['read_file', 'Path'],
+    ['view_file', 'AbsolutePath'],
+  ] as const) {
+    expect(tool(name, { [field]: 'plain.txt' })).toEqual({});
+    for (const file of ['fixture.txt', '', 'missing.txt'])
+      expect(tool(name, { [field]: file })).toMatchObject({ decision: 'deny' });
+  }
+  for (const name of ['grep_search', 'mcp__fixture__read'])
+    expect(tool(name)).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringContaining('终端命令'),
+    });
+  expect(tool('invoke_subagent')).toEqual({});
+});
