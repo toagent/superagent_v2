@@ -95,6 +95,8 @@ export function validatePlan(data: unknown, roots = writeRoots()): Plan {
     throw new Error(`plan invalid: ${errs.join('; ')}`);
   }
   const input = data as PlanInput;
+  if (input.mode === 'single:gemini' && input.gemini_review)
+    throw new Error('plan invalid: /gemini_review cannot be enabled with single:gemini');
   if (
     input.caps?.long_tests !== undefined ||
     input.packages.some(p => p.caps?.long_tests !== undefined)

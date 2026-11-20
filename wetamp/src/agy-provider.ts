@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -17,6 +17,7 @@ import {
   type ProviderCapabilities,
   type ResultChunk,
 } from '../../packages/provider-contract/src';
+import { agyGuardCommand, agyGuardPath } from './install-hooks';
 
 // prettier-ignore
 export const agyCapabilities: ProviderCapabilities = {
@@ -37,18 +38,31 @@ const string = (value: unknown): string | undefined =>
 const count = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 
-function hasManagedHook(path: string): boolean {
+function hasManagedHook(path: string, env: NodeJS.ProcessEnv, home: string): boolean {
   try {
+    // 已安装的 hook 路径可能属于控制端检出，执行器则在固定版本快照中运行。
+    const stateHome = env.XDG_STATE_HOME === '' ? undefined : env.XDG_STATE_HOME;
+    const ledger = join(stateHome ?? join(home, '.local/state'), 'superagent/install.json');
+    let wetamp: string | undefined;
+    try {
+      const installed = object(JSON.parse(readFileSync(ledger, 'utf8')));
+      wetamp = string(installed?.wetamp);
+      if (installed?.installer !== 'superagent_v2' || !wetamp || !isAbsolute(wetamp)) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    }
+    if (!statSync(agyGuardPath(wetamp), { throwIfNoEntry: false })?.isFile()) return false;
+    const expected = agyGuardCommand(wetamp);
     const group = object(object(JSON.parse(readFileSync(path, 'utf8')))?.superagent);
     const entries = group?.PreToolUse;
     if (group?.enabled !== undefined && group.enabled !== true) return false;
     if (!Array.isArray(entries)) return false;
     return entries.some(entry => {
       const match = object(entry);
-      if (typeof match?.matcher !== 'string' || !Array.isArray(match.hooks)) return false;
+      if (match?.matcher !== '*' || !Array.isArray(match.hooks)) return false;
       return match.hooks.some(handler => {
         const hook = object(handler);
-        return hook?.type === 'command' && !!string(hook.command)?.trim();
+        return hook?.type === 'command' && hook.command === expected;
       });
     });
   } catch {
@@ -237,15 +251,23 @@ export function createAgyProvider(
     async *sendQuery(prompt, cwd, resume, options) {
       options?.abortSignal?.throwIfAborted();
       const env = buildProviderSubprocessEnv(options);
-      const hooksPath =
-        config.hooksPath ?? join(env.HOME ?? homedir(), '.gemini/config/hooks.json');
+      const home = (env.HOME === '' ? undefined : env.HOME) ?? homedir();
+      const hooksPath = config.hooksPath ?? join(home, '.gemini/config/hooks.json');
+      const executable = Bun.which(config.executable ?? 'agy', { PATH: env.PATH ?? '', cwd });
+      const gatewayKey = env.AGY_LLM_GATEWAY_API_KEY?.trim()
+        ? env.AGY_LLM_GATEWAY_API_KEY
+        : env.ANTIGRAVITY_API_KEY;
       const model = options?.model;
       let problem: string | undefined;
-      if (!isAbsolute(hooksPath) || !hasManagedHook(hooksPath))
-        problem = 'agy hooks.json 缺少启用的 superagent PreToolUse 命令';
+      if (!executable) problem = '找不到 agy 可执行文件';
+      else if (!env.AGY_LLM_GATEWAY_URL?.trim()) problem = 'agy 缺少 AGY_LLM_GATEWAY_URL';
+      else if (!gatewayKey?.trim())
+        problem = 'agy 缺少 AGY_LLM_GATEWAY_API_KEY 或 ANTIGRAVITY_API_KEY';
+      else if (!isAbsolute(hooksPath) || !hasManagedHook(hooksPath, env, home))
+        problem = 'agy hooks.json 缺少匹配且启用的 superagent PreToolUse 命令';
       else if (resume !== undefined || options?.execContext?.kind === 'container')
         problem = 'agy 仅支持主机上的新会话';
-      if (problem || !model?.trim()) {
+      if (!executable || problem || !model?.trim()) {
         yield failure('misconfigured', problem ?? 'agy 缺少模型标识');
         yield { type: 'settled' };
         return;
@@ -254,7 +276,13 @@ export function createAgyProvider(
       if (options?.outputFormat)
         args.push('--json-schema', JSON.stringify(options.outputFormat.schema));
       args.push('--dangerously-skip-permissions');
-      yield* runAgy(config.executable ?? 'agy', args, cwd, env, options);
+      yield* runAgy(
+        executable,
+        args,
+        cwd,
+        { ...env, AGY_LLM_GATEWAY_API_KEY: gatewayKey },
+        options
+      );
     },
   };
 }

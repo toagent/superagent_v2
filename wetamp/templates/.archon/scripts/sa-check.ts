@@ -2925,9 +2925,10 @@ export function attemptIdentity(
   if (!attempt) return identityOf(binding);
   if (attempt.status !== 'completed' && !author) return { model: null, strength: 'unknown' };
   if (attempt.resolved) return { model: attempt.resolved, strength: 'provider' };
-  // absent tracking on an interrupted legacy attempt cannot prove its author model.
-  return attempt.provider === 'codex' &&
-    (attempt.status === 'completed' || attempt.rerouted_models !== undefined)
+  // agy 仅在收到 provider 回执时才有实际模型，派发时已钉住作者候选。
+  return (attempt.provider === 'agy' && author) ||
+    (attempt.provider === 'codex' &&
+      (attempt.status === 'completed' || attempt.rerouted_models !== undefined))
     ? { model: attempt.model, strength: 'pinned' }
     : { model: null, strength: 'unknown' };
 }

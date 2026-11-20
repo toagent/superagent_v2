@@ -3,11 +3,15 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProviderFailureClass, TokenUsage } from '@archon/provider-contract';
 
+const dispatchProviders = ['codex', 'claude', 'agy'] as const;
+export type DispatchProvider = (typeof dispatchProviders)[number];
+const attemptProviders = [...dispatchProviders, 'gemini'] as const;
+
 /** One run has one engine owner; its provider wrapper writes before dispatch and after settlement. */
 export interface PolicyAttempt {
   id: string;
   node: string;
-  provider: 'codex' | 'claude' | 'gemini';
+  provider: (typeof attemptProviders)[number];
   model: string;
   resolved?: string;
   rerouted_models?: string[]; // Codex tracking reservation; absent on untracked legacy attempts.
@@ -17,8 +21,8 @@ export interface PolicyAttempt {
   cooldown_until?: number;
   reassignment?: {
     node: string;
-    from: 'codex' | 'claude';
-    to: 'codex' | 'claude';
+    from: DispatchProvider;
+    to: DispatchProvider;
   } & (
     | { reason: 'vendor_failure'; failure: ProviderFailureClass }
     | { reason: 'vendor_unavailable' }
@@ -38,7 +42,7 @@ function validAttempt(value: unknown): boolean {
     !value.node ||
     typeof value.model !== 'string' ||
     !value.model ||
-    !['codex', 'claude', 'gemini'].includes(String(value.provider)) ||
+    !attemptProviders.some(provider => value.provider === provider) ||
     !['started', 'completed', 'failed'].includes(String(value.status)) ||
     (value.resolved !== undefined && (typeof value.resolved !== 'string' || !value.resolved)) ||
     (value.rerouted_models !== undefined &&
@@ -59,8 +63,8 @@ function validAttempt(value: unknown): boolean {
     (reassignment === undefined ||
       (record(reassignment) &&
         typeof reassignment.node === 'string' &&
-        ['codex', 'claude'].includes(String(reassignment.from)) &&
-        ['codex', 'claude'].includes(String(reassignment.to)) &&
+        dispatchProviders.some(provider => reassignment.from === provider) &&
+        dispatchProviders.some(provider => reassignment.to === provider) &&
         (reassignment.reason === 'vendor_unavailable' ||
           ((reassignment.reason === undefined || reassignment.reason === 'vendor_failure') &&
             typeof reassignment.failure === 'string' &&
@@ -79,8 +83,8 @@ export function readPolicyAttempts(artifacts: string): PolicyAttempt[] {
       const legacy = attempt.reassignment;
       typed.reassignment = {
         node: legacy.node as string,
-        from: legacy.from as 'codex' | 'claude',
-        to: legacy.to as 'codex' | 'claude',
+        from: legacy.from as DispatchProvider,
+        to: legacy.to as DispatchProvider,
         reason: 'vendor_failure',
         failure: legacy.failure as ProviderFailureClass,
       };

@@ -10,7 +10,7 @@ import * as archon from '../src/archon';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import * as coord from '../src/coord';
 import { draftPlan } from '../src/gemini-plan';
-import { milestones, type Plan } from '../src/plan';
+import { milestones, validatePlan, type Plan } from '../src/plan';
 import { installPolicyExecutor, wrapPolicyProvider } from '../src/policy-executor';
 import { geminiTurn } from '../src/gemini-role';
 import { freezeContext } from '../templates/.archon/scripts/sa-context';
@@ -68,6 +68,44 @@ test('generated Gemini review alias passes Archon run-config validation', async 
   } finally {
     validation.mockRestore();
     engine.mockRestore();
+  }
+});
+
+test('single:gemini pins a separate agy alias and generates fresh coder and repair nodes', async () => {
+  installPolicyExecutor();
+  const dir = tmp(),
+    repo = gitRepo(dir);
+  const restore = gatewayEnv(dir, 'https://example.invalid');
+  const engine = spyOn(coord, 'cleanEngine').mockReturnValue('fixture');
+  const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
+  try {
+    const baseline = planFor(repo);
+    const plan = validatePlan({ ...baseline, mode: 'single:gemini' }, [dir]);
+    const { config, dir: generated, workflow } = generate(plan, 'agy-general');
+    const { layer } = await loadWorkflowRunConfigFile(config);
+    expect(layer.aliases?.['@sa-agy-coder']).toMatchObject({
+      provider: 'agy',
+      model: 'gemini-4-neon-%78high',
+    });
+    expect(layer.aliases?.['@sa-coder']?.provider).toBe('codex');
+    expect(layer.envVars?.SA_POLICY_PATH).toBe(join(generated, 'policy.json'));
+    const path = join(generated, '.archon/workflows', workflow, `${workflow}.yaml`);
+    const { nodes } = Bun.YAML.parse(readFileSync(path, 'utf8')) as { nodes: { id: string }[] };
+    const native = buildWorkflow(baseline, milestones(baseline), 'agy-general', generated)
+      .nodes as typeof nodes;
+    for (const id of ['code-core', 'repair-core', 'fix-m1-r2']) {
+      expect(nodes.find(node => node.id === id)).toMatchObject({
+        model: '@sa-agy-coder',
+        context: 'fresh',
+        output_format: (native.find(node => node.id === id) as { output_format?: unknown })
+          .output_format,
+      });
+    }
+    expect(() => validatePlan({ ...plan, gemini_review: true }, [dir])).toThrow('gemini_review');
+  } finally {
+    validation.mockRestore();
+    engine.mockRestore();
+    restore();
   }
 });
 // prettier-ignore

@@ -45,8 +45,11 @@ const envOr = (key: string, fallback: string): string => {
   return v !== undefined && v !== '' ? v : fallback;
 };
 const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
-const cmd = (file: string, client?: Client | 'agy'): string =>
+const cmd = (file: string, client?: Client): string =>
   `node ${quote(V2_HOOKS + file)}${client ? ` ${client}` : ''}`;
+export const agyGuardPath = (wetamp = WETAMP): string => join(wetamp, 'hooks', 'guard.cjs');
+export const agyGuardCommand = (wetamp = WETAMP): string =>
+  `node ${quote(agyGuardPath(wetamp))} agy`;
 
 /** 延续 V1 事件清单与顺序：guard 五个事件；两端另有 advisory 两个。 */
 export function wanted(client: Client): [string, string][] {
@@ -202,7 +205,7 @@ function renderAgy(raw: string, purge: boolean): string {
   const doc = JSON.parse(raw || '{}') as Record<string, unknown> | null;
   if (!doc || typeof doc !== 'object' || Array.isArray(doc))
     throw new Error('agy hooks.json 必须是 JSON 对象');
-  const handler = { type: 'command', command: cmd('guard.cjs', 'agy'), timeout: 30 };
+  const handler = { type: 'command', command: agyGuardCommand(), timeout: 30 };
   const managed = { PreToolUse: [{ matcher: '*', hooks: [handler] }], PreInvocation: [handler] };
   if (JSON.stringify(doc.superagent) === JSON.stringify(purge ? undefined : managed)) return raw;
   if (purge) delete doc.superagent;

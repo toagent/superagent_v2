@@ -183,6 +183,7 @@ export function executionLaunch(descriptor: ExecutionDescriptor, candidate: Alia
 }
 
 export function executionNode(descriptor: ExecutionDescriptor, candidate: Alias) {
+  if (candidate.provider === 'agy') return {};
   return {
     ...workflowLaunchPolicy(executionLaunch(descriptor, candidate), candidate.provider),
   };

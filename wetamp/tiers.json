@@ -162,6 +162,7 @@
   },
   "routing": {
     "gemini": {
+      "code": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"],
       "command": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"],
       "review": ["gemini-4-neon-%68igh", "gemini-4-neon-%78high"]
     },

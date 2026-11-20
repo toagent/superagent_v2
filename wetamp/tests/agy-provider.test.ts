@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import {
   chmodSync,
   copyFileSync,
@@ -8,13 +9,23 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { getRegistration } from '@archon/providers';
 import { providerChunkSchema } from '../../packages/provider-contract/src';
 import { createAgyProvider } from '../src/agy-provider';
-import { tmp } from './helpers';
+import { loadTiers, snapshotPolicy } from '../src/config';
+import { executionTable } from '../src/execution';
+import { agyGuardCommand, agyGuardPath } from '../src/install-hooks';
+import { installPolicyExecutor } from '../src/policy-executor';
+import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
+import { readAuthorEvidence } from '../templates/.archon/scripts/sa-check';
+import { loadPlan } from '../src/plan';
+import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const fixtures = join(import.meta.dir, 'fixtures/agy');
 const model = 'gemini-4-neon-%78high';
-const managed = { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'guard' }] }] };
+const managed = {
+  PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: agyGuardCommand() }] }],
+};
 
 function fixture() {
   const home = tmp();
@@ -28,7 +39,15 @@ function fixture() {
   copyFileSync(join(fixtures, 'success.ndjson'), output);
   mkdirSync(dirname(hooksPath), { recursive: true });
   writeFileSync(hooksPath, JSON.stringify({ superagent: managed }));
-  const env = { HOME: home, FIXTURE_STREAM: output, FIXTURE_RUN: 'node-env', FIXTURE_EXIT: '0' };
+  const env = {
+    HOME: home,
+    XDG_STATE_HOME: home,
+    AGY_LLM_GATEWAY_URL: 'https://example.invalid',
+    AGY_LLM_GATEWAY_API_KEY: 'fixture-gateway-key',
+    FIXTURE_STREAM: output,
+    FIXTURE_RUN: 'node-env',
+    FIXTURE_EXIT: '0',
+  };
   return { home, cwd, env, output, executable, hooksPath };
 }
 
@@ -138,7 +157,7 @@ test('没有输出、空回执、非成功状态、坏行、非零退出均结�
     (await collect(missing.sendQuery('检查', f.cwd, undefined, { model, env: f.env }))).at(-2)
   ).toMatchObject({
     type: 'result',
-    failure: { class: 'misconfigured', evidence: '无法启动 agy' },
+    failure: { class: 'misconfigured', evidence: '找不到 agy 可执行文件' },
   });
 });
 
@@ -198,6 +217,9 @@ test('逐次校验受管 PreToolUse，拒绝时未启动进程', async () => {
     { superagent: {} },
     { superagent: { PreToolUse: [] } },
     { superagent: { PreToolUse: [{ hooks: [] }] } },
+    {
+      superagent: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'true' }] }] },
+    },
   ];
   const send = () => collect(provider.sendQuery('检查', f.cwd, undefined, { model, env: f.env }));
   expect((await send()).at(-2)).toMatchObject({ type: 'result', structuredOutput: { ok: true } });
@@ -223,6 +245,121 @@ test('逐次校验受管 PreToolUse，拒绝时未启动进程', async () => {
   for (const config of configs) {
     writeFileSync(f.hooksPath, JSON.stringify(config));
     await refused(send());
+  }
+});
+
+test('agy 启动前区分缺少网关地址或凭据', async () => {
+  const f = fixture();
+  const provider = createAgyProvider({ executable: f.executable });
+  for (const [overrides, evidence] of [
+    [{ AGY_LLM_GATEWAY_URL: '' }, '缺少 AGY_LLM_GATEWAY_URL'],
+    [{ AGY_LLM_GATEWAY_API_KEY: '', ANTIGRAVITY_API_KEY: '' }, '缺少 AGY_LLM_GATEWAY_API_KEY'],
+  ] as const) {
+    const chunks = await collect(
+      provider.sendQuery('检查', f.cwd, undefined, {
+        model,
+        env: { ...f.env, ...overrides },
+      })
+    );
+    expect(chunks).toEqual([
+      {
+        type: 'result',
+        isError: true,
+        failure: { class: 'misconfigured', evidence: expect.stringContaining(evidence) },
+      },
+      { type: 'settled' },
+    ]);
+    expect(existsSync(join(f.home, 'args'))).toBeFalse();
+  }
+});
+
+test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修复', async () => {
+  const f = fixture(),
+    tiers = loadTiers();
+  const plan = loadPlan(
+    fixturePlan(f.home, gitRepo(f.home), p => {
+      p.mode = 'single:gemini';
+    }),
+    [f.home]
+  );
+  const policy = join(f.home, 'policy.json');
+  writeFileSync(policy, JSON.stringify(snapshotPolicy(tiers)));
+  writeFileSync(join(f.home, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(f.home, 'execution.json'), JSON.stringify(executionTable(plan, tiers)));
+  const artifacts = join(f.home, 'artifacts/runs/run');
+  mkdirSync(artifacts, { recursive: true });
+  using db = new Database(join(f.home, 'archon.db'));
+  db.exec(`CREATE TABLE remote_agent_workflow_runs (id, working_path, status, output_root, metadata, codebase_id, adopted_from_run_id);
+    CREATE TABLE remote_agent_workflow_events (workflow_run_id, event_type, step_name, data, event_order);`);
+  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?, ?, NULL)', [
+    'run',
+    f.cwd,
+    'running',
+    f.home,
+    JSON.stringify({ execution_owner: { pid: process.pid } }),
+    'repo',
+  ]);
+  const previousHome = process.env.ARCHON_HOME;
+  process.env.ARCHON_HOME = f.home;
+  try {
+    installPolicyExecutor();
+    const provider = getRegistration('agy').factory();
+    const invoke = (role: 'code' | 'repair') =>
+      collect(
+        provider.sendQuery('检查', f.cwd, undefined, {
+          model,
+          nodeConfig: { nodeId: `${role}-${plan.packages[0].id}` },
+          env: { ...f.env, PATH: `${f.home}:${process.env.PATH ?? ''}`, SA_POLICY_PATH: policy },
+        })
+      );
+    writeFileSync(f.hooksPath, '{}');
+    expect((await invoke('code')).at(-2)).toMatchObject({
+      failure: { class: 'misconfigured', evidence: expect.stringContaining('PreToolUse') },
+    });
+    expect(existsSync(join(f.home, 'args'))).toBeFalse();
+    const installedRoot = join(f.home, 'installed engine');
+    mkdirSync(dirname(agyGuardPath(installedRoot)), { recursive: true });
+    copyFileSync(agyGuardPath(), agyGuardPath(installedRoot));
+    mkdirSync(join(f.home, 'superagent'));
+    writeFileSync(
+      join(f.home, 'superagent/install.json'),
+      JSON.stringify({ installer: 'superagent_v2', wetamp: installedRoot })
+    );
+    writeFileSync(
+      f.hooksPath,
+      JSON.stringify({
+        superagent: {
+          PreToolUse: [
+            { matcher: '*', hooks: [{ type: 'command', command: agyGuardCommand(installedRoot) }] },
+          ],
+        },
+      })
+    );
+    expect((await invoke('repair')).at(-2)).toMatchObject({ structuredOutput: { ok: true } });
+    const attempts = readPolicyAttempts(artifacts);
+    expect(attempts.map(a => [a.node, a.provider, a.status])).toEqual([
+      [`code-${plan.packages[0].id}`, 'agy', 'failed'],
+      [`code-${plan.packages[0].id}`, 'agy', 'failed'],
+      [`repair-${plan.packages[0].id}`, 'agy', 'completed'],
+    ]);
+    const authors = readAuthorEvidence(
+      { id: 'run', codebase_id: 'repo', events: [], output_root: f.home },
+      attempts,
+      [plan.packages[0].id],
+      'm1',
+      6,
+      () => {
+        throw new Error('unexpected ancestry');
+      }
+    );
+    expect(authors.map(a => [a.model, a.strength])).toEqual([
+      [model, 'pinned'],
+      ['gemini-4-neon-%68igh', 'pinned'],
+      ['gemini-4-neon-xhigh', 'provider'],
+    ]);
+  } finally {
+    if (previousHome === undefined) delete process.env.ARCHON_HOME;
+    else process.env.ARCHON_HOME = previousHome;
   }
 });
 

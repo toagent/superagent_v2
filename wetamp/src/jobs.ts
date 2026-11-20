@@ -540,6 +540,7 @@ export async function jobCli(
     const descriptor = describeExecution(tiers, ROUTE_ROLE[jobRole], risk, Number(a.flags.round ?? 1));
     const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, state).candidates;
     const provider = automatic ? candidates[0].provider : kindOf(cmd[0]) as 'codex' | 'claude';
+    if (provider === 'agy') throw new Error('job: single:gemini requires superagent run <plan>');
     if (!automatic && provider === 'claude' && health.state !== 'up')
       throw new Error(`claude_unavailable: ${routeNotice(state)}; remove -- <cmd> and use --prompt-file for automatic routing`);
     const model = automatic ? null : modelOf(cmd.slice(1));

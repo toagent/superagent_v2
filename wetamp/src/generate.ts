@@ -271,6 +271,7 @@ export function buildWorkflow(
     ).candidates[0];
     return {
       ...executionNode(descriptor, candidate),
+      ...(candidate.provider === 'agy' ? { model: '@sa-agy-coder', context: 'fresh' } : {}),
       ...(descriptor.role !== 'review' && candidate.provider === 'claude'
         ? { maxBudgetUsd: tiers.policy.coder_budget_usd.claude }
         : {}),
@@ -1845,6 +1846,10 @@ export function generate(
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
+  const neonCoder =
+    plan.mode === 'single:gemini'
+      ? resolveRoute(tiers, plan.console ?? 'claude', plan.mode).candidates[0]
+      : undefined;
   const gemini = plan.gemini_review ? tiers.routing.gemini?.review[0] : undefined;
   if (plan.gemini_review && !gemini) throw new Error('Gemini review routing is unavailable');
   const reviewer = (risk: Pkg['risk']) =>
@@ -1873,6 +1878,9 @@ export function generate(
     {
       aliases: {
         ...aliases,
+        ...(neonCoder
+          ? { '@sa-agy-coder': { provider: neonCoder.provider, model: neonCoder.model } }
+          : {}),
         ...(gemini ? { '@sa-gemini-review': { provider: 'gemini', model: gemini } } : {}),
       },
       env: { SA_POLICY_PATH: join(dir, 'policy.json') },

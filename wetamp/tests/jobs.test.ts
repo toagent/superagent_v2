@@ -921,7 +921,12 @@ else if (process.argv[1].endsWith('/claude')) {
     }
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
-    const jobsBefore = readJobs().jobs.length; setClaudeDown();
+    const jobsBefore = readJobs().jobs.length;
+    const prompt = join(root, 'prompt.md'); writeFileSync(prompt, 'fixture prompt');
+    const neon = run(['job', 'exec', '--title', 'neon', '--role', 'general', '--mode', 'single:gemini', '--prompt-file', prompt]);
+    expect(await neon.exited).not.toBe(0); expect(await new Response(neon.stderr as ReadableStream).text()).toContain('requires superagent run');
+    expect(readJobs().jobs).toHaveLength(jobsBefore);
+    setClaudeDown();
     writeFileSync(join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: loadTiers().routing.budget.claude_daily_usd }));
     const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     const downgraded = run(['job', 'exec', '--title', 'budget', '--role', 'strategist', '--', claude, '-p']);

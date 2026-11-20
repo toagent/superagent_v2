@@ -11,6 +11,7 @@ import {
   readPolicyAttempts,
   writePolicyAttempts,
   budgetReason,
+  type DispatchProvider,
   type PolicyAttempt,
   type PolicyBudget,
 } from './provider-attempts';
@@ -28,7 +29,7 @@ interface BudgetUsage {
   reserve: number;
 }
 export interface DispatchCandidate {
-  provider: 'codex' | 'claude';
+  provider: DispatchProvider;
   model: string;
 }
 
@@ -38,7 +39,7 @@ export interface DispatchExecution<Candidate extends DispatchCandidate> {
   artifacts: string;
   budget: PolicyBudget;
   usage(attempts: PolicyAttempt[]): BudgetUsage;
-  provider: 'codex' | 'claude';
+  provider: DispatchProvider;
   sendQuery: IAgentProvider['sendQuery'];
   sendQueryFor?(candidate: Candidate): IAgentProvider['sendQuery'];
   available?(candidate: Candidate): boolean;

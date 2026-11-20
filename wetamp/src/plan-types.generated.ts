@@ -70,7 +70,7 @@ export interface Plan {
     launches?: number;
   };
   /**
-   * single:* is rejected by loadPlan until single-vendor routing reaches node routing
+   * Coding and repair routing mode. single:gemini uses Antigravity CLI.
    */
   mode?: string;
   /**

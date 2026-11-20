@@ -31,6 +31,7 @@ import { geminiCapabilities, reviewWithGemini, type GeminiReview } from './gemin
 import { settledRoleResult } from './gemini-role';
 import { validateStructuredOutput } from '@archon/workflows/structured-output';
 import { reviewerOutputFormat } from './contract';
+import { agyCapabilities, createAgyProvider } from './agy-provider';
 
 const { loadPolicy } = createRequire(import.meta.url)('../bin/policy-snapshot.cjs') as {
   loadPolicy: (path: string) => ReturnType<typeof import('./config').snapshotPolicy>;
@@ -82,11 +83,18 @@ function runtimeExecution(
   const node = options.nodeConfig?.nodeId;
   if (!node) throw new Error('policy: node id missing');
   const gemini = provider === 'gemini';
-  const resync = gemini && node.startsWith('review-resync-');
-  const contract = resync ? node.replace('review-resync-', 'review-') : node;
+  const neon = plan.mode === 'single:gemini';
+  const resync = (gemini || neon) && /^(review|fix)-resync-/.test(node);
+  const contract = resync
+    ? node.replace(/^(review|fix)-resync-/, '$1-')
+    : neon
+      ? node.replace(/^resolve-resync-/, 'resolve-sync-')
+      : node;
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
   const route = executionForNode(table, contract, tiers);
+  if (provider === 'agy' && (!neon || (route.role !== 'code' && route.role !== 'repair')))
+    throw new Error('policy: agy requires a single:gemini coder or repair node');
   if (
     gemini &&
     (!plan.gemini_review || route.role !== 'review' || options.nodeConfig?.requiresExactSession)
@@ -235,6 +243,9 @@ function runtimeExecution(
         ...options,
         model: candidate.model,
         fallbackModel: undefined,
+        ...(candidate.provider === 'agy'
+          ? { env: { ...options.env, SUPERAGENT_ROLE: 'general' } }
+          : {}),
         ...(gemini
           ? { purpose: 'title-generation' as const, nativeTools: undefined, assistantConfig }
           : {}),
@@ -333,28 +344,42 @@ const failedReview = (tokens?: ResultChunk['tokens']): ResultChunk => ({
   failure: { class: 'unknown', evidence: 'all eligible review attempts failed' },
 });
 const nativeFactories: Partial<Record<Alias['provider'], () => IAgentProvider>> = {};
+const antigravityCredentials = {
+  kind: 'static',
+  specs: [{ vendor: 'antigravity', displayName: 'Antigravity gateway', kinds: ['ambient'] }],
+  vendorFor: () => 'antigravity',
+} satisfies Parameters<typeof registerProvider>[0]['credentials'];
+
+function parseNeonConfig(raw: Record<string, unknown>, role: string) {
+  const keys = Reflect.ownKeys(raw);
+  if (keys.length === 0) return {};
+  if (keys.length !== 1 || keys[0] !== 'model')
+    throw new Error(`${role} uses the native gateway environment`);
+  const { model } = raw;
+  if (!isGeminiModel(model))
+    throw new InvalidProviderRunConfigError('model', 'expected a Gemini model name');
+  return { model };
+}
+
 export function installPolicyExecutor(): void {
   registerBuiltinProviders();
+  if (!isRegisteredProvider('agy'))
+    registerProvider({
+      id: 'agy',
+      displayName: 'Antigravity CLI',
+      builtIn: true,
+      capabilities: agyCapabilities,
+      credentials: antigravityCredentials,
+      parseConfig: raw => parseNeonConfig(raw, 'agy'),
+      factory: () => wrapPolicyProvider(createAgyProvider(), 'agy'),
+    });
   // prettier-ignore
   if (!isRegisteredProvider('gemini'))
     registerProvider({
       id: 'gemini', displayName: 'Gemini Neon', builtIn: true,
       capabilities: geminiCapabilities,
-      credentials: {
-        kind: 'static',
-        specs: [{ vendor: 'antigravity', displayName: 'Antigravity gateway', kinds: ['ambient'] }],
-        vendorFor: () => 'antigravity',
-      },
-      parseConfig: raw => {
-        const keys = Reflect.ownKeys(raw);
-        if (keys.length === 0) return {};
-        if (keys.length !== 1 || keys[0] !== 'model')
-          throw new Error('Gemini review uses the native gateway environment');
-        const { model } = raw;
-        if (!isGeminiModel(model))
-          throw new InvalidProviderRunConfigError('model', 'expected a Gemini model name');
-        return { model };
-      },
+      credentials: antigravityCredentials,
+      parseConfig: raw => parseNeonConfig(raw, 'Gemini review'),
       factory: () => wrapPolicyProvider({
         getType: () => 'gemini',
         getCapabilities: () => geminiCapabilities,

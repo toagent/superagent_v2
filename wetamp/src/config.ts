@@ -16,10 +16,11 @@ import { createRequire } from 'node:module';
 import type { Pkg } from './plan';
 import { QUERY_TIMEOUT_MS } from './archon';
 import { claudeHealthNotice, readClaudeHealth, type ClaudeHealth } from './claude-health';
+import type { DispatchProvider } from '../../packages/workflows/src/provider-attempts';
 
 export type Console = 'claude' | 'codex';
 export interface Alias {
-  provider: 'codex' | 'claude';
+  provider: DispatchProvider;
   model: string;
   effort: string;
 }
@@ -124,7 +125,7 @@ export function configHash(): string {
     h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
   return h.digest('hex').slice(0, 16);
 }
-export function providerOf(model: string): Alias['provider'] {
+export function providerOf(model: string): Console {
   if (model.startsWith('gpt-')) return 'codex';
   if (model.startsWith('claude-')) return 'claude';
   throw new Error(`unknown vendor for model ${model}`);
@@ -133,7 +134,7 @@ export function providerOf(model: string): Alias['provider'] {
 export interface Tiers {
   tiers: Record<string, { pools: Record<string, string[]> }>;
   routing: {
-    gemini?: { command: string[]; review: string[] };
+    gemini?: { command: string[]; review: string[]; code?: string[] };
     budget: { claude_daily_usd: number; claude_medium_usd: number; codex_warning_usd: number };
     commander: { by_console: Record<Console, string[]> };
     coder: { models: string[] };
@@ -220,8 +221,9 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
       throw new Error(`tiers.routing.commander.by_console.${c}: expected models for ${c}`);
   }
   if (t.routing.gemini !== undefined)
-    for (const role of ['command', 'review'] as const) {
+    for (const role of ['command', 'review', 'code'] as const) {
       const models = obj(t.routing.gemini)[role];
+      if (role === 'code' && models === undefined) continue;
       if (!Array.isArray(models) || !models.length || !models.every(isGeminiModel))
         throw new Error(`tiers.routing.gemini.${role}: expected Gemini models`);
     }
@@ -275,8 +277,15 @@ export function resolveRoute(
   state: RouteState = HEALTHY_ROUTE,
   allowEmpty = false
 ): Route {
-  if (!['auto', 'strict', 'single:claude', 'single:chatgpt'].includes(mode))
+  if (!['auto', 'strict', 'single:claude', 'single:chatgpt', 'single:gemini'].includes(mode))
     throw new Error(`unsupported routing mode: ${mode}`);
+  if (mode === 'single:gemini' && (role === 'code' || role === 'repair')) {
+    const effort = effortFor(t, role, risk, round);
+    const candidates = [...new Set(t.routing.gemini?.code)].map(model => ({ model, provider: 'agy' as const, effort }));
+    if (!candidates.length && !allowEmpty)
+      throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
+    return { candidates, effort };
+  }
   if ((mode === 'auto' && state.budget.degraded) || (['auto', 'strict'].includes(mode) && state.claude.state !== 'up')) mode = 'single:chatgpt';
   if (mode === 'single:chatgpt') console = 'codex';
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
@@ -351,7 +360,7 @@ const obj = (v: unknown): Obj =>
 export function runAliases(c: Console, t = loadTiers(), mode = 'auto', state = HEALTHY_ROUTE) {
   const route = (role: Parameters<typeof resolveRoute>[3], authors: string[] = []) =>
     resolveRoute(t, c, mode, role, 'G1', 1, authors, state).candidates;
-  const coder = route('code')[0],
+  const coder = (mode === 'single:gemini' ? resolveRoute(t, c).candidates : route('code'))[0],
     reviewers = route('review', [coder.model]);
   const reviewer = reviewers[0];
   return {

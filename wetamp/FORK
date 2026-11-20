@@ -85,9 +85,10 @@ packages/workflows/src/defaults/bundled-defaults.generated.ts
 packages/workflows/src/defaults/bundled-defaults.test.ts
 packages/workflows/src/execution-lifecycle.ts
 packages/workflows/src/loader.test.ts
+# agy 编码复用共享派发、预算与持久化回执。
 packages/workflows/src/policy-dispatch.test.ts
 packages/workflows/src/policy-dispatch.ts
-# Gemini formal review writes to the shared provider attempt ledger.
+# Gemini 评审与 agy 编码写入同一 provider 回执台账。
 packages/workflows/src/provider-attempts.ts
 packages/workflows/src/schemas/retry.ts
 packages/workflows/src/store-conformance.ts

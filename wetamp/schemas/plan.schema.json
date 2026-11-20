@@ -48,8 +48,8 @@
     },
     "mode": {
       "type": "string",
-      "pattern": "^(auto|strict|single:(chatgpt|claude))$",
-      "description": "single:* is rejected by loadPlan until single-vendor routing reaches node routing"
+      "pattern": "^(auto|strict|single:(chatgpt|claude|gemini))$",
+      "description": "Coding and repair routing mode. single:gemini uses Antigravity CLI."
     },
     "environment": {
       "type": "array",

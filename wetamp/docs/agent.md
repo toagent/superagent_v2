@@ -95,6 +95,16 @@ superagent plan draft task.md plan.json > plan.receipt.json && superagent plan c
 军师只接收冻结任务材料、diff 和验收日志，检测到受限材料即失败。网关不可用或候选耗尽时切换至
 该角色现有合格候选。元帅回执写 stdout，军师回执写入 run 的 `policy-attempts.json`。
 
+### 显式使用 Neon 将军
+
+在 plan 顶层设置 `"mode": "single:gemini"`。用 `superagent models --mode single:gemini`
+查看候选，通过 `superagent run plan.json` 派发。启动需要 PATH 上的 `agy`、已安装且匹配的
+superagent `PreToolUse` hook、`AGY_LLM_GATEWAY_URL` 及已注入的 `AGY_LLM_GATEWAY_API_KEY`
+或 `ANTIGRAVITY_API_KEY`。任一前提缺失时节点报错。
+
+`agy` 每次开启新会话，修复通过任务卡和已有工作交接。护栏会拒绝结果无法遮蔽的工具。
+此模式须关闭 `gemini_review`，正式评审沿用现有独立评审路由。
+
 ## 评审
 
 只有实际 diff 命中 `tiers.json` 的 `policy.risk_paths`，或用户本轮明确要求时才触发独立

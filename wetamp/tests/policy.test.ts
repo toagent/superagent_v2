@@ -22,6 +22,37 @@ const plan = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
 ) as Plan;
 const POLICY_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
+
+test('single:gemini lists only the ordered agy candidates and leaves review independent', () => {
+  const tiers = loadTiers(),
+    dir = tmp();
+  const models = ['gemini-4-neon-%78high', 'gemini-4-neon-%68igh'];
+  for (const role of ['code', 'repair'] as const)
+    expect(resolveRoute(tiers, 'claude', 'single:gemini', role).candidates).toEqual(
+      models.map(model => ({ model, provider: 'agy', effort: expect.any(String) }))
+    );
+  expect(
+    resolveRoute(tiers, 'claude', 'single:gemini', 'review', 'G2', 1, models).candidates
+  ).toEqual(resolveRoute(tiers, 'claude', 'auto', 'review', 'G2').candidates);
+  const cli = Bun.spawnSync(
+    [process.execPath, join(WETAMP, 'src/cli.ts'), 'models', '--mode', 'single:gemini', '--json'],
+    {
+      env: {
+        ...process.env,
+        HOME: dir,
+        SUPERAGENT_HOME: dir,
+        ARCHON_HOME: dir,
+        SUPERAGENT_RELAY_QUOTA: 'off',
+      },
+    }
+  );
+  expect(cli.exitCode).toBe(0);
+  expect(JSON.parse(cli.stdout.toString()).codex.general).toEqual(models);
+  delete tiers.routing.gemini;
+  expect(() => resolveRoute(tiers, 'codex', 'single:gemini', 'repair')).toThrow(
+    'no eligible repair model'
+  );
+});
 const decide = (input: Omit<Parameters<typeof rawDecide>[0], 'reviewRounds'>) =>
   rawDecide({ ...input, reviewRounds: POLICY_ROUNDS });
 
