@@ -154,7 +154,7 @@ function agyFixture() {
           cwd: repo,
           toolCall: { id: 'call-1', name, args },
         },
-        { HOME: home, SUPERAGENT_HOME: home }
+        { HOME: home, SUPERAGENT_HOME: home, SA_SECRET_SCAN_MODULE: '' }
       ),
   };
 }
@@ -180,10 +180,23 @@ test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
     decision: 'deny',
     reason: expect.stringContaining('（凭据文件）'),
   });
+  expect(call('read_file', { AbsolutePath: '~/.ssh/id_ed25519' })).toMatchObject({
+    decision: 'deny',
+  });
+  for (const TargetFile of [undefined, ''])
+    expect(call('write_to_file', { TargetFile, File: '~/.netrc' })).toMatchObject({
+      decision: 'deny',
+    });
+  expect(call('grep_search', { Query: '_private', SearchPath: '' })).toEqual({});
 });
 
 test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
   const { call, home } = agyFixture();
+  for (const args of [{ Command: 'ls' }, {}, { CommandLine: null }])
+    expect(call('run_command', args), JSON.stringify(args)).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringContaining('无法识别终端命令参数'),
+    });
   for (const CommandLine of [
     'cat ~/.ssh/id_ed25519',
     'op item list',

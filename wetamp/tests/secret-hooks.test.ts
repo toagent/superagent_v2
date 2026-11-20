@@ -65,3 +65,63 @@ test('prompt skips heuristics while tool output redacts them and managed prompts
     hookSpecificOutput: { suppressOriginalPrompt: true },
   });
 });
+
+test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具输出（%p）', role => {
+  const cwd = tmp(),
+    scan = scanner();
+  const env: NodeJS.ProcessEnv = { ...process.env, AI_DISPATCH_ROLE: '', TWIN_AGENT_REMOTE: '' };
+  if (role === undefined) delete env.SUPERAGENT_ROLE;
+  else env.SUPERAGENT_ROLE = role;
+  const hook = (payload: object, active = true) => {
+    const result = Bun.spawnSync(['node', 'hooks/guard.cjs', 'agy'], {
+      stdin: Buffer.from(JSON.stringify({ cwd, ...payload })),
+      env: { ...env, HOME: cwd, SA_SECRET_SCAN_MODULE: active ? scan : '' },
+    });
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout.toString()) as {
+      decision?: string;
+      overwrite?: { CommandLine: string };
+    };
+  };
+  const prompt = (lastUserInput?: string, active = true) =>
+    hook({ hookEventName: 'PreInvocation', lastUserInput }, active);
+  const tool = (name: string, args: object = {}, active = true) =>
+    hook({ hookEventName: 'PreToolUse', toolCall: { name, args } }, active);
+  expect(prompt('synthetic-secret-value')).toMatchObject({ terminationBehavior: 'terminate' });
+  for (const input of [undefined, '', 'synthetic-heuristic-value'])
+    expect(prompt(input)).toEqual({});
+  expect(prompt('synthetic-secret-value', false)).toEqual({});
+  const wrapped = tool('run_command', { CommandLine: 'echo ok', Cwd: cwd });
+  expect(wrapped).toEqual({
+    decision: 'allow',
+    overwrite: { CommandLine: '. ~/.wetamp/jail/sa-redact.sh; echo ok' },
+  });
+  expect(tool('run_command', wrapped.overwrite)).toEqual({});
+  expect(tool('run_command', { CommandLine: 'echo ok' }, false)).toEqual({});
+  writeFileSync(`${cwd}/plain.txt`, 'hello');
+  writeFileSync(`${cwd}/fixture.txt`, 'synthetic-heuristic-value');
+  for (const [name, field] of [
+    ['read_file', 'Path'],
+    ['view_file', 'AbsolutePath'],
+  ] as const) {
+    expect(tool(name, { [field]: 'plain.txt' })).toEqual({});
+    for (const file of ['fixture.txt', '', 'missing.txt'])
+      expect(tool(name, { [field]: file })).toMatchObject({ decision: 'deny' });
+  }
+  for (const name of ['grep_search', 'mcp__fixture__read']) {
+    const result = tool(name, name === 'grep_search' ? { SearchPath: '.', Query: 'hello' } : {});
+    if (role)
+      expect(result).toMatchObject({
+        decision: 'deny',
+        reason: expect.stringContaining('终端命令'),
+      });
+    else expect(result).toEqual({});
+  }
+  for (const [result, reason] of [
+    [tool('read_file', { Path: '~/.ssh/id_ed25519' }), 'ssh 私钥'],
+    [tool('run_command', { CommandLine: 'git push --force' }), 'git force push'],
+    [tool('run_command'), '无法识别终端命令参数'],
+  ] as const)
+    expect(result).toMatchObject({ decision: 'deny', reason: expect.stringContaining(reason) });
+  expect(tool('invoke_subagent')).toEqual({});
+});

@@ -38,6 +38,14 @@ const mapStrings = (value, transform) => {
 };
 const scanned = (value, env) =>
   mapStrings(value, text => scanner(env).scanText(text, { keyValues: false }));
+const PROMPT_SECRET_REASON = '检测到凭据；请按 ai-secret-sync 录入 1Password AI-Agents 后用 $NAME 引用';
+function safePrompt(prompt, env) {
+  try {
+    return !prompt || scanner(env).scanText(prompt, { keyValues: false, heuristics: false }) === prompt;
+  } catch {
+    return false;
+  }
+}
 
 const pool = tier => tiers[tier].pools.chatgpt;
 const deny = (reason, superagentPermissionCategory = 'authorization') => ({
@@ -222,19 +230,10 @@ function decide(payload, client, env = process.env) {
   if (event !== 'PreToolUse') {
     if (event === 'UserPromptSubmit') {
       if (!firewallInstalled(env)) return null;
-      const prompt = String(payload.prompt || '');
-      let safe;
-      try {
-        safe =
-          !prompt ||
-          scanner(env).scanText(prompt, { keyValues: false, heuristics: false }) === prompt;
-      } catch {
-        safe = false;
-      }
-      if (safe) return null;
+      if (safePrompt(String(payload.prompt || ''), env)) return null;
       return {
         decision: 'block',
-        reason: '检测到凭据；请按 ai-secret-sync 录入 1Password AI-Agents 后用 $NAME 引用',
+        reason: PROMPT_SECRET_REASON,
         ...(client === 'claude'
           ? { hookSpecificOutput: { hookEventName: event, suppressOriginalPrompt: true } }
           : {}),
@@ -349,21 +348,75 @@ function decide(payload, client, env = process.env) {
   );
 }
 
-async function decideAgy(payload) {
+// 官方 Hooks 工具清单，外加 CLI 实际使用的 read_file（在 AGY_PATH_FIELDS 中）。
+const AGY_BUILTINS = new Set([
+  ...redline.AGY_PATH_FIELDS.keys(),
+  'search_web', 'read_url_content', 'run_command', 'manage_task', 'schedule',
+  'list_permissions', 'ask_permission', 'invoke_subagent', 'define_subagent',
+  'send_message', 'manage_subagents', 'ask_question', 'generate_image',
+]);
+const AGY_READ_LIMIT = 1024 * 1024;
+function agyReadReason(file, cwd, env) {
+  try {
+    if (typeof file === 'string' && file.trim()) {
+      const target = fs.realpathSync(path.resolve(cwd, redline.expand(file, env)));
+      const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW);
+      try {
+        const stat = fs.fstatSync(fd);
+        if (stat.isFile() && stat.size <= AGY_READ_LIMIT) {
+          const bytes = Buffer.alloc(AGY_READ_LIMIT + 1);
+          let size = 0, count;
+          while (size < bytes.length && (count = fs.readSync(fd, bytes, size, bytes.length - size)) > 0)
+            size += count;
+          if (size <= AGY_READ_LIMIT) {
+            const text = bytes.toString('utf8', 0, size);
+            return scanned(text, env) === text ? null : '检测到凭据';
+          }
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  } catch {
+    // 读文件和扫描失败都没有可供确认的结果。
+  }
+  return '无法完成文件秘密扫描';
+}
+async function decideAgy(payload, env = process.env) {
+  if (payload?.hookEventName === 'PreInvocation') {
+    if (!firewallInstalled(env) || safePrompt(String(payload.lastUserInput || ''), env)) return {};
+    return {
+      terminationBehavior: 'terminate',
+      injectSteps: [{ errorMessage: { userMessage: PROMPT_SECRET_REASON } }],
+    };
+  }
   if (payload?.hookEventName !== 'PreToolUse') return {};
   const { name, args = {} } = payload.toolCall || {};
   const cwd =
     typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
   const command = name === 'run_command';
   const shell = command && typeof args?.CommandLine === 'string' ? args.CommandLine : undefined;
+  if (command && shell === undefined)
+    return { decision: 'deny', reason: redline.message('执行终端命令', '无法识别终端命令参数', '使用字符串类型的 CommandLine 后重试') };
   const workdir = command && typeof args?.Cwd === 'string' ? path.resolve(cwd, args.Cwd) : cwd;
   if (shell) await redline.init();
   const reason = redline.reason({
     client: 'agy', name, cwd, root: shell ? gitRoot(cwd) : null, shell: shell || undefined,
-    input: command ? { workdir } : args || {},
+    input: command ? { workdir } : args || {}, env,
     onAdvisory: code => process.stderr.write(`SUPERAGENT advisory：${code}\n`),
   });
-  return reason ? { decision: 'deny', reason } : {};
+  if (reason) return { decision: 'deny', reason };
+  if (!firewallInstalled(env)) return {};
+  if (shell && !shell.startsWith(REDACT_PREFIX))
+    return { decision: 'allow', overwrite: { CommandLine: `${REDACT_PREFIX} ${shell}` } };
+  const alternative = '改用终端命令，输出会经过秘密遮蔽';
+  if ((name === 'grep_search' || !AGY_BUILTINS.has(name)) && derivedBy(payload, 'agy', env))
+    return { decision: 'deny', reason: redline.message('执行工具', '无法预扫或遮蔽工具输出', alternative) };
+  if (name === 'read_file' || name === 'view_file') {
+    const why = agyReadReason(args?.[redline.AGY_PATH_FIELDS.get(name)], cwd, env);
+    if (why) return { decision: 'deny', reason: redline.message('读取文件', why, alternative) };
+  }
+  return {};
 }
 
 if (require.main === module)
