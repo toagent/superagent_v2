@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { alreadySandboxed, privatePathCases, tmp } from './helpers';
 
@@ -159,6 +159,29 @@ describe('ai-jail', () => {
     expect(result.exitCode).toBe(126);
     expect(result.stdout.toString()).toBe('');
     expect(result.stderr.toString()).toContain('沙箱配置缺失');
+  });
+
+  test('安装的 agy 入口跳过自身并经 ai-jail 传递受管环境', () => {
+    const home = tmp(),
+      jail = join(home, '.wetamp/jail'),
+      bin = join(home, '.local/bin');
+    install(home);
+    const shim = join(jail, 'bin/agy');
+    expect(readlinkSync(shim)).toBe('../ai-jail-shim');
+    mkdirSync(bin, { recursive: true });
+    const security = join(bin, 'security');
+    const env = { HOME: home, PATH: `${jail}/bin:${bin}:/usr/bin:/bin`, SECURITY_BIN: security };
+    const run = (client: string) => Bun.spawnSync([client], { env }).exitCode;
+    expect(run(shim)).toBe(127);
+    const executable = (path: string, body: string) =>
+      writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    writeFileSync(join(home, '.wetamp/secrets.list'), 'AGY_TEST_MANAGED\n');
+    executable(security, '[ "$3" = AGY_TEST_MANAGED ] && printf fixture');
+    executable(join(jail, 'ai-jail'), 'export AGY_TEST_JAILED=1; exec "$@"');
+    executable(join(bin, 'agy'), '[ "$AGY_TEST_MANAGED:$AGY_TEST_JAILED" = fixture:1 ]');
+    executable(join(bin, 'anti'), 'exec agy "$@"');
+    expect(run(shim)).toBe(0);
+    expect(run(join(bin, 'anti'))).toBe(0);
   });
 
   test('client shims preserve empty argument lists under macOS bash', () => {

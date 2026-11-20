@@ -66,7 +66,7 @@ for (const line of ps.stdout.toString().split('\n')) {
     command = match[2];
   const first = basename(command.split(/\s+/, 1)[0]).replace(/\.exe$/, '');
   if (
-    !['claude', 'codex', 'opencode', 'superagent'].includes(first) &&
+    !['claude', 'codex', 'opencode', 'agy', 'superagent'].includes(first) &&
     !/\bbun\b.*\/wetamp\/src\/cli\.ts(?:\s|$)/.test(command)
   )
     continue;
