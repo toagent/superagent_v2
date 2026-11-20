@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -12,6 +13,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import * as fs from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import { Database } from 'bun:sqlite';
@@ -27,6 +29,7 @@ import {
   ledgerPath,
   loadLedger,
   main,
+  maintenanceTick,
   type Ledger,
 } from '../src/cli';
 import { collectEngineSnapshots, gc as collect, LIVE_RETENTION_MS } from '../src/gc';
@@ -826,7 +829,8 @@ test('engine gc removes read-only failed candidates and preserves protected or l
     mkdirSync(join(root, sha), { recursive: true });
     writeFileSync(join(root, sha, 'file'), sha);
   }
-  symlinkSync(join(root, shas.current), join(root, 'current'));
+  const current = join(root, 'current');
+  symlinkSync(join(root, shas.current), current);
   mkdirSync(join(root, 'receipts'));
   mkdirSync(join(root, 'promotions'));
   for (const [sha, at] of [
@@ -902,6 +906,46 @@ test('engine gc removes read-only failed candidates and preserves protected or l
     shas.console,
   ])
     expect(existsSync(join(root, sha))).toBe(true);
+
+  const lockPath = join(root, 'engine.lock');
+  // prettier-ignore
+  const publish = () => {
+    writeFileSync(join(root, 'receipts', `${shas.running}.json`), JSON.stringify({ sha: shas.running, at: '2026-01-04' }));
+    symlinkSync(join(root, shas.running), join(root, 'next'));
+    renameSync(join(root, 'next'), current);
+    writeFileSync(join(root, 'promotions', `${shas.running}.json`), JSON.stringify({ status: 'promoted' }));
+  };
+  const enumerate = readdirSync;
+  // 在读完保护状态、枚举候选目录前尝试晋升。
+  // prettier-ignore
+  const barrier = spyOn(fs, 'readdirSync').mockImplementation(new Proxy(enumerate, {
+    apply(target, thisArg, args) {
+      const held = args[0] === root && args[1]?.withFileTypes ? lock(lockPath) : undefined;
+      if (held?.ok) try { publish(); } finally { held.release(); }
+      return Reflect.apply(target, thisArg, args);
+    },
+  }));
+  try {
+    collectEngineSnapshots(false);
+    expect(barrier).toHaveBeenCalledWith(root, { withFileTypes: true });
+  } finally {
+    barrier.mockRestore();
+  }
+  expect(realpathSync(current)).toBe(join(root, shas.current));
+  const held = lock(lockPath);
+  if (!held.ok) throw new Error('晋升未取得 engine.lock');
+  try {
+    publish();
+    // prettier-ignore
+    maintenanceTick(process.env.SUPERAGENT_HOME!, { memory: () => {}, gc: () => collectEngineSnapshots(false), scratch: () => [] });
+    expect(readFileSync(join(root, '..', 'maintenance.json'), 'utf8')).toContain(
+      'engine.lock held'
+    );
+  } finally {
+    held.release();
+  }
+  collectEngineSnapshots(false);
+  expect(readFileSync(join(realpathSync(current), 'file'), 'utf8')).toBe(shas.running);
 });
 
 test('engine gc removes only stale engine probes while the promotion lock is free', () => {

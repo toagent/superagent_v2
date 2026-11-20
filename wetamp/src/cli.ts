@@ -3712,7 +3712,7 @@ export function maintenanceTick(
   }
   const maintenanceStarted = Date.now();
   const record: Record<string, unknown> = { at: new Date().toISOString() };
-  const run = (name: string, task: () => unknown): unknown => {
+  const run = <T>(name: string, task: () => T): T | undefined => {
     const started = Date.now();
     try {
       const value = task();
@@ -3738,7 +3738,12 @@ export function maintenanceTick(
     const gcStamp = join(sa, 'gc-tick');
     if (!existsSync(gcStamp) || Date.now() - statSync(gcStamp).mtimeMs >= 15 * 60_000) {
       writeAtomic(gcStamp, String(Date.now()));
-      run('gc', tasks.gc);
+      const enginePath = resolve(sa, 'engine');
+      const skipped = run('gc', tasks.gc)?.find(
+        action => action.object === 'engine' && action.path === enginePath
+      );
+      if (skipped?.action === 'skipped')
+        record.gc = { ...(record.gc as object), engine_snapshot_skip: skipped };
     } else record.gc = { ok: true, duration_ms: 0, skipped: 'not-due' };
     run('scratch', tasks.scratch);
     if (tasks.nightly) {

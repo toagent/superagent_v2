@@ -188,10 +188,28 @@ function consoleEngineSnapshot(engineRoot: string, configuredRoot: string) {
     return { error: String(error) };
   }
 }
-// prettier-ignore
-export function collectEngineSnapshots(dryRun: boolean, statuses: Map<string, RunView['status']> | null = null): GcAction[] {
+export function collectEngineSnapshots(dryRun: boolean): GcAction[] {
   const configuredRoot = resolve(home().sa, 'engine');
   if (!existsSync(configuredRoot)) return [];
+  const skipped = (reason: string): GcAction[] => [
+    { run_id: '*', object: 'engine', action: 'skipped', reason, path: configuredRoot },
+  ];
+  let held;
+  try {
+    held = lock(join(configuredRoot, 'engine.lock'));
+  } catch (error) {
+    return skipped(`engine.lock unavailable: ${String(error)}`);
+  }
+  if (!held.ok) return skipped('engine.lock held');
+  try {
+    return collectLockedEngineSnapshots(configuredRoot, dryRun);
+  } finally {
+    held.release();
+  }
+}
+
+// prettier-ignore
+function collectLockedEngineSnapshots(configuredRoot: string, dryRun: boolean): GcAction[] {
   let engineRoot: string, current: string;
   try {
     engineRoot = realpathSync(configuredRoot);
@@ -255,6 +273,13 @@ export function collectEngineSnapshots(dryRun: boolean, statuses: Map<string, Ru
     }
   }
   const bootstrap = receipts.at(0)?.sha;
+  let statuses: ReturnType<typeof runStatuses> = null;
+  if (!dryRun && ledgers.length)
+    try {
+      statuses = runStatuses();
+    } catch {
+      // 批量查询失败时，仍由单个 run 查询确认引用状态。
+    }
   return readdirSync(engineRoot, { withFileTypes: true }).flatMap(entry => {
     if (!entry.isDirectory() || !/^[0-9a-f]{7,40}$/i.test(entry.name)) return [];
     const path = join(engineRoot, entry.name);
@@ -776,5 +801,5 @@ export function gc(
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
   // prettier-ignore
-  return [...out, ...collectLive(dryRun), ...collectGen(dryRun), ...collectEngineSnapshots(dryRun, statuses)];
+  return [...out, ...collectLive(dryRun), ...collectGen(dryRun), ...collectEngineSnapshots(dryRun)];
 }
