@@ -348,7 +348,7 @@ function decide(payload, client, env = process.env) {
   );
 }
 
-// 官方 Hooks 工具清单及 CLI 实际上报的 read_file、edit_file、finish。
+// 官方 Hooks 工具清单及 CLI 实际上报的 read_file、write_file、edit_file、finish。
 const AGY_BUILTINS = new Set([
   ...redline.AGY_PATH_FIELDS.keys(),
   'search_web', 'read_url_content', 'run_command', 'manage_task', 'schedule',
