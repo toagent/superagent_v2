@@ -105,6 +105,10 @@ superagent plan draft task.md plan.json > plan.receipt.json && superagent plan c
 `agy` 每次开启新会话，修复通过任务卡和已有工作交接。护栏会拒绝结果无法遮蔽的工具。
 此模式须关闭 `gemini_review`，正式评审沿用现有独立评审路由。
 
+`agy` 的工具为 `read_file`、`write_file`、`edit_file`、`run_command`、`manage_task`、`finish`，没有内置的列目录、查找或搜索工具。
+hook 进程非零退出时，本次工具调用失败。护栏脚本无法加载会导致全部工具调用失败，可用 `superagent health` 检查。
+在引擎安装检出根目录运行 `bun wetamp/src/install-hooks.ts --only agy --purge-v1` 可备份并撤下 agy 的受管 hook。
+
 ## 评审
 
 只有实际 diff 命中 `tiers.json` 的 `policy.risk_paths`，或用户本轮明确要求时才触发独立

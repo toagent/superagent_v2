@@ -29,6 +29,7 @@ import { runAttention } from '../../packages/workflows/src/schemas/workflow-run'
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
+import { guardSelftest } from './guard-selftest';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { scanText } from './secrets/scan';
@@ -2428,6 +2429,7 @@ function health(cwd?: string, verbose = false, daysRaw?: string): number {
     readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
     Date.now()
   );
+  const guard_selftest = guardSelftest();
   const ok =
     tick.ok &&
     doctor.code === 0 &&
@@ -2436,7 +2438,8 @@ function health(cwd?: string, verbose = false, daysRaw?: string): number {
     !capabilities.length &&
     !worker &&
     secrets.ok &&
-    transcripts.ok;
+    transcripts.ok &&
+    guard_selftest.every(result => result.ok);
   print({
     ok,
     mode,
@@ -2452,6 +2455,7 @@ function health(cwd?: string, verbose = false, daysRaw?: string): number {
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
     secrets: { ...secrets, transcripts },
+    guard_selftest,
     tick,
   });
   return ok ? 0 : drift.length || capabilities.length ? EXIT_ALIAS_DRIFT : 1;

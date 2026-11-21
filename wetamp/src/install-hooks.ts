@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { WETAMP } from './config';
 import { createRequire } from 'node:module';
@@ -42,11 +42,8 @@ const V1_HOOKS =
   /[^\s'"]*(?:\/work\/github\/superagent|\/\.local\/share\/superagent\/releases\/[^/\s'"]+)\/hooks\//g;
 const isV1 = (c: string): boolean => new RegExp(V1_HOOKS.source).test(c);
 const V2_HOOKS = join(WETAMP, 'hooks') + '/';
-// 空串与未设置同样回落到默认（与 shell 的 ${X:-default} 一致）
-const envOr = (key: string, fallback: string): string => {
-  const v = process.env[key];
-  return v !== undefined && v !== '' ? v : fallback;
-};
+const envOr = (key: string, fallback: string, env = process.env): string =>
+  env[key] === '' ? fallback : (env[key] ?? fallback);
 const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
 const cmd = (file: string, client?: Client): string =>
   `node ${quote(V2_HOOKS + file)}${client ? ` ${client}` : ''}`;
@@ -80,10 +77,10 @@ export function wanted(client: Client): [string, string][] {
   ];
 }
 
-const paths = (agyHome: string): Record<Client | 'agy', string> => ({
-  claude: join(envOr('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')), 'settings.json'),
-  codex: join(envOr('CODEX_HOME', join(homedir(), '.codex')), 'hooks.json'),
-  agy: join(agyHome, 'config/hooks.json'),
+const paths = (home: string, env = process.env): Record<Client | 'agy', string> => ({
+  claude: join(envOr('CLAUDE_CONFIG_DIR', join(home, '.claude'), env), 'settings.json'),
+  codex: join(envOr('CODEX_HOME', join(home, '.codex'), env), 'hooks.json'),
+  agy: join(home, '.gemini/config/hooks.json'),
 });
 const ours = (h: Handler): boolean =>
   typeof h.command === 'string' && (isV1(h.command) || h.command.includes(V2_HOOKS));
@@ -100,6 +97,19 @@ const condition = (g: Group): string => {
   return JSON.stringify({ ...g, hooks: undefined, matcher: all ? '*' : g.matcher });
 };
 const ALL = condition({});
+// prettier-ignore
+export function configuredGuard(client: Client | 'agy', env: NodeJS.ProcessEnv): string | undefined {
+  const file = paths(envOr('HOME', homedir(), env), env)[client];
+  if (!existsSync(file)) return undefined;
+  const doc = JSON.parse(readFileSync(file, 'utf8')) as { hooks?: Partial<Hooks>; superagent?: Partial<Hooks> & { enabled?: boolean } };
+  if (client === 'agy' && ![true, undefined].includes(doc.superagent?.enabled)) return undefined;
+  const groups = (client === 'agy' ? doc.superagent : doc.hooks)?.PreToolUse;
+  return groups?.filter(group => condition(group) === ALL).flatMap(group => group.hooks ?? []).map(({ type, command }) => {
+    if (type !== 'command' || typeof command !== 'string') return undefined;
+    const script = (/^node '(.+\/hooks\/guard\.cjs)' /.exec(command))?.[1]?.replaceAll("'\\''", "'");
+    return script && isAbsolute(script) && command === `node ${quote(script)} ${client}` ? script : undefined;
+  }).find(Boolean);
+}
 
 /** V1 路径改写为本 wetamp/hooks/、按（事件 × 执行条件 × command）去重、按 V1 清单补齐；purge 时只删 V1 条目。 */
 export function mergeHooks(hooks: Hooks, client: Client, purge = false): Hooks {
@@ -362,7 +372,7 @@ export function installHooks(dryRun: boolean, purge = false, only?: InstallClien
   const agyInstalled =
     (!only || only === 'agy') &&
     (!!statSync(agyHome, { throwIfNoEntry: false })?.isDirectory() || Bun.which('agy') !== null);
-  for (const [client, file] of Object.entries(paths(agyHome)) as [Client | 'agy', string][]) {
+  for (const [client, file] of Object.entries(paths(homedir())) as [Client | 'agy', string][]) {
     if (only && client !== only) continue;
     if (client === 'agy' && !agyInstalled) {
       out += 'agy: 未找到 agy 或 ~/.gemini，跳过\n';

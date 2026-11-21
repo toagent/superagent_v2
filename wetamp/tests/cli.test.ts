@@ -133,6 +133,9 @@ const fixtureDecision = (
 let engineBoundary: ReturnType<typeof spyOn<typeof coordModule, 'cleanEngine'>> | undefined;
 const cleanEngine = coordModule.cleanEngine;
 const isolatedEnvKeys = [
+  'HOME',
+  'CLAUDE_CONFIG_DIR',
+  'CODEX_HOME',
   'BUN_OPTIONS',
   'SUPERAGENT_MEMORY',
   'GIT_CONFIG_GLOBAL',
@@ -2433,6 +2436,8 @@ describe('run (archon stub)', () => {
   test('a drifted global alias also refuses; health --cwd runs the same check', () => {
     expect(drifted('global').code).toBe(EXIT_ALIAS_DRIFT);
     const repo = join(process.env.SUPERAGENT_HOME ?? '', '..', 'repo');
+    process.env.HOME = tmp();
+    process.env.CLAUDE_CONFIG_DIR = process.env.CODEX_HOME = '';
     const h = captured(() => main(['health', '--cwd', repo]));
     expect(h.code).toBe(EXIT_ALIAS_DRIFT);
     expect((JSON.parse(h.out) as { alias_drift: string[] }).alias_drift).toHaveLength(1);
@@ -2499,6 +2504,7 @@ describe('health upstream reporting', () => {
       }
     const previousHome = process.env.HOME;
     process.env.HOME = home;
+    process.env.CLAUDE_CONFIG_DIR = process.env.CODEX_HOME = '';
     const checkSpawn = <
       const In extends Bun.SpawnOptions.Writable = 'ignore',
       const Out extends Bun.SpawnOptions.Readable = 'pipe',
@@ -2547,7 +2553,9 @@ describe('health upstream reporting', () => {
   });
   test('empty successful upstream check reports zero files without a dirty reason', () => {
     const result = check([]);
-    expect(result.json).toMatchObject({ upstream_clean: true, upstream_file_count: 0 });
+    expect(result.code).toBe(1);
+    expect(result.json).toMatchObject({ ok: false, upstream_clean: true, upstream_file_count: 0 });
+    expect(result.json.guard_selftest).toHaveLength(3);
     expect(result.json).not.toHaveProperty('reason');
     const failed = check([], 0, false, undefined, { ntfy_sync: { ok: false, error: 'offline' } });
     expect(failed.code).toBe(1);
