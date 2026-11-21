@@ -43,6 +43,7 @@ project scope 和已有 claim；不能替换证据中的作者、模型或事实
 
 `maintenance-tick` 继续收集 episode、更新 priors 和 fold-index，并处理引擎事故 handoff。
 逐 episode 反思已从定时维护移除。`maintenance.json` 的常规任务为 memory、gc、scratch。
+scratch 回收同时检查引擎主目录内的新根和系统临时目录内的旧根，仅回收 owner 已退出且没有非终态 plan 引用的会话目录。
 
 保留 `memory-reflect` workflow 及其回执。有效操作写入候选。空输出或无有效操作只记
 `rejected`，反思失败终态记 `degraded`。回执仍记录 episode 和用量。

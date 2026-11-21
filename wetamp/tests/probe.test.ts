@@ -17,12 +17,21 @@ test('judgeProbe accepts exact real-run evidence and rejects every missing ident
 const fakeProbe = (missingRunId = false): ReturnType<typeof runProbe> => {
   const root = tmp(),
     shim = join(root, 'shim'),
+    permission = join(root, 'permission.ts'),
     snapshot = resolve(import.meta.dir, '../..');
+  writeFileSync(
+    permission,
+    `import { isWithinWriteRoots } from ${JSON.stringify(join(import.meta.dir, '../src/plan.ts'))};
+require(${JSON.stringify(join(import.meta.dir, '../hooks/scratch.cjs'))}).LEGACY_ROOT = ${JSON.stringify(join(root, 'legacy-scratch'))};
+if (!isWithinWriteRoots(process.cwd()) || isWithinWriteRoots(process.env.SUPERAGENT_HOME!))
+  process.exit(93);`
+  );
   mkdirSync(join(root, 'sa', 'archon'), { recursive: true });
   writeFileSync(
     shim,
     `#!/bin/sh
 if [ "$1" = quick ]; then
+  "${process.execPath}" "${permission}" || exit $?
   printf '%s\n' '{"event":"started"}' '${missingRunId ? '{"ok":true}' : '{"run_id":"run-1"}'}'
   printf '%s\n' '{"code":"superagent.disk_observed","token":"raw-secret"}' >&2
   ${missingRunId ? ':' : `mkdir -p "$SUPERAGENT_HOME/runs"; printf '%s\n' '${JSON.stringify({ run_id: 'run-1', engine_commit: Bun.spawnSync(['git', '-C', snapshot, 'rev-parse', 'HEAD']).stdout.toString().trim(), engine_snapshot: snapshot })}' > "$SUPERAGENT_HOME/runs/run-1.json"`}

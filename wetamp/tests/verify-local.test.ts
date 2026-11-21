@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -36,6 +37,7 @@ function fixture() {
   const repo = join(root, 'repo');
   mkdirSync(join(repo, 'wetamp', 'scripts'), { recursive: true });
   copyFileSync(SCRIPT, join(repo, 'wetamp', 'scripts', 'verify-local.sh'));
+  symlinkSync(join(import.meta.dir, '../hooks'), join(repo, 'wetamp/hooks'));
   copyFileSync(
     join(import.meta.dir, '..', 'scripts', 'heavy-slot.sh'),
     join(repo, 'wetamp', 'scripts', 'heavy-slot.sh')
@@ -174,7 +176,7 @@ git config --global --get core.hooksPath && exit 9
     );
     sharedResult = shared.run(shared.pass, {
       GIT_CONFIG_GLOBAL: sharedConfig,
-      TMPDIR: '/tmp/sa-scratch/not-created',
+      TMPDIR: join(shared.root, 'sa/scratch/not-created'),
       READONLY_CAPTURE: sharedCapture,
       SHARD_SYNC: sharedSync,
     });

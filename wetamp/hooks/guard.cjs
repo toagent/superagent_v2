@@ -250,7 +250,7 @@ function decide(payload, client, env = process.env) {
     }
     if (derived) return null;
     if (event === 'SessionStart') {
-      const result = require('./scratch.cjs').start(payload, client, env);
+      const result = require('./scratch.cjs').sessionScratch(env).start(payload, client, env);
       require('./heartbeat-panel.cjs').ensurePanel(payload, env);
       const home = saHome(env);
       if (

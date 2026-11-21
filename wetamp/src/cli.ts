@@ -193,7 +193,7 @@ import {
   type Continuation,
   type ReviewCheckpoint,
 } from './generate';
-import { loadPlan, milestones, type Plan } from './plan';
+import { loadPlan, milestones, scratch, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
@@ -231,14 +231,7 @@ export const consoleLaunchdPlist = (): string =>
     `${consoleLaunchdLabel()}.plist`
   );
 
-const inheritedTmp = process.env.TMPDIR && resolve(process.env.TMPDIR);
-if (
-  inheritedTmp &&
-  ['/tmp/sa-scratch', '/private/tmp/sa-scratch'].some(
-    root => inheritedTmp === root || inheritedTmp.startsWith(root + '/')
-  )
-)
-  delete process.env.TMPDIR;
+if (scratch.isScratchPath(process.env.TMPDIR)) delete process.env.TMPDIR;
 
 export function intakeEvidence(repo: string, query: typeof getRun = getRun): EvidenceReader {
   // Cache only raw engine reads for this query; every binding still validates its identity.

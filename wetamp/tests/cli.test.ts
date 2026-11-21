@@ -3605,7 +3605,7 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     writeFileSync(
       preload,
       `const scratch = require(${JSON.stringify(join(WETAMP, 'hooks/scratch.cjs'))});
-Object.assign(scratch, scratch.createScratch(${JSON.stringify(join(s.root, 'scratch'))}));\n`
+scratch.LEGACY_ROOT = ${JSON.stringify(join(s.root, 'scratch'))};\n`
     );
     writeFileSync(
       join(s.root, 'home', 'web.json'),

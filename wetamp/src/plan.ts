@@ -61,12 +61,16 @@ const Ajv2020 = createRequire(join(WETAMP, '..', 'packages', 'workflows', 'packa
 ) as { default: AjvCtor };
 let validator: Validate | undefined;
 
-export const SCRATCH_ROOT = '/tmp/sa-scratch';
+export const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
+  scratchRoots: () => string[];
+  isScratchPath: (path: string | undefined) => boolean;
+  engineProbeRoot: () => string;
+};
 
 /** 允许的目标 repo 根；SUPERAGENT_WRITE_ROOTS（冒号分隔）可覆盖，测试据此指向临时目录。 */
 export const writeRoots = (): string[] => [
   ...(process.env.SUPERAGENT_WRITE_ROOTS ?? join(homedir(), 'work')).split(':'),
-  SCRATCH_ROOT,
+  ...scratch.scratchRoots(),
 ];
 export const isWithinWriteRoots = (path: string, roots = writeRoots()): boolean => {
   const candidate = realpathSync(path);

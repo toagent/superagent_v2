@@ -5,6 +5,7 @@ import { stageKind } from '../board/cockpit';
 import { workflowRoles, type Role } from '../board/workflow';
 import { loadLedger } from '../cli';
 import { home } from '../config';
+import { scratch } from '../plan';
 export class HudEventsUnsupported extends Error {}
 type ToolKind = keyof typeof TOOLS | 'mcp' | 'other';
 type Delivery = [run: string, project: string, roles?: Map<string, Role>];
@@ -53,6 +54,7 @@ function delivery(row: Row): Delivery | undefined {
         ledger.archon_run_id !== row.workflow_run_id ||
         !ledger.workflow.startsWith('sa-') ||
         repo.startsWith(resolve(tmpdir()) + sep) ||
+        scratch.isScratchPath(repo) ||
         /fake/i.test(project),
       value: Delivery | null = excluded ? null : [ledger.run_id, project, workflowRoles(ledger)];
     if (cached.runs.size >= 512) cached.runs.clear();

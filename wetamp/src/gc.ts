@@ -33,11 +33,14 @@ export interface ScratchAction {
   reason: string;
 }
 const scratch = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
-  clean: (
-    session: string | undefined,
-    dryRun: boolean,
-    referenced: (path: string) => boolean
-  ) => ScratchAction[];
+  sessionScratch: () => {
+    clean: (
+      session: string | undefined,
+      dryRun: boolean,
+      referenced: (path: string) => boolean
+    ) => ScratchAction[];
+  };
+  engineProbeRoot: () => string;
 };
 const { abandoned } = createRequire(import.meta.url)('../hooks/coord.cjs') as {
   abandoned: (ledger: Ledger) => boolean;
@@ -51,7 +54,7 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
   } catch {
     statuses = null;
   }
-  return scratch.clean(session, dryRun, path =>
+  return scratch.sessionScratch().clean(session, dryRun, path =>
     (ledgers ??= ledgerIds().map(loadLedger)).some(l => {
       // l.plan keeps the launch argument verbatim; a relative one only resolves in the launch
       // cwd, so the absolute gen copy (same parsed plan) stands in for it.
@@ -780,7 +783,8 @@ export function gc(
   }
   if (!dryRun && revisions) writeAtomic(join(home().sa, 'gc-inputs.json'), JSON.stringify(next));
   try {
-    for (const root of new Set(probeRoots.filter(existsSync).map(p => realpathSync(p)))) {
+    const roots = [...probeRoots, scratch.engineProbeRoot()];
+    for (const root of new Set(roots.filter(existsSync).map(p => realpathSync(p)))) {
       for (const entry of readdirSync(root, { withFileTypes: true })) {
         const path = join(root, entry.name);
         if (!entry.isDirectory() || Date.now() - statSync(path).mtimeMs <= 24 * 60 * 60_000)

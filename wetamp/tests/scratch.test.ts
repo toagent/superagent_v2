@@ -12,20 +12,25 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
 import { removeTempTree, testTimeout } from '@archon/paths/test-utils';
 import * as archon from '../src/archon';
 import type { Ledger } from '../src/cli';
 import type { ScratchAction } from '../src/gc';
 import { loadPlan, writeRoots } from '../src/plan';
 import { fixturePlan, gitRepo, tmp } from './helpers';
+import { inheritedTestHomes } from './preload';
 
+const productionHome = { HOME: homedir(), SUPERAGENT_HOME: inheritedTestHomes.superagent };
 const require = createRequire(import.meta.url);
-const scratchRoot = join(tmp(), 'scratch'),
+const legacyRoot = join(tmp(), 'legacy-scratch'),
   scratchPreload = join(tmp(), 'scratch-preload.cjs');
 writeFileSync(
   scratchPreload,
   `const fs = require('node:fs'), path = require('node:path');
+const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
+const denied = ['/tmp/sa-scratch', '/private/tmp/sa-scratch', scratch.scratchRoot(${JSON.stringify(productionHome)})];
 let violations = 0;
 const restores = [];
 const check = value => {
@@ -33,7 +38,7 @@ const check = value => {
   if (Buffer.isBuffer(value)) value = value.toString();
   if (typeof value !== 'string') return;
   const p = path.resolve(value);
-  if (['/tmp/sa-scratch', '/private/tmp/sa-scratch'].some(r => p === r || p.startsWith(r + '/'))) {
+  if (denied.some(r => p === r || p.startsWith(r + '/'))) {
     violations++; throw new Error('production scratch access: ' + p);
   }
 };
@@ -56,13 +61,9 @@ if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
   restores.push(() => { Bun[key] = spawn; });
 }
 process.on('exit', () => { if (violations) process.exitCode = 1; });
-const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
-const key = Symbol.for('superagent.test.scratch.default');
-if (!globalThis[key]) {
-  if (scratch.ROOT !== '/tmp/sa-scratch') throw new Error('production default changed');
-  globalThis[key] = true;
-}
-if (scratch.ROOT !== ${JSON.stringify(scratchRoot)}) Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
+const originalLegacy = scratch.LEGACY_ROOT;
+scratch.LEGACY_ROOT = ${JSON.stringify(legacyRoot)};
+restores.push(() => { scratch.LEGACY_ROOT = originalLegacy; });
 module.exports = {violations: () => violations, restore: () => {
   for (const restore of restores.reverse()) restore();
   require('node:module').syncBuiltinESMExports();
@@ -80,8 +81,14 @@ interface Owner {
   created: string;
 }
 const scratch = require('../hooks/scratch.cjs') as {
+  scratchRoot: (env?: NodeJS.ProcessEnv) => string;
+  createScratch: (root: string, legacy?: boolean) => Scratch;
+  sessionScratch: (env?: NodeJS.ProcessEnv) => Scratch;
+};
+const current = () => scratch.sessionScratch();
+interface Scratch {
   ROOT: string;
-  createScratch: (root: string) => typeof scratch;
+  directory: (client: string, session: string) => string;
   start: (payload: { session_id: string }, client: string, env?: NodeJS.ProcessEnv) => Context;
   transfer: (
     client: string,
@@ -94,7 +101,7 @@ const scratch = require('../hooks/scratch.cjs') as {
     referenced: (path: string) => boolean
   ) => ScratchAction[];
   cleanOne: (path: string, dry: boolean, referenced: (path: string) => boolean) => ScratchAction;
-};
+}
 const live = require('../hooks/live.cjs') as {
   owner: () => { pid: number; tty: string | null } | null;
 };
@@ -130,16 +137,16 @@ afterEach(async () => {
 
 function setup(client = 'claude') {
   const root = tmp(),
-    session = `test-${crypto.randomUUID()}`,
-    dir = join(scratch.ROOT, `${client}-${session}`);
+    session = `test-${crypto.randomUUID()}`;
   Object.assign(process.env, {
     SUPERAGENT_HOME: join(root, 'sa'),
     ARCHON_HOME: join(root, 'archon'),
-    SUPERAGENT_WRITE_ROOTS: [root, scratchRoot].join(require('node:path').delimiter),
+    SUPERAGENT_WRITE_ROOTS: root,
   });
+  const dir = current().directory(client, session);
   dirs.push(dir);
   ownerSpy = spyOn(live, 'owner').mockReturnValue({ pid: process.pid, tty: null });
-  const context = scratch.start({ session_id: session }, client, {});
+  const context = current().start({ session_id: session }, client, {});
   const file = join(dir, '.owner.json');
   const owner = JSON.parse(readFileSync(file, 'utf8')) as Owner;
   const exited = (): void => {
@@ -158,7 +165,7 @@ function git(repo: string, ...args: string[]): string {
   return p.stdout.toString().trim();
 }
 const logInfo = (): { size: number; mtime: number } | null => {
-  const file = join(scratch.ROOT, '.log');
+  const file = join(scratch.scratchRoot(), '.log');
   return existsSync(file) ? { size: statSync(file).size, mtime: statSync(file).mtimeMs } : null;
 };
 
@@ -186,11 +193,14 @@ test('explicit root rejects relative paths, root symlinks and canonical parent d
 });
 
 test.each(['node', process.execPath])('fs boundary fails closed in %s subprocess', executable => {
-  const p = Bun.spawnSync(
-    [executable, '-e', "try { require('node:fs').readdirSync('/tmp/sa-scratch'); } catch {}"],
-    { env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' }
-  );
-  expect(p.exitCode).toBe(1);
+  const production = scratch.scratchRoot(productionHome);
+  for (const root of ['/tmp/sa-scratch', production]) {
+    const p = Bun.spawnSync(
+      [executable, '-e', "try { require('node:fs').readdirSync(process.argv[1]); } catch {}", root],
+      { env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' }
+    );
+    expect(p.exitCode).toBe(1);
+  }
 });
 
 test('guard SessionStart records client process identity, creates 0700 scratch and writes CLAUDE_ENV_FILE', () => {
@@ -200,7 +210,7 @@ test('guard SessionStart records client process identity, creates 0700 scratch a
     guard.decide(
       { hook_event_name: 'SessionStart', session_id: f.session, cwd: f.root },
       'claude',
-      { CLAUDE_ENV_FILE: envFile }
+      { ...process.env, CLAUDE_ENV_FILE: envFile }
     )
   ).toEqual(f.context);
   expect(f.owner).toMatchObject({
@@ -210,7 +220,9 @@ test('guard SessionStart records client process identity, creates 0700 scratch a
     pid_start: identity.inspect(process.pid).start,
   });
   expect(Date.parse(f.owner.created)).not.toBeNaN();
+  expect(basename(f.dir)).toMatch(/^claude-[0-9a-f]{20}$/);
   expect(statSync(f.dir).mode & 0o777).toBe(0o700);
+  expect(statSync(f.file).mode & 0o777).toBe(0o600);
   expect(readFileSync(envFile, 'utf8')).toBe(`export TMPDIR='${f.dir}/'\n`);
   const temp = spawnSync(
     'bash',
@@ -219,7 +231,7 @@ test('guard SessionStart records client process identity, creates 0700 scratch a
   );
   expect(temp.status).toBe(0);
   expect(temp.stdout.trim()).toStartWith(f.dir + '/');
-  expect(realpathSync(f.dir)).toStartWith(realpathSync(scratchRoot) + '/');
+  expect(realpathSync(f.dir)).toStartWith(realpathSync(scratch.scratchRoot()) + '/');
 });
 
 test('Codex SessionStart emits exactly the scratch context line without modifying Claude env', () => {
@@ -228,7 +240,7 @@ test('Codex SessionStart emits exactly the scratch context line without modifyin
   const output = guard.decide(
     { hook_event_name: 'SessionStart', session_id: f.session, cwd: f.root },
     'codex',
-    { CLAUDE_ENV_FILE: envFile }
+    { ...process.env, CLAUDE_ENV_FILE: envFile }
   );
   expect(output?.hookSpecificOutput.additionalContext).toBe(`scratch: ${f.dir}/`);
   expect(output?.hookSpecificOutput.additionalContext.split('\n')).toHaveLength(1);
@@ -302,7 +314,7 @@ test.each(['exited', 'reused'] as const)(
     if (state === 'exited') f.exited();
     else
       writeFileSync(f.file, JSON.stringify({ ...f.owner, pid_start: 'different process start' }));
-    expect(scratch.start({ session_id: f.session }, 'claude', {})).toEqual(f.context);
+    expect(current().start({ session_id: f.session }, 'claude', {})).toEqual(f.context);
     expect(JSON.parse(readFileSync(f.file, 'utf8'))).toMatchObject({
       pid: process.pid,
       pid_start: f.owner.pid_start,
@@ -313,7 +325,7 @@ test.each(['exited', 'reused'] as const)(
     expect(scratchClean(f.session)[0].action).toBe('removed');
     mkdirSync(f.dir);
     writeFileSync(join(f.dir, 'keep'), 'unowned');
-    expect(() => scratch.start({ session_id: f.session }, 'claude', {})).toThrow();
+    expect(() => current().start({ session_id: f.session }, 'claude', {})).toThrow();
     expect(existsSync(f.file)).toBe(false);
     expect(readFileSync(join(f.dir, 'keep'), 'utf8')).toBe('unowned');
   }
@@ -326,15 +338,15 @@ test('symbolic links, nested directories and outside paths are refused', () => {
   mkdirSync(outside);
   mkdirSync(nested);
   writeFileSync(join(outside, 'keep'), 'keep');
-  const link = join(scratch.ROOT, `codex-${f.session}`);
+  const link = current().directory('codex', f.session);
   dirs.push(link);
   symlinkSync(outside, link);
-  expect(scratch.cleanOne(link, false, () => false).action).toBe('skipped');
-  expect(scratch.cleanOne(outside, false, () => false).action).toBe('skipped');
-  expect(scratch.cleanOne(nested, false, () => false).action).toBe('skipped');
+  expect(current().cleanOne(link, false, () => false).action).toBe('skipped');
+  expect(current().cleanOne(outside, false, () => false).action).toBe('skipped');
+  expect(current().cleanOne(nested, false, () => false).action).toBe('skipped');
   expect(lstatSync(link).isSymbolicLink()).toBe(true);
   expect(readFileSync(join(outside, 'keep'), 'utf8')).toBe('keep');
-  expect(() => scratch.start({ session_id: '../../outside' }, 'claude', {})).toThrow(
+  expect(() => current().start({ session_id: '../../outside' }, 'claude', {})).toThrow(
     'session path invalid'
   );
 });
@@ -486,9 +498,9 @@ test('GC-A releases an outside fake worktree so the next scratch cleanup succeed
     throw new Error('historical repo no longer exists');
   });
   const session = `test-${crypto.randomUUID()}`,
-    dir = join(scratch.ROOT, `claude-${session}`);
+    dir = current().directory('claude', session);
   dirs.push(dir);
-  scratch.start({ session_id: session }, 'claude', {});
+  current().start({ session_id: session }, 'claude', {});
   const exited = spawnSync('true');
   expect(exited.status).toBe(0);
   writeFileSync(
@@ -500,11 +512,40 @@ test('GC-A releases an outside fake worktree so the next scratch cleanup succeed
   expect(existsSync(ledgerPath(id))).toBe(true);
 });
 
-test('production plan root stays configured while temporary scratch is explicitly admitted', () => {
+test('plan accepts both roots and legacy owner remains transferable and collectable', () => {
   const f = setup(),
-    repo = gitRepo(f.dir);
-  expect(writeRoots()).toContain('/tmp/sa-scratch');
-  expect(loadPlan(fixturePlan(f.root, repo)).repo).toBe(realpathSync(repo));
+    legacy = scratch.createScratch(legacyRoot, true),
+    session = f.session + '-legacy',
+    dir = legacy.directory('claude', session);
+  process.env.SUPERAGENT_WRITE_ROOTS = join(f.root, 'work');
+  mkdirSync(dir, { recursive: true });
+  const repo = gitRepo(dir);
+  const owner = join(dir, '.owner.json');
+  writeFileSync(owner, JSON.stringify({ ...f.owner, session, pid_start: 'old fixture process' }));
+  expect(writeRoots()).toContain(scratch.scratchRoot());
+  for (const path of [gitRepo(f.dir), repo])
+    expect(loadPlan(fixturePlan(f.root, path)).repo).toBe(realpathSync(path));
+  expect(current().directory('claude', session)).toBe(dir);
+  expect(current().transfer('claude', session, f.owner)).toMatchObject({
+    path: dir,
+    action: 'transferred',
+  });
+  expect(scratchClean(session)[0].reason).toBe('scratch owner alive or unknown');
+  writeFileSync(owner, JSON.stringify({ ...f.owner, session, pid_start: 'old fixture process' }));
+  expect(scratchClean(session)[0]).toMatchObject({ path: dir, action: 'removed' });
+  expect(() => legacy.start({ session_id: session }, 'claude')).toThrow('legacy scratch');
+  current().start({ session_id: session }, 'claude', {});
+  expect(existsSync(dir)).toBe(false);
+});
+
+test('a conflicting full session ID cannot take over an existing short name', () => {
+  const f = setup();
+  const prior = { ...f.owner, session: 'different-full-session' };
+  writeFileSync(f.file, JSON.stringify(prior));
+  expect(() => current().start({ session_id: f.session }, 'claude', {})).toThrow(
+    'owner identity invalid'
+  );
+  expect(JSON.parse(readFileSync(f.file, 'utf8'))).toEqual(prior);
 });
 
 test(
@@ -513,9 +554,9 @@ test(
     const f = setup();
     f.exited();
     let takeoverError: unknown;
-    const result = scratch.cleanOne(realpathSync(f.dir), false, () => {
+    const result = current().cleanOne(realpathSync(f.dir), false, () => {
       try {
-        scratch.start({ session_id: f.session }, 'claude', {});
+        current().start({ session_id: f.session }, 'claude', {});
       } catch (error) {
         takeoverError = error;
       }
@@ -525,9 +566,9 @@ test(
     expect((takeoverError as Error).message).toBe('状态锁忙');
     expect(result.action).toBe('removed');
     expect(existsSync(f.dir)).toBe(false);
-    expect(scratch.start({ session_id: f.session }, 'claude', {})).toEqual(f.context);
+    expect(current().start({ session_id: f.session }, 'claude', {})).toEqual(f.context);
     writeFileSync(join(f.dir, 'keep'), 'resumed session');
-    expect(scratch.cleanOne(f.dir, false, () => false).reason).toBe(
+    expect(current().cleanOne(f.dir, false, () => false).reason).toBe(
       'scratch owner alive or unknown'
     );
     expect(readFileSync(join(f.dir, 'keep'), 'utf8')).toBe('resumed session');
@@ -544,7 +585,9 @@ test.each(['online', 'unknown'] as const)('different %s owner cannot be reclaime
     pid === prior.pid ? { state, start: prior.pid_start } : inspect(pid)
   );
   try {
-    expect(() => scratch.start({ session_id: f.session }, 'claude', {})).toThrow('owner mismatch');
+    expect(() => current().start({ session_id: f.session }, 'claude', {})).toThrow(
+      'owner mismatch'
+    );
   } finally {
     probe.mockRestore();
   }
@@ -554,18 +597,20 @@ test.each(['online', 'unknown'] as const)('different %s owner cannot be reclaime
 test('transfer preserves scratch while the new owner lives and remains validated', () => {
   const f = setup();
   f.exited();
-  expect(scratch.transfer('claude', f.session, f.owner).action).toBe('transferred');
+  expect(current().transfer('claude', f.session, f.owner).action).toBe('transferred');
   const transferred = JSON.parse(readFileSync(f.file, 'utf8'));
   expect(transferred.transferred_from.pid).not.toBe(f.owner.pid);
-  expect(scratch.cleanOne(f.dir, false, () => false).reason).toBe('scratch owner alive or unknown');
-  expect(scratch.transfer('claude', `${f.session}-missing`, f.owner).reason).toBe(
+  expect(current().cleanOne(f.dir, false, () => false).reason).toBe(
+    'scratch owner alive or unknown'
+  );
+  expect(current().transfer('claude', `${f.session}-missing`, f.owner).reason).toBe(
     'scratch missing'
   );
   writeFileSync(f.file, JSON.stringify({ ...transferred, session: 'wrong' }));
-  expect(() => scratch.transfer('claude', f.session, f.owner)).toThrow('owner identity invalid');
+  expect(() => current().transfer('claude', f.session, f.owner)).toThrow('owner identity invalid');
   writeFileSync(f.file, JSON.stringify(transferred));
   const probe = spyOn(identity, 'inspect').mockReturnValue({ state: 'offline' });
-  expect(scratch.cleanOne(f.dir, false, () => false).action).toBe('removed');
+  expect(current().cleanOne(f.dir, false, () => false).action).toBe('removed');
   probe.mockRestore();
 });
 
@@ -606,28 +651,32 @@ test.each(['claude', 'codex'])(
   }
 );
 
-test.each([
-  '/tmp/sa-scratch/session/',
-  '/private/tmp/sa-scratch/session/',
-  '/tmp/sa-scratch',
-  '/tmp/sa-scratch-other/',
-])('CLI startup scopes TMPDIR removal to scratch paths (%s)', dir => {
-  const f = setup(),
-    probe = join(f.root, 'archon-probe');
-  writeFileSync(probe, '#!/bin/sh\nprintf "%s\\n" "${TMPDIR-unset}"\n', { mode: 0o700 });
-  const script = `await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'cli.ts'))});
+test.each(['current', 'legacy', 'legacy root', 'neighbor'])(
+  'CLI startup scopes TMPDIR removal to scratch paths (%s)',
+  kind => {
+    const f = setup(),
+      dir = {
+        current: f.dir + '/',
+        legacy: legacyRoot + '/session/',
+        'legacy root': legacyRoot,
+        neighbor: legacyRoot + '-other/',
+      }[kind]!,
+      probe = join(f.root, 'archon-probe');
+    writeFileSync(probe, '#!/bin/sh\nprintf "%s\\n" "${TMPDIR-unset}"\n', { mode: 0o700 });
+    const script = `await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'cli.ts'))});
     const engine = await import(${JSON.stringify(join(import.meta.dir, '..', 'src', 'archon.ts'))});
     const p = engine.archon(['workflow', 'status']);
     process.stdout.write(p.out); process.exit(p.code);`;
-  const p = Bun.spawnSync([process.execPath, '--preload', scratchPreload, '-e', script], {
-    env: { ...process.env, TMPDIR: dir, HOME: f.root, SA_ARCHON_BIN: probe },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  expect(p.exitCode).toBe(0);
-  expect(p.stderr.toString()).toBe('');
-  expect(p.stdout.toString().trim()).toBe(dir === '/tmp/sa-scratch-other/' ? dir : 'unset');
-});
+    const p = Bun.spawnSync([process.execPath, '--preload', scratchPreload, '-e', script], {
+      env: { ...process.env, TMPDIR: dir, HOME: f.root, SA_ARCHON_BIN: probe },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(p.exitCode).toBe(0);
+    expect(p.stderr.toString()).toBe('');
+    expect(p.stdout.toString().trim()).toBe(kind === 'neighbor' ? dir : 'unset');
+  }
+);
 
 test('maintenance-tick persists a 15-minute GC throttle while scratch cleanup runs every tick', () => {
   const f = setup();

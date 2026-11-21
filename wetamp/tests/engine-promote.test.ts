@@ -13,7 +13,6 @@ import {
 import { join } from 'node:path';
 import { lock } from '../src/archon';
 import { coord } from '../src/coord';
-import { isWithinWriteRoots } from '../src/plan';
 import {
   autoPromote,
   autoVerify,
@@ -233,20 +232,20 @@ test('snapshot probe removes successful scratch and preserves failed output', ()
     trace = join(root, 'trace.json');
   mkdirSync(join(snapshot, 'wetamp', 'src'), { recursive: true });
   process.env.TMPDIR = '/var/folders/launchd-not-allowed';
-  process.env.SUPERAGENT_WRITE_ROOTS = root;
+  process.env.SUPERAGENT_HOME = join(root, 'sa');
   process.env.SA_ENGINE_PROBE_TRACE = trace;
   process.env.SA_ENGINE_PROMOTER_TOKEN = 'leaked';
   writeFileSync(cli, `import { mkdirSync, writeFileSync } from 'node:fs'; const home = process.env.SUPERAGENT_HOME!; mkdirSync(home, { recursive: true }); const evidence = home + '/candidate-evidence.json'; writeFileSync(evidence, '{}'); writeFileSync(process.env.SA_ENGINE_PROBE_TRACE!, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home, archon: process.env.ARCHON_HOME, token: process.env.SA_ENGINE_PROMOTER_TOKEN })); console.log(JSON.stringify({ ok: true, level: 'G1', duration_ms: 1, evidence_path: evidence }));`);
-  const scratch = join(root, 'scratch'),
-    evidence = runSnapshotProbe(snapshot, scratch),
+  const scratch = join(root, 'sa', 'scratch', '.engine-probes'),
+    evidence = runSnapshotProbe(snapshot),
     invoked = JSON.parse(readFileSync(trace, 'utf8'));
   expect(evidence.ok).toBe(true); expect(invoked.argv).toEqual(['engine', 'probe', 'G1']); expect(invoked.cwd).toBe(join(snapshot, 'wetamp'));
   expect(invoked.home).not.toBe(process.env.SUPERAGENT_HOME);
-  expect(isWithinWriteRoots(scratch)).toBe(true); expect(invoked.home.startsWith(scratch)).toBe(true);
+  expect(invoked.home.startsWith(scratch + '/')).toBe(true);
   expect(invoked.archon).toBe(join(invoked.home, 'archon')); expect(invoked.token).toBe('');
   expect(existsSync(join(invoked.home, '..'))).toBe(false);
   writeFileSync(cli, `import { mkdirSync, writeFileSync } from 'node:fs'; const home = process.env.SUPERAGENT_HOME!; mkdirSync(home, { recursive: true }); const evidence = home + '/failed.json'; writeFileSync(evidence, '{}'); console.log(JSON.stringify({ ok: false, level: 'G1', duration_ms: 1, reason: 'not_published', evidence_path: evidence }));`);
-  const failed = runSnapshotProbe(snapshot, scratch);
+  const failed = runSnapshotProbe(snapshot);
   expect(failed).toMatchObject({ ok: false, reason: 'not_published' });
   expect(existsSync(failed.evidence_path)).toBe(true);
 });

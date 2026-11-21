@@ -109,7 +109,12 @@ export function runProbe(level: ProbeLevel, shimOverride?: string): ProbeEvidenc
   git(repo, ['-c', 'user.name=probe', '-c', 'user.email=probe@local', 'commit', '-qm', 'init']);
   git(repo, ['switch', '-q', '-c', 'probe']);
 
-  const env = { ...process.env, SUPERAGENT_HOME: canonicalSa, ARCHON_HOME: canonicalArchon };
+  const env = {
+    ...process.env,
+    SUPERAGENT_HOME: canonicalSa,
+    ARCHON_HOME: canonicalArchon,
+    SUPERAGENT_WRITE_ROOTS: root,
+  };
   const judgement: ProbeJudgement = {
     launch_exit: -1,
     expected_commit: expectedCommit,

@@ -950,7 +950,7 @@ test('engine gc removes read-only failed candidates and preserves protected or l
 
 test('engine gc removes only stale engine probes while the promotion lock is free', () => {
   const f = fixture('running', false),
-    root = process.env.TMPDIR!,
+    root = join(f.root, 'sa', 'scratch', '.engine-probes'),
     engine = join(f.root, 'sa', 'engine'),
     old = join(root, 'sa-engine-probe-old'),
     fresh = join(root, 'sa-engine-probe-fresh'),

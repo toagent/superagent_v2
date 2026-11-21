@@ -2,6 +2,7 @@ import { afterAll, afterEach } from 'bun:test';
 // prettier-ignore
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
 
@@ -107,6 +108,10 @@ export const isolatedTestHomes = {
 };
 process.env.SUPERAGENT_HOME = isolatedTestHomes.superagent;
 process.env.ARCHON_HOME = isolatedTestHomes.archon;
+createRequire(import.meta.url)('../hooks/scratch.cjs').LEGACY_ROOT = join(
+  testHome,
+  'legacy-scratch'
+);
 mkdirSync(process.env.ARCHON_HOME);
 for (const key of Object.keys(process.env)) if (key.startsWith('GIT_')) delete process.env[key];
 process.env.GIT_CEILING_DIRECTORIES = dirname(tmpdir());

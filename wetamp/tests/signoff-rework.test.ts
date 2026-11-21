@@ -23,7 +23,7 @@ test('signoff rejection retries the target and later packages in the same run', 
     preload,
     `const path = require('node:path');
 const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
-Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
+scratch.LEGACY_ROOT = ${JSON.stringify(scratchRoot)};
 const original = { spawn: Bun.spawn, spawnSync: Bun.spawnSync };
 for (const key of ['spawn', 'spawnSync']) Bun[key] = (cmd, options = {}) => {
   if (!Array.isArray(cmd)) { options = cmd; cmd = options.cmd; }

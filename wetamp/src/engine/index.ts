@@ -21,7 +21,7 @@ import { executionAdmissionLock } from '@archon/workflows/execution-lifecycle';
 import { getRun, lastJson, lock, runStatuses } from '../archon';
 import { WETAMP, home, writeAtomic } from '../config';
 import { inspectProcess } from '../launcher';
-import { SCRATCH_ROOT } from '../plan';
+import { scratch as scratchPaths } from '../plan';
 import { runProbe, type ProbeEvidence } from '../probe';
 import { printLaunchd, type LaunchctlRunner } from '../launchd';
 import { caller, coord, repoScope } from '../coord';
@@ -733,11 +733,14 @@ export function followCurrentConsole(
   restart(snapshot);
 }
 
-export function runSnapshotProbe(snapshot: string, scratchRoot = SCRATCH_ROOT): ProbeEvidence {
+export function runSnapshotProbe(
+  snapshot: string,
+  scratchRoot = scratchPaths.engineProbeRoot()
+): ProbeEvidence {
   const scratch = join(scratchRoot, `sa-engine-probe-${crypto.randomUUID()}`),
     evidencePath = join(scratch, 'evidence.json'),
     started = Date.now();
-  mkdirSync(scratch, { recursive: true });
+  mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const result = Bun.spawnSync(
     [process.execPath, join(snapshot, 'wetamp', 'src', 'cli.ts'), 'engine', 'probe', 'G1'],
     {
@@ -748,6 +751,7 @@ export function runSnapshotProbe(snapshot: string, scratchRoot = SCRATCH_ROOT): 
         DATABASE_URL: '',
         SUPERAGENT_HOME: join(scratch, 'sa'),
         ARCHON_HOME: join(scratch, 'sa', 'archon'),
+        TMPDIR: '',
       },
       stdin: 'ignore',
       stdout: 'pipe',

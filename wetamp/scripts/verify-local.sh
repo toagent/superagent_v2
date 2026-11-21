@@ -93,10 +93,13 @@ echo $$ > "$LOCK/pid"
 LC_ALL=C ps -o lstart= -p $$ | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$LOCK/start"
 # 等锁另计：步骤预算从拿到锁起算，并发排队不吃掉后续 bun test 的时间。
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
-TMP_BASE="$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${TMPDIR:-/tmp}")"
-case "$TMP_BASE" in
-  /tmp/sa-scratch|/tmp/sa-scratch/*|/private/tmp/sa-scratch|/private/tmp/sa-scratch/*) TMP_BASE=/tmp;;
-esac
+TMP_BASE="$(node -e '
+  const fs = require("node:fs");
+  const scratch = require(process.argv[1]);
+  const tmp = process.env.TMPDIR || "/tmp";
+  const physical = scratch.isScratchPath(tmp) ? "/tmp" : fs.realpathSync(tmp);
+  console.log(scratch.isScratchPath(physical) ? "/tmp" : physical);
+' "$WETAMP/hooks/scratch.cjs")"
 TMP="$(mktemp -d "$TMP_BASE/sa-verify.XXXXXX")"
 TMP="$(cd -P "$TMP" && pwd)"
 echo "$TMP" > "$LOCK/tmp"

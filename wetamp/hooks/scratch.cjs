@@ -3,11 +3,26 @@
 const fs = require('node:fs'),
   path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const identity = require('./identity.cjs'),
   live = require('./live.cjs');
-const { resolvePath, within } = require('./redline.cjs');
+const { resolvePath, saHome, within } = require('./redline.cjs');
 const { withLock, atomicWrite } = require('./hook-state.cjs');
-function createScratch(ROOT) {
+// 旧根下不再有存活会话目录时移除兼容逻辑。
+const LEGACY_ROOT = '/tmp/sa-scratch';
+const scratchRoot = (env = process.env) => path.resolve(saHome(env), 'scratch');
+const scratchRoots = () => [scratchRoot(), module.exports.LEGACY_ROOT];
+const canonicalRoot = root => path.join(resolvePath(path.dirname(root)), path.basename(root));
+const isScratchPath = file =>
+  !!file && scratchRoots().some(root => within(file, root) || within(file, canonicalRoot(root)));
+const engineProbeRoot = () => {
+  const root = scratchRoot(), probes = path.join(root, '.engine-probes');
+  if ([root, probes].some(dir => fs.lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() === false))
+    throw new Error('engine probe root invalid');
+  return probes;
+};
+
+function createScratch(ROOT, legacy = false) {
   if (
     typeof ROOT !== 'string' ||
     !path.isAbsolute(ROOT) ||
@@ -16,10 +31,7 @@ function createScratch(ROOT) {
   )
     throw new Error('scratch root must be a normalized absolute child path');
   // Fix the identity from the existing parent, never by probing the production root.
-  const CANONICAL =
-    ROOT === '/tmp/sa-scratch'
-      ? '/private/tmp/sa-scratch'
-      : path.join(fs.realpathSync(path.dirname(ROOT)), path.basename(ROOT));
+  const CANONICAL = canonicalRoot(ROOT);
   // Keep session locks outside the removable directory, including across /tmp aliases.
   const sessionLock = dir => path.join(ROOT, `.${path.basename(dir)}`);
   const clients = ['claude', 'codex'];
@@ -34,7 +46,7 @@ function createScratch(ROOT) {
       throw new Error('scratch path outside direct root or symlink');
     return fs.realpathSync(dir);
   }
-  function readOwner(dir) {
+  function readOwner(dir, session) {
     const file = path.join(dir, '.owner.json');
     if (!fs.lstatSync(file).isFile()) throw new Error('scratch owner is not a regular file');
     const o = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -42,7 +54,8 @@ function createScratch(ROOT) {
       !clients.includes(o.client) ||
       typeof o.session !== 'string' ||
       !o.session ||
-      path.basename(dir) !== `${o.client}-${o.session}` ||
+      (session !== undefined && o.session !== session) ||
+      path.basename(dir) !== name(o.client, o.session) ||
       !validProcess(o)
     )
       throw new Error('scratch owner identity invalid');
@@ -54,14 +67,17 @@ function createScratch(ROOT) {
   }
   const validProcess = o =>
     Number.isSafeInteger(o?.pid) && o.pid > 1 && typeof o.pid_start === 'string' && o.pid_start;
+  const name = (client, session) =>
+    `${client}-${legacy ? session : createHash('sha256').update(session).digest('hex').slice(0, 20)}`;
   function directory(client, session) {
     if (!clients.includes(client) || typeof session !== 'string' || !session)
       throw new Error('scratch session path invalid');
     if (path.basename(session) !== session || ['.', '..'].includes(session))
       throw new Error('scratch session path invalid');
-    return path.join(ROOT, `${client}-${session}`);
+    return path.join(ROOT, name(client, session));
   }
   function start(payload, client, env = process.env) {
+    if (legacy) throw new Error('legacy scratch is read-only for allocation');
     if (typeof payload.session_id !== 'string' || !payload.session_id) return null;
     const dir = directory(client, payload.session_id);
     const who = live.owner(),
@@ -69,7 +85,7 @@ function createScratch(ROOT) {
     if (!who || probe.state !== 'online')
       throw new Error('scratch client process identity unavailable');
     // R1-1: reject parent drift before creating anything through the changed alias.
-    if (path.join(fs.realpathSync(path.dirname(ROOT)), path.basename(ROOT)) !== CANONICAL)
+    if (canonicalRoot(ROOT) !== CANONICAL)
       throw new Error('scratch root invalid');
     fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
     if (fs.lstatSync(ROOT).isSymbolicLink() || fs.realpathSync(ROOT) !== CANONICAL)
@@ -86,7 +102,7 @@ function createScratch(ROOT) {
       const file = path.join(dir, '.owner.json');
       let rewrite = created;
       if (!created) {
-        const prior = readOwner(dir);
+        const prior = readOwner(dir, payload.session_id);
         rewrite = prior.pid !== who.pid || prior.pid_start !== probe.start;
         if (rewrite && !exited(prior)) throw new Error('scratch owner mismatch');
       }
@@ -120,7 +136,7 @@ function createScratch(ROOT) {
     return withLock(sessionLock(dir), () => {
       validate(dir);
       const file = path.join(dir, '.owner.json'),
-        prior = readOwner(dir);
+        prior = readOwner(dir, session);
       if (prior.pid === to.pid && prior.pid_start === to.pid_start)
         return { ...result, reason: 'scratch owner unchanged' };
       atomicWrite(
@@ -136,13 +152,13 @@ function createScratch(ROOT) {
       return { path: dir, action: 'transferred', reason: 'scratch owner transferred' };
     });
   }
-  function cleanOne(dir, dryRun, referenced) {
+  function cleanOne(dir, dryRun, referenced, session) {
     const result = { path: dir, action: 'skipped', reason: '' };
     try {
       validate(dir);
       return withLock(sessionLock(dir), () => {
         const real = validate(dir),
-          o = readOwner(dir);
+          o = readOwner(dir, session);
         if (!exited(o)) throw new Error('scratch owner alive or unknown');
         if (referenced(dir) || (real !== dir && referenced(real)))
           throw new Error('nonterminal run plan references scratch');
@@ -213,10 +229,11 @@ function createScratch(ROOT) {
       for (const e of fs.readdirSync(ROOT, { withFileTypes: true })) {
         if (
           !(e.isDirectory() || e.isSymbolicLink()) ||
-          (session !== undefined && !clients.some(c => e.name === `${c}-${session}`))
+          e.name === '.engine-probes' ||
+          (session !== undefined && !clients.some(c => e.name === name(c, session)))
         )
           continue;
-        const result = cleanOne(path.join(ROOT, e.name), dryRun, referenced);
+        const result = cleanOne(path.join(ROOT, e.name), dryRun, referenced, session);
         out.push(result);
         if (!dryRun)
           fs.appendFileSync(
@@ -239,4 +256,21 @@ function createScratch(ROOT) {
   }
   return { ROOT, directory, start, transfer, clean, cleanOne };
 }
-module.exports = { ...createScratch('/tmp/sa-scratch'), createScratch };
+function sessionScratch(env = process.env) {
+  const current = createScratch(scratchRoot(env));
+  const legacy = () => createScratch(module.exports.LEGACY_ROOT, true);
+  const ownerRoot = (client, session) => {
+    if (fs.existsSync(current.directory(client, session))) return current;
+    const old = legacy();
+    return fs.existsSync(old.directory(client, session)) ? old : current;
+  };
+  return {
+    ...current,
+    directory: (client, session) => ownerRoot(client, session).directory(client, session),
+    transfer: (client, session, to) => ownerRoot(client, session).transfer(client, session, to),
+    clean: (...args) => [...current.clean(...args), ...legacy().clean(...args)],
+  };
+}
+module.exports = {
+  LEGACY_ROOT, scratchRoot, scratchRoots, isScratchPath, engineProbeRoot, createScratch, sessionScratch,
+};

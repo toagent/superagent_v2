@@ -3,12 +3,15 @@ import { spyOn, afterAll } from 'bun:test';
 import * as coordination from '../src/coord';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { lastJson } from '../src/archon';
 import { generate } from '../src/generate';
 import { WETAMP } from '../src/config';
 import type { Plan } from '../src/plan';
 import { fixturePlan, gitRepo, fixtureEnv, sh, stableInstall, tmp } from './helpers';
+import { inheritedTestHomes } from './preload';
+const productionHome = { HOME: homedir(), SUPERAGENT_HOME: inheritedTestHomes.superagent };
 const fixtureEngine = gitRepo(tmp());
 const originalCleanEngine = coordination.cleanEngine;
 const engineBoundary = spyOn(coordination, 'cleanEngine').mockImplementation(() =>
@@ -20,13 +23,15 @@ const scratchRoot = join(tmp(), 'scratch'),
 writeFileSync(
   scratchPreload,
   `const fs = require('node:fs'), path = require('node:path');
+const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
+const denied = ['/tmp/sa-scratch', '/private/tmp/sa-scratch', scratch.scratchRoot(${JSON.stringify(productionHome)})];
 let violations = 0;
 const check = value => {
   if (value instanceof URL) value = require('node:url').fileURLToPath(value);
   if (Buffer.isBuffer(value)) value = value.toString();
   if (typeof value !== 'string') return;
   const p = path.resolve(value);
-  if (['/tmp/sa-scratch', '/private/tmp/sa-scratch'].some(r => p === r || p.startsWith(r + '/'))) {
+  if (denied.some(r => p === r || p.startsWith(r + '/'))) {
     violations++; throw new Error('production scratch access: ' + p);
   }
 };
@@ -46,13 +51,7 @@ if (typeof Bun !== 'undefined') for (const key of ['spawn', 'spawnSync']) {
   };
 }
 process.on('exit', () => { if (violations) process.exitCode = 1; });
-const scratch = require(${JSON.stringify(join(import.meta.dir, '..', 'hooks', 'scratch.cjs'))});
-const key = Symbol.for('superagent.test.scratch.default');
-if (!globalThis[key]) {
-  if (scratch.ROOT !== '/tmp/sa-scratch') throw new Error('production default changed');
-  globalThis[key] = true;
-}
-if (scratch.ROOT !== ${JSON.stringify(scratchRoot)}) Object.assign(scratch, scratch.createScratch(${JSON.stringify(scratchRoot)}));
+scratch.LEGACY_ROOT = ${JSON.stringify(scratchRoot)};
 module.exports = {violations: () => violations};`
 );
 mkdirSync(join(scratchRoot, 'codex-sentinel'), { recursive: true });

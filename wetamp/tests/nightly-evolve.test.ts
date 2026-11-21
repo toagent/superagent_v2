@@ -248,7 +248,7 @@ test('nightly windows use report receipts and separate operator and superseded c
   const elapsed = (report.measurement as Record<string, { wall_clock_ms: number }>)['pass/pass'].wall_clock_ms;
   expect(weekly.elapsed.value).toBe(elapsed / 2);
   expect(collect([{ ...ledgers[0], repo: sa }], at(18))).toEqual([]);
-  expect(collect([{ ...ledgers[0], repo: '/tmp/sa-scratch/probe' }], at(18))).toEqual([]);
+  expect(collect([{ ...ledgers[0], repo: join(process.env.SUPERAGENT_HOME!, 'scratch', 'probe') }], at(18))).toEqual([]);
   writeFileSync(join(sa, 'engine.json'), '{"fake":true}');
   expect(collect([ledgers[0]], at(18))).toEqual([]);
 });

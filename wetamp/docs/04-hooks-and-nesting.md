@@ -64,7 +64,8 @@ Claude 的模型、effort 与路由只从 `tiers.json` 渲染。
 
 ## 原生输入 hooks
 
-`UserPromptSubmit` 只捕获已登记主检出的输入，`SessionStart` 只恢复有界 Task 指针。
+`UserPromptSubmit` 只捕获已登记主检出的输入。`SessionStart` 恢复有界 Task 指针，并为 Claude 和 Codex 元帅分配
+`${SUPERAGENT_HOME:-$HOME/.superagent}/scratch` 下的会话目录。目录名包含客户端和会话 ID 的 20 位十六进制摘要，完整 ID 保存在 `.owner.json`。
 worktree、派生节点、评审、worker 与未登记项目不捕获。hook 输出包含 key、brief、owner 和
 pending 指针，不包含原始消息正文。
 

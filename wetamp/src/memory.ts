@@ -27,7 +27,7 @@ import { CLASSIFIED_HOLD_REASONS, reasonOf } from './reasons';
 import { redact } from './redact';
 import { caller, coord, repoScope } from './coord';
 import { budgetUsage } from '../templates/.archon/scripts/sa-check';
-import { milestones, SCRATCH_ROOT, type Plan, type Pkg } from './plan';
+import { milestones, scratch, type Plan, type Pkg } from './plan';
 import {
   recallLearning,
   selectLearning,
@@ -155,7 +155,8 @@ export function lessonTrialEligible(project: string, fake = false): boolean {
     }
   };
   const resolved = real(project);
-  return ![tmpdir(), '/tmp', '/private/tmp', '/var/tmp', SCRATCH_ROOT].some(
+  if (scratch.isScratchPath(project) || scratch.isScratchPath(resolved)) return false;
+  return ![tmpdir(), '/tmp', '/private/tmp', '/var/tmp'].some(
     root =>
       isPathInside(root, project, { includeRoot: true }) ||
       isPathInside(real(root), resolved, { includeRoot: true })
