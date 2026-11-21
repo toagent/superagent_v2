@@ -75,7 +75,7 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
   const hook = (payload: object, active = true) => {
     const result = Bun.spawnSync(['node', 'hooks/guard.cjs', 'agy'], {
       stdin: Buffer.from(JSON.stringify({ cwd, ...payload })),
-      env: { ...env, HOME: cwd, SA_SECRET_SCAN_MODULE: active ? scan : '' },
+      env: { ...env, HOME: cwd, SUPERAGENT_HOME: cwd, SA_SECRET_SCAN_MODULE: active ? scan : '' },
     });
     expect(result.exitCode).toBe(0);
     return JSON.parse(result.stdout.toString()) as {
@@ -116,6 +116,7 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
     tool('finish'),
     hook({ hookEventName: 'PreToolUse', toolCall: { name: 'finish' } }),
   ]).toEqual([allow, allow, allow, allow]);
+  expect(tool('write_file', { Path: 'new.txt', Content: '~/.netrc' })).toEqual(allow);
   for (const name of ['grep_search', 'mcp__fixture__read']) {
     const result = tool(name, name === 'grep_search' ? { SearchPath: '.', Query: 'hello' } : {});
     if (role)
@@ -127,11 +128,14 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
     else expect(result).toEqual(allow);
   }
   for (const [result, reason] of [
+    [tool('write_file', { Path: '_private', Content: '' }), '（_private）'],
     [tool('edit_file', { Path: `${cwd}/work/a/_private/b/a` }), '（_private）'],
     [tool('read_file', { Path: '~/.ssh/id_ed25519' }), 'ssh 私钥'],
     [tool('run_command', { CommandLine: 'git push --force' }), 'git force push'],
     [tool('run_command'), '无法识别终端命令参数'],
   ] as const)
     expect(result).toMatchObject({ decision: 'deny', reason: expect.stringContaining(reason) });
+  for (const Path of [undefined, ''])
+    expect(tool('write_file', { Path, Content: '' })).toEqual(allow);
   expect(tool('invoke_subagent')).toEqual(allow);
 });
