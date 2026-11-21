@@ -93,14 +93,77 @@ packages/workflows/src/provider-attempts.ts
 packages/workflows/src/schemas/retry.ts
 packages/workflows/src/store-conformance.ts
 
-# WeTAMP-owned general node leases are enforced by supervise-tick without changing
-# Archon packages. Exhaustion writes a deterministic handback report and wakes wait
-# once per node attempt; the run keeps running until the operator explicitly cancels.
-wetamp/src/node-lease.ts
-
 # Selective upstream port: d0bb89df992f25dbac0b36e8a696a923d1c6d592
 # Kept only the postCreate config contract, validation, injectable executor, and
 # fresh-worktree setup-lock call. Omitted upstream audit events, run pre-creation,
 # credential plumbing, subprocess framework, and workflow architecture changes.
 packages/isolation/src/post-create-config.ts
 packages/core/src/workflows/worktree-setup.ts
+
+# 有意保留的 fork 改动
+.prettierignore
+.superagent/rules.json
+packages/cli/src/commands/codebase-env.test.ts
+packages/cli/src/commands/codebase-env.ts
+packages/core/src/config/config-loader.test.ts
+packages/core/src/config/config-loader.ts
+packages/core/src/config/config-types.ts
+packages/core/src/orchestrator/orchestrator.ts
+packages/core/src/schemas/env-var.ts
+packages/core/src/services/run-attention-watch.test.ts
+packages/core/src/services/run-owner-stop.test.ts
+packages/core/src/workflows/child-isolation-resolver.test.ts
+packages/core/src/workflows/child-isolation-resolver.ts
+packages/core/src/workflows/worktree-setup.test.ts
+packages/docs-web/src/content/docs/reference/cli.md
+packages/docs-web/src/content/docs/reference/configuration.md
+packages/docs-web/src/content/docs/reference/node-execution.md
+packages/isolation/src/factory.test.ts
+packages/isolation/src/factory.ts
+packages/isolation/src/index.ts
+packages/isolation/src/post-create-config.test.ts
+packages/isolation/src/types.ts
+packages/provider-contract/src/conformance.test.ts
+packages/provider-contract/src/failure.ts
+packages/providers/src/claude/index.ts
+packages/providers/src/claude/outcome.test.ts
+packages/providers/src/claude/outcome.ts
+packages/providers/src/claude/probe.test.ts
+packages/providers/src/claude/probe.ts
+packages/providers/src/test/codex-app-server-fake.ts
+packages/server/src/routes/schemas/codebase.schemas.ts
+packages/workflows/src/execution-lifecycle.test.ts
+packages/workflows/src/executor-shared.test.ts
+packages/workflows/src/executor-shared.ts
+packages/workflows/src/executor.test.ts
+packages/workflows/src/executor.ts
+packages/workflows/src/loader.ts
+packages/workflows/src/provider-events.test.ts
+packages/workflows/src/provider-events.ts
+packages/workflows/src/run-preflight.test.ts
+packages/workflows/src/run-preflight.ts
+packages/workflows/src/schemas/run-config.ts
+packages/workflows/src/schemas/workflow-run.ts
+packages/workflows/src/script-node-deps.test.ts
+packages/workflows/src/subprocess-output.test.ts
+packages/workflows/src/subprocess-output.ts
+packages/workflows/src/tool-call-attention.test.ts
+packages/workflows/src/tool-call-attention.ts
+packages/workflows/src/utils/idle-timeout.test.ts
+packages/workflows/src/utils/idle-timeout.ts
+packages/workflows/src/utils/workflow-requirements.test.ts
+scripts/package-test-groups.test.ts
+scripts/repo-tests.ts
+scripts/test-inventory.test.ts
+
+# 上游已有等价实现，同步上游后复核是否保留
+packages/cli/src/commands/trigger.ts
+packages/cli/src/utils/owned-run-termination.ts
+packages/docs-web/src/content/docs/book/quick-reference.md
+packages/docs-web/src/content/docs/guides/script-nodes.md
+packages/paths/src/plugin-process.ts
+
+# 叠加多批修改，暂无法判断是否保留
+packages/docs-web/src/content/docs/guides/authoring-workflows.md
+packages/workflows/src/dag-executor.test.ts
+packages/workflows/src/subrun.test.ts
