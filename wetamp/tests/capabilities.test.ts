@@ -25,16 +25,17 @@ const skillHome = () => {
 const resolved = (home: string, role: string, failure_classes: string[], risk: string, scope: string[]) => resolveCapabilities(mapPath, home, { role, failure_classes, risk, scope }).evidence.injected;
 
 // prettier-ignore
-test('structured triggers cover code, repair, fix and upgraded review', () => {
+test('structured triggers cover code, repair and review', () => {
   const home = skillHome();
   expect(resolved(home, 'code', [], 'G1', ['packages/web/page.ts'])).toEqual(['qa.visual']);
   expect(resolved(home, 'code', [], 'G1', ['packages/server/page.ts'])).toEqual([]);
-  expect(resolved(home, 'repair', ['product'], 'G1', ['src/view.tsx'])).toEqual(['debug.root-cause', 'qa.visual']);
+  expect(resolved(home, 'repair', ['product'], 'G1', ['src/view.tsx'])).toEqual(['qa.visual']);
+  expect(resolved(home, 'repair', ['product'], 'G1', [])).toEqual([]);
   expect(resolved(home, 'review', [], 'G2', [])).toEqual(['security.audit']);
 });
 
 // prettier-ignore
-test('context uses ledger/effective risk and emits one mapped guidance line', () => {
+test('context uses scope and effective risk to emit mapped guidance', () => {
   const gen = tmp(), artifacts = join(gen, 'artifacts'), repo = gitRepo(tmp()), home = skillHome();
   const plan = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')) as Plan;
   plan.packages[0].scope.write = ['packages/web/view.tsx']; const table = executionTable(plan, loadTiers());
@@ -47,7 +48,7 @@ test('context uses ledger/effective risk and emits one mapped guidance line', ()
     expect(code.capabilities.injected).toEqual(['qa.visual']); expect(contextPack(gen, code).split('\n').filter(line => line.startsWith('可用技能'))).toHaveLength(1);
     const fix = Object.keys(table).find(key => key.startsWith('fix-'))!, d = table[fix];
     writeFileSync(join(artifacts, `gate-${d.milestone}-r${d.round - 1}.ledger.json`), JSON.stringify({ blocking: [{ failure_class: 'product' }], debt: [], closed: [] }));
-    expect(roleContext({ ...base, node: fix }).capabilities.injected).toContain('debug.root-cause');
+    expect(roleContext({ ...base, node: fix }).capabilities.injected).toEqual(['qa.visual']);
     const review = Object.keys(table).find(key => key.startsWith('review-') && key.endsWith('-r1'))!;
     const reviewContext = roleContext({ ...base, node: review, acceptance: { ok: true, diff_hash: '', same: true, risk: 'G2' } });
     expect(reviewContext.capabilities.injected).toEqual(['security.audit']); expect(reviewContext.capability_guidance).toContain(mapping.find(cap => cap.id === 'security.audit')!.use.claude);
@@ -56,11 +57,13 @@ test('context uses ledger/effective risk and emits one mapped guidance line', ()
 
 // prettier-ignore
 test('missing skills are unavailable, health-visible, and map-owned', () => {
-  const home = skillHome(), first = mapping[0], missing = Object.entries(first.use)[0]; rmSync(join(home, `.${missing[0]}`, 'skills', missing[1]), { recursive: true });
-  expect(resolveCapabilities(mapPath, home, { role: 'repair', failure_classes: ['product'], risk: 'G1', scope: [] })).toMatchObject({ evidence: { injected: [], unavailable: [first.id] }, guidance: [] });
+  const home = skillHome(), visual = mapping.find(cap => cap.id === 'qa.visual')!;
+  const [provider, skill] = Object.entries(visual.use)[0];
+  rmSync(join(home, `.${provider}`, 'skills', skill), { recursive: true });
+  expect(resolveCapabilities(mapPath, home, { role: 'repair', failure_classes: ['product'], risk: 'G1', scope: ['src/view.tsx'] })).toMatchObject({ evidence: { injected: [], unavailable: [visual.id] }, guidance: [] });
   const state = tmp(), archon = join(state, 'archon'); mkdirSync(archon);
   const health = Bun.spawnSync([process.execPath, 'src/cli.ts', 'health'], { cwd: WETAMP, env: { ...process.env, HOME: home, SUPERAGENT_HOME: state, ARCHON_HOME: archon } });
-  expect(JSON.parse(health.stdout.toString().trim()).capability_drift).toHaveLength(1);
+  expect(JSON.parse(health.stdout.toString().trim()).capability_drift).toEqual([{ id: visual.id, provider, skill }]);
   const names = mapping.flatMap(cap => Object.values(cap.use));
   const files = Bun.spawnSync(['rg', '--files', '--hidden', 'src', 'templates', 'README.md'], { cwd: WETAMP }).stdout.toString().trim().split('\n');
   const source = files.map(file => readFileSync(join(WETAMP, file), 'utf8')).join('\n');
