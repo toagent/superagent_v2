@@ -121,10 +121,25 @@ test('回放事件，校验工作目录、环境、原始模型标识和结构�
       structuredOutput: { ok: true },
       numTurns: 1,
       resolvedModel: { id: 'gemini-4-neon-xhigh' },
-      tokens: { input: 10418, output: 589, cacheRead: 8113, total: 11007 },
+      tokens: { input: 18531, output: 589, cacheRead: 8113, total: 19120 },
     },
     { type: 'settled' },
   ]);
+});
+
+test('高缓存命中按总输入计量，未报告的总量保持缺失', async () => {
+  const f = fixture();
+  const provider = createAgyProvider({ executable: f.executable });
+  const options = { model, env: f.env };
+  const counts = { input_tokens: 297640, output_tokens: 65506, cache_read_tokens: 5726105 };
+  for (const total of [363146, undefined]) {
+    const result = { status: 'SUCCESS', response: 'OK', usage: { ...counts, total_tokens: total } };
+    writeFileSync(f.output, JSON.stringify({ event: 'result', result }));
+    const chunks = await collect(provider.sendQuery('检查', f.cwd, undefined, options));
+    const tokens = { input: 6023745, output: 65506, cacheRead: 5726105 };
+    const expected = total === undefined ? tokens : { ...tokens, total: 6089251 };
+    expect(chunks.find(chunk => chunk.type === 'result')?.tokens).toEqual(expected);
+  }
 });
 
 test('递归翻译可空属性并还原省略值', async () => {

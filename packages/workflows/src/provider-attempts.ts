@@ -33,6 +33,18 @@ const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const amount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0;
+export function validAttemptTokens(tokens: unknown): boolean {
+  return (
+    tokens === undefined ||
+    (record(tokens) &&
+      amount(tokens.input) &&
+      amount(tokens.output) &&
+      (tokens.cacheRead === undefined ||
+        (amount(tokens.cacheRead) && tokens.cacheRead <= tokens.input)) &&
+      (tokens.cacheWrite === undefined ||
+        (amount(tokens.cacheWrite) && tokens.cacheWrite <= tokens.input)))
+  );
+}
 function validAttempt(value: unknown): boolean {
   if (
     !record(value) ||
@@ -51,15 +63,9 @@ function validAttempt(value: unknown): boolean {
     (value.cooldown_until !== undefined && !amount(value.cooldown_until))
   )
     return false;
-  const tokens = value.tokens,
-    reassignment = value.reassignment;
+  const reassignment = value.reassignment;
   return (
-    (tokens === undefined ||
-      (record(tokens) &&
-        amount(tokens.input) &&
-        amount(tokens.output) &&
-        (tokens.cacheRead === undefined ||
-          (amount(tokens.cacheRead) && tokens.cacheRead <= tokens.input)))) &&
+    validAttemptTokens(value.tokens) &&
     (reassignment === undefined ||
       (record(reassignment) &&
         typeof reassignment.node === 'string' &&

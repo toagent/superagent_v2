@@ -121,11 +121,14 @@ function usage(value: unknown): ResultChunk['tokens'] {
   const input = count(reported?.input_tokens);
   const output = count(reported?.output_tokens);
   if (input === undefined || output === undefined) return undefined;
+  // agy 的 input_tokens 不含缓存读取，契约 input 则是总输入。
+  const cacheRead = count(reported?.cache_read_tokens);
+  const total = count(reported?.total_tokens);
   return {
-    input,
+    input: input + (cacheRead ?? 0),
     output,
-    cacheRead: count(reported?.cache_read_tokens),
-    total: count(reported?.total_tokens),
+    cacheRead,
+    ...(total === undefined ? {} : { total: total + (cacheRead ?? 0) }),
   };
 }
 

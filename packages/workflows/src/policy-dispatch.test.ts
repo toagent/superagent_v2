@@ -78,13 +78,31 @@ for (const failure of ['overloaded', 'quota_exhausted', 'transient'] as const)
 test('VENDOR_FAILOVER unclassified throw preserves failure without reassignment', async () => {
   const s = setup();
   s.execution.sendQuery = async function* () {
+    yield { type: 'result', tokens: { input: 1, output: 1, cacheWrite: 2 } };
     throw new Error('overloaded HTTP 503');
   };
   await expect(collect(executePolicy(s.execution, 'p', '/scratch'))).rejects.toThrow(
     'overloaded HTTP 503'
   );
   expect(s.calls).toEqual([]);
-  expect(readPolicyAttempts(s.artifacts)).toHaveLength(1);
+  expect(readPolicyAttempts(s.artifacts)).toMatchObject([{ status: 'failed' }]);
+  expect(readPolicyAttempts(s.artifacts)[0]).not.toHaveProperty('tokens');
+});
+
+test('settlement drops invalid usage and warns', async () => {
+  const { execution, artifacts } = setup();
+  const tokens = { input: 2, output: 1, cacheRead: 3 };
+  execution.sendQuery = async function* () {
+    yield { type: 'result', tokens };
+    yield { type: 'settled' };
+  };
+  const chunks = await collect(executePolicy(execution, 'p', '/scratch'));
+  const [attempt] = readPolicyAttempts(artifacts);
+  expect(attempt.status).toBe('completed');
+  expect(attempt).not.toHaveProperty('tokens');
+  const warnings = chunks.filter(c => c.type === 'warning');
+  expect(warnings.map(w => w.code)).toEqual(['superagent.invalid_attempt_usage']);
+  expect(warnings[0].message).toBe(JSON.stringify({ provider: 'codex', model: 'codex-a', tokens }));
 });
 
 test('EXACT_SESSION stops before fallback while a fresh retry keeps normal routing', async () => {
@@ -251,4 +269,8 @@ test('BYPASS_CAPACITY exhausted thresholds warn through fallback and successful 
   expect(chunks.at(-2)).toMatchObject({ type: 'result', tokens: { input: 16, output: 4 } });
   expect(chunks.at(-2)).not.toHaveProperty('failure');
   expect(readPolicyAttempts(artifacts).map(a => a.status)).toEqual(['failed', 'completed']);
+  expect(readPolicyAttempts(artifacts).map(a => a.tokens)).toEqual([
+    { input: 8, output: 2 },
+    { input: 8, output: 2 },
+  ]);
 });

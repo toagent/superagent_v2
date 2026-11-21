@@ -1,3 +1,4 @@
+import { createLogger } from '@archon/paths';
 import type {
   IAgentProvider,
   MessageChunk,
@@ -10,6 +11,7 @@ import { mergeTokenUsage, type TokenUsage } from '@archon/provider-contract';
 import {
   readPolicyAttempts,
   writePolicyAttempts,
+  validAttemptTokens,
   budgetReason,
   type DispatchProvider,
   type PolicyAttempt,
@@ -173,6 +175,14 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     let result: ResultChunk | undefined,
       settled = false;
     const turnUsage: TokenUsage[] = [];
+    const recordUsage = (): Pick<PolicyAttempt, 'provider' | 'model' | 'tokens'> | undefined => {
+      const tokens = mergeTokenUsage(turnUsage);
+      if (validAttemptTokens(tokens)) {
+        attempt.tokens = tokens;
+        return;
+      }
+      return { provider: attempt.provider, model: attempt.model, tokens };
+    };
     try {
       // Never pass a session from a different model or vendor to the fallback.
       const session =
@@ -198,9 +208,14 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
       }
     } catch (error) {
       attempt.status = 'failed';
-      attempt.tokens = mergeTokenUsage(turnUsage);
+      const invalidUsage = recordUsage();
       attempt.resolved = result?.resolvedModel?.id;
       writePolicyAttempts(execution.artifacts, attempts);
+      if (invalidUsage)
+        createLogger('workflow.policy-dispatch').warn(
+          invalidUsage,
+          'superagent.invalid_attempt_usage'
+        );
       throw error; // An untyped throw cannot justify switching models.
     }
     if (!result || !settled) {
@@ -216,7 +231,7 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
     }
     attempt.status =
       settled && result && !result.failure && !result.isError ? 'completed' : 'failed';
-    attempt.tokens = mergeTokenUsage(turnUsage);
+    const invalidUsage = recordUsage();
     attempt.resolved = result?.resolvedModel?.id;
     attempt.failure = result?.failure?.class;
     const failure = result?.failure;
@@ -229,6 +244,12 @@ export async function* executePolicy<Candidate extends DispatchCandidate>(
         : undefined;
     if (cooldown !== undefined) attempt.cooldown_until = now() + cooldown;
     writePolicyAttempts(execution.artifacts, attempts);
+    if (invalidUsage)
+      yield {
+        type: 'warning',
+        code: 'superagent.invalid_attempt_usage',
+        message: JSON.stringify(invalidUsage),
+      };
     const settledWarning = await execution.onSettled?.(attempt, failure);
     if (settledWarning) yield { type: 'warning', ...settledWarning };
     const stillAvailable = isAvailable(candidate);
