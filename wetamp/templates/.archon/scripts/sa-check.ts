@@ -699,7 +699,8 @@ async function run(
   failures: CheckFailure[] = [],
   results: CommandResult[] = [],
   retryFailure = true,
-  artifactTag = env('TAG')
+  artifactTag = env('TAG'),
+  rerun: readonly string[] = []
 ): Promise<string[]> {
   const failed: string[] = [];
   const commandEnv =
@@ -731,7 +732,7 @@ async function run(
     }
     // prettier-ignore
     const hit = tree && c.cache !== false ? acceptanceCachePath(head, tree, c, envKey, environment) : '';
-    if (hit && existsSync(hit)) {
+    if (hit && !rerun.includes(c.cmd) && existsSync(hit)) {
       let saved: CachedCommandResult = {};
       try {
         saved = JSON.parse(readFileSync(hit, 'utf8')) as CachedCommandResult;
@@ -1331,11 +1332,10 @@ function reusableNodeAcceptance(prior: Accept | undefined, head: string): boolea
   );
 }
 
-function nodeAcceptance(path: string, head: string): Accept | undefined {
+function readAcceptance(path: string): Accept | undefined {
   if (!path) return undefined;
   try {
-    const prior = JSON.parse(readFileSync(path, 'utf8')) as Accept;
-    return reusableNodeAcceptance(prior, head) ? prior : undefined;
+    return JSON.parse(readFileSync(path, 'utf8')) as Accept;
   } catch {
     return undefined;
   }
@@ -1432,13 +1432,23 @@ async function acceptOnce(
   const noChanges = delta ? readFileSync(delta, 'utf8').length === 0 : undefined;
   const hash = patch ? diffHash(readFileSync(patch)) : '';
   const head = git('rev-parse', 'HEAD').trim();
-  const prior = dirty ? undefined : nodeAcceptance(env('ACCEPTANCE_EVIDENCE'), head);
+  const previous = readAcceptance(join(artifacts, `${tag}.json`));
+  const retrying =
+    previous?.ok === false &&
+    previous.head === head &&
+    previous.contract_hash === acceptanceContractHash();
+  const evidence = dirty || retrying ? undefined : readAcceptance(env('ACCEPTANCE_EVIDENCE'));
+  const prior = evidence && reusableNodeAcceptance(evidence, head) ? evidence : undefined;
+  const rerun =
+    retrying && Array.isArray(previous.failures)
+      ? previous.failures.map(failure => failure.command)
+      : [];
   // prettier-ignore
   let resourceWaitTimedOut = false, failed: string[] = dependency.environment.ok ? [] : ['env-precheck'];
   // prettier-ignore
   if (!prior && !failed.length)
     try {
-      failed = await run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults);
+      failed = await run(checks, log, undefined, dirty ? '' : envKey, failures, commandResults, true, tag, rerun);
     } catch (error) {
       if (!(error instanceof ResourceWaitTimeout)) throw error;
       resourceWaitTimedOut = true;
