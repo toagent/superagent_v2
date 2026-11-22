@@ -180,7 +180,7 @@ export async function syncOrcaDeliveries(): Promise<void> {
   if (!held.ok) return;
   try {
     const seen = (readJson(state) ?? {}) as Record<string, boolean | undefined>;
-    const groups = new Map<string, { key: string; block: string }[]>();
+    const groups = new Map<string, { key: string; block: string; mtimeMs: number }[]>();
     for (const file of publicationFiles.scanSync({ cwd: root })) {
       const path = join(root, file),
         st = lstatSync(path, { throwIfNoEntry: false });
@@ -214,9 +214,10 @@ export async function syncOrcaDeliveries(): Promise<void> {
         .join('；')
         .replace(/[\r\n]/g, ' ');
       const count = String(receipt.commit_count ?? commits.length);
-      const block = `【引擎合入 ${st.mtime.toISOString()}】run ${ledger.run_id}/${basename(file, '.json')} → ${target.branch}：${count} 个提交｜${changes}【/引擎合入】\n`;
+      const time = st.mtime.toLocaleString('sv-SE').slice(0, 16);
+      const block = `【引擎合入 ${time}】run ${ledger.run_id}/${basename(file, '.json')} → ${target.branch}：${count} 个提交｜${changes}【/引擎合入】\n`;
       const entries = groups.get(target.checkout) ?? [];
-      entries.push({ key, block });
+      entries.push({ key, block, mtimeMs: st.mtimeMs });
       groups.set(target.checkout, entries);
     }
     const bin = orcaBin(),
@@ -236,10 +237,15 @@ export async function syncOrcaDeliveries(): Promise<void> {
         if (!record(worktree)) throw new Error('Orca worktree show failed');
         const comment = worktree.comment ?? '';
         if (typeof comment !== 'string') throw new Error('Invalid Orca worktree comment');
-        const managed = /^【引擎合入 \d{4}-[^\n]*【\/引擎合入】\n/gm;
-        const blocks = new Set(comment.match(managed));
-        for (const { block } of entries) blocks.add(block);
-        const next = [...blocks].sort().slice(-5).reverse().join('') + comment.replace(managed, '');
+        const managed =
+          /^【引擎合入 (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}|T\d{2}:\d{2}:\d{2}\.\d{3}Z))】[^\n]*【\/引擎合入】\n/gm;
+        const blocks = new Map(entries.map(({ block, mtimeMs }) => [block, mtimeMs]));
+        // Compare UTC and local headers on the same timeline while keeping the original text.
+        for (const [block, time] of comment.matchAll(managed)) {
+          if (!blocks.has(block)) blocks.set(block, Date.parse(time.replace(' ', 'T')));
+        }
+        const latest = [...blocks].sort((a, b) => b[1] - a[1]).slice(0, 5);
+        const next = latest.map(([block]) => block).join('') + comment.replace(managed, '');
         if (next !== comment) {
           const updated = await call(['worktree', 'set', ...target, '--comment', next, '--json']);
           if (!record(updated) || updated.ok !== true) throw new Error('Orca worktree set failed');

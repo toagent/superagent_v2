@@ -28,7 +28,8 @@ test('tick records project publications, keeps five blocks and retries a warning
       status: 'published', task: 'r1', target: { checkout: target, branch: 'main' },
       integrated: `${i}`.repeat(40), commits: [{ sha: `${i}`.repeat(9), title: `change ${i}` }],
     }));
-    utimesSync(receipt, i, i);
+    const timestamp = Date.parse('2026-11-22T15:59:55Z') / 1000 + i;
+    utimesSync(receipt, timestamp, timestamp);
   }
   writeFileSync(bin, `#!${process.execPath}
 const [, , group, action, selector, path, ...rest] = process.argv;
@@ -39,7 +40,7 @@ if (action === 'set') fs.writeFileSync(file, rest[1]);
 console.log(JSON.stringify({ ok: true, result: { worktree: { comment: fs.readFileSync(file, 'utf8') } } }));
 `, { mode: 0o700 });
   Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, DATABASE_URL: '',
-    SA_ORCA: '1', SA_ORCA_BIN: bin, TEST_ORCA_TARGET: target, TEST_ORCA_COMMENT: comment });
+    SA_ORCA: '1', SA_ORCA_BIN: bin, TEST_ORCA_TARGET: target, TEST_ORCA_COMMENT: comment, TZ: 'Asia/Taipei' });
   const tick = () => superviseTickCli(async () => undefined, async () => undefined, {},
     async () => ({ at: '', summary: {}, rows: [] }), () => undefined, () => undefined,
     async () => ({ accepted: 0, ignored: 0, failed: 0 }), async () => undefined,
@@ -49,13 +50,20 @@ console.log(JSON.stringify({ ok: true, result: { worktree: { comment: fs.readFil
     expect(await tick()).toBe(0);
     expect(warning.mock.calls).toHaveLength(1);
     const manual = '\n  用户原文\n第二行  \n';
-    writeFileSync(comment, manual);
+    const legacy = '【引擎合入 2026-11-22T16:00:00.500Z】旧版近期记录【/引擎合入】\n';
+    const expired = '【引擎合入 2026-11-22T15:59:00.000Z】旧版较早记录【/引擎合入】\n';
+    writeFileSync(comment, legacy + expired + manual);
     expect(await tick()).toBe(0);
     const result = readFileSync(comment, 'utf8');
     expect(result.match(/【引擎合入/g)).toHaveLength(5);
-    expect(result.split('\n')[0]).toContain('666666666 change 6');
-    expect(result).toContain('666666666 change 6');
-    expect(result).not.toContain('111111111 change 1');
+    const lines = result.split('\n');
+    expect(lines[0]).toStartWith('【引擎合入 2026-11-23 00:00】');
+    expect(lines[0]).toContain('666666666 change 6');
+    expect(lines[1] + '\n').toBe(legacy);
+    expect(lines[2]).toContain('555555555 change 5');
+    expect(lines[3]).toStartWith('【引擎合入 2026-11-22 23:59】');
+    expect(lines[4]).toContain('333333333 change 3');
+    expect(result).not.toContain(expired);
     expect(result).toEndWith(manual);
     writeFileSync(comment, manual);
     expect(await tick()).toBe(0);
