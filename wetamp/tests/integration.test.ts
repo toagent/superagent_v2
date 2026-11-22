@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from 'node:fs';
 import { readdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { integrationLockPath, publish, sync, type PublishRun } from '../src/integration';
@@ -181,9 +181,42 @@ test('publish advances the target with CAS and writes its receipt', () => {
   expect(result.status).toBe('published');
   if (result.status !== 'published') throw new Error('expected published');
   expect(result.receipt.integrated).toBe(head);
+  expect(result.receipt.commits).toEqual([{ sha: head.slice(0, 9), title: 'feature.txt' }]);
   expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(result.receipt);
+  expect(publish({ ...f.run(), receipt }, f.expected())).toEqual(result);
+  expect(publish(f.run(), f.expected())).toMatchObject({ receipt: { commits: [] } });
   expect(sh('git rev-parse wetamp', f.target).trim()).toBe(head);
   expect(sh('git status --porcelain', f.target)).toBe('');
+  sh("git commit --allow-empty --allow-empty-message -qm ''", f.worktree);
+  expect(publish(f.run(), f.expected())).toMatchObject({ receipt: { commits: [{ title: '' }] } });
+});
+
+test('publish lists at most 30 commits and reports the total', () => {
+  const f = fixture();
+  sh('for i in $(seq 1 31); do git commit --allow-empty -qm "change $i" || exit; done', f.worktree);
+  const result = publish(f.run(), f.expected());
+  expect(result.status).toBe('published');
+  if (result.status !== 'published') throw new Error('expected published');
+  expect(result.receipt.commits).toHaveLength(30);
+  expect(result.receipt.commits?.[0]?.title).toBe('change 31');
+  expect(result.receipt.commit_count).toBe(31);
+});
+
+test('publish recovers the original range after a receipt finalization failure', () => {
+  const f = fixture(),
+    run = f.run();
+  const head = commit(f.worktree, 'feature.txt', 'feature\n');
+  const before = f.expected();
+  mkdirSync(run.receipt);
+  expect(() => publish(run, before)).toThrow();
+  expect(f.expected().target_tip).toBe(head);
+  rmdirSync(run.receipt);
+  expect(publish(run, f.expected())).toMatchObject({
+    receipt: {
+      target_tip: before.target_tip,
+      commits: [{ sha: head.slice(0, 9), title: 'feature.txt' }],
+    },
+  });
 });
 
 test('publish outlives a released integration lock and times out structurally when it stays held', async () => {

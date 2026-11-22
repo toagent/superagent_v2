@@ -1,11 +1,70 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getRunArtifactsDirForRoot } from '@archon/paths';
+import { superviseTickCli } from '../src/cli';
+import { tmp } from './helpers';
 import { cockpit, type Cockpit, type CockpitRun } from '../src/board/cockpit';
 import { unreadableRow, type Snapshot } from '../src/board/data';
 import { unknownProgress } from '../src/board/eta';
 import { launchAgent, orcaBin, orcaView, syncOrca, type OrcaDeps } from '../src/orca';
 import type { Heartbeat } from '../src/heartbeat';
 import type { Hold } from '../src/reasons';
+
+// prettier-ignore
+test('tick records project publications, keeps five blocks and retries a warning once', async () => {
+  const root = tmp(), target = join(root, 'checkout'), bin = join(root, 'orca'), comment = join(root, 'comment');
+  const saved = { ...process.env }, log = spyOn(console, 'log').mockImplementation(() => undefined);
+  const warning = spyOn(console, 'warn').mockImplementation(() => undefined);
+  const runDir = getRunArtifactsDirForRoot(join(root, 'workspaces', 'owner', 'repo'), 'native');
+  mkdirSync(join(root, 'runs')); mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(root, 'runs', 'r1.json'), JSON.stringify({
+    run_id: 'r1', archon_run_id: 'native', repo: target, branch: 'main', gen_dir: root,
+    workflow: 'test', delivery: { checkout: target, branch: 'main' },
+  }));
+  for (let i = 1; i <= 6; i++) {
+    const receipt = join(runDir, `publish-m${i}.json`);
+    writeFileSync(receipt, JSON.stringify({
+      status: 'published', task: 'r1', target: { checkout: target, branch: 'main' },
+      integrated: `${i}`.repeat(40), commits: [{ sha: `${i}`.repeat(9), title: `change ${i}` }],
+    }));
+    utimesSync(receipt, i, i);
+  }
+  writeFileSync(bin, `#!${process.execPath}
+const [, , group, action, selector, path, ...rest] = process.argv;
+if (group !== 'worktree' || selector !== '--worktree' || path !== 'path:' + process.env.TEST_ORCA_TARGET || !rest.includes('--json')) process.exit(2);
+const fs = require('node:fs'), file = process.env.TEST_ORCA_COMMENT;
+if (!fs.existsSync(file)) { console.log(JSON.stringify({ ok: false })); process.exit(1); }
+if (action === 'set') fs.writeFileSync(file, rest[1]);
+console.log(JSON.stringify({ ok: true, result: { worktree: { comment: fs.readFileSync(file, 'utf8') } } }));
+`, { mode: 0o700 });
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, DATABASE_URL: '',
+    SA_ORCA: '1', SA_ORCA_BIN: bin, TEST_ORCA_TARGET: target, TEST_ORCA_COMMENT: comment });
+  const tick = () => superviseTickCli(async () => undefined, async () => undefined, {},
+    async () => ({ at: '', summary: {}, rows: [] }), () => undefined, () => undefined,
+    async () => ({ accepted: 0, ignored: 0, failed: 0 }), async () => undefined,
+    () => ({ health: { state: 'up', probe_failures: 0 }, persisted: false }), () => 0);
+  try {
+    expect(await tick()).toBe(0);
+    expect(await tick()).toBe(0);
+    expect(warning.mock.calls).toHaveLength(1);
+    const manual = '\n  用户原文\n第二行  \n';
+    writeFileSync(comment, manual);
+    expect(await tick()).toBe(0);
+    const result = readFileSync(comment, 'utf8');
+    expect(result.match(/【引擎合入/g)).toHaveLength(5);
+    expect(result.split('\n')[0]).toContain('666666666 change 6');
+    expect(result).toContain('666666666 change 6');
+    expect(result).not.toContain('111111111 change 1');
+    expect(result).toEndWith(manual);
+    writeFileSync(comment, manual);
+    expect(await tick()).toBe(0);
+    expect(readFileSync(comment, 'utf8')).toBe(manual);
+  } finally {
+    process.env = saved;
+    warning.mockRestore(); log.mockRestore();
+  }
+});
 
 const item = (id: string, extra: Partial<CockpitRun> = {}): CockpitRun => ({
   id,

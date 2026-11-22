@@ -12,6 +12,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
 import type { PublishReceipt, PublishResult, SyncResult } from './contract';
+import { readJson } from './ledger';
 
 export type { PublishReceipt, PublishResult, SyncResult } from './contract';
 
@@ -418,9 +419,46 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
       }
     }
 
+    const pending = `${run.receipt}.pending`;
+    const completed = head === targetTip ? readJson(run.receipt) : undefined;
+    const previous = (completed ?? (head === targetTip ? readJson(pending) : undefined)) as
+      | Partial<PublishReceipt>
+      | undefined;
+    const range = `${targetTip}..${head}`;
+    const log = ['log', '--no-show-signature', '--no-notes', '-30', '--format=%H %s', range];
+    const commits = git(repo, ...log)
+      .split('\n')
+      .filter(Boolean)
+      .map(line => ({ sha: line.slice(0, 9), title: line.replace(/^[0-9a-f]+ ?/, '') }));
+    const total =
+      commits.length === 30 ? Number(git(repo, 'rev-list', '--count', range)) : commits.length;
+    const receipt: PublishReceipt = {
+      task: run.task,
+      source: head,
+      target,
+      target_tip: targetTip,
+      contract: run.contract,
+      evidence: `review=${reviewPath}; artifacts=${run.evidence}`,
+      integrated: head,
+      commits,
+      ...(total > commits.length ? { commit_count: total } : {}),
+      status: 'published',
+    };
     run.fence();
+    // Preserve the original range if Git succeeds before the receipt can be finalized.
+    if (head !== targetTip) writeReceipt(pending, receipt);
     const lateSwitch = switched();
     if (lateSwitch) return lateSwitch;
+    if (
+      previous?.status === 'published' &&
+      previous.task === run.task &&
+      previous.integrated === head &&
+      previous.target?.checkout === target.checkout &&
+      previous.target.branch === target.branch
+    ) {
+      if (!completed) renameSync(pending, run.receipt);
+      return { status: 'published', receipt: previous as PublishReceipt };
+    }
     if (head !== targetTip) {
       // An unoccupied ref touches no worktree or index; CAS plus the integration lock prevents races.
       const args = checkout ? ['merge', '--ff-only', head] : ['update-ref', ref, head, targetTip];
@@ -439,18 +477,8 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
           'publish_outcome_unknown',
           'target ref does not match the published head'
         );
-    }
-    const receipt: PublishReceipt = {
-      task: run.task,
-      source: head,
-      target,
-      target_tip: targetTip,
-      contract: run.contract,
-      evidence: `review=${reviewPath}; artifacts=${run.evidence}`,
-      integrated: head,
-      status: 'published',
-    };
-    writeReceipt(run.receipt, receipt);
+      renameSync(pending, run.receipt);
+    } else writeReceipt(run.receipt, receipt);
     return { status: 'published', receipt };
   } finally {
     lease.release();

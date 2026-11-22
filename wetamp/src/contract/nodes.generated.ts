@@ -66,6 +66,14 @@ export interface PublishReceipt {
   contract: string;
   evidence: string;
   integrated: string;
+  /**
+   * @maxItems 30
+   */
+  commits?: {
+    sha: string;
+    title: string;
+  }[];
+  commit_count?: number;
   status: 'published';
 }
 
@@ -136,6 +144,20 @@ export const publishOutputFormat = {
         contract: { type: 'string' },
         evidence: { type: 'string' },
         integrated: { type: 'string' },
+        commits: {
+          type: 'array',
+          maxItems: 30,
+          items: {
+            type: 'object',
+            properties: {
+              sha: { type: 'string', pattern: '^[0-9a-f]{9}$' },
+              title: { type: 'string' },
+            },
+            required: ['sha', 'title'],
+            additionalProperties: false,
+          },
+        },
+        commit_count: { type: 'integer', minimum: 31 },
         status: { const: 'published' },
       },
       required: [

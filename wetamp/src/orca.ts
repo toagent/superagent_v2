@@ -1,12 +1,15 @@
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { getArchonWorkspacesPath, getRunArtifactsDirForRoot } from '@archon/paths';
 import { home, writeAtomic } from './config';
 import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit, type Cockpit } from './board/cockpit';
 import { presence, type Identity, type Presence } from './coord';
 import { heartbeat, shouldWriteHeartbeat, type Heartbeat } from './heartbeat';
+import { loadLedger, readJson } from './ledger';
+import type { PublishReceipt } from './contract';
 
 export interface OrcaView {
   status: 'in-review' | 'in-progress' | 'completed';
@@ -156,6 +159,106 @@ async function bounded<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T
   }
 }
 
+const orcaCall =
+  (d: OrcaDeps, bin: string, signal: AbortSignal) =>
+  async (args: string[]): Promise<unknown> => {
+    const child = AbortSignal.any([signal, AbortSignal.timeout(d.commandTimeoutMs)]);
+    return JSON.parse(await bounded(child, () => d.exec(bin, args, child))) as unknown;
+  };
+
+const publicationFiles = new Bun.Glob(
+  join(getRunArtifactsDirForRoot(join('*', '*'), '*'), 'publish-*.json')
+);
+
+export async function syncOrcaDeliveries(): Promise<void> {
+  if (process.env.SA_ORCA === '0') return;
+  const root = getArchonWorkspacesPath();
+  if (!existsSync(root)) return;
+  const { sa } = home();
+  const state = join(sa, 'orca-deliveries.json');
+  const held = lock(join(sa, 'orca-deliveries.lock'));
+  if (!held.ok) return;
+  try {
+    const seen = (readJson(state) ?? {}) as Record<string, boolean | undefined>;
+    const groups = new Map<string, { key: string; block: string }[]>();
+    for (const file of publicationFiles.scanSync({ cwd: root })) {
+      const path = join(root, file),
+        st = lstatSync(path, { throwIfNoEntry: false });
+      if (!st?.isFile()) continue;
+      const key = `${file}:${String(st.mtimeMs)}`;
+      if (seen[key] === true) continue;
+      let receipt: Partial<PublishReceipt>;
+      let ledger: ReturnType<typeof loadLedger>;
+      try {
+        const value = readJson(path) as Partial<PublishReceipt> | undefined;
+        if (value?.status !== 'published' || !Array.isArray(value.commits)) continue;
+        if (typeof value.task !== 'string' || basename(value.task) !== value.task) continue;
+        ledger = loadLedger(value.task);
+        receipt = value;
+      } catch {
+        continue;
+      }
+      const nativeId = basename(dirname(file));
+      const target = ledger.delivery;
+      if (!target || target.checkout !== receipt.target?.checkout) continue;
+      if (target.branch !== receipt.target.branch || target.checkout === join(sa, 'orca-board'))
+        continue;
+      if (ledger.archon_run_id !== nativeId && !ledger.adoptions?.some(a => a.from === nativeId))
+        continue;
+      const commits = receipt.commits ?? [];
+      const changes = commits
+        .filter(
+          (c: unknown) => record(c) && typeof c.sha === 'string' && typeof c.title === 'string'
+        )
+        .map(c => `${c.sha} ${c.title}`)
+        .join('；')
+        .replace(/[\r\n]/g, ' ');
+      const count = String(receipt.commit_count ?? commits.length);
+      const block = `【引擎合入 ${st.mtime.toISOString()}】run ${ledger.run_id}/${basename(file, '.json')} → ${target.branch}：${count} 个提交｜${changes}【/引擎合入】\n`;
+      const entries = groups.get(target.checkout) ?? [];
+      entries.push({ key, block });
+      groups.set(target.checkout, entries);
+    }
+    const bin = orcaBin(),
+      signal = AbortSignal.timeout(defaults.timeoutMs);
+    for (const [checkout, entries] of groups) {
+      if (signal.aborted) break;
+      let synced = false;
+      try {
+        if (!bin) throw new Error('Orca CLI unavailable');
+        const call = orcaCall(defaults, bin, signal);
+        const target = ['--worktree', `path:${checkout}`];
+        const shown = (await call(['worktree', 'show', ...target, '--json'])) as {
+          ok?: boolean;
+          result?: { worktree?: { comment?: unknown } };
+        } | null;
+        const worktree = shown?.ok === true ? shown.result?.worktree : undefined;
+        if (!record(worktree)) throw new Error('Orca worktree show failed');
+        const comment = worktree.comment ?? '';
+        if (typeof comment !== 'string') throw new Error('Invalid Orca worktree comment');
+        const managed = /^【引擎合入 \d{4}-[^\n]*【\/引擎合入】\n/gm;
+        const blocks = new Set(comment.match(managed));
+        for (const { block } of entries) blocks.add(block);
+        const next = [...blocks].sort().slice(-5).reverse().join('') + comment.replace(managed, '');
+        if (next !== comment) {
+          const updated = await call(['worktree', 'set', ...target, '--comment', next, '--json']);
+          if (!record(updated) || updated.ok !== true) throw new Error('Orca worktree set failed');
+        }
+        synced = true;
+      } catch {
+        if (entries.some(({ key }) => seen[key] === undefined))
+          console.warn(`supervise-tick: Orca delivery comment unavailable for ${checkout}`);
+      }
+      if (entries.some(({ key }) => seen[key] !== synced)) {
+        for (const { key } of entries) seen[key] = synced;
+        writeAtomic(state, JSON.stringify(seen));
+      }
+    }
+  } finally {
+    held.release();
+  }
+}
+
 export async function syncOrca(
   snapshotOrOverrides: Snapshot | Partial<OrcaDeps> = {},
   overrides: Partial<OrcaDeps> = {}
@@ -173,10 +276,7 @@ export async function syncOrca(
     held = d.lock(join(d.sa(), 'orca-board.lock'));
     if (!held.ok) return { skipped: 'locked' };
     const signal = AbortSignal.timeout(d.timeoutMs);
-    const call = async (args: string[]): Promise<unknown> => {
-      const child = AbortSignal.any([signal, AbortSignal.timeout(d.commandTimeoutMs)]);
-      return JSON.parse(await bounded(child, () => d.exec(bin, args, child))) as unknown;
-    };
+    const call = orcaCall(d, bin, signal);
     let probe: unknown;
     try {
       probe = await call(['status', '--json']);

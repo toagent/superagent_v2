@@ -185,7 +185,7 @@ import {
   readClaudeHealth,
   refreshClaudeHealth,
 } from './claude-health';
-import { launchAgent, orcaBin, type AgentLaunch } from './orca';
+import { launchAgent, orcaBin, syncOrcaDeliveries, type AgentLaunch } from './orca';
 import {
   engineHash,
   generate,
@@ -1698,7 +1698,8 @@ export function waitForRunAdmission(
   }
 }
 
-type NtfyTickRecord = TickRecord & Partial<Record<'ntfy_sync' | 'ntfy_publish', TickStage>>;
+type NtfyTickRecord = TickRecord &
+  Partial<Record<'ntfy_sync' | 'ntfy_publish' | 'orca_delivery', TickStage>>;
 
 export function ntfyTickHealth(tick: NtfyTickRecord | undefined, now: number) {
   const messages = [...tickHealth(tick, now).messages];
@@ -5022,6 +5023,7 @@ export async function superviseTickCli(refresh = async (): Promise<unknown> => (
     if (synced && typeof synced === 'object' && 'error' in synced) throw new Error(String(synced.error));
     return synced;
   }, 'orca sync');
+  await result('orca_delivery', () => mode.noGlobal ? { skipped: 'no-global' } : syncOrcaDeliveries());
   const details = ['actions', 'gc', 'scratch'].flatMap(key =>
     Array.isArray(output[key])
       ? (output[key] as Record<string, unknown>[]).filter(item => item.action !== 'none')

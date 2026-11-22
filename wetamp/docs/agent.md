@@ -37,8 +37,12 @@ superagent retro <run> --effect "<本次效果>" --improve "<下次改进>"
 
 `run` 创建隔离 worktree 后立即返回。`wait` 阻塞到终态、挂起或超时；超时返回运行中，
 再次等待即可。接手时先用 `brief` 读取有界摘要，需要完整投影再用
-`superagent status <run>`。`land --apply` 在目标锁内以目标分支实时 tip 组合验收并本地集成，
-不 push；目标历史重写、脏检出或无法安全组合时拒绝。
+`superagent status <run>`。交付默认锁定启动时仓库主检出的当前分支，允许 main、master、
+dev、develop 和 release-\*。可用 `delivery_checkout` 指定同仓其他检出的绝对路径。
+`land --apply` 在目标锁内以目标分支实时 tip 组合验收并本地快进。交付无需新建提交，
+push 由人工执行。目标历史重写、默认检出切换分支、脏检出或无法安全组合时挂起。
+发布回执包含本次提交清单，最多 30 条，超出时附总数。supervise-tick 将合入记录写入
+目标检出的 Orca comment，保留用户原文和最近 5 段引擎记录。Orca 故障只产生警告。
 
 run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 1–3 条，可重复传入；
 全部条目去除首尾空白后合计不超过 200 个 Unicode 字符。重复提交会修订并保留最近 5 版历史。

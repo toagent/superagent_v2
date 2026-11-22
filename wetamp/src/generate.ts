@@ -896,7 +896,7 @@ export function buildWorkflow(
           : {
               script: [
                 "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
-                "const output = { status: 'published', receipt: { task: 'fake', source: tip, target: { checkout: 'fake', branch: 'fake' }, target_tip: tip, contract: 'fake', evidence: 'fake', integrated: tip, status: 'published' } };",
+                "const output = { status: 'published', receipt: { task: 'fake', source: tip, target: { checkout: 'fake', branch: 'fake' }, target_tip: tip, contract: 'fake', evidence: 'fake', integrated: tip, commits: [], status: 'published' } };",
                 `await Bun.write(process.env.ARTIFACTS_DIR + '/${publishId}.json', JSON.stringify(output));`,
                 'process.stdout.write(JSON.stringify(output));',
               ].join('\n'),
