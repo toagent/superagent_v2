@@ -9,6 +9,11 @@
       "type": "string",
       "minLength": 1
     },
+    "delivery_checkout": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to a checkout of the same repository. Defaults to the primary worktree."
+    },
     "base_ref": {
       "type": "string",
       "minLength": 1

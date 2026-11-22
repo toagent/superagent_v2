@@ -27,6 +27,7 @@ export const REASONS = {
   review_not_independent: '评审不独立',
   engine_suspect: '引擎嫌疑',
   approval: '等待批准',
+  target_switched: '交付目标已切换分支',
   stalled: '进展停滞',
   auto_recover: '恢复等待处理',
   reclaim_pending: '回收续授权尚未完成',

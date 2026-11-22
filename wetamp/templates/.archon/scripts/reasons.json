@@ -56,6 +56,13 @@
     "description": "目标检出存在未提交改动"
   },
   {
+    "code": "target_switched",
+    "hold": "target_switched",
+    "determinism": "deterministic",
+    "owner": "human",
+    "description": "交付目标检出已切换分支"
+  },
+  {
     "code": "target_advanced",
     "hold": "gate",
     "determinism": "transient",

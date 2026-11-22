@@ -323,24 +323,19 @@ test('two runs racing the same expected tip publish only the first', () => {
   ).toBe(1);
 });
 
-test('publish rejects protected targets and non-descendant history', () => {
-  const protectedFixture = fixture();
-  sh('git branch -m main', protectedFixture.target);
+test('publish fast-forwards master and rejects non-descendant history', () => {
+  const master = fixture();
+  sh('git branch -m master', master.target);
+  const before = sh('git rev-parse HEAD', master.target).trim();
+  const head = commit(master.worktree, 'feature.txt', 'feature\n');
   expect(
     publish(
-      {
-        worktree: protectedFixture.worktree,
-        target: { checkout: protectedFixture.target, branch: 'main' },
-        task: 'r1',
-        contract: 'contract',
-        evidence: protectedFixture.root,
-        receipt: join(protectedFixture.root, 'publish.json'),
-        review: { required: false },
-        fence: () => undefined,
-      },
-      { target_tip: sh('git rev-parse main', protectedFixture.target).trim() }
+      { ...master.run(), target: { checkout: master.target, branch: 'master' } },
+      { target_tip: before }
     )
-  ).toMatchObject({ status: 'rejected', reason: 'protected_target' });
+  ).toMatchObject({ status: 'published', receipt: { integrated: head } });
+  expect(sh('git rev-parse HEAD', master.target).trim()).toBe(head);
+  expect(readFileSync(join(master.target, 'feature.txt'), 'utf8')).toBe('feature\n');
 
   const f = fixture();
   commit(f.worktree, 'feature.txt', 'feature\n');
@@ -424,6 +419,26 @@ test('publish advances an unoccupied target without changing the operator checko
   expect(sh('git write-tree', switched.target).trim()).toBe(operatorIndex);
   expect(sh('git status --porcelain=v1', switched.target)).toBe(operatorStatus);
   expect(existsSync(switched.run().receipt)).toBe(true);
+});
+
+test('publish holds a switched default target and retries after the branch is restored', () => {
+  const f = fixture();
+  const before = f.expected();
+  const head = commit(f.worktree, 'feature.txt', 'feature\n');
+  const run = { ...f.run(), target: { ...f.targetSpec, require_checkout: true as const } };
+  sh('git switch -qc operator', f.target);
+  expect(publish(run, before)).toMatchObject({
+    status: 'rejected',
+    reason: 'target_switched',
+    evidence: expect.stringMatching(/wetamp.*operator/),
+  });
+  expect(f.expected()).toEqual(before);
+  expect(existsSync(run.receipt)).toBe(false);
+  sh('git switch -q wetamp', f.target);
+  expect(publish(run, before)).toMatchObject({
+    status: 'published',
+    receipt: { integrated: head },
+  });
 });
 
 test('publish rejects an occupied target and reports an unoccupied CAS race', () => {

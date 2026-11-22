@@ -47,6 +47,7 @@ export type PublishOutput =
         | 'not_descendant'
         | 'review_stale'
         | 'target_checkout_changed'
+        | 'target_switched'
         | 'target_advanced'
         | 'target_dirty';
       target_tip?: string;
@@ -103,6 +104,7 @@ export const publishOutputFormat = {
             'not_descendant',
             'review_stale',
             'target_checkout_changed',
+            'target_switched',
             'target_advanced',
             'target_dirty',
           ],

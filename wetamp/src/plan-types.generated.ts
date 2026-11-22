@@ -51,6 +51,10 @@ export type Requirements = {
 export interface Plan {
   request_ref?: string;
   repo: string;
+  /**
+   * Absolute path to a checkout of the same repository. Defaults to the primary worktree.
+   */
+  delivery_checkout?: string;
   base_ref: string;
   /**
    * Only 1 is supported: packages share one worktree and run serially

@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { lock, QUERY_TIMEOUT_MS } from './archon';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
 import type { PublishReceipt, PublishResult, SyncResult } from './contract';
@@ -30,6 +30,8 @@ export interface DeliveryTarget {
   checkout: string;
   branch: string;
   head: string;
+  /** Default delivery must update the pinned checkout with its branch. */
+  require_checkout?: true;
 }
 
 export interface DeliveryReceipt {
@@ -62,12 +64,13 @@ export function captureDelivery(checkout: string): DeliveryTarget {
     });
     if (result.exitCode !== 0)
       throw new LandError('delivery_git_failed', `delivery: ${result.stderr.toString().trim()}`);
-    return result.stdout.toString().trim();
+    return result.stdout.toString().replace(/\n$/, '');
   };
+  const ref = git('symbolic-ref', 'HEAD');
   return {
     checkout: realpathSync(git('rev-parse', '--show-toplevel')),
-    branch: git('symbolic-ref', '--short', 'HEAD'),
-    head: git('rev-parse', 'HEAD'),
+    branch: ref.replace(/^refs\/heads\//, ''),
+    head: git('rev-parse', ref),
   };
 }
 
@@ -86,9 +89,6 @@ export function excludeCodegraph(repo: string): void {
   if (!existsSync(file) || !readFileSync(file, 'utf8').split('\n').includes('.codegraph/'))
     appendFileSync(file, '\n.codegraph/\n');
 }
-
-export const protectedTarget = (branch: string): boolean =>
-  /^(main|master|dev|develop|release-.*)$/.test(branch);
 
 // prettier-ignore
 export function checkoutChanges(checkout: string): string[] {
@@ -125,7 +125,7 @@ export const targetCheckout = (worktrees: string, branch: string): string | unde
 
 export interface PublishRun {
   worktree: string;
-  target: Pick<DeliveryTarget, 'checkout' | 'branch'>;
+  target: Omit<DeliveryTarget, 'head'> & { head?: string };
   task: string;
   contract: string;
   evidence: string;
@@ -229,6 +229,23 @@ const git = (cwd: string, ...args: string[]): string => {
   return result.stdout.toString().trimEnd();
 };
 
+export function captureRunDelivery(repo: string, explicit?: string): DeliveryTarget {
+  if (explicit === undefined) {
+    const first = git(repo, 'worktree', 'list', '--porcelain', '-z').split('\0', 1)[0];
+    return { ...captureDelivery(first.slice('worktree '.length)), require_checkout: true };
+  }
+  if (!isAbsolute(explicit))
+    throw new Error('plan invalid: delivery_checkout must be an absolute path');
+  const target = captureDelivery(explicit);
+  const commonDir = (path: string): string =>
+    realpathSync(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir'));
+  if (target.checkout !== realpathSync(explicit) || commonDir(target.checkout) !== commonDir(repo))
+    throw new Error(
+      'plan invalid: delivery_checkout must be a checkout root in the same repository'
+    );
+  return target;
+}
+
 const gitBytes = (cwd: string, ...args: string[]): Buffer => {
   const result = gitResult(cwd, args);
   if (result.exitCode !== 0) throw gitFailure(args, result);
@@ -319,12 +336,6 @@ const writeReceipt = (file: string, receipt: PublishReceipt): void => {
 
 export function publish(run: PublishRun, expected: PublishExpected): PublishResult {
   const repo = realpathSync(run.target.checkout);
-  if (protectedTarget(run.target.branch))
-    return {
-      status: 'rejected',
-      reason: 'protected_target',
-      evidence: `target branch ${run.target.branch} is protected`,
-    };
   const common = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir');
   const lockfile = integrationLockPath(common, run.target.branch);
   let lease = lock(lockfile);
@@ -336,17 +347,32 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
   if (!lease.ok)
     throw new IntegrationError('lock_timeout', 'timed out waiting for integration lock');
   try {
-    const ref = `refs/heads/${run.target.branch}`;
+    const { require_checkout, ...target } = run.target;
+    const ref = `refs/heads/${target.branch}`;
+    const switched = (): PublishResult | undefined => {
+      if (!require_checkout) return undefined;
+      const args = ['symbolic-ref', '--quiet', 'HEAD'];
+      const current = gitResult(repo, args);
+      if (current.exitCode !== 0 && current.exitCode !== 1) throw gitFailure(args, current);
+      const branch = current.stdout.toString().trimEnd();
+      if (branch === ref) return undefined;
+      return {
+        status: 'rejected',
+        reason: 'target_switched',
+        evidence: `expected branch ${target.branch}; current branch ${branch.replace(/^refs\/heads\//, '') || '(detached HEAD)'}`,
+      };
+    };
+    const initialSwitch = switched();
+    if (initialSwitch) return initialSwitch;
     const targetTip = git(repo, 'rev-parse', ref);
     if (targetTip !== expected.target_tip) return { status: 'advanced', target_tip: targetTip };
-    const checkout = targetCheckout(
-      git(repo, 'worktree', 'list', '--porcelain', '-z'),
-      run.target.branch
-    );
+    const checkout = require_checkout
+      ? repo
+      : targetCheckout(git(repo, 'worktree', 'list', '--porcelain', '-z'), target.branch);
     if (
+      !require_checkout &&
       checkout &&
-      (realpathSync(checkout) !== repo ||
-        git(repo, 'symbolic-ref', '--short', 'HEAD') !== run.target.branch)
+      (realpathSync(checkout) !== repo || git(repo, 'symbolic-ref', 'HEAD') !== ref)
     )
       return {
         status: 'rejected',
@@ -393,6 +419,8 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
     }
 
     run.fence();
+    const lateSwitch = switched();
+    if (lateSwitch) return lateSwitch;
     if (head !== targetTip) {
       // An unoccupied ref touches no worktree or index; CAS plus the integration lock prevents races.
       const args = checkout ? ['merge', '--ff-only', head] : ['update-ref', ref, head, targetTip];
@@ -415,7 +443,7 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
     const receipt: PublishReceipt = {
       task: run.task,
       source: head,
-      target: run.target,
+      target,
       target_tip: targetTip,
       contract: run.contract,
       evidence: `review=${reviewPath}; artifacts=${run.evidence}`,

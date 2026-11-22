@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generate } from '../src/generate';
+import { captureRunDelivery } from '../src/integration';
 import { ledgerPath } from '../src/cli';
 import { diffHash } from '../templates/.archon/scripts/sa-check';
 import * as coordination from '../src/coord';
@@ -99,7 +100,7 @@ const setup = (mode: 'normal' | 'advanced' | 'dirty' | 'conflict') => {
       'utf8'
     )
   ) as Plan;
-  const delivery = { checkout: repo, branch: 'delivery-target', head: targetHead };
+  const delivery = captureRunDelivery(worker);
   coordination.coord().claim(coordination.repoScope(repo), who);
   coordination.coord().claim(coordination.runScope({ run_id: runId, repo }), who);
   const engine = spyOn(coordination, 'cleanEngine').mockReturnValue(targetHead);
@@ -244,6 +245,21 @@ test.each(['normal', 'advanced', 'dirty', 'conflict'] as const)(
         unlinkSync(dirty);
       }
       if (mode === 'normal') {
+        sh('git switch -q --detach HEAD', f.repo);
+        const switched = Bun.spawnSync(['bash', '-c', publishCommand(String(synced.target_tip))], {
+          cwd: f.worker,
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(switched.exitCode).toBe(1);
+        const evidence = JSON.parse(readFileSync(join(f.artifact, 'publish-m1.json'), 'utf8'));
+        expect(evidence).toMatchObject({
+          reason: 'target_switched',
+          evidence: expect.stringMatching(/delivery-target.*detached HEAD/),
+        });
+        expect(sh('git rev-parse delivery-target', f.repo).trim()).toBe(String(synced.target_tip));
+        sh('git switch -q delivery-target', f.repo);
         const gatePath = join(f.artifact, 'gate-m1-r1.json');
         writeFileSync(
           gatePath,

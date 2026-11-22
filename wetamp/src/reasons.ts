@@ -46,6 +46,11 @@ export const HOLD_POLICY = {
     next: '检查incident证据并修复引擎判定',
   },
   approval: { do: 'ask', yes: 'approve', text: 'Archon审批门', yesText: '批准审批门并续跑' },
+  target_switched: {
+    do: 'blocked',
+    text: '交付目标检出已切换分支',
+    next: '切回本次运行锁定的分支后执行 superagent land --apply',
+  },
   stalled: {
     do: 'ask',
     yes: 'cancel',
@@ -75,6 +80,7 @@ export const CLASSIFIED_HOLD_REASONS = {
   rework: 'rework',
   human: 'signoff',
   target_dirty: 'target_dirty',
+  target_switched: 'target_switched',
   paused: 'paused',
   environment: 'environment',
   owner_unknown: 'owner_unknown',
@@ -229,6 +235,7 @@ export const REASONS: Reason[] = [
   ),
   deterministic('rework', 'signoff', 'human', '人工签收拒绝后等待返工'),
   deterministic('target_dirty', 'approval', 'human', '目标检出存在未提交改动'),
+  deterministic('target_switched', 'target_switched', 'human', '交付目标检出已切换分支'),
   entry('target_advanced', 'gate', 'transient', 'env', '发布时目标分支已前进'),
   entry('reclaim_pending', 'auto_recover', 'transient', 'engine', '回收续授权尚未完成'),
   entry('lock_timeout', 'environment', 'transient', 'env', '等待集成锁超时'),
@@ -260,6 +267,7 @@ export const reasonOf = (code: string): Reason | undefined => REASONS.find(r => 
 /** Return the CLI action accepted by the current hold, including reason codes projected as holds. */
 export function holdAction(run: string, code: string): string {
   const hold = reasonOf(code)?.hold ?? code;
+  if (hold === 'target_switched') return `superagent land --apply ${run}`;
   return hold === 'acceptance_adjudication' || code === 'scope_approval'
     ? `superagent decide ${run} approve`
     : `superagent decide ${run} retry`;

@@ -36,9 +36,8 @@ import { scanText } from './secrets/scan';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import { canonicalRepo, closeDebts, debtMetrics, debtSnapshot } from './debt';
 import {
-  captureDelivery,
+  captureRunDelivery,
   checkoutChanges,
-  protectedTarget,
   deliveryProjection,
   landEvidence,
   publishProjection,
@@ -194,7 +193,7 @@ import {
   type Continuation,
   type ReviewCheckpoint,
 } from './generate';
-import { loadPlan, milestones, scratch, type Plan } from './plan';
+import { isWithinWriteRoots, loadPlan, milestones, scratch, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
@@ -931,13 +930,14 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
       ? reasonToken(l.delivery_result.reason)
       : landError?.startsWith('land_') ? reasonToken(landError.slice(5)) : undefined,
     registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
-    integrationReason = ['held:target_dirty', 'target_dirty'].includes(c.state) ? 'target_dirty'
+    integrationReason = c.state === 'held:target_switched' ? 'target_switched'
+      : ['held:target_dirty', 'target_dirty'].includes(c.state) ? 'target_dirty'
       : ['sync_conflict', 'target_checkout_changed', 'target_advanced', 'review_stale'].includes(c.state) ? c.state : undefined,
     reason = landReason ?? integrationReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
       holdOf(l, run, c) ?? reasonToken(run.metadata?.stop_reason?.reason) ?? 'unclassified',
     evidence = [
       landReason && join(art, 'delivery.json'),
-      ['target_dirty', 'target_checkout_changed'].includes(reason) && c.node && join(art, `${authoredNodeId(c.node)}.json`),
+      ['target_dirty', 'target_checkout_changed', 'target_switched'].includes(reason) && c.node && join(art, `${authoredNodeId(c.node)}.json`),
       c.node && join(art, `${c.node}.json`),
       run.transcript_path, l.log, l.transcript, art, ledgerPath(l.run_id),
     ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
@@ -949,7 +949,7 @@ function terminalProjection(l: Ledger, run: RunView, c: Classified) {
     action = c.state === 'held:recovery_admission_unknown' ? recoveryAdmissionAction(l.run_id)
       : reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
       : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
-      : reason === 'target_checkout_changed' && l.delivery ? targetCheckoutAction(l, l.delivery)
+      : ['target_checkout_changed', 'target_switched'].includes(reason) && l.delivery ? targetCheckoutAction(l, l.delivery)
       : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
       : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
       : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
@@ -1123,6 +1123,8 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
       if (publish?.reason === 'reclaim_pending')
         return { ...projected, state: heldState('reclaim_pending'), exit: EXIT.held };
       if (publish?.reason === 'target_dirty') return { ...projected, state: 'target_dirty' };
+      if (publish?.reason === 'target_switched')
+        return { ...projected, state: heldState('target_switched'), exit: EXIT.held };
       if (publish?.reason === 'target_checkout_changed')
         return { ...projected, state: 'target_checkout_changed' };
       if (publish?.reason === 'target_advanced') return { ...projected, state: 'target_advanced' };
@@ -1881,6 +1883,13 @@ function preflight(): void {
   );
 }
 
+function planDelivery(plan: Plan): DeliveryTarget {
+  const delivery = captureRunDelivery(plan.repo, plan.delivery_checkout);
+  if (!isWithinWriteRoots(delivery.checkout))
+    throw new Error(`plan invalid: delivery checkout ${delivery.checkout} outside allowed roots`);
+  return delivery;
+}
+
 function checkedPlan(planPath: string, override?: string) {
   const rules = applyPlanRules(loadPlan(planPath), override);
   assertSecretFree(JSON.stringify(rules.plan));
@@ -2069,19 +2078,8 @@ function startRun(planPath: string, a: Args): number {
           return EXIT_USAGE;
         }
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
-        const delivery =
-          typeof launchBranch === 'string' && launchBranch ? captureDelivery(plan.repo) : undefined;
-        if (delivery && protectedTarget(delivery.branch)) {
-          print({
-            ok: false,
-            status: 'rejected',
-            reason: 'target_protected',
-            target: delivery.branch,
-            action: '在非保护分支（feature 分支）上启动：git switch -c <新分支> 后重跑',
-          });
-          return EXIT_USAGE;
-        }
-        const paths = delivery ? checkoutChanges(delivery.checkout) : [];
+        const delivery = planDelivery(plan);
+        const paths = checkoutChanges(delivery.checkout);
         if (paths.length) {
           print({
             ok: false,
@@ -4252,6 +4250,7 @@ function tick(
 /** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
 export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
   if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
+  if (c.state === 'held:target_switched') return pastDeadline(l) ? 'deadline' : 'target_switched';
   if (c.state === 'held:human') return 'signoff';
   const h: Hold | undefined =
     c.state === 'held:gate' || c.state === 'held:reclaim_pending'
@@ -5426,7 +5425,8 @@ export function main(argv: string[]): number {
     case 'plan': {
       if (target !== 'check' || a._.length !== 3)
         throw new Error('usage: superagent plan check <file>');
-      const { plan_lint, rules_added } = checkedPlan(a._[2], a.flags['lint-override']);
+      const { plan, plan_lint, rules_added } = checkedPlan(a._[2], a.flags['lint-override']);
+      if (plan.delivery_checkout !== undefined) planDelivery(plan);
       if (plan_lint.rejected)
         throw new Error(`preflight: plan lint: ${plan_lint.warnings.join('; ')}`);
       print({ ok: true, plan_lint, rules_added });

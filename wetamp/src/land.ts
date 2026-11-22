@@ -1,5 +1,6 @@
 export {
   captureDelivery,
+  captureRunDelivery,
   checkoutChanges,
   excludeCodegraph,
   integrationLockPath,
@@ -7,7 +8,6 @@ export {
   integrationNodeTimeout,
   IntegrationError,
   LandError,
-  protectedTarget,
   publish,
   sync,
   targetCheckout,

@@ -316,6 +316,22 @@ test('plan check validates without dispatch or launch-failure writes', () => {
     ok: true,
     plan_lint: { rejected: false },
   });
+  const linked = join(s.root, 'delivery worktree');
+  sh(`git worktree add -qb explicit '${linked}'`, repo);
+  fixturePlan(s.root, repo, p => { p.delivery_checkout = linked; });
+  expect(invoke().exitCode).toBe(0);
+  const unrelated = gitRepo(tmp());
+  for (const [value, message] of [
+    ['', '/delivery_checkout'],
+    ['relative', 'absolute path'],
+    [unrelated, 'same repository'],
+  ]) {
+    fixturePlan(s.root, repo, p => { p.delivery_checkout = value; });
+    const invalid = invoke();
+    expect(invalid.exitCode).not.toBe(0);
+    expect(invalid.stderr.toString()).toContain(message);
+  }
+  fixturePlan(s.root, repo);
   process.env.SUPERAGENT_MEMORY = 'on';
   const episodes = join(s.root, 'home/memory/episodes');
   mkdirSync(episodes, { recursive: true });
@@ -2161,32 +2177,39 @@ describe('run (archon stub)', () => {
     ]);
   });
   test.each([
-    ['run', 'main'],
-    ['run', 'dev'],
-    ['run', 'release-1.2'],
-    ['quick', 'main'],
-  ] as const)('%s rejects protected delivery target %s before generation', (command, branch) => {
-    const s = stub([]),
-      repo = gitRepo(s.root);
-    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
-    if (branch !== 'main') sh(`git switch -qc ${branch}`, repo);
-    const before = readdirSync(join(s.root, 'home/runs'));
-    const args =
-      command === 'run'
-        ? ['run', fixturePlan(s.root, repo)]
-        : ['quick', '--repo', repo, '--goal', 'x', '--accept', 'true'];
-    const result = captured(() => main(args));
-    expect(result.code).toBe(EXIT_USAGE);
-    expect(JSON.parse(result.out)).toEqual({
-      ok: false,
-      status: 'rejected',
-      reason: 'target_protected',
-      target: branch,
-      action: '在非保护分支（feature 分支）上启动：git switch -c <新分支> 后重跑',
-    });
-    expect(readdirSync(join(s.root, 'home/runs'))).toEqual(before);
-    expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
-  });
+    ['run', 'master', false],
+    ['run', 'dev', true],
+    ['run', 'release-1.2', false],
+    ['quick', 'main', false],
+  ] as const)(
+    '%s from a linked worktree selects its delivery target (%s, explicit=%p)',
+    (command, branch, explicit) => {
+      const s = stub([]),
+        repo = gitRepo(s.root),
+        linked = join(s.root, 'linked worktree');
+      process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+      engineBoundary!.mockImplementation(() => cleanEngine(repo));
+      sh(`git branch -m ${branch} && git worktree add -qb feature/launch '${linked}'`, repo);
+      const plan = fixturePlan(s.root, linked, p => {
+        p.base_ref = branch;
+        if (explicit) p.delivery_checkout = linked;
+      });
+      const args =
+        command === 'run'
+          ? ['run', plan]
+          : ['quick', '--repo', linked, '--goal', 'x', '--accept', 'true'];
+      const result = captured(() => main([...args, '--fake']));
+      expect(result.code, result.out).toBe(0);
+      const ledger = loadLedger(JSON.parse(result.out).run_id);
+      expect(ledger.launch_branch).toBe('feature/launch');
+      expect(ledger.delivery).toEqual({
+        checkout: fs.realpathSync(explicit ? linked : repo),
+        branch: explicit ? 'feature/launch' : branch,
+        head: sh('git rev-parse HEAD', repo).trim(),
+        ...(explicit ? {} : { require_checkout: true }),
+      });
+    }
+  );
   // prettier-ignore
   test('run rejects an untracked delivery target before generation', () => {
     const s = stub([]), repo = featureRepo(s.root);
@@ -2278,8 +2301,12 @@ describe('run (archon stub)', () => {
       }
       const sha = sh('git rev-parse HEAD', repo).trim();
       engineBoundary!.mockImplementation(() => cleanEngine(repo));
-      sh(detached ? 'git switch -q --detach HEAD' : 'git switch -qc feature/launch', repo);
-      const plan = fixturePlan(s.root, repo, p => {
+      const launch = detached ? join(s.root, 'detached') : repo;
+      sh(
+        detached ? `git worktree add -q --detach '${launch}'` : 'git switch -qc feature/launch',
+        repo
+      );
+      const plan = fixturePlan(s.root, launch, p => {
         p.base_ref = sha;
       });
       const quota = spyOn(relay, 'relayQuota').mockReturnValue({ quota: 'relay fixture' });
@@ -2302,6 +2329,7 @@ describe('run (archon stub)', () => {
       ).toBe(sha);
       expect(ledger.intervention_events).toEqual([]);
       expect(ledger.launch_branch).toBe(detached ? undefined : 'feature/launch');
+      expect(ledger.delivery?.branch).toBe(detached ? 'main' : 'feature/launch');
       expect(JSON.parse(readFileSync(join(ledger.gen_dir, 'plan.json'), 'utf8')).base_ref).toBe(
         sha
       );
@@ -3038,8 +3066,18 @@ describe('brief / land (archon stub)', () => {
     });
     writeFileSync(
       join(art, 'publish-m1.json'),
-      JSON.stringify({ status: 'rejected', reason: 'target_checkout_changed' })
+      JSON.stringify({ status: 'rejected', reason: 'target_switched' })
     );
+    s.ledger.delivery = { checkout: target, branch: 'main', head: 'a'.repeat(40) };
+    writeFileSync(ledgerPath('sa1'), JSON.stringify(s.ledger));
+    const held = captured(() => main(['wait', 'sa1', '--json', '--timeout', '1']));
+    expect(held.code).toBe(EXIT.held);
+    expect(JSON.parse(held.out).receipt).toMatchObject({
+      state: 'held:target_switched',
+      reason: 'target_switched',
+      evidence_path: join(art, 'publish-m1.json'),
+      action: `把 ${target} 切回 main 后执行 superagent land --apply sa1`,
+    });
     expect(captured(() => main(['land', 'sa1', '--apply'])).code).toBe(0);
     expect(s.calls()).toContain('workflow resume r --detach --json');
   });
@@ -4182,6 +4220,12 @@ describe('explicit continuation (supervise-tick, archon stub)', () => {
       return { s, first: {} };
     },
     engine_suspect: () => ({ s: held('settle-core'), first: {} }),
+    target_switched: () => ({
+      s: held('publish-m1', {
+        'publish-m1.json': { status: 'rejected', reason: 'target_switched' },
+      }),
+      first: { action: 'none', held: true, ok: true },
+    }),
     approval: () => {
       const s = held('x');
       setGet(
