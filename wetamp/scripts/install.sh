@@ -130,6 +130,29 @@ withLock(file, () => {
 console.log("install: mode=" + role);
 ' "$state" "$WETAMP" "$(git -C "$WETAMP" rev-parse HEAD 2>/dev/null || echo unknown)" "$role"
 }
+install_launchd() {
+  local label="$1" dir="${SA_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
+  local plist="$dir/$label.plist"
+  # PATH 取安装时的 PATH 并把 bun 放最前：tick 触发的 resume 要找到 bun、git 与各家 CLI；路径按 XML 转义后代入
+  local new
+  new="$(SA_ARCHON="${SA_ARCHON:-}" SA_REPO="${WETAMP%/wetamp}" SA_PATH="$(dirname "$(command -v bun)"):$PATH${2:-}" bun -e '
+const x = (s: string) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+const e = process.env as Record<string, string>;
+const { normalizeLaunchdPath } = await import(process.argv[2]);
+let t = await Bun.file(process.argv[1]).text();
+t = e.SA_ARCHON ? t.replaceAll("__ARCHON_HOME__", x(e.SA_ARCHON)) : t.replace(/ *<key>ARCHON_HOME<\/key>\n *<string>__ARCHON_HOME__<\/string>\n/, "");
+console.log(t.replaceAll("__HOME__", x(e.SUPERAGENT_HOME || "")).replaceAll("__REPO__", x(e.SA_REPO)).replaceAll("__PATH__", x(normalizeLaunchdPath(e.SA_PATH))).trimEnd());
+' "$WETAMP/launchd/$label.plist.tmpl" "$WETAMP/src/launchd-path.ts")"
+  if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
+    mkdir -p "$dir"
+    [ -f "$plist" ] && cp "$plist" "$plist.bak-$(date +%Y%m%d%H%M%S)"
+    printf '%s\n' "$new" >"$plist"
+    echo "updated ${plist/#$HOME/~}"
+    if [ "${SA_SKIP_LAUNCHD_RELOAD:-}" != 1 ]; then
+      bun "$WETAMP/src/launchd.ts" reload "$plist"
+    fi
+  fi
+}
 case "$mode" in
   ""|--remote-hooks) [ -z "$dry" ] || { echo "install.sh: --dry-run only applies to --hooks/--purge-v1" >&2; exit 64; };;
   --jail-off) [ -z "$dry" ] || { echo "install.sh: --dry-run does not apply to --jail-off" >&2; exit 64; }; disable_jail; exit 0;;
@@ -141,6 +164,7 @@ esac
 if [ "$mode" = --remote-hooks ]; then
   command -v node >/dev/null || { echo "install.sh --remote-hooks: node not found" >&2; exit 1; }
   for f in "$WETAMP"/hooks/*.cjs; do node --check "$f"; done
+  export PATH="$PATH:${BUN_INSTALL:-$HOME/.bun}/bin:/opt/homebrew/bin:/usr/local/bin"
   # twin-toolkit 的 git bundle 不带依赖；有 bun 时冻结安装，否则必须已预装。
   if command -v bun >/dev/null; then
     (cd "$WETAMP" && bun install --frozen-lockfile >/dev/null) || { echo 'install.sh --remote-hooks: shell parser dependencies unavailable' >&2; exit 1; }
@@ -161,6 +185,7 @@ try {
   console.error("install.sh --remote-hooks: " + e.message); process.exitCode = 1;
 }
 ' "$WETAMP"
+  command -v bun >/dev/null || { echo "install.sh --remote-hooks: secret-sync 需要 bun" >&2; exit 1; }
   # 远端 hooks.json 由 agentcfg 维度下推；这里为其中指向本 wetamp/hooks/ 的条目写 Codex 信任
   node "$WETAMP/scripts/codex-trust.cjs" write
   install_jail
@@ -168,6 +193,7 @@ try {
   entry="$HOME/.local/bin/superagent"; mkdir -p "$HOME/.local/bin"
   if [ -e "$entry" ] && [ ! -L "$entry" ]; then mv "$entry" "$entry.bak-$(date +%Y%m%d%H%M%S)"; fi
   [ "$(readlink "$entry" 2>/dev/null)" = "$WETAMP/bin/superagent" ] || { ln -sfn "$WETAMP/bin/superagent" "$entry"; echo "linked $entry -> $WETAMP/bin/superagent"; }
+  install_launchd com.wetamp.superagent.secret-sync ":/opt/homebrew/bin:/usr/local/bin"
   exit 0
 fi
 export SUPERAGENT_HOME="${SUPERAGENT_HOME:-$HOME/.superagent}"
@@ -178,26 +204,8 @@ install_jail
 bun -e "import { install } from '$WETAMP/src/config.ts'; for (const f of install()) console.log('updated ' + f.replace(process.env.HOME, '~'))"
 # hooks 解析器与 board 使用 wetamp 自有依赖；主安装失败明确提示派生 Bash 会拒绝。
 (cd "$WETAMP" && bun install --frozen-lockfile >/dev/null 2>&1) || echo "install.sh: wetamp bun install --frozen-lockfile failed; 派生会话 Bash 将全部被 redline 拒绝；board 不可用" >&2
-label=com.wetamp.superagent.supervise-tick dir="${SA_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
-plist="$dir/$label.plist"
-# PATH 取安装时的 PATH 并把 bun 放最前：tick 触发的 resume 要找到 bun、git 与各家 CLI；路径按 XML 转义后代入
-new="$(SA_ARCHON="$SA_ARCHON" SA_REPO="${WETAMP%/wetamp}" SA_PATH="$(dirname "$(command -v bun)"):$PATH" bun -e '
-const x = (s: string) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-const e = process.env as Record<string, string>;
-const { normalizeLaunchdPath } = await import(process.argv[2]);
-let t = await Bun.file(process.argv[1]).text();
-t = e.SA_ARCHON ? t.replaceAll("__ARCHON_HOME__", x(e.SA_ARCHON)) : t.replace(/ *<key>ARCHON_HOME<\/key>\n *<string>__ARCHON_HOME__<\/string>\n/, "");
-console.log(t.replaceAll("__HOME__", x(e.SUPERAGENT_HOME)).replaceAll("__REPO__", x(e.SA_REPO)).replaceAll("__PATH__", x(normalizeLaunchdPath(e.SA_PATH))).trimEnd());
-' "$WETAMP/launchd/$label.plist.tmpl" "$WETAMP/src/launchd-path.ts")"
-if ! { [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ]; }; then
-  mkdir -p "$dir"
-  [ -f "$plist" ] && cp "$plist" "$plist.bak-$(date +%Y%m%d%H%M%S)"
-  printf '%s\n' "$new" >"$plist"
-  echo "updated ${plist/#$HOME/~}"
-  if [ "${SA_SKIP_LAUNCHD_RELOAD:-}" != 1 ]; then
-    bun "$WETAMP/src/launchd.ts" reload "$plist"
-  fi
-fi
+install_launchd com.wetamp.superagent.supervise-tick
+install_launchd com.wetamp.superagent.secret-sync ":/opt/homebrew/bin:/usr/local/bin"
 publish_mode controller
 [ "${SA_SKIP_DOCTOR:-}" = 1 ] && exit 0
 if out="$("$WETAMP/bin/archon" doctor 2>&1)"; then echo "doctor: ok"; else echo "$out" | grep -v "^[○✓]" | tail -20; echo "doctor: FAILED" >&2; exit 1; fi

@@ -198,7 +198,9 @@ import { loadPlan, milestones, scratch, type Plan } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
-import { secretCommand } from './secrets/command';
+import { defaultRunner, secretCommand } from './secrets/command';
+import { syncFleet } from './secrets/fleet';
+import { syncSecrets } from './secrets/sync';
 import { secretsHealth } from './secrets/scan';
 import { auditTranscripts } from './secrets/audit';
 import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
@@ -338,6 +340,7 @@ export const OPTIONS = {
   session: { type: 'string' },
   'dry-run': { type: 'boolean' },
   vault: { type: 'string' },
+  host: { type: 'string', multiple: true },
   prune: { type: 'boolean' },
   open: { type: 'boolean' },
   schedule: { type: 'boolean' },
@@ -4891,7 +4894,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'report', audience: 'agent', flags: ['full', 'since'], operatorFlags: ['by-engine', 'baseline-days', 'review-whitelist'] },
   { command: 'quota', audience: 'agent', flags: [] },
   { command: 'health', audience: 'agent', flags: ['cwd', 'verbose', 'days'] },
-  { command: 'secret', audience: 'operator', positionals: 'set|list|rm <NAME>|sync|init-op', flags: ['vault', 'dry-run', 'prune'] },
+  { command: 'secret', audience: 'operator', positionals: 'set|list|rm <NAME>|sync|init-op', flags: ['vault', 'dry-run', 'prune', 'host'] },
   { command: 'rollover', audience: 'agent', positionals: '<start|accept|wait|cancel|status|context> [token]', flags: ['reason', 'user', 'timeout'] },
   { command: 'intake', audience: 'agent', positionals: INTAKE_USAGE.slice('intake '.length), flags: ['repo'] },
   { command: 'reclaim', audience: 'operator', flags: ['json'] },
@@ -5216,15 +5219,17 @@ export function main(argv: string[]): number {
       return code;
     });
   switch (verb) {
-    case 'secret':
-      print(
-        secretCommand(target, a._[2], undefined, undefined, {
-          vault: a.flags.vault,
-          dryRun: a.flags['dry-run'],
-          prune: a.flags.prune,
-        })
-      );
+    case 'secret': {
+      const options = { vault: a.flags.vault, dryRun: a.flags['dry-run'], prune: a.flags.prune };
+      if (target === 'sync') {
+        const local = () => syncSecrets(defaultRunner, options);
+        const result = a.flags.host ? syncFleet(a.flags.host, !!options.dryRun, local) : local();
+        print(result);
+        return result.ok ? 0 : 1;
+      }
+      print(secretCommand(target, a._[2], undefined, undefined, options));
       return 0;
+    }
     case 'debt': {
       const action = need(target, 'debt list|close');
       if (action === 'list') {

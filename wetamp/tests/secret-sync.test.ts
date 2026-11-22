@@ -14,14 +14,21 @@ afterEach(() => {
 const probe = (): string => `s_${randomBytes(18).toString('base64url')}`;
 const done = (status = 0, stdout = '') => ({ status, stdout: Buffer.from(stdout) }) as never;
 
-function fixture(home: string, items: string[], values: Record<string, string>) {
+type Revision = { version: number; error?: string };
+function fixture(home: string, items: string[], values: Record<string, string>, rev?: Revision) {
   const token = probe(),
     keychain = new Map<string, string>(),
     calls: { args: string[]; env?: NodeJS.ProcessEnv }[] = [];
   const run: Runner = (command, args, input, env) => {
     calls.push({ args, env });
-    if (command === '/fake/op' && args[0] === 'item')
-      return done(0, JSON.stringify(items.map(title => ({ title }))));
+    if (command === '/fake/op' && args[0] === 'item') {
+      if (rev?.error) return { status: 1, stderr: Buffer.from(rev.error) } as ReturnType<Runner>;
+      const metadata = { id: 'c4p3fx5xfzm4vno2a4ii7u3qea', updated_at: '2026-11-22T01:00:00Z' };
+      return done(
+        0,
+        JSON.stringify(items.map(title => ({ ...metadata, title, version: rev?.version })))
+      );
+    }
     if (command === '/fake/op') {
       const match = args[1]?.match(/^op:\/\/[^/]+\/([^/]+)\/(credential|password)$/);
       const value = match && values[`${match[1]}/${match[2]}`];
@@ -34,7 +41,8 @@ function fixture(home: string, items: string[], values: Record<string, string>) 
     }
     if (args[0] === 'delete-generic-password') return done(keychain.delete(args[2]!) ? 0 : 1);
     if (args.includes('superagent-op-sa-token')) return done(0, token);
-    return done(keychain.has(args[3]!) ? 0 : 1, keychain.get(args[3]!) ?? '');
+    const name = args[args.indexOf('-a') + 1]!;
+    return done(keychain.has(name) ? 0 : 44, args.includes('-w') ? (keychain.get(name) ?? '') : '');
   };
   process.env.HOME = home;
   return { run, token, keychain, calls };
@@ -70,6 +78,47 @@ test('sync verifies writes, records provenance, and prunes only synchronized nam
       .every(call => call.env?.OP_SERVICE_ACCOUNT_TOKEN === f.token)
   ).toBeTrue();
   expect(f.calls.flatMap(call => call.args).join(' ')).not.toContain(f.token);
+});
+
+test('sync reuses versions, recovers missing entries and refuses empty prune', () => {
+  const items = ['ONLY'],
+    rev = { version: 1 };
+  const f = fixture(tmp(), items, { 'ONLY/credential': probe() }, rev);
+  const options = { opPath: '/fake/op', prune: true };
+  const sync = () => secretCommand('sync', undefined, undefined, f.run, options);
+  expect(sync()).toMatchObject({ synced: ['ONLY'] });
+  f.calls.length = 0;
+  expect(sync()).toMatchObject({ synced: [], unchanged: ['ONLY'] });
+  expect(f.calls.some(call => call.args.includes('-w') && call.args.includes('ONLY'))).toBeFalse();
+  expect(f.calls.some(call => call.args[0] === 'read')).toBeFalse();
+  rev.version++;
+  expect(sync()).toMatchObject({ synced: ['ONLY'] });
+  f.keychain.delete('ONLY');
+  expect(sync()).toMatchObject({ synced: ['ONLY'] });
+  items.pop();
+  expect(sync()).toMatchObject({ ok: false, failed: ['ONLY'], pruned: [] });
+  expect(f.keychain.has('ONLY')).toBeTrue();
+});
+
+test('sync writes success and failure receipts without raw command output', () => {
+  const home = tmp(),
+    value = probe(),
+    rev: Revision = { version: 1 };
+  const f = fixture(home, ['ONLY'], { 'ONLY/credential': value }, rev);
+  const state = (file: string) => readFileSync(join(home, '.wetamp', file), 'utf8');
+  const receipt = () => state('secret-sync.last.json');
+  const sync = () => secretCommand('sync', undefined, undefined, f.run, { opPath: '/fake/op' });
+  sync();
+  expect(JSON.parse(receipt())).toMatchObject({ ok: true, synced: ['ONLY'], error: null });
+  expect(receipt() + state('secrets.sync-state.json')).not.toContain(value);
+  rev.error = value;
+  expect(sync).toThrow('op item list failed');
+  expect(JSON.parse(receipt())).toMatchObject({
+    ok: false,
+    synced: [],
+    error: 'secret sync: op item list failed',
+  });
+  expect(receipt()).not.toContain(value);
 });
 
 test('dry-run and initialization expose no values and perform no keychain writes', () => {

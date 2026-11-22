@@ -148,6 +148,13 @@ describe('install.sh', () => {
     mkdirSync(join(home, '.nvm/current/bin'), { recursive: true });
     runInstall(home, la, undefined, callerPath);
     const xml = readFileSync(plist, 'utf8');
+    const secretPlist = join(la, 'com.wetamp.superagent.secret-sync.plist');
+    const secretXml = readFileSync(secretPlist, 'utf8'),
+      secretMtime = statSync(secretPlist).mtimeMs;
+    expect(secretXml).toContain('<key>RunAtLoad</key><true/>');
+    expect(secretXml).toContain('<integer>1800</integer>');
+    expect(secretXml).toContain('<string>--prune</string>');
+    expect(secretXml).toContain('/wetamp/bin/superagent</string>');
     for (const s of [
       '<integer>60</integer>',
       '<string>Interactive</string>',
@@ -162,6 +169,7 @@ describe('install.sh', () => {
     expect(xml).not.toContain('.nvm/versions/');
     expect(xml).not.toContain('.codex/tmp/');
     expect(runInstall(home, la, undefined, callerPath)).toContain('install: mode=controller');
+    expect(statSync(secretPlist).mtimeMs).toBe(secretMtime);
     writeFileSync(plist, 'stale');
     runInstall(home, la, undefined, callerPath);
     expect(readFileSync(plist, 'utf8')).toBe(xml);
@@ -266,6 +274,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
           OPENCODE_CONFIG_DIR: '',
           XDG_CONFIG_HOME: '',
           XDG_STATE_HOME: '',
+          SA_LAUNCHD_DIR: join(home, 'LaunchAgents'),
+          SA_SKIP_LAUNCHD_RELOAD: '1',
         },
         stdout: 'pipe',
         stderr: 'pipe',
@@ -705,6 +715,9 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     });
     expect(ledger.hooks).toContain('guard.cjs');
     expect(ledger.role).toBe('worker');
+    expect(
+      readFileSync(join(home, 'LaunchAgents/com.wetamp.superagent.secret-sync.plist'), 'utf8')
+    ).toContain('<string>--prune</string>');
     const file = join(home, '.local', 'state', 'superagent', 'install.json');
     writeFileSync(file, JSON.stringify({ ...ledger, userField: 'retained' }));
     expect(sh('--remote-hooks').code).toBe(0);
@@ -717,9 +730,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     const root = tmp(),
       toolkit = join(root, 'wetamp');
     mkdirSync(toolkit);
-    for (const dir of ['hooks', 'scripts', 'bin', 'jail', 'secrets'])
+    for (const dir of ['hooks', 'scripts', 'bin', 'jail', 'secrets', 'launchd'])
       cpSync(join(WETAMP, dir), join(toolkit, dir), { recursive: true });
     cpSync(join(WETAMP, 'src/secrets'), join(toolkit, 'src/secrets'), { recursive: true });
+    cpSync(join(WETAMP, 'src/launchd-path.ts'), join(toolkit, 'src/launchd-path.ts'));
     writeFileSync(join(toolkit, 'tiers.json'), readFileSync(join(WETAMP, 'tiers.json')));
     mkdirSync(join(root, '.git'));
     const commands = join(root, 'commands');
@@ -756,6 +770,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         XDG_STATE_HOME: state,
         CLAUDE_CONFIG_DIR: '',
         CODEX_HOME: '',
+        SA_LAUNCHD_DIR: join(home, 'LaunchAgents'),
+        SA_SKIP_LAUNCHD_RELOAD: '1',
       };
       const probe = Bun.spawnSync(['node', join(toolkit, 'hooks/guard.cjs'), 'claude'], {
         env,

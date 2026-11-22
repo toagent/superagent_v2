@@ -217,6 +217,9 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 ## 1Password 凭据同步
 
 每台机器先在普通 TTY 终端运行 `superagent secret init-op`，按返回命令把只读
-`AI-Agents` 服务账号 token 存入本机钥匙串。导入或修改凭据后运行
-`superagent secret sync --vault AI-Agents`；删除保管库条目后加 `--prune`，只清理由同步
-创建的名字。AI jail 内禁止直接运行 `op`，也禁止 `secret set/rm/sync` 访问钥匙串。
+`AI-Agents` 服务账号 token 保存到本机。controller 和 `--remote-hooks` 安装会在 GUI
+会话中每 30 分钟运行一次增量同步，含空候选保护的 `--prune`。
+手动同步时可用 `superagent secret sync --vault AI-Agents`，加 `--prune` 只清理由同步创建的名字。
+运行 `superagent secret sync --host <ssh别名> --host <ssh别名>` 立即同步本机和指定主机，
+回执中的 `local` 代表本机。远端使用已安装的 LaunchAgent 和它的默认保管库。
+`--dry-run` 预演本机同步并检查远端 LaunchAgent。AI jail 禁止直接运行 `op` 和访问钥匙串。
