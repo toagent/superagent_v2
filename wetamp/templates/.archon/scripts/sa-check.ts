@@ -1132,7 +1132,7 @@ export function scopeBase(runStart: string, base: string): string {
   return merged.exitCode === 0 && !merged.signalCode ? merged.stdout.toString().trim() : base;
 }
 
-/** Use one authored-change baseline for both scope and package complexity checks. */
+/** Keep scope cumulative across packages. */
 function packageChangeBase(runStart: string, base: string): string {
   return scopeBase(runStart, env('TARGET_TIP') || base);
 }
@@ -1607,7 +1607,7 @@ async function acceptOnce(
   // prettier-ignore
   if (resourceWaitTimedOut)
     Object.assign(result, { disposition: 'fail', reason: 'resource_wait_timeout', decision: { ...result.decision, kind: 'block', reason: 'resource_wait_timeout' } });
-  const lines = lineBudget(pkgs, tag, changeBase);
+  const lines = lineBudget(pkgs, tag, env('DELTA_BASE') || changeBase);
   if (
     lines &&
     budgetExceeded(lines.limit, lines.used) &&
@@ -3662,12 +3662,11 @@ if (import.meta.main) {
   const fn = kinds[env('KIND')];
   try {
     if (process.argv[2] === 'net-lines') {
-      const [start, tip, generated] = JSON.parse(readFileSync(process.argv[3], 'utf8')) as [
-        string,
+      const [base, generated] = JSON.parse(readFileSync(process.argv[3], 'utf8')) as [
         string,
         string[],
       ];
-      console.log(gitNetLineBudget(scopeBase(start, tip), generated).used);
+      console.log(gitNetLineBudget(base, generated).used);
     } else {
       if (!fn) throw new Error(`sa-check: unknown INPUTS_KIND ${env('KIND')}`);
       await fn();

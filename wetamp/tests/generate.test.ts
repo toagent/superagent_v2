@@ -1923,17 +1923,17 @@ describe('renderBrief', () => {
     const gen = tmp(),
       repo = gitRepo(tmp());
     const plan = structuredClone(fixture);
-    const p = plan.packages[0];
+    const p = plan.packages[1];
+    delete p.milestone;
     p.max_net_lines = 2;
-    const start = sh('git rev-parse HEAD', repo).trim();
-    sh('echo upstream > upstream.txt && git add upstream.txt && git commit -qm upstream', repo);
-    const tip = sh('git rev-parse HEAD', repo).trim();
+    sh('echo prior > core.txt && git add core.txt && git commit -qm prior', repo);
+    const packageBase = sh('git rev-parse HEAD', repo).trim();
     const nodes = nodesOf(buildWorkflow(plan, milestones(plan), 'budget', gen, false, NOW));
-    const producer = nodes.find(n => n.id === 'package-attempt-core')!;
-    const verify = nodes.find(n => n.id === 'verify-core')!;
+    const producer = nodes.find(n => n.id === 'package-attempt-api')!;
+    const verify = nodes.find(n => n.id === 'verify-api')!;
+    expect(producer.with!.delta_base).toBe('$settle-core.output.head');
     expect(verify.with).toMatchObject({
-      scope_base: producer.with!.scope_base,
-      target_tip: producer.with!.target_tip,
+      delta_base: producer.with!.delta_base,
       generated_paths: producer.with!.generated_paths,
     });
     fs.cpSync(join(WETAMP, 'templates/.archon'), join(gen, '.archon'), { recursive: true });
@@ -1948,21 +1948,21 @@ describe('renderBrief', () => {
     );
     fs.mkdirSync(join(gen, 'briefs'));
     fs.writeFileSync(
-      join(gen, 'briefs/core.md'),
-      renderBrief(p, join(gen, 'hints/core.md'), capsOf(plan, p, []))
+      join(gen, 'briefs/api.md'),
+      renderBrief(p, join(gen, 'hints/api.md'), capsOf(plan, p, []))
     );
-    const result = runAttempt(
-      { ...producer, with: { ...producer.with, scope_base: start, target_tip: tip } },
-      repo,
-      gen
-    );
+    const bound = { ...producer, with: { ...producer.with, delta_base: packageBase } };
+    const result = runAttempt(bound, repo, gen);
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     const pack = readFileSync(JSON.parse(result.stdout.toString()).context_pack_path, 'utf8');
     const cmd = /^\`(bun .* net-lines .*)\`$/m.exec(pack)![1];
     sh(
-      "mkdir -p tests wetamp/src && printf 'one\\ntwo\\n' > core.txt && echo test > tests/core.ts && echo generated > wetamp/src/plan-types.generated.ts && git add core.txt tests/core.ts wetamp/src/plan-types.generated.ts",
+      "mkdir -p tests wetamp/src && printf 'one\\ntwo\\n' > api.txt && echo test > tests/api.ts && echo generated > wetamp/src/plan-types.generated.ts && git add api.txt tests/api.ts wetamp/src/plan-types.generated.ts",
       repo
     );
+    expect(sh(cmd, repo).trim()).toBe('2');
+    sh('git commit -qm candidate', repo);
+    expect(runAttempt(bound, repo, gen).exitCode).toBe(0);
     expect(sh(cmd, repo).trim()).toBe('2');
   });
 

@@ -1018,6 +1018,7 @@ export function buildWorkflow(
         scope_base: scopeBase,
         target_tip: ref.required(syncReadyHandle, 'target_tip'),
       };
+      const deltaBase = ref.required(output<DeliveryOutput>(prev), 'head');
       const budgetInputs =
         p.max_net_lines === undefined
           ? {}
@@ -1031,7 +1032,7 @@ export function buildWorkflow(
           p.id,
           '',
           '',
-          p.max_net_lines === undefined ? {} : { ...changeInputs, ...budgetInputs }
+          p.max_net_lines === undefined ? {} : { delta_base: deltaBase, ...budgetInputs }
         ),
         depends_on: [packageStart],
         always_run: true,
@@ -1084,7 +1085,6 @@ export function buildWorkflow(
         ...(carry ? { when: `$${pkgAttempt}.output.attempt != '0'` } : {}),
         output_format: coderOutputFormat,
       });
-      const previousHandle = output<DeliveryOutput>(prev);
       const accept = {
         kind: 'accept',
         plan: planPath,
@@ -1094,7 +1094,7 @@ export function buildWorkflow(
         base,
         ...changeInputs,
         review_base: reviewBase,
-        delta_base: ref.required(previousHandle, 'head'),
+        delta_base: deltaBase,
         ...(p.max_net_lines === undefined
           ? {}
           : {

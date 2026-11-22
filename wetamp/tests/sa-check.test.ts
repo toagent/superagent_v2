@@ -2930,6 +2930,7 @@ describe('sa-check script', () => {
       generated_paths: '[]',
       base,
       scope_base: base,
+      delta_base: '',
       risk: 'G1',
     });
     expect(r.out).toMatchObject({
@@ -2959,8 +2960,9 @@ describe('sa-check script', () => {
       value = JSON.parse(readFileSync(plan, 'utf8'));
     value.packages[0].max_net_lines = 10;
     value.packages[0].scope = { write: ['current.ts'] };
+    value.packages.unshift({ id: 'prior', scope: { write: ['prior.ts'] }, accept: [] });
     writeFileSync(plan, JSON.stringify(value));
-    const result = runScript(repo, {
+    const inputs = {
       kind: 'accept',
       plan,
       pkgs: 'a',
@@ -2969,13 +2971,20 @@ describe('sa-check script', () => {
       generated_paths: '[]',
       base: runBase,
       scope_base: runBase,
-      target_tip: packageBase,
+      target_tip: runBase,
+      delta_base: packageBase,
+      scope_pkgs: 'prior,a',
       risk: 'G1',
-    });
+    };
+    const result = runScript(repo, inputs);
     expect(result.out).toMatchObject({
       reason: null,
       net_lines: { used: 7, limit: 10, excluded: [] },
       out_of_scope: [],
+    });
+    expect(runScript(repo, { ...inputs, scope_pkgs: 'a' }).out).toMatchObject({
+      net_lines: { used: 7 },
+      out_of_scope: ['prior.ts'],
     });
   });
   // prettier-ignore

@@ -352,14 +352,12 @@ if (import.meta.main) {
     if (!artifacts && (pkg || review || contextNode || process.env.INPUTS_HANDOFF === '1'))
       throw new Error('context: ARTIFACTS_DIR missing');
     if (pkg && process.env.INPUTS_GENERATED_PATHS) {
+      const base = process.env.INPUTS_DELTA_BASE;
+      if (!base) throw new Error('context: missing delta base for line budget');
       mkdirSync(dirname(counter), { recursive: true });
       writeFileSync(
         netLineInputsPath(counter),
-        JSON.stringify([
-          process.env.INPUTS_SCOPE_BASE,
-          process.env.INPUTS_TARGET_TIP,
-          JSON.parse(process.env.INPUTS_GENERATED_PATHS),
-        ])
+        JSON.stringify([base, JSON.parse(process.env.INPUTS_GENERATED_PATHS)])
       );
     }
     if (pkg || review || contextNode) {

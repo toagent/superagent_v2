@@ -108,6 +108,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: "lineBudget(pkgs, tag, env('DELTA_BASE') || changeBase)",
+    to: 'lineBudget(pkgs, tag, changeBase)',
+    test: 'tests/sa-check.test.ts',
+    name: 'line budget counts only the current package',
+    expectedError: '"used": 47',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: "return scopeBase(runStart, env('TARGET_TIP') || base);",
     to: "return env('TARGET_TIP') || scopeBase(runStart, base);",
     test: 'tests/sa-check.test.ts',
