@@ -385,6 +385,45 @@ export function buildWorkflow(
     }
     return gates;
   };
+  // Only used before package verification or milestone acceptance, which binds evidence to HEAD.
+  const syncReadyScript = (afterSync = ''): string =>
+    [
+      "import { existsSync } from 'node:fs';",
+      "const runGit = (args: string[]) => Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' });",
+      'const failure = (args: string[], p: ReturnType<typeof runGit>) =>',
+      "  'git ' + args.join(' ') + ' exit=' + p.exitCode + '\\nstdout: ' + p.stdout.toString().trim() + '\\nstderr: ' + p.stderr.toString().trim();",
+      'const git = (...args: string[]) => {',
+      '  const p = runGit(args);',
+      '  if (p.exitCode !== 0) throw new Error(failure(args, p));',
+      '  return p.stdout.toString().trim();',
+      '};',
+      "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
+      "let status = process.env.INPUTS_STATUS ?? '';",
+      "if (status === 'conflict') {",
+      "  const ancestor = ['merge-base', '--is-ancestor', tip, 'HEAD'];",
+      '  const check = runGit(ancestor);',
+      '  if (check.exitCode === 1) {',
+      "    const head = git('rev-parse', 'HEAD');",
+      "    const missing = 'target_tip=' + tip + ' 不在 HEAD=' + head + ' 祖先链上，resolver 未完成真实合并';",
+      "    const mergeHead = git('rev-parse', '--git-path', 'MERGE_HEAD');",
+      "    if (existsSync(mergeHead)) throw new Error(missing + '\\n已有合并正在进行');",
+      "    const merge = ['merge', '--no-edit', tip];",
+      '    const result = runGit(merge);',
+      '    if (result.exitCode !== 0 || existsSync(mergeHead)) {',
+      "      const abort = ['merge', '--abort'];",
+      '      const aborted = existsSync(mergeHead) ? runGit(abort) : null;',
+      "      throw new Error(missing + '\\n' + failure(merge, result) +",
+      "        (aborted && aborted.exitCode !== 0 ? '\\n' + failure(abort, aborted) : ''));",
+      '    }',
+      '    git(...ancestor);',
+      "    console.error(JSON.stringify({ event: 'sync_auto_merge', target_tip: tip, previous_head: head, head: git('rev-parse', 'HEAD') }));",
+      '  } else if (check.exitCode !== 0) throw new Error(failure(ancestor, check));',
+      "  status = 'resolved';",
+      '}',
+      afterSync,
+      "const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };",
+      'process.stdout.write(JSON.stringify(output));',
+    ].join('\n');
   const addSync = (
     target: Node[],
     m: Milestone,
@@ -451,14 +490,7 @@ export function buildWorkflow(
       id: ready,
       depends_on: [id, ...(delivery && !fake ? [resolve] : [])],
       trigger_rule: 'none_failed_min_one_success',
-      script: [
-        "const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };",
-        "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
-        "let status = process.env.INPUTS_STATUS ?? '';",
-        "if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }",
-        "const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };",
-        'process.stdout.write(JSON.stringify(output));',
-      ].join('\n'),
+      script: syncReadyScript(),
       runtime: 'bun',
       with: {
         target_tip: ref.required(syncHandle, 'target_tip'),
@@ -591,16 +623,9 @@ export function buildWorkflow(
         id: syncReady,
         depends_on: [syncId, ...(delivery && !fake ? [resolveDecision] : [])],
         trigger_rule: 'none_failed_min_one_success',
-        script: [
-          "import { existsSync } from 'node:fs';",
-          "const git = (...args: string[]) => { const p = Bun.spawnSync(['git', ...args], { stdout: 'pipe', stderr: 'pipe' }); if (p.exitCode !== 0) throw new Error(p.stderr.toString().trim()); return p.stdout.toString().trim(); };",
-          "const tip = process.env.INPUTS_TARGET_TIP ?? '';",
-          "let status = process.env.INPUTS_STATUS ?? '';",
-          "if (status === 'conflict') { git('merge-base', '--is-ancestor', tip, 'HEAD'); status = 'resolved'; }",
-          `if (status === 'merged' && existsSync(process.env.ARTIFACTS_DIR + '/${gateId(1)}.json')) status = 'resolved';`,
-          "const output = { status, target_tip: tip, merge_base: git('merge-base', 'HEAD', tip), head: git('rev-parse', 'HEAD'), generation: Number(process.env.INPUTS_GENERATION) };",
-          'process.stdout.write(JSON.stringify(output));',
-        ].join('\n'),
+        script: syncReadyScript(
+          `if (status === 'merged' && existsSync(process.env.ARTIFACTS_DIR + '/${gateId(1)}.json')) status = 'resolved';`
+        ),
         runtime: 'bun',
         with: {
           target_tip: ref.required(syncHandle, 'target_tip'),

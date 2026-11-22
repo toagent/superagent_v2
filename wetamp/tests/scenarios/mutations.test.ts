@@ -16,6 +16,14 @@ type Mutation = {
 const mutations: Mutation[] = [
   {
     file: 'src/generate.ts',
+    from: "const merge = ['merge', '--no-edit', tip];",
+    to: 'const merge = ancestor;',
+    test: 'tests/scenarios/scenario-rest.test.ts',
+    name: 'S5 sync ready after resolver done \\(ordinary-commit\\)',
+    expectedError: 'expect(received).toEqual(expected)',
+  },
+  {
+    file: 'src/generate.ts',
     from: 'loop_group: {\n        max_iterations: 3,',
     to: 'loop_group: {\n        interactive: true,\n        max_iterations: 3,',
     test: 'tests/scenarios/scenario-core.test.ts',

@@ -399,6 +399,46 @@ test('S5/S7/S9/S10: generated scenarios use executor facts, never local counters
   }
 }, 300_000);
 
+test.each(['ordinary-commit', 'still-conflicting'] as const)(
+  'S5 sync ready after resolver done (%s)',
+  async resolution => {
+    const f = fixture('S5');
+    f.syncResolution = resolution;
+    try {
+      const result = await runInProcess(f);
+      const ready = 'sync-review-m1-ready';
+      const { target_tip: tip, status } = JSON.parse(
+        readFileSync(join(result.artifactsDir, 'sync-review-m1.json'), 'utf8')
+      );
+      const head = sh('git rev-parse HEAD', f.worker).trim();
+      expect(status).toBe('conflict');
+      expect(f.agentCalls?.['resolve-sync-review-m1']).toBe(1);
+      expect(sh('git status --porcelain', f.worker)).toBe('');
+      if (resolution === 'ordinary-commit') {
+        expect(result.terminal.completed).toEqual([result.runId]);
+        expect(sh('git rev-parse HEAD^2', f.worker).trim()).toBe(tip);
+        const accepted = JSON.parse(
+          readFileSync(join(result.artifactsDir, 'diff-m1-r1.json'), 'utf8')
+        );
+        expect(accepted.head).toBe(head);
+      } else {
+        expect(result.terminal.failed).toEqual([result.runId]);
+        const failure = JSON.stringify(
+          result.events.find(e => e.event_type === 'node_failed' && e.step_name === ready)?.data
+        );
+        expect(failure).toContain(`target_tip=${tip} 不在 HEAD=${head} 祖先链上`);
+        expect(failure).toContain(`git merge --no-edit ${tip}`);
+        expect(failure).toContain('exit=1');
+        expect(failure).toContain('stdout:');
+        expect(failure).toContain('stderr:');
+      }
+    } finally {
+      restore(f);
+    }
+  },
+  90_000
+);
+
 test.each([
   ['S18', 'G2', 2],
   ['S19', 'G1', 0],

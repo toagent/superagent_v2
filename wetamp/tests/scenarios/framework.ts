@@ -68,6 +68,7 @@ export interface ScenarioFixture {
   blockMs?: number;
   runId?: string;
   targetAfterInjection?: string;
+  syncResolution?: 'ordinary-commit' | 'still-conflicting';
   targetAdvancedAfterResync?: boolean;
   targetAdvanceAfterInitialSync?: string;
   carried?: Continuation;
@@ -176,18 +177,28 @@ function scriptedProvider(f: ScenarioFixture): IAgentProvider {
             ? { path: 'scenario-2.txt', content: `${f.spec.id}-2\n` }
             : f.spec.agents.code;
         writeFileSync(join(cwd, edit.path), edit.content);
+        if (f.syncResolution) {
+          writeFileSync(join(cwd, 'sync-conflict.txt'), 'worker-side\n');
+          sh('git add sync-conflict.txt', cwd);
+        }
         sh(
           `git add '${edit.path}' && git -c user.name=scenario -c user.email=scenario@local commit -qm scenario-${f.spec.id}`,
           cwd
         );
         if (f.spec.id === 'S5') {
-          writeFileSync(join(f.target, edit.path), 'target-side\n');
-          sh(`git add '${edit.path}' && git commit -qm target-conflict`, f.target);
+          const path = f.syncResolution ? 'sync-conflict.txt' : edit.path;
+          writeFileSync(join(f.target, path), 'target-side\n');
+          sh(`git add '${path}' && git commit -qm target-conflict`, f.target);
         }
       }
       if (id === 'resolve-sync-review-m1' && f.spec.id === 'S5') {
         const targetTip = sh('git rev-parse scenario-target', f.target).trim();
-        sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
+        if (f.syncResolution === 'ordinary-commit') {
+          writeFileSync(join(cwd, 'sync-conflict.txt'), 'target-side\n');
+          sh('git commit -qam resolve-content-only', cwd);
+        } else if (!f.syncResolution) {
+          sh(`git merge -s ours --no-edit '${targetTip}'`, cwd);
+        }
       }
       if (
         id === 'resolve-resync-m1' &&
@@ -514,7 +525,14 @@ export async function runInProcess(
             id: 'p',
             title: f.spec.id,
             goal: f.spec.plan.goal,
-            scope: { write: [f.spec.agents.code.path, 'fix.txt', 'require-fix.txt'] },
+            scope: {
+              write: [
+                f.spec.agents.code.path,
+                'fix.txt',
+                'require-fix.txt',
+                ...(f.syncResolution ? ['sync-conflict.txt'] : []),
+              ],
+            },
             accept: [{ cmd: f.spec.plan.accept, timeout_s: 5 }],
             risk: f.spec.risk,
             size: 'S',
