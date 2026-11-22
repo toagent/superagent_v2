@@ -1732,6 +1732,29 @@ describe('buildWorkflow', () => {
       if_skipped: '',
     });
   });
+  test('sync ready handles a completed merge and diagnoses missing or empty target tips', () => {
+    const repo = gitRepo(tmp());
+    const head = sh('git rev-parse HEAD', repo).trim();
+    const script = nodesOf(build(false)).find(n => n.id === 'sync-review-m1-ready')!.script!;
+    const env = fixtureEnv({ INPUTS_STATUS: 'conflict', INPUTS_GENERATION: '1' });
+    const run = (tip?: string) =>
+      Bun.spawnSync([process.execPath, '-e', script], {
+        cwd: repo,
+        env: { ...env, INPUTS_TARGET_TIP: tip },
+      });
+    const resolved = run(head);
+    expect(resolved.exitCode).toBe(0);
+    expect(resolved.stderr.toString()).toBe('');
+    expect(JSON.parse(resolved.stdout.toString()).status).toBe('resolved');
+    for (const tip of [undefined, '']) {
+      const result = run(tip);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr.toString()).toMatch(
+        /git merge-base --is-ancestor  HEAD exit=\d+\nstdout:.*\nstderr: .+/
+      );
+    }
+    expect(sh('git rev-parse HEAD', repo).trim()).toBe(head);
+  });
   test('every $INPUTS.<name> a command template reads is bound by its node', () => {
     const nodes = nodesOf(build(false)) as (N & { command?: string })[];
     for (const x of nodes.filter(k => k.command)) {

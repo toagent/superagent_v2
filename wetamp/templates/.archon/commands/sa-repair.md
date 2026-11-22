@@ -22,6 +22,12 @@ $INPUTS.prior_work
 
 复用其中 changed_files、quick_checks、deviations、needs 定位本次失败，源码按需核验。
 
+## 同步冲突（仅 `sync_conflict`）
+
+取 `prior_work.target_tip` 的 SHA，在运行 worktree 执行 `git merge --no-edit <target_tip>`。
+有冲突时解决冲突、暂存相关文件并完成真实合并提交。内容修正的普通提交和 `git merge-tree` 预检都不能代替这一步。
+回报 `done` 前运行 `git merge-base --is-ancestor <target_tip> HEAD`，确认退出码为 0。
+
 ## 资源检查定向复现（仅本修复节点）
 
 从 `$INPUTS.accept_log` 读取失败检查及失败用例 ID，只用测试工具原生选择器定向重跑失败用例（如 pytest nodeid、bun test 文件加 `-t`），不得重跑完整资源命令或全量套件。按失败检查的 `resource` 把定向命令追加到对应包装前缀后执行：
