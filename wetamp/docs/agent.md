@@ -4,7 +4,7 @@
 
 ## 选择入口
 
-- 单包、小范围交付：`superagent quick --card <card.md> --accept "<cmd>" --scope "<glob>"`。
+- 单包交付：`superagent quick --card <card.md> --accept "<cmd>" --scope "<glob>" [--size S|M|L]`，默认 S，租约分别为 30、45、60 分钟。
 - 多包、依赖或不同门禁：先写 plan，再运行 `superagent run <plan.json>`。
 - plan 外的一次性调研或评审：`superagent job exec --role general --title <title> -- <cmd>`。
 

@@ -296,6 +296,7 @@ export const OPTIONS = {
   accept: { type: 'string', multiple: true },
   scope: { type: 'string', multiple: true },
   risk: { type: 'string' },
+  size: { type: 'string', metavar: 'S|M|L' },
   'review-reason': { type: 'string' },
   'review-whitelist': { type: 'boolean' },
   'no-cache': { type: 'boolean' },
@@ -361,9 +362,14 @@ interface Args {
   _: string[];
   flags: ReturnType<typeof parse<{ options: typeof OPTIONS; allowPositionals: true }>>['values'];
 }
+const quickSize = (size = 'S') => {
+  if (size !== 'S' && size !== 'M' && size !== 'L') throw new Error('quick --size must be S|M|L');
+  return size;
+};
 /** 严格模式：未知参数直接报错，不静默忽略。 */
 export function parseArgs(argv: string[]): Args {
   const { values, positionals } = parse({ args: argv, options: OPTIONS, allowPositionals: true });
+  if (positionals[0] === 'quick') quickSize(values.size);
   return { _: positionals, flags: values };
 }
 
@@ -1785,6 +1791,7 @@ export function waitRuns(
 
 /** Materialize and validate the ordinary plan contract before using the run launcher. */
 export function quickPlan(a: Args): string {
+  const size = quickSize(a.flags.size);
   if (a.flags.card !== undefined && a.flags.goal !== undefined)
     throw new Error('quick requires either --goal <text> or --card <file>, not both');
   // Snapshot the full brief into the existing plan so later edits cannot change the run.
@@ -1822,7 +1829,6 @@ export function quickPlan(a: Args): string {
     if (p.exitCode !== 0) throw new Error(`quick git ${args[0]}: ${tail(p.stderr.toString())}`);
     return p.stdout.toString().trim();
   };
-  const size = 'S';
   const plan: Plan = {
     ...(a.flags['request-ref'] !== undefined ? { request_ref: a.flags['request-ref'] } : {}),
     repo: git('rev-parse', '--show-toplevel'),
@@ -4856,7 +4862,7 @@ interface CommandUsage {
 export const CLI_GLOBAL_OPTIONS = ['help', 'json'] as const satisfies readonly OptionName[];
 // prettier-ignore
 export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
-  { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
+  { command: 'quick', audience: 'agent', flags: ['goal', 'card', 'accept', 'accept-timeout', 'environment', 'console', 'scope', 'risk', 'size', 'review-reason', 'no-cache', 'base', 'repo', 'request-ref', 'allow-overlap'] },
   { command: 'run', audience: 'agent', positionals: '<plan.json>', flags: ['allow-overlap', 'adopt', 'fresh'], operatorFlags: ['fake', 'lint-override'] },
   { command: 'retro', audience: 'agent', positionals: '<run>', flags: ['effect', 'improve'] },
   { command: 'plan', audience: 'agent', positionals: 'check <file> | draft <brief> <output>', flags: [], operatorFlags: ['lint-override'] },
@@ -4908,7 +4914,8 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
 
 const optionUsage = (name: OptionName): string => {
   const option = OPTIONS[name];
-  const value = option.type === 'string' ? ` <v>${'multiple' in option ? '...' : ''}` : '';
+  const metavar = 'metavar' in option ? option.metavar : 'v';
+  const value = option.type === 'string' ? ` <${metavar}>${'multiple' in option ? '...' : ''}` : '';
   return ` [--${name}${value}]`;
 };
 const loadExport = createRequire(import.meta.url);

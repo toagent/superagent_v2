@@ -62,6 +62,7 @@ import {
 } from '../src/cli';
 import { gitHead, renderAliases, loadTiers, resolveRoute, WETAMP } from '../src/config';
 import { redact } from '../src/redact';
+import { budgetSeconds } from '../src/node-progress';
 import { buildWorkflow, engineHash, generate, renderBrief } from '../src/generate';
 import { capsOf, loadPlan, milestones, type Plan } from '../src/plan';
 import { detailOf, redact as boardRedact } from '../src/board/detail';
@@ -621,6 +622,31 @@ describe('quick', () => {
       });
     }
   });
+  const sizeArgs = ['quick', '--goal', 'deliver', '--accept', 'true'];
+  test('quick persists explicit size for the existing lease budget', () => {
+    const root = tmp(),
+      repo = gitRepo(root);
+    process.env.SUPERAGENT_HOME = join(root, 'sa');
+    process.env.SUPERAGENT_WRITE_ROOTS = root;
+    const budgets = { S: 1800, M: 2700, L: 3600 };
+    for (const size of ['S', 'M', 'L'] as const) {
+      const path = quickPlan(parseArgs([...sizeArgs, '--repo', repo, '--size', size]));
+      const [pkg] = loadPlan(path).packages;
+      expect(pkg.size).toBe(size);
+      expect(budgetSeconds(pkg)).toBe(budgets[size]);
+    }
+  });
+  test('quick rejects invalid or empty size with exit 64', () => {
+    const error = spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      for (const size of ['XL', 'm', '']) {
+        expect(main([...sizeArgs, `--size=${size}`])).toBe(EXIT_USAGE);
+        expect(error).toHaveBeenLastCalledWith(expect.stringContaining('--size must be S|M|L'));
+      }
+    } finally {
+      error.mockRestore();
+    }
+  });
   test('missing or empty arguments fail before launch; help advertises quick', () => {
     for (const args of [
       [],
@@ -640,7 +666,7 @@ describe('quick', () => {
     try {
       expect(main(['--help'])).toBe(0);
       expect(cliMod.CLI_COMMAND_USAGE.find(command => command.command === 'quick')?.flags).toEqual(
-        expect.arrayContaining(['card', 'environment'])
+        expect.arrayContaining(['card', 'environment', 'size'])
       );
     } finally {
       log.mockRestore();
