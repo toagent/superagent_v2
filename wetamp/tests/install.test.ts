@@ -28,6 +28,12 @@ import {
 
 const trackTempRoot = trackTempRoots();
 const tmp = (): string => trackTempRoot(mkdtempSync(join(tmpdir(), 'sa-test-')));
+const secretSyncArguments = `<key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>exec "$HOME/.local/bin/superagent" secret sync --prune</string>
+  </array>`;
 
 function runInstall(
   home: string,
@@ -153,8 +159,7 @@ describe('install.sh', () => {
       secretMtime = statSync(secretPlist).mtimeMs;
     expect(secretXml).toContain('<key>RunAtLoad</key><true/>');
     expect(secretXml).toContain('<integer>1800</integer>');
-    expect(secretXml).toContain('<string>--prune</string>');
-    expect(secretXml).toContain('/wetamp/bin/superagent</string>');
+    expect(secretXml).toContain(secretSyncArguments);
     for (const s of [
       '<integer>60</integer>',
       '<string>Interactive</string>',
@@ -171,10 +176,25 @@ describe('install.sh', () => {
     expect(runInstall(home, la, undefined, callerPath)).toContain('install: mode=controller');
     expect(statSync(secretPlist).mtimeMs).toBe(secretMtime);
     writeFileSync(plist, 'stale');
+    const staleSecretXml = secretXml.replace(
+      secretSyncArguments,
+      `<key>ProgramArguments</key>
+  <array>
+    <string>${join(import.meta.dir, '../bin/superagent')}</string>
+    <string>secret</string>
+    <string>sync</string>
+    <string>--prune</string>
+  </array>`
+    );
+    writeFileSync(secretPlist, staleSecretXml);
     runInstall(home, la, undefined, callerPath);
     expect(readFileSync(plist, 'utf8')).toBe(xml);
+    expect(readFileSync(secretPlist, 'utf8')).toBe(secretXml);
     const baks = readdirSync(la).filter(f => f.includes('.plist.bak-'));
-    expect(baks.map(f => readFileSync(join(la, f), 'utf8'))).toEqual(['stale']);
+    expect(baks.sort().map(f => readFileSync(join(la, f), 'utf8'))).toEqual([
+      staleSecretXml,
+      'stale',
+    ]);
   });
 
   test('launchd reload refuses a plist outside the system user directory', () => {
@@ -717,7 +737,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(ledger.role).toBe('worker');
     expect(
       readFileSync(join(home, 'LaunchAgents/com.wetamp.superagent.secret-sync.plist'), 'utf8')
-    ).toContain('<string>--prune</string>');
+    ).toContain(secretSyncArguments);
     const file = join(home, '.local', 'state', 'superagent', 'install.json');
     writeFileSync(file, JSON.stringify({ ...ledger, userField: 'retained' }));
     expect(sh('--remote-hooks').code).toBe(0);
