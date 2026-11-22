@@ -4506,6 +4506,38 @@ describe('suite', () => { test('stable', () => { appendFileSync(${JSON.stringify
     go('final-accept-moved-head', evidence, { sync_generation: '2' });
     expect(readFileSync(counter, 'utf8')).toBe('c\nu\nu\nc\nu\n');
   });
+  test.each([false, true])('F-21: recovery reruns failed checks (fixed=%s)', fixed => {
+    const root = tmp(),
+      repo = gitRepo(root),
+      marker = join(root, 'pass'),
+      counter = join(root, 'n'),
+      p = planFile(root, `echo x >> '${counter}'; test -f '${marker}' || exit 2`);
+    const inputs = { kind: 'accept', plan: p, pkgs: 'a', terminal: '1' };
+    const go = (tag: string, acceptance_evidence = '') =>
+      runScript(repo, { ...inputs, tag, acceptance_evidence });
+    writeFileSync(marker, '');
+    const first = go('verify-a');
+    expect(first.code, first.err).toBe(0);
+    const evidence = join(first.art, 'verify-a.json');
+    const cache = join(first.art, 'accept-cache');
+    const entry = join(cache, readdirSync(cache).find(name => name !== '.key')!);
+    const cached = readFileSync(entry);
+    unlinkSync(entry);
+    unlinkSync(marker);
+    const failed = go('final-accept-m1');
+    expect(failed.code, failed.err).toBe(1);
+    expect(failed.out).toMatchObject({ command_results: [{ exit: 2 }] });
+    writeFileSync(entry, cached);
+    if (fixed) writeFileSync(marker, '');
+    const before = readFileSync(counter, 'utf8').length;
+    const recovered = go('final-accept-m1', evidence);
+    expect(readFileSync(counter, 'utf8').length).toBeGreaterThan(before);
+    expect(recovered.code, recovered.err).toBe(fixed ? 0 : 1);
+    expect(recovered.out).toMatchObject({
+      disposition: fixed ? 'advance' : 'fail',
+      command_results: [{ exit: fixed ? 0 : 2 }],
+    });
+  });
   test('F-21: flaky node evidence reruns instead of being reused', () => {
     const root = tmp(),
       repo = gitRepo(root),

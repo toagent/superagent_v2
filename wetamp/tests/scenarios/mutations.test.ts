@@ -164,6 +164,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: 'hit && !rerun.includes(c.cmd) && existsSync(hit)',
+    to: 'hit && existsSync(hit)',
+    test: 'tests/sa-check.test.ts',
+    name: 'F-21: recovery reruns',
+    expectedError: 'toBeGreaterThan',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: 'return { owned: prior.id === adoption && ownsCheckout(prior, cwd) };',
     to: 'return { owned: false };',
     test: 'tests/sa-check.test.ts',
