@@ -47,3 +47,34 @@ test('net lines exclude tests, golden paths and generator-declared outputs', () 
   ].join('\0');
   expect(netLinesFromNumstat(raw, ['generated/types.ts'])).toBe(7);
 });
+
+test('net lines exclude conventional test paths and count nearby source names', () => {
+  const testPaths = [
+    'tests/unit.go',
+    'pkg/test/helpers.py',
+    'pkg/__tests__/helpers.js',
+    'pkg/golden/output.yaml',
+    'pkg/server_test.go',
+    'pkg/test_routes.py',
+    'pkg/routes_test.py',
+    'conftest.py',
+    'pkg/server_spec.rb',
+    ...['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'].flatMap(ext => [
+      `pkg/view.test.${ext}`,
+      `pkg/view.spec.${ext}`,
+    ]),
+  ];
+  const sourcePaths = [
+    'spec/openapi.yaml',
+    ...['testing.go', 'contest.py', 'latest.ts', 'attest_utils.py'].map(name => `src/${name}`),
+    ...['test', 'tests', '__tests__'].map(name => `src/${name}`),
+    'src/conftest.py.bak',
+    'src/server_spec.rbs',
+    'src/test_routes.py/schema.yaml',
+    'src/view.spec.ts/impl.ts',
+    'src/view.spec.ts.bak',
+  ];
+  const rows = testPaths.map(path => `5\t0\t${path}`);
+  rows.push(...sourcePaths.map(path => `2\t1\t${path}`));
+  expect(netLinesFromNumstat(rows.join('\0'), [])).toBe(sourcePaths.length);
+});
