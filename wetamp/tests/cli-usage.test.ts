@@ -21,7 +21,8 @@ test('CLI usage separates agent and operator surfaces', () => {
   // 文档行是检出绝对路径，长度随检出位置变化（候选复验检出比主检出长），不计入预算。
   const budgeted = lines.filter(line => !line.startsWith('  文档：')).join('\n');
   expect(lines.length - budgeted.split('\n').length).toBe(1);
-  expect(Buffer.byteLength(budgeted)).toBeLessThanOrEqual(2200);
+  // 加入 merge 后帮助文本为 2282 字节，2300 字节的预算留出约 18 字节余量。
+  expect(Buffer.byteLength(budgeted)).toBeLessThanOrEqual(2300);
   for (const entry of CLI_COMMAND_USAGE) {
     const line = find(lines, entry.command);
     if (entry.audience === 'operator') expect(line).toBeUndefined();
