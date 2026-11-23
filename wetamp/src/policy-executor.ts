@@ -18,7 +18,13 @@ import {
 import { registerBuiltinProviders } from '@archon/providers/in-process';
 import { isGeminiModel, routeState, type Alias, type Tiers } from './config';
 import { claudeOutcomeTrips, recordClaudeOutcome, type ClaudeOutcome } from './claude-health';
-import { readExecutionTable, executionForNode, executionRoute, executionNode } from './execution';
+import {
+  executionContract,
+  executionForNode,
+  executionNode,
+  executionRoute,
+  readExecutionTable,
+} from './execution';
 import { type Plan } from './plan';
 import {
   readAuthorEvidence,
@@ -84,26 +90,14 @@ function runtimeExecution(
   if (!node) throw new Error('policy: node id missing');
   const gemini = provider === 'gemini';
   const neon = plan.mode === 'single:gemini';
-  const resync = (gemini || neon) && /^(review|fix)-resync-/.test(node);
-  const contract = resync
-    ? node.replace(/^(review|fix)-resync-/, '$1-')
-    : neon
-      ? node.replace(/^resolve-resync-/, 'resolve-sync-')
-      : node;
+  let contract = executionContract(node);
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
-  const route = executionForNode(table, contract, tiers);
-  if (provider === 'agy' && (!neon || (route.role !== 'code' && route.role !== 'repair')))
-    throw new Error('policy: agy requires a single:gemini coder or repair node');
-  if (
-    gemini &&
-    (!plan.gemini_review || route.role !== 'review' || options.nodeConfig?.requiresExactSession)
-  )
-    throw new Error('policy: Gemini requires an opted-in fresh review');
   const archonHome = process.env.ARCHON_HOME;
   if (!archonHome) throw new Error('policy: ARCHON_HOME missing');
   const db = new Database(join(archonHome, 'archon.db'), { readonly: true });
   let run: RunRow, events: Events;
+  let route: ReturnType<typeof executionForNode>, resync: boolean;
   let authors: string[] = [];
   try {
     const rows = db
@@ -122,6 +116,33 @@ function runtimeExecution(
         .all(id)
         .map(e => ({ ...e, data: JSON.parse(e.data) as Events[number]['data'] }));
     events = readEvents(run.id);
+    // Keep frozen legacy aliases. A regular milestone named resync-* can also share
+    // a local id with a current integration node, whose engine start is qualified.
+    if (contract !== node && Object.hasOwn(table, node)) {
+      const exact = table[node];
+      const started = [...events]
+        .reverse()
+        .find(
+          e =>
+            e.event_type === 'node_started' &&
+            (e.step_name === node || e.step_name?.endsWith(`.${node}`))
+        );
+      if (
+        !node.endsWith(`-${exact.milestone}-r${String(exact.round)}`) ||
+        !started?.step_name?.startsWith('integrate-')
+      ) {
+        contract = node;
+      }
+    }
+    resync = contract !== node;
+    route = executionForNode(table, contract, tiers);
+    if (provider === 'agy' && (!neon || (route.role !== 'code' && route.role !== 'repair')))
+      throw new Error('policy: agy requires a single:gemini coder or repair node');
+    if (
+      gemini &&
+      (!plan.gemini_review || route.role !== 'review' || options.nodeConfig?.requiresExactSession)
+    )
+      throw new Error('policy: Gemini requires an opted-in fresh review');
     if (route.role === 'review') {
       const identities = readAuthorEvidence(
         { ...run, events },

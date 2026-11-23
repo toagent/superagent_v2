@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   describeExecution,
+  executionContract,
   executionLaunch,
   executionNode,
   executionRoute,
@@ -20,6 +21,20 @@ const MAX_ROUNDS = reviewRoundLimit(tiers.policy);
 const plan = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures/plan-two-pkgs.json'), 'utf8')
 ) as Plan;
+
+test('resync aliases map to frozen contracts and ordinary node ids stay literal', () => {
+  expect(
+    ['resolve-resync-m1', 'fix-resync-m1-r2', 'review-resync-m1-r1'].map(executionContract)
+  ).toEqual(['resolve-sync-m1', 'fix-m1-r2', 'review-m1-r1']);
+  for (const node of [
+    '',
+    'code-resync-m1',
+    'resolve-sync-review-m1',
+    'review-m1-r1',
+    'review-resync-m1',
+  ])
+    expect(executionContract(node)).toBe(node);
+});
 
 test('frozen descriptors and both entry points share risk/round effort and native profiles', () => {
   for (const risk of ['G0', 'G1', 'G2'] as const)
@@ -47,9 +62,11 @@ test('new runs read persisted identities; only missing tables use the historical
   const table = executionTable(plan, tiers);
   const [node, descriptor] = Object.entries(table)[0];
   expect(readExecution(path, plan, tiers, node)).toEqual(descriptor);
+  table['resolve-resync-m1'] = { ...table['resolve-sync-m1'], scope: ['old-scope'] };
   // Deliberately change the input plan: a new run must not reconstruct it at dispatch.
   writeFileSync(path, JSON.stringify(table));
   expect(readExecution(path, { ...plan, packages: [] }, tiers, node)).toEqual(descriptor);
+  expect(readExecution(path, plan, tiers, 'resolve-resync-m1').scope).toEqual(['old-scope']);
   expect(() => readExecution(path, plan, tiers, 'unknown')).toThrow('unknown node');
   writeFileSync(path, '{');
   expect(() => readExecution(path, plan, tiers, node)).toThrow();

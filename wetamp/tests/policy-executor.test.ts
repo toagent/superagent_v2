@@ -16,6 +16,7 @@ import {
   wrapPolicyProvider,
 } from '../src/policy-executor';
 import { loadTiers, snapshotPolicy, type Alias } from '../src/config';
+import { executionTable } from '../src/execution';
 import type { Plan } from '../src/plan';
 import { executePolicy as dispatchPolicy } from '@archon/workflows/policy-dispatch';
 import { attemptIdentity, budgetUsage } from '../templates/.archon/scripts/sa-check';
@@ -277,6 +278,96 @@ async function inRuntime<T>(root: string, run: () => Promise<T>): Promise<T> {
       else process.env[key] = value;
   }
 }
+
+test('Codex resync uses frozen contracts, integration risk evidence and fix author exclusions', async () => {
+  const s = runtimeFixture();
+  s.plan.packages[0].risk = 'G0';
+  writeFileSync(join(s.root, 'plan.json'), JSON.stringify(s.plan));
+  writeFileSync(join(s.root, 'execution.json'), JSON.stringify(executionTable(s.plan, s.tiers)));
+  const models: (string | undefined)[] = [];
+  const provider = wrapPolicyProvider(
+    fake(options => {
+      models.push(options.model);
+      return success;
+    }),
+    'codex'
+  );
+  const dispatch = (nodeId: string) =>
+    inRuntime(s.root, () =>
+      collect(
+        provider.sendQuery('p', s.root, undefined, {
+          env: { SA_POLICY_PATH: s.policyPath },
+          nodeConfig: { nodeId },
+        })
+      )
+    );
+  await dispatch('resolve-resync-m1');
+  await expect(dispatch('fix-resync-m1-r2')).rejects.toThrow('final-accept-m1.json');
+  writeFileSync(join(s.artifacts, 'final-accept-m1.json'), JSON.stringify({ risk: 'G0' }));
+  await dispatch('fix-resync-m1-r2');
+  writeFileSync(join(s.artifacts, 'diff-resync-m1-r2.json'), JSON.stringify({ risk: 'G0' }));
+  writePolicyAttempts(s.artifacts, [
+    ...readPolicyAttempts(s.artifacts),
+    ...['code-core', 'fix-resync-m1-r2'].map((node, i) => ({
+      id: `historical-${i}`,
+      node,
+      provider: 'codex' as const,
+      model: ['gpt-6.1-sol', 'gpt-6-sol'][i],
+      status: 'completed' as const,
+    })),
+  ]);
+  await dispatch('review-resync-m1-r2');
+  expect(models).toHaveLength(3);
+  expect(models.at(-1)).toBe('gpt-6-astra');
+});
+
+test('qualified starts distinguish resync from a normal milestone with the same local id', async () => {
+  const s = runtimeFixture(),
+    nodeId = 'review-resync-m1-r1';
+  s.plan.packages[0].risk = 'G0';
+  s.plan.packages[1].milestone = 'resync-m1';
+  writeFileSync(join(s.root, 'plan.json'), JSON.stringify(s.plan));
+  writeFileSync(join(s.artifacts, 'final-accept-m1.json'), JSON.stringify({ risk: 'G0' }));
+  writeFileSync(join(s.artifacts, 'diff-resync-m1-r1.json'), JSON.stringify({ risk: 'G2' }));
+  writePolicyAttempts(
+    s.artifacts,
+    ['code-core', 'code-api'].map(node => ({
+      id: node,
+      node,
+      provider: 'codex',
+      model: 'gpt-6.1-sol',
+      status: 'completed',
+    }))
+  );
+  const models: (string | undefined)[] = [];
+  const provider = wrapPolicyProvider(
+    fake(options => {
+      models.push(options.model);
+      return success;
+    }),
+    'codex'
+  );
+  for (const [i, step] of [`integrate-m1.${nodeId}`, nodeId].entries()) {
+    const db = new Database(join(s.root, 'archon.db'));
+    db.run('INSERT INTO remote_agent_workflow_events VALUES (?, ?, ?, ?, ?)', [
+      'run',
+      'node_started',
+      step,
+      '{}',
+      i,
+    ]);
+    db.close();
+    await inRuntime(s.root, () =>
+      collect(
+        provider.sendQuery('p', s.root, undefined, {
+          env: { SA_POLICY_PATH: s.policyPath },
+          nodeConfig: { nodeId },
+        })
+      )
+    );
+  }
+  expect(models).toEqual(['gpt-6-sol', 'gpt-6-astra']);
+});
 
 test('POLICY-R1-01/02: same-vendor fallback preserves protected child env and the admitted slot', async () => {
   const s = runtimeFixture(),

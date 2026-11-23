@@ -62,6 +62,12 @@ export function describeExecution(
   });
 }
 
+export function executionContract(node: string): string {
+  return node
+    .replace(/^resolve-resync-/, 'resolve-sync-')
+    .replace(/^(review|fix)-resync-(?=.+-r\d+$)/, '$1-');
+}
+
 /** Frozen node identities, not names interpreted again at every dispatch. */
 export function executionTable(plan: Plan, tiers: Tiers): Record<string, ExecutionDescriptor> {
   const table: Record<string, ExecutionDescriptor> = {};

@@ -36,7 +36,7 @@ import {
   acquireResource,
   reviewRoundLimit,
 } from '../templates/.archon/scripts/sa-check';
-import { executionTable } from '../src/execution';
+import { executionContract, executionForNode, executionTable } from '../src/execution';
 import { attemptPath } from '../templates/.archon/scripts/sa-check';
 import { evaluateCondition } from '../../packages/workflows/src/condition-evaluator';
 import {
@@ -290,6 +290,32 @@ const allNodesOf = (w: unknown): N[] => {
 };
 const validNodes = (nodes: N[]) =>
   nodes.map(n => (n.command ? dagNodeSchema.parse(n) : (n as DagNode)));
+test('every generated delivery agent node resolves to a frozen execution contract', () => {
+  const tiers = fixtureTiers();
+  const workflow = buildWorkflow(
+    fixture,
+    milestones(fixture),
+    'c0ffee-0001',
+    '/GEN',
+    false,
+    NOW,
+    tiers,
+    undefined,
+    { checkout: '/target', branch: 'target', head: 'a'.repeat(40) }
+  );
+  const agents = allNodesOf(workflow).filter(node => node.command);
+  expect(agents.map(node => node.id)).toEqual(
+    expect.arrayContaining([
+      'resolve-resync-m1',
+      'fix-resync-m1-r2',
+      'review-resync-m1-r1',
+      'resolve-sync-review-m1',
+    ])
+  );
+  const table = executionTable(fixture, tiers);
+  for (const { id } of agents)
+    expect(() => executionForNode(table, executionContract(id), tiers)).not.toThrow();
+});
 test('integration nodes reserve non-lock work beyond the lock wait budget', () => {
   const integration = allNodesOf(
     buildWorkflow(fixture, milestones(fixture), 'deadline', '/GEN', false, NOW)

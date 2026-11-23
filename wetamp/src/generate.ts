@@ -1,4 +1,4 @@
-import { executionTable, executionRoute, executionNode } from './execution';
+import { executionContract, executionTable, executionRoute, executionNode } from './execution';
 import { assertBackgroundDispatchable, parseWorkflow } from '@archon/workflows/loader';
 import { assertComposedGateDriveable } from '@archon/workflows/utils/workflow-requirements';
 // plan → $SUPERAGENT_HOME/gen/<run>/：Archon 工作流源（git 仓库）+ 工作包 brief。
@@ -512,7 +512,7 @@ export function buildWorkflow(
     const resyncBase = `resync-base-${m.id}`;
     const syncId = `resync-${m.id}`;
     const resolveId = `resolve-${syncId}`;
-    const resolveContract = `resolve-sync-${m.id}`;
+    const resolveContract = executionContract(resolveId);
     const resolveDecision = `${resolveId}-decision`;
     const syncReady = `${syncId}-ready`;
     const finalAccept = `final-accept-${m.id}`;
@@ -643,7 +643,7 @@ export function buildWorkflow(
       const reviewer = reviewId(round);
       const reviewerHandle = conditionalOutput<ReviewerOutput>(reviewer);
       const gate = gateId(round);
-      const reviewContract = `review-${m.id}-r${String(round)}`;
+      const reviewContract = executionContract(reviewer);
       const reviewAttempt = `attempt-review-resync-${m.id}-r${String(round)}`;
       const reviewContext = `review-context-resync-${m.id}-r${String(round)}`;
       const reviewWhen =
@@ -654,6 +654,7 @@ export function buildWorkflow(
         const priorGate = gateId(round - 1);
         const handoff = `handoff-resync-${m.id}-r${String(round)}`;
         const fix = `fix-resync-${m.id}-r${String(round)}`;
+        const fixContract = executionContract(fix);
         if (!fake)
           integrationNodes.push({
             id: handoff,
@@ -661,7 +662,7 @@ export function buildWorkflow(
             with: {
               counter: attemptPath(gen, m.id),
               gen,
-              context_node: `fix-${m.id}-r${String(round)}`,
+              context_node: fixContract,
               context_packages: m.packages.map(p => p.id),
               handoff: '1',
               work_keys: round === 2 ? (delivery ? ['resolve'] : []) : ['fix'],
@@ -687,7 +688,7 @@ export function buildWorkflow(
                 command: 'sa-fix',
                 retry: { on_error: 'transient' },
                 model: '@sa-coder',
-                ...execution(`fix-${m.id}-r${String(round)}`),
+                ...execution(fixContract),
                 with: {
                   prior_work: `$${handoff}.output.handoff`,
                   context_node: handoff,
