@@ -2156,6 +2156,50 @@ describe('verbs (archon stub)', () => {
 });
 
 describe('run (archon stub)', () => {
+  // prettier-ignore
+  test('19 merge-lock 拒绝新接纳，释放后正常启动', async () => {
+    const s = stub([]), repo = featureRepo(s.root), linked = join(s.root, 'task');
+    process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+    sh(`git worktree add -qb task/merge-lock "${linked}"`, repo);
+    const plan = fixturePlan(s.root, repo, p => { p.delivery_checkout = linked; });
+    const { mergeLock } = await import('../src/merge');
+    const held = mergeLock(linked);
+    if (!held.ok) throw new Error('fixture lock unavailable');
+    const before = readdirSync(join(s.root, 'home/runs'));
+    const args = ['run', plan, '--fake', '--allow-overlap', 'fixture'];
+    try {
+      const refused = captured(() => main(args));
+      expect(refused.code, refused.out).toBe(75);
+      expect(existsSync(join(s.root, 'home/intents'))).toBe(false);
+      expect(readdirSync(join(s.root, 'home/runs'))).toEqual(before);
+      expect(s.calls().some(c => c.startsWith('workflow run'))).toBe(false);
+    } finally { held.release(); }
+    expect(captured(() => main(args)).code).toBe(0);
+    expect(s.calls().filter(c => c.startsWith('workflow run'))).toHaveLength(1);
+  });
+  // prettier-ignore
+  test('19 对账先落 ledger 再删 intent，merge 仍拦截已迁移 run', async () => {
+    const s = stub([run('paused')]), repo = gitRepo(tmp()), linked = join(s.root, 'task');
+    sh(`git worktree add -qb task/reconcile "${linked}"`, repo);
+    const intents = join(s.root, 'home/intents'), path = join(intents, 'migration.json');
+    mkdirSync(intents);
+    writeFileSync(path, JSON.stringify({ host: 'fixture', pid: 1, ledger: {
+      ...s.ledger, repo, run_id: 'migration', workflow: 'sa-migration',
+      started_at: '2026-01-01', delivery: { checkout: linked, branch: 'task/reconcile' },
+    } }));
+    const db = new Database(join(process.env.ARCHON_HOME!, 'archon.db'));
+    db.exec("create table remote_agent_workflow_runs (id text, workflow_name text); insert into remote_agent_workflow_runs values ('r','sa-migration')");
+    db.close();
+    expect(cliMod.reconcileIntents()).toMatchObject([{ run_id: 'migration', ok: true }]);
+    expect(existsSync(path)).toBe(false);
+    const out = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await cliMod.mergeCli(['merge', linked, '--dry-run', '--json'])).toBe(3);
+      expect(JSON.parse(String(out.mock.calls.at(-1)?.[0]))).toMatchObject({
+        reason: 'run_not_terminal', run_id: 'migration',
+      });
+    } finally { out.mockRestore(); }
+  });
   test('successful start warns after two recent failures with the same typed reason', () => {
     const s = stub([run('failed', { metadata: { stop_reason: { reason: 'launch_failed' } } })]),
       repo = featureRepo(s.root),

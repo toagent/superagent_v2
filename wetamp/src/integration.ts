@@ -136,6 +136,8 @@ export interface PublishRun {
     | { required: true; reviewed_head: string; reviewed_diff_hash: string };
   /** Revalidates owner/generation immediately before the ref mutation and receipt write. */
   fence: () => void;
+  /** Optional transport allowlist inherited by hooks on the ref mutation. */
+  gitAllowProtocol?: string;
 }
 
 export interface PublishExpected {
@@ -463,6 +465,10 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
       // An unoccupied ref touches no worktree or index; CAS plus the integration lock prevents races.
       const args = checkout ? ['merge', '--ff-only', head] : ['update-ref', ref, head, targetTip];
       const merged = Bun.spawnSync(['git', '-C', checkout ?? repo, ...args], {
+        env:
+          run.gitAllowProtocol === undefined
+            ? undefined
+            : { ...process.env, GIT_ALLOW_PROTOCOL: run.gitAllowProtocol },
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: QUERY_TIMEOUT_MS,

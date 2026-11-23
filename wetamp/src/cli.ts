@@ -185,7 +185,8 @@ import {
   readClaudeHealth,
   refreshClaudeHealth,
 } from './claude-health';
-import { launchAgent, orcaBin, syncOrcaDeliveries, type AgentLaunch } from './orca';
+import { launchAgent, orcaBin, syncOrcaDeliveries, syncOrcaMerge, type AgentLaunch } from './orca';
+import { mergeLock, mergeTask } from './merge';
 import {
   engineHash,
   generate,
@@ -338,6 +339,8 @@ export const OPTIONS = {
   reconciled: { type: 'string' }, // explicit external-effect reconciliation, bound to a run snapshot
   session: { type: 'string' },
   'dry-run': { type: 'boolean' },
+  'message-file': { type: 'string' },
+  into: { type: 'string' },
   vault: { type: 'string' },
   host: { type: 'string', multiple: true },
   prune: { type: 'boolean' },
@@ -1960,6 +1963,7 @@ function startRun(planPath: string, a: Args): number {
   const run = newRunId();
   let phase: 'preflight' | 'admission' | 'engine' = 'preflight';
   let release: (() => void) | undefined;
+  let releaseMerge: (() => void) | undefined;
   let mode: 'controller' | 'worker' | 'unknown' = 'unknown';
   let plan_lint: ReturnType<typeof lintPlan> | undefined;
   let adopt_candidates: AdoptCandidate[] = [];
@@ -2080,6 +2084,16 @@ function startRun(planPath: string, a: Args): number {
         }
         const launchBranch = lastJson(checked.stdout.toString())?.launch_branch;
         const delivery = planDelivery(plan);
+        const merge = mergeLock(delivery.checkout);
+        if (!merge.ok) {
+          print({
+            ok: false,
+            reason: 'merge_lock_busy',
+            next_action: '目标检出正在合并，请稍后重试',
+          });
+          return EXIT_ADMISSION;
+        }
+        releaseMerge = merge.release;
         const paths = checkoutChanges(delivery.checkout);
         if (paths.length) {
           print({
@@ -2259,6 +2273,8 @@ function startRun(planPath: string, a: Args): number {
         mkdirSync(join(home().sa, 'runs'), { recursive: true });
         saveLedger(l);
         rmSync(intentPath(run), { force: true });
+        releaseMerge();
+        releaseMerge = undefined;
         // prettier-ignore
         const recent = ledgers().flatMap(previous => {
           try {
@@ -2314,6 +2330,7 @@ function startRun(planPath: string, a: Args): number {
     print(failure);
     return e instanceof SecretInputError ? EXIT_USAGE : 1;
   } finally {
+    releaseMerge?.();
     release?.();
   }
 }
@@ -2332,7 +2349,7 @@ const INTENT_GRACE_MS = 10 * 60e3;
  * 对账没写成 ledger 的启动：已有 ledger → 删意图；启动进程还活着或未过 10 分钟 → 不动；archon.db 里按工作流名
  * （sa-<run>，每个 run 唯一）找到一个 run → 补写 ledger 并删意图；找不到 → 意图记 no_run 并报一次，不重启；多于一个 → 报错交人。
  */
-function reconcileIntents(): Action[] {
+export function reconcileIntents(): Action[] {
   const dir = join(home().sa, 'intents');
   if (!existsSync(dir)) return [];
   const out: Action[] = [];
@@ -4876,6 +4893,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'work find', audience: 'agent', flags: ['terms-json', 'limit', 'json'] },
   { command: 'work queue', audience: 'agent', flags: ['json'] },
   { command: 'land', audience: 'agent', positionals: '<run>', flags: ['apply'] },
+  { command: 'merge', audience: 'agent', positionals: '<task-worktree>', flags: ['dry-run', 'message-file', 'accept', 'into'] },
   { command: 'resume', audience: 'agent', positionals: '<run>', flags: ['reconciled'] },
   { command: 'recover', audience: 'agent', positionals: '<run>', flags: ['evidence', 'reconciled'] },
   { command: 'cancel', audience: 'agent', positionals: '<run>', flags: ['reason'] },
@@ -6143,6 +6161,45 @@ export async function exitCli(code: number): Promise<never> {
   process.exit(code);
 }
 
+// prettier-ignore
+export async function mergeCli(argv: string[]): Promise<number> {
+  const { _: [, source, ...extra], flags } = parseArgs(argv);
+  const allowed = ['dry-run', 'message-file', 'accept', 'into', 'json'];
+  if (!source || extra.length || Object.keys(flags).some(flag => !allowed.includes(flag))) {
+    print({ status: 'rejected', reason: 'usage', next_action: 'superagent merge <task-worktree> --dry-run' });
+    return EXIT_USAGE;
+  }
+  assertEngineAccess(argv);
+  const who = caller();
+  const native = new Map<string, RunView>();
+  const result = await mergeTask(source, {
+    dryRun: flags['dry-run'], messageFile: flags['message-file'], into: flags.into, accept: flags.accept,
+  }, {
+    home: home().sa,
+    ledgers,
+    canMerge: path => {
+      const owner = coord().owner(repoScope(path));
+      return owner.conflicts.length === 0 && (!owner.owner || same(owner.owner, who));
+    },
+    state: l => {
+      const run = getRun(l.archon_run_id, l.repo);
+      native.set(run.id, run);
+      return ['pending', 'running', 'paused'].includes(run.status) ? run.status : classifyRun(l, run).state;
+    },
+    receipts: l => archonRunIds(l).flatMap(id => {
+      let run: RunView;
+      try { run = native.get(id) ?? getRun(id, l.repo); } catch { return []; }
+      const dir = run.output_root && confined(l, artifactsOf(run));
+      return dir ? [...new Bun.Glob('publish-*.json').scanSync({ cwd: dir })]
+        .flatMap(file => confined(l, join(dir, file)) ?? []) : [];
+    }),
+    plan: l => confined(l, join(l.gen_dir, 'plan.json')),
+    orca: syncOrcaMerge,
+  });
+  print(result.value);
+  return result.exit;
+}
+
 // Keep this module synchronous: land loads operator evidence lazily via require().
 async function runCli(): Promise<void> {
   try {
@@ -6174,6 +6231,7 @@ async function runCli(): Promise<void> {
       ].includes(verb ?? '')
     )
       assertEngineAccess(argv);
+    if (verb === 'merge' && !parseArgs(argv).flags.help) return await exitCli(await mergeCli(argv));
     if (verb === 'board') return await exitCli(await (await import('./board/index')).board(argv));
     if (verb === 'usage') return await exitCli(await usageCli(argv));
     if (verb === 'heartbeat') return await exitCli(await heartbeatCli(argv));

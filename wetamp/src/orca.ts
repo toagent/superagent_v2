@@ -170,6 +170,72 @@ const publicationFiles = new Bun.Glob(
   join(getRunArtifactsDirForRoot(join('*', '*'), '*'), 'publish-*.json')
 );
 
+async function setDeliveryComment(
+  call: ReturnType<typeof orcaCall>,
+  checkout: string,
+  entries: { block: string; mtimeMs: number }[],
+  completed = false
+): Promise<void> {
+  const target = ['--worktree', `path:${checkout}`];
+  const shown = (await call(['worktree', 'show', ...target, '--json'])) as {
+    ok?: boolean;
+    result?: { worktree?: { comment?: unknown } };
+  } | null;
+  const worktree = shown?.ok === true ? shown.result?.worktree : undefined;
+  if (!record(worktree)) throw new Error('Orca worktree show failed');
+  const comment = worktree.comment ?? '';
+  if (typeof comment !== 'string') throw new Error('Invalid Orca worktree comment');
+  const managed =
+    /^【引擎合入 (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}|T\d{2}:\d{2}:\d{2}\.\d{3}Z))】[^\n]*【\/引擎合入】\n/gm;
+  const blocks = new Map(entries.map(({ block, mtimeMs }) => [block, mtimeMs]));
+  // Compare UTC and local headers on the same timeline while keeping the original text.
+  for (const [block, time] of comment.matchAll(managed)) {
+    if (!blocks.has(block)) blocks.set(block, Date.parse(time.replace(' ', 'T')));
+  }
+  const latest = [...blocks].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const next = latest.map(([block]) => block).join('') + comment.replace(managed, '');
+  if (next !== comment || completed) {
+    const updated = await call([
+      'worktree',
+      'set',
+      ...target,
+      '--comment',
+      next,
+      ...(completed ? ['--workspace-status', 'completed'] : []),
+      '--json',
+    ]);
+    if (!record(updated) || updated.ok !== true) throw new Error('Orca worktree set failed');
+  }
+}
+
+export async function syncOrcaMerge(
+  parent: string,
+  source: string,
+  receipt: PublishReceipt,
+  at: number
+): Promise<void> {
+  if (process.env.SA_ORCA === '0') return;
+  const bin = orcaBin();
+  if (!bin) throw new Error('Orca CLI unavailable');
+  const held = lock(join(home().sa, 'orca-deliveries.lock'));
+  if (!held.ok) throw new Error('Orca delivery comment update busy');
+  try {
+    const call = orcaCall(defaults, bin, AbortSignal.timeout(defaults.timeoutMs));
+    const time = new Date(at).toISOString();
+    const changes =
+      receipt.commits
+        ?.map(c => `${c.sha} ${c.title}`)
+        .join('；')
+        .replace(/[\r\n]/g, ' ') ?? '';
+    const block = `【引擎合入 ${time}】merge ${receipt.integrated} → ${receipt.target.branch}｜${changes}【/引擎合入】\n`;
+    const entries = [{ block, mtimeMs: at }];
+    await setDeliveryComment(call, parent, entries);
+    await setDeliveryComment(call, source, entries, true);
+  } finally {
+    held.release();
+  }
+}
+
 export async function syncOrcaDeliveries(): Promise<void> {
   if (process.env.SA_ORCA === '0') return;
   const root = getArchonWorkspacesPath();
@@ -228,28 +294,7 @@ export async function syncOrcaDeliveries(): Promise<void> {
       try {
         if (!bin) throw new Error('Orca CLI unavailable');
         const call = orcaCall(defaults, bin, signal);
-        const target = ['--worktree', `path:${checkout}`];
-        const shown = (await call(['worktree', 'show', ...target, '--json'])) as {
-          ok?: boolean;
-          result?: { worktree?: { comment?: unknown } };
-        } | null;
-        const worktree = shown?.ok === true ? shown.result?.worktree : undefined;
-        if (!record(worktree)) throw new Error('Orca worktree show failed');
-        const comment = worktree.comment ?? '';
-        if (typeof comment !== 'string') throw new Error('Invalid Orca worktree comment');
-        const managed =
-          /^【引擎合入 (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}|T\d{2}:\d{2}:\d{2}\.\d{3}Z))】[^\n]*【\/引擎合入】\n/gm;
-        const blocks = new Map(entries.map(({ block, mtimeMs }) => [block, mtimeMs]));
-        // Compare UTC and local headers on the same timeline while keeping the original text.
-        for (const [block, time] of comment.matchAll(managed)) {
-          if (!blocks.has(block)) blocks.set(block, Date.parse(time.replace(' ', 'T')));
-        }
-        const latest = [...blocks].sort((a, b) => b[1] - a[1]).slice(0, 5);
-        const next = latest.map(([block]) => block).join('') + comment.replace(managed, '');
-        if (next !== comment) {
-          const updated = await call(['worktree', 'set', ...target, '--comment', next, '--json']);
-          if (!record(updated) || updated.ok !== true) throw new Error('Orca worktree set failed');
-        }
+        await setDeliveryComment(call, checkout, entries);
         synced = true;
       } catch {
         if (entries.some(({ key }) => seen[key] === undefined))
