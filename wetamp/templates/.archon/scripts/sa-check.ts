@@ -1159,14 +1159,24 @@ interface NetLineExclusion {
   lines: number;
 }
 
+function isTestPath(path: string): boolean {
+  const name = basename(path);
+  return (
+    /(?:^|\/)(?:tests|test|__tests__)\//.test(path) ||
+    name.endsWith('_test.go') ||
+    (name.endsWith('.py') &&
+      (name.startsWith('test_') || name.endsWith('_test.py') || name === 'conftest.py')) ||
+    /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(name) ||
+    name.endsWith('_spec.rb')
+  );
+}
+
 /** Count only authored source growth; exclusions are structural or generator-declared. */
 function netLineBudgetFromNumstat(raw: string, generated: readonly string[]) {
   const excluded = (path: string): boolean => {
-    const parts = path.split('/');
     return (
-      parts.includes('tests') ||
-      parts.includes('golden') ||
-      path.endsWith('.test.ts') ||
+      isTestPath(path) ||
+      path.split('/').includes('golden') ||
       path.endsWith('.generated.ts') ||
       LOCKFILES.has(basename(path)) ||
       generated.some(output => path === output || path.startsWith(output.replace(/\/*$/, '/')))

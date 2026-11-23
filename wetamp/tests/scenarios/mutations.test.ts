@@ -116,6 +116,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-check.ts',
+    from: "name.endsWith('_test.go') ||",
+    to: '',
+    test: 'tests/budget.test.ts',
+    name: 'net lines exclude conventional test paths',
+    expectedError: 'expect(received).toBe(expected)',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-check.ts',
     from: "lineBudget(pkgs, tag, env('DELTA_BASE') || changeBase)",
     to: 'lineBudget(pkgs, tag, changeBase)',
     test: 'tests/sa-check.test.ts',
