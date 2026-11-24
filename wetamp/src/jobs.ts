@@ -103,7 +103,7 @@ export function modelOf(argv: string[]): string | null {
 }
 
 const ENV_TIER: Partial<Record<string, Tier>> = { general: 'general', reviewer: 'strategist' };
-const isJobRole = (value: unknown): value is Exclude<Tier, 'commander'> =>
+export const isJobRole = (value: unknown): value is Exclude<Tier, 'commander'> =>
   value === 'general' || value === 'strategist';
 /** --role 缺省按派发环境：SUPERAGENT_ROLE=general 为将军、reviewer 为军师，其余不记。 */
 export const roleOf = (flag: Tier | undefined, env = process.env): Tier | null =>
