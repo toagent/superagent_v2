@@ -42,11 +42,13 @@ import {
   runAliases,
   resolveRoute,
   routeState,
+  usesNeonCoder,
   type RouteState,
   snapshotPolicy,
   type Tiers,
 } from './config';
 import {
+  assertReviewRouting,
   capsOf,
   GENERATED_OUTPUT_PATHS,
   milestones,
@@ -215,6 +217,7 @@ export function buildWorkflow(
   // 只拒绝显式 deadline 已过的 plan；缺省没有交付期限。
   if (plan.deadline !== undefined && Date.parse(plan.deadline) <= now)
     throw new Error(`plan invalid: /deadline ${plan.deadline} already passed`);
+  assertReviewRouting(plan);
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
   const reviewModel = (risk: Pkg['risk']) =>
     plan.gemini_review
@@ -1869,10 +1872,10 @@ export function generate(
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
-  const neonCoder =
-    plan.mode === 'single:gemini'
-      ? resolveRoute(tiers, plan.console ?? 'claude', plan.mode).candidates[0]
-      : undefined;
+  const neonCoder = usesNeonCoder(plan.console, plan.mode)
+    ? resolveRoute(tiers, plan.console ?? 'claude', plan.mode, 'code', 'G1', 1, [], state)
+        .candidates[0]
+    : undefined;
   const gemini = plan.gemini_review ? tiers.routing.gemini?.review[0] : undefined;
   if (plan.gemini_review && !gemini) throw new Error('Gemini review routing is unavailable');
   const reviewer = (risk: Pkg['risk']) =>

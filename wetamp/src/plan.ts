@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
-import { WETAMP, assertSQLite, type Console } from './config';
+import { WETAMP, assertSQLite, usesNeonCoder, type Console } from './config';
 import type { PolicyBudget } from '../../packages/workflows/src/provider-attempts';
 import { GENERATED_OUTPUT_PATHS, type Plan as PlanInput } from './plan-types.generated';
 export { GENERATED_OUTPUT_PATHS };
@@ -12,6 +12,13 @@ export type Plan = Omit<PlanInput, 'budget'> & { budget: NonNullable<PlanInput['
 export type Pkg = Plan['packages'][number];
 export type Requirement = NonNullable<Pkg['requirements']>[number];
 export type Check = Pkg['accept'][number];
+
+export function assertReviewRouting(plan: Pick<Plan, 'console' | 'mode' | 'gemini_review'>): void {
+  if (plan.gemini_review && usesNeonCoder(plan.console, plan.mode)) {
+    const route = plan.mode === 'single:gemini' ? plan.mode : 'Neon coding';
+    throw new Error(`plan invalid: /gemini_review cannot be enabled with ${route}`);
+  }
+}
 /** Resolved capability defaults; the wire schema keeps every override optional. */
 export type Caps = Required<NonNullable<Plan['caps']>>;
 
@@ -99,8 +106,7 @@ export function validatePlan(data: unknown, roots = writeRoots()): Plan {
     throw new Error(`plan invalid: ${errs.join('; ')}`);
   }
   const input = data as PlanInput;
-  if (input.mode === 'single:gemini' && input.gemini_review)
-    throw new Error('plan invalid: /gemini_review cannot be enabled with single:gemini');
+  assertReviewRouting(input);
   if (
     input.caps?.long_tests !== undefined ||
     input.packages.some(p => p.caps?.long_tests !== undefined)

@@ -168,9 +168,11 @@ import {
   type AuthorRun,
 } from '../templates/.archon/scripts/sa-check';
 import {
+  CONSOLES,
   WETAMP,
   aliasDrift,
   codexWorkerProblem,
+  consoleForClient,
   formatEngineTime,
   gitHead,
   home,
@@ -196,7 +198,14 @@ import {
   type Continuation,
   type ReviewCheckpoint,
 } from './generate';
-import { isWithinWriteRoots, loadPlan, milestones, scratch, type Plan } from './plan';
+import {
+  assertReviewRouting,
+  isWithinWriteRoots,
+  loadPlan,
+  milestones,
+  scratch,
+  type Plan,
+} from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
 import { applyPlanRules, freezePlanRules } from './plan-rules';
 import { redact } from './redact';
@@ -1823,8 +1832,13 @@ export function quickPlan(a: Args): string {
   if (!Number.isSafeInteger(acceptTimeout) || acceptTimeout <= 0)
     throw new Error('quick --accept-timeout must be a positive integer of seconds');
   const consoleClient = a.flags.console;
-  if (consoleClient !== undefined && consoleClient !== 'codex' && consoleClient !== 'claude')
-    throw new Error('quick --console must be codex|claude');
+  if (
+    consoleClient !== undefined &&
+    consoleClient !== 'codex' &&
+    consoleClient !== 'claude' &&
+    consoleClient !== 'gemini'
+  )
+    throw new Error('quick --console must be claude|codex|gemini');
   const risk = a.flags.risk ?? 'G1';
   if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2')
     throw new Error('quick --risk must be G0|G1|G2');
@@ -1976,6 +1990,9 @@ function startRun(planPath: string, a: Args): number {
     const rulesChecked = checkedPlan(planPath, a.flags['lint-override']),
       plan = rulesChecked.plan,
       adoptId = a.flags.adopt?.trim();
+    const who = caller();
+    plan.console ??= consoleForClient(who.client);
+    assertReviewRouting(plan);
     adopt_candidates = adoptCandidates(plan);
     const candidate = adopt_candidates[0];
     if (adopt_candidates.length) {
@@ -1998,7 +2015,6 @@ function startRun(planPath: string, a: Args): number {
       throw new Error('--adopt requires a non-empty run id');
     const repo = repoScope(plan.repo),
       scope = runScope({ run_id: run, repo: plan.repo });
-    const who = caller();
     const default_contact = coord().scoped(repo, () => {
       if (!coord().owner(repo).owner && !coord().owner(repo).conflicts.length)
         coord().claim(repo, who);
@@ -5375,7 +5391,7 @@ export function main(argv: string[]): number {
         health = refreshClaudeHealth().health,
         state = routeState(tiers, mode, Date.now(), health);
       // prettier-ignore
-      const models = Object.fromEntries((['claude', 'codex'] as const).map(c => [c,
+      const models = Object.fromEntries(CONSOLES.filter(c => tiers.routing.commander.by_console[c]).map(c => [c,
         Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r], 'G1', 1, [], state).candidates.map(a => a.model)]))]));
       if (a.flags.json) print({ ...models, budget: state.budget, route_state: state });
       else

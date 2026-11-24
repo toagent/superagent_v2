@@ -101,6 +101,21 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 完整结构以 `schemas/plan.schema.json` 为准。将军节点到达时间预算后由 `supervise-tick`
 按近期工作树进展续租一次；超限只写交回报告并唤醒一次 `wait`，不会取消或暂停 run。
 
+## 控制台模型路由
+
+plan 的 `console` 以显式值为准。缺省时按发起者识别，`claude` → `claude`、
+`codex` → `codex`、`agy` → `gemini`，其他身份默认 `claude`。生成的 run 快照保存该值，恢复时沿用。
+用 `superagent models --mode auto` 查看候选顺序。
+
+| 控制台   | 元帅                                             | 默认将军                                             | 正式评审                                                        |
+| -------- | ------------------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------- |
+| `claude` | Claude 池                                        | ChatGPT 池                                           | 优先 Claude，ChatGPT 可接替                                     |
+| `codex`  | ChatGPT 池                                       | ChatGPT 池                                           | ChatGPT 池，排除作者模型                                        |
+| `gemini` | `gemini-4-neon-%78high` → `gemini-4-neon-%68igh` | 同序 Neon，符合派发策略的供应商故障可切至 ChatGPT 池 | `claude-opus-5-5` → `gpt-5.6-sol` → `gpt-6-astra`，排除作者模型 |
+
+Claude 和 Codex 控制台沿用预算降级规则。Gemini 控制台的 Neon 将军复用下文的
+Antigravity CLI 前提检查。启用 Neon 将军时，`gemini_review` 必须关闭。
+
 ## 单次使用 Gemini Neon
 
 ```bash

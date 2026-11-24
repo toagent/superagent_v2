@@ -235,8 +235,8 @@
       }
     },
     "console": {
-      "enum": ["claude", "codex"],
-      "description": "Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude"
+      "enum": ["claude", "codex", "gemini"],
+      "description": "Selects role routing in tiers.json. Inferred from the initiating client when omitted; defaults to claude for unknown clients."
     },
     "gemini_review": {
       "const": true,

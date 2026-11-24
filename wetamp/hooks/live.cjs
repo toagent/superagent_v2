@@ -37,6 +37,8 @@ function cliOf(argv, controller = false) {
   if (k === 'codex' && !['mcp', 'mcp-server', ...(!controller ? ['app-server'] : [])].includes(sub))
     return { kind: k, headless: sub === 'exec' };
   if (k === 'opencode' && sub !== 'serve') return { kind: k, headless: sub === 'run' };
+  if (k === 'agy' && controller)
+    return { kind: k, headless: a.some(t => t === '-p' || t === '--print') };
   return null;
 }
 // Nearest agent CLI ancestor of this hook process. One `ps -p` per level: a full `ps -ax`

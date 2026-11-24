@@ -54,6 +54,22 @@ test('owner contracts reject optional keys, types and optionality drift', () => 
 }, 30000);
 
 describe('loadPlan', () => {
+  test('accepts Gemini console and rejects an unknown console', () => {
+    const gemini = setup(p => {
+      p.console = 'gemini';
+    });
+    expect(loadPlan(gemini.path, [gemini.root]).console).toBe('gemini');
+    const unknown = setup(p => {
+      p.console = 'unknown';
+    });
+    expect(() => loadPlan(unknown.path, [unknown.root])).toThrow('/console');
+    const selfReview = setup(p => {
+      p.console = 'gemini';
+      p.gemini_review = true;
+    });
+    expect(() => loadPlan(selfReview.path, [selfReview.root])).toThrow('/gemini_review');
+  });
+
   test('accepts explicit long_tests with one deprecation warning', () => {
     const { path, root } = setup(p => {
       p.caps = { long_tests: false };

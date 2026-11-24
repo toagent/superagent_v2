@@ -18,7 +18,16 @@ import { QUERY_TIMEOUT_MS } from './archon';
 import { claudeHealthNotice, readClaudeHealth, type ClaudeHealth } from './claude-health';
 import type { DispatchProvider } from '../../packages/workflows/src/provider-attempts';
 
-export type Console = 'claude' | 'codex';
+export const CONSOLES = ['claude', 'codex', 'gemini'] as const;
+export type Console = (typeof CONSOLES)[number];
+type ConsolePools = Record<Exclude<Console, 'gemini'>, string[]> & { gemini?: string[] };
+
+export const consoleForClient = (client: string): Console =>
+  client === 'agy' ? 'gemini' : client === 'codex' ? 'codex' : 'claude';
+
+export const usesNeonCoder = (console?: Console, mode = 'auto'): boolean =>
+  mode === 'single:gemini' || (console === 'gemini' && (mode === 'auto' || mode === 'strict'));
+
 export interface Alias {
   provider: DispatchProvider;
   model: string;
@@ -161,9 +170,11 @@ export function configHash(): string {
     h.update(`${existsSync(p) ? readFileSync(p, 'utf8') : ''}\0`);
   return h.digest('hex').slice(0, 16);
 }
-export function providerOf(model: string): Console {
+const GEMINI_MODEL = /^gemini-[a-z0-9%-]+$/;
+export function providerOf(model: string): Alias['provider'] {
   if (model.startsWith('gpt-')) return 'codex';
   if (model.startsWith('claude-')) return 'claude';
+  if (GEMINI_MODEL.test(model)) return 'agy';
   throw new Error(`unknown vendor for model ${model}`);
 }
 
@@ -172,10 +183,10 @@ export interface Tiers {
   routing: {
     gemini?: { command: string[]; review: string[]; code?: string[] };
     budget: { claude_daily_usd: number; claude_medium_usd: number; codex_warning_usd: number };
-    commander: { by_console: Record<Console, string[]> };
+    commander: { by_console: ConsolePools };
     coder: { models: string[] };
     reviewer: {
-      by_console: Record<Console, string[]>;
+      by_console: ConsolePools;
       by_risk?: Partial<Record<Pkg['risk'], string[]>>;
     };
   };
@@ -234,7 +245,7 @@ export function effortFor(
 }
 
 export const isGeminiModel = (model: unknown): model is string =>
-  typeof model === 'string' && /^gemini-[a-z0-9%-]+$/.test(model);
+  typeof model === 'string' && GEMINI_MODEL.test(model);
 
 // prettier-ignore
 export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
@@ -251,10 +262,18 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
     if (![value.cases, value.lines].every(n => typeof n === 'number' && Number.isInteger(n) && n > 0))
       throw new Error(`tiers.policy.test_budget.${size}: expected positive integer cases and lines`);
   }
-  for (const c of ['claude', 'codex'] as const) {
+  for (const c of CONSOLES) {
     const models = obj(obj(obj(t.routing).commander).by_console)[c];
-    if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== c))
+    const reviewers = obj(obj(t.routing.reviewer).by_console)[c];
+    if (c === 'gemini' && models === undefined && reviewers === undefined) continue;
+    const provider = c === 'gemini' ? 'agy' : c;
+    if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== provider))
       throw new Error(`tiers.routing.commander.by_console.${c}: expected models for ${c}`);
+    if (c === 'gemini') {
+      if (!t.routing.gemini?.code?.length || !Array.isArray(reviewers) || !reviewers.length ||
+          reviewers.some(m => typeof m !== 'string' || providerOf(m) === 'agy'))
+        throw new Error('tiers.routing: Gemini console requires Neon coding and non-Neon review candidates');
+    }
   }
   if (t.routing.gemini !== undefined)
     for (const role of ['command', 'review', 'code'] as const) {
@@ -315,26 +334,24 @@ export function resolveRoute(
 ): Route {
   if (!['auto', 'strict', 'single:claude', 'single:chatgpt', 'single:gemini'].includes(mode))
     throw new Error(`unsupported routing mode: ${mode}`);
-  if (mode === 'single:gemini' && (role === 'code' || role === 'repair')) {
-    const effort = effortFor(t, role, risk, round);
-    const candidates = [...new Set(t.routing.gemini?.code)].map(model => ({ model, provider: 'agy' as const, effort }));
-    if (!candidates.length && !allowEmpty)
-      throw new Error(`mode ${mode}: no eligible ${role} model for ${risk} R${String(round)}`);
-    return { candidates, effort };
-  }
-  if ((mode === 'auto' && state.budget.degraded) || (['auto', 'strict'].includes(mode) && state.claude.state !== 'up')) mode = 'single:chatgpt';
+  const claudeDegraded = (mode === 'auto' && state.budget.degraded) ||
+    (['auto', 'strict'].includes(mode) && state.claude.state !== 'up');
+  if (console !== 'gemini' && claudeDegraded) mode = 'single:chatgpt';
+  const neonCoder = usesNeonCoder(console, mode);
   if (mode === 'single:chatgpt') console = 'codex';
   const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
+  const coderProvider = mode === 'single:claude' ? 'claude' : 'codex';
+  const coding = role === 'code' || role === 'repair';
   // single:chatgpt keeps reviews on Codex; only single:claude opens the configured review pool.
   const reviewIgnoresVendor = role === 'review' && mode === 'single:claude';
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
-      ? (t.routing.reviewer.by_risk?.[risk] ?? t.routing.reviewer.by_console[console])
-      : t.routing.coder.models;
+      ? ((console === 'gemini' ? undefined : t.routing.reviewer.by_risk?.[risk]) ?? t.routing.reviewer.by_console[console])
+      : [...(neonCoder ? t.routing.gemini?.code ?? [] : []), ...(mode === 'single:gemini' ? [] : t.routing.coder.models)];
   const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: providerOf(model), effort }))
-    .filter(a => !['code', 'repair'].includes(role) || a.provider === (mode === 'single:claude' ? 'claude' : 'codex'))
+    .filter(a => !coding || a.provider === coderProvider || (neonCoder && a.provider === 'agy'))
     .filter(
       a => (role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );

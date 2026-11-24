@@ -140,7 +140,8 @@
       "purpose": "主控：设计、架构、拍板验收；使用用户启动客户端的第一档。",
       "pools": {
         "claude": ["claude-opus-5-5", "claude-fable-5-2"],
-        "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"]
+        "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"],
+        "gemini": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"]
       }
     },
     "strategist": {
@@ -153,7 +154,7 @@
     },
     "general": {
       "name": "将军",
-      "purpose": "编码：ChatGPT 池为主力；Claude 池仅 plan mode single:claude；实现、验收、修复一次性闭环。",
+      "purpose": "编码：Gemini 发起时优先 Neon，ChatGPT 后备；其他控制台默认 ChatGPT，Claude 由 single:claude 启用。",
       "pools": {
         "chatgpt": ["gpt-6.2-sol", "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
         "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]
@@ -170,7 +171,8 @@
     "commander": {
       "by_console": {
         "claude": ["claude-fable-5-2", "claude-opus-5-5"],
-        "codex": ["gpt-6-astra", "gpt-6.1-sol"]
+        "codex": ["gpt-6-astra", "gpt-6.1-sol"],
+        "gemini": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"]
       }
     },
     "coder": {
@@ -203,7 +205,8 @@
           "claude-opus-5",
           "claude-fable-5-2"
         ],
-        "codex": ["gpt-5.6-sol", "gpt-6-astra"]
+        "codex": ["gpt-5.6-sol", "gpt-6-astra"],
+        "gemini": ["claude-opus-5-5", "gpt-5.6-sol", "gpt-6-astra"]
       },
       "exclude_author": true
     }

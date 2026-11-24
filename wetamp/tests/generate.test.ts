@@ -12,7 +12,7 @@ import {
   newRunId,
   renderBrief,
 } from '../src/generate';
-import { install, loadTiers, snapshotPolicy, WETAMP } from '../src/config';
+import { install, loadTiers, resolveRoute, snapshotPolicy, WETAMP } from '../src/config';
 import * as coord from '../src/coord';
 import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
@@ -250,6 +250,50 @@ const fixture = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'plan-two-pkgs.json'), 'utf8')
 ) as Plan;
 const NOW = Date.parse('2026-10-09T00:00:00Z');
+test('Gemini routes Neon coding before Codex fallback and reviews independently', () => {
+  const tiers = loadTiers();
+  const neon = ['gemini-4-neon-%78high', 'gemini-4-neon-%68igh'];
+  const coders = ['gpt-6.2-sol', 'gpt-5.6-sol', 'gpt-6.1-sol', 'gpt-6-astra'];
+  const models = (...args: Parameters<typeof resolveRoute>) =>
+    resolveRoute(...args).candidates.map(candidate => candidate.model);
+  const degraded = {
+    budget: { degraded: true, notice: '' },
+    claude: { state: 'up' as const, probe_failures: 0 },
+  };
+  expect(models(tiers, 'gemini', 'auto', 'command', 'G1', 1, [], degraded)).toEqual(neon);
+  expect(models(tiers, 'gemini', 'auto', 'code', 'G1', 1, [], degraded)).toEqual([
+    ...neon,
+    ...coders,
+  ]);
+  expect(models(tiers, 'gemini', 'strict', 'repair')).toEqual([...neon, ...coders]);
+  expect(models(tiers, 'gemini', 'single:gemini')).toEqual(neon);
+  expect(models(tiers, 'gemini', 'auto', 'review', 'G0', 1, [...neon, coders[1]])).toEqual([
+    'claude-opus-5-5',
+    'gpt-6-astra',
+  ]);
+  for (const [client, commanders, reviewers] of [
+    [
+      'claude',
+      ['claude-fable-5-2', 'claude-opus-5-5'],
+      ['claude-opus-5-5', 'gpt-5.6-sol', 'gpt-6-astra', 'claude-opus-5', 'claude-fable-5-2'],
+    ],
+    ['codex', ['gpt-6-astra', 'gpt-6.1-sol'], ['gpt-5.6-sol', 'gpt-6-astra']],
+  ] as const) {
+    expect(models(tiers, client, 'auto', 'command')).toEqual([...commanders]);
+    expect(models(tiers, client)).toEqual(coders);
+    expect(models(tiers, client, 'auto', 'review')).toEqual([...reviewers]);
+  }
+  const plan = { ...fixture, console: 'gemini' as const };
+  const workflow = buildWorkflow(plan, milestones(plan), 'golden-0001', '/GEN', false, NOW, tiers);
+  expect(workflow.nodes).toContainEqual(
+    expect.objectContaining({
+      id: 'code-core',
+      model: '@sa-agy-coder',
+      context: 'fresh',
+    })
+  );
+});
+
 const legacyTiers = () => {
   const tiers = loadTiers();
   return tiers;

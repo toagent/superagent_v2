@@ -154,9 +154,9 @@ export interface Plan {
     caps?: Caps;
   }[];
   /**
-   * Selects the reviewer pool (tiers.json routing.reviewer.by_console); default claude
+   * Selects role routing in tiers.json. Inferred from the initiating client when omitted; defaults to claude for unknown clients.
    */
-  console?: 'claude' | 'codex';
+  console?: 'claude' | 'codex' | 'gemini';
   /**
    * Prefer Gemini for the formal review nodes of this plan
    */

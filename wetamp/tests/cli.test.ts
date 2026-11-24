@@ -824,7 +824,10 @@ describe('classify', () => {
  * running，abandon 拒绝 completed/cancelled，拒绝时与真 CLI 一样回 {"ok":false,"error":<文本>}。
  * ledger 的 gen_dir 含 plan.json（core、api 两包）与 hints/。
  */
-function stub(responses: RunView[]): {
+function stub(
+  responses: RunView[],
+  identity?: launcherModule.Launcher
+): {
   dir: string;
   root: string;
   ledger: Ledger;
@@ -834,7 +837,7 @@ function stub(responses: RunView[]): {
   scratch: ReturnType<typeof spyOn<typeof gcMod, 'scratchClean'>>;
 } {
   restoreFixtures();
-  fixtureSpies.push(spyOn(launcherModule, 'launcher').mockReturnValue(undefined));
+  fixtureSpies.push(spyOn(launcherModule, 'launcher').mockReturnValue(identity));
   const root = tmp();
   sh('git init -q -b fixture', root);
   // These tests isolate recovery calls; cleanEngine itself has real dirty/committed fixtures in coord.test.ts.
@@ -875,7 +878,9 @@ function stub(responses: RunView[]): {
     spyOn(cliMod.waitClock, 'sleep').mockImplementation(ms => {
       elapsed += ms;
     }),
-    spyOn(coordModule, 'caller').mockReturnValue((fixtureCaller ??= coordModule.caller())),
+    spyOn(coordModule, 'caller').mockReturnValue(
+      identity ? coordModule.caller() : (fixtureCaller ??= coordModule.caller())
+    ),
     due,
     spyOn(archonMod, 'archon').mockImplementation((args, _cwd, intent) => {
       if (args[1] === 'wait') elapsed += Number(args[args.indexOf('--timeout') + 1]) * 1000;
@@ -2499,6 +2504,53 @@ describe('run (archon stub)', () => {
     ).aliases;
   };
   const want = renderAliases(loadTiers());
+  test('run freezes the launcher console, with explicit precedence and unknown client fallback', () => {
+    const live = createRequire(import.meta.url)('../hooks/live.cjs') as {
+      cliOf(argv: string[], controller: boolean): unknown;
+    };
+    expect(live.cliOf(['/bin/agy'], true)).toEqual({ kind: 'agy', headless: false });
+    expect(live.cliOf(['/bin/agy', '--print', 'task'], true)).toEqual({
+      kind: 'agy',
+      headless: true,
+    });
+    for (const [client, explicit, expected] of [
+      ['agy', undefined, 'gemini'],
+      ['codex', undefined, 'codex'],
+      ['claude', undefined, 'claude'],
+      ['opencode', undefined, 'claude'],
+      ['agy', 'claude', 'claude'],
+    ] as const) {
+      const identity = launcherModule.inspectProcess(process.pid);
+      expect(identity.state).toBe('online');
+      const s = stub([], {
+        client,
+        pid: process.pid,
+        pid_start: identity.start,
+        tty: null,
+        cwd: process.cwd(),
+        host: hostname(),
+      });
+      const repo = featureRepo(s.root);
+      process.env.SUPERAGENT_WRITE_ROOTS = s.root;
+      const path = fixturePlan(s.root, repo, plan => {
+        if (explicit) plan.console = explicit;
+        else delete plan.console;
+      });
+      const started = captured(() => main(['run', path, '--json']));
+      expect(started.code).toBe(0);
+      const ledger = loadLedger(JSON.parse(started.out).run_id);
+      expect(ledger.controller?.client).toBe(client);
+      expect(cliMod.planOf(ledger).console).toBe(expected);
+      if (expected === 'gemini') {
+        const call = s.calls().find(c => c.startsWith('workflow run'))!;
+        expect(pinned(call)['@sa-agy-coder']).toEqual({
+          provider: 'agy',
+          model: 'gemini-4-neon-%78high',
+        });
+      }
+    }
+  }, 30_000);
+
   test.each(['codex', 'claude'] as const)(
     'console=%s pins routed models and effort in the run config layer',
     console => {

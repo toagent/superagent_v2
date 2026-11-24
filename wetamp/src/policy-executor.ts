@@ -16,7 +16,7 @@ import {
   registerProvider,
 } from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
-import { isGeminiModel, routeState, type Alias, type Tiers } from './config';
+import { isGeminiModel, routeState, usesNeonCoder, type Alias, type Tiers } from './config';
 import { claudeOutcomeTrips, recordClaudeOutcome, type ClaudeOutcome } from './claude-health';
 import {
   executionContract,
@@ -89,7 +89,7 @@ function runtimeExecution(
   const node = options.nodeConfig?.nodeId;
   if (!node) throw new Error('policy: node id missing');
   const gemini = provider === 'gemini';
-  const neon = plan.mode === 'single:gemini';
+  const neon = usesNeonCoder(plan.console, plan.mode);
   let contract = executionContract(node);
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
@@ -137,7 +137,7 @@ function runtimeExecution(
     resync = contract !== node;
     route = executionForNode(table, contract, tiers);
     if (provider === 'agy' && (!neon || (route.role !== 'code' && route.role !== 'repair')))
-      throw new Error('policy: agy requires a single:gemini coder or repair node');
+      throw new Error('policy: agy requires a Neon coder or repair node');
     if (
       gemini &&
       (!plan.gemini_review || route.role !== 'review' || options.nodeConfig?.requiresExactSession)
@@ -267,6 +267,7 @@ function runtimeExecution(
         ...(candidate.provider === 'agy'
           ? { env: { ...options.env, SUPERAGENT_ROLE: 'general' } }
           : {}),
+        ...(provider === 'agy' && candidate.provider === 'codex' ? { assistantConfig } : {}),
         ...(gemini
           ? { purpose: 'title-generation' as const, nativeTools: undefined, assistantConfig }
           : {}),
