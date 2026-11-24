@@ -2515,10 +2515,11 @@ describe('run (archon stub)', () => {
     });
     for (const [client, explicit, expected] of [
       ['agy', undefined, 'gemini'],
-      ['codex', undefined, 'codex'],
+      ['codex', undefined, 'claude'],
       ['claude', undefined, 'claude'],
       ['opencode', undefined, 'claude'],
       ['agy', 'claude', 'claude'],
+      ['codex', 'codex', 'codex'],
     ] as const) {
       const identity = launcherModule.inspectProcess(process.pid);
       expect(identity.state).toBe('online');

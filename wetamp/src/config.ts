@@ -23,7 +23,7 @@ export type Console = (typeof CONSOLES)[number];
 type ConsolePools = Record<Exclude<Console, 'gemini'>, string[]> & { gemini?: string[] };
 
 export const consoleForClient = (client: string): Console =>
-  client === 'agy' ? 'gemini' : client === 'codex' ? 'codex' : 'claude';
+  client === 'agy' ? 'gemini' : 'claude';
 
 export const usesNeonCoder = (console?: Console, mode = 'auto'): boolean =>
   mode === 'single:gemini' || (console === 'gemini' && (mode === 'auto' || mode === 'strict'));

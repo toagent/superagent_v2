@@ -103,8 +103,9 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 
 ## 控制台模型路由
 
-plan 的 `console` 以显式值为准。缺省时按发起者识别，`claude` → `claude`、
-`codex` → `codex`、`agy` → `gemini`，其他身份默认 `claude`。生成的 run 快照保存该值，恢复时沿用。
+plan 的 `console` 以显式值为准。缺省时 `agy` → `gemini`，其他发起者默认 `claude`。
+只有显式设置 `console: "codex"` 才使用 Codex 控制台，默认保留跨厂商评审。
+生成的 run 快照保存该值，恢复时沿用。
 用 `superagent models --mode auto` 查看候选顺序。
 
 | 控制台   | 元帅                                             | 默认将军                                             | 正式评审                                                        |
