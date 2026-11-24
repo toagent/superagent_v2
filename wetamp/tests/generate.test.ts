@@ -767,6 +767,7 @@ test('coder command templates share the same scope decision rules', () => {
     '卡片或 hint 已授权的事项',
     '附录与代码细节不一致但能按最简解释完成的事项',
     '复用原语或上游代码的既有问题',
+    '只有以下两种情况可在 `needs` 请求 `scope_decision`',
     '最小必要改动涉及命中 `policy.risk_paths` 的越界文件',
     '提交且验收全绿后返回 `error_class: scope_violation`',
     '有实际反例，且授权范围内没有可行解法',

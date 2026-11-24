@@ -53,6 +53,6 @@ $INPUTS.prior_work
 
 - 净增行数上限永远不构成停下或申报 `scope_decision` 的理由。完成最小必要实现，在 `notes` 报告本包自己的净增行数。引擎验收负责计量，超限走 `human-budget`，批准后沿用原差异继续。
 - 必要越界未命中 `tiers.json policy.risk_paths` 时直接修改，在 `deviations` 逐项记录 `{path, why}`，继续验收和提交。卡片或 hint 已授权的事项、附录与代码细节不一致但能按最简解释完成的事项、复用原语或上游代码的既有问题，均继续完成本包并记入 `deviations`。
-- 只有两种情况可返回 `status: blocked` 并在 `needs` 中填一项 `{cap: "scope_decision", why, minimal_ask}`。
+- 只有以下两种情况可在 `needs` 请求 `scope_decision`。返回 `status: blocked`，`needs` 只填一项 `{cap: "scope_decision", why, minimal_ask}`。
   - 最小必要改动涉及命中 `policy.risk_paths` 的越界文件。在 `deviations` 逐项登记。提交且验收全绿后返回 `error_class: scope_violation`，在 `why` 列出文件、命中的规则和证明必须越界的实际反例，在 `minimal_ask` 列出待批准文件。引擎挂起该差异等待审批。
   - 硬约束冲突有实际反例，且授权范围内没有可行解法。返回 `error_class: scope_violation`，任务契约自身矛盾时用 `plan_invalid`。在 `why` 写清硬约束、实际反例和最小方案为何无解，在 `minimal_ask` 写明所需的最小裁决。
