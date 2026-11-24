@@ -749,6 +749,32 @@ test('review guidance and generated reason registry use their typed owners', () 
   }
 });
 
+test('coder command templates share the same scope decision rules', () => {
+  const heading = '\n## 何时需要范围裁决\n';
+  const rules = ['sa-code', 'sa-repair', 'sa-fix'].map(command => {
+    const prompt = readFileSync(join(WETAMP, `templates/.archon/commands/${command}.md`), 'utf8');
+    expect(prompt).not.toContain('净增行数上限与目标冲突');
+    expect(prompt).not.toContain('越界改动提交且验收全绿后');
+    const sections = prompt.split(heading);
+    expect(sections).toHaveLength(2);
+    return sections[1];
+  });
+  expect(rules).toEqual([rules[0], rules[0], rules[0]]);
+  for (const requirement of [
+    '净增行数上限永远不构成停下或申报 `scope_decision` 的理由',
+    '`human-budget`',
+    '必要越界未命中 `tiers.json policy.risk_paths` 时直接修改',
+    '卡片或 hint 已授权的事项',
+    '附录与代码细节不一致但能按最简解释完成的事项',
+    '复用原语或上游代码的既有问题',
+    '最小必要改动涉及命中 `policy.risk_paths` 的越界文件',
+    '提交且验收全绿后返回 `error_class: scope_violation`',
+    '有实际反例，且授权范围内没有可行解法',
+    '任务契约自身矛盾时用 `plan_invalid`',
+  ])
+    expect(rules[0]).toContain(requirement);
+});
+
 test('SHIFT_LEFT_ACCEPT HF3 fingerprint is stable and changes with template bytes or generation logic', () => {
   const root = join(tmp(), 'wetamp');
   for (const path of ['templates', 'src', 'schemas', 'bin', 'scripts'])

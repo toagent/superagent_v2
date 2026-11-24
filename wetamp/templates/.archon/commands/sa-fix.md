@@ -21,7 +21,7 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 
 ## 要求
 
-1. 只修复台账 `blocking` 中的发现和失败命令；分类以 reviewer 或验证节点为准，coder 自报仅供参考，不可自行降级阻塞失败。测试数据、夹具、截图遮罩/基线、测试环境引起的失败不改产品代码。`debt` 与评审里的其他意见不动（新出现的非阻塞问题由引擎记债，不在本轮扩大修复范围）。任务书的改动范围只是预期，必须越出时完成最小必要改动，并在 `deviations` 逐条登记 `{path, why}`。越界改动提交且验收全绿后，返回 `status: blocked`、`error_class: scope_violation`，`needs` 只含 `[{cap: "scope_decision", why: "为何必须越界", minimal_ask: "请批准的越界文件"}]`；引擎会挂起这份确切 diff，批准后原 run 续跑。
+1. 只修复台账 `blocking` 中的发现和失败命令；分类以 reviewer 或验证节点为准，coder 自报仅供参考，不可自行降级阻塞失败。测试数据、夹具、截图遮罩/基线、测试环境引起的失败不改产品代码。`debt` 与评审里的其他意见不动（新出现的非阻塞问题由引擎记债，不在本轮扩大修复范围）。
    验收（冒烟/行为测试）通过且核心目标达成即交付；验收外发现的问题写进 `deviations` 交由引擎记债，不继续扩大修改。
 2. 修完 `git add <文件> && git commit -m "fix($INPUTS.milestone): r$INPUTS.round"`，工作区必须干净。
 3. 交付前运行 brief 中列给你的验收命令：在当前 worktree、commit 前按原样重跑其中 `blocking` 失败的命令及受影响的其余命令，标为引擎运行的检查不要运行；保持相同 cwd 与环境前缀，失败就在本会话继续修，直到全部通过。把实际命令与退出码写进 `quick_checks`。引擎的 verify 照常独立复跑，是唯一的放行依据；coder 自报永远不作为验收证据。基线上就失败且与本次工作无关的命令，在 `deviations` 附证据后继续；需要更换工具链版本、`JAVA_HOME`/`PATH` 等环境才能通过时，不得绕过，须在 `needs` 报 `{"cap":"environment","why":"<原样失败的命令与关键信号>","minimal_ask":"<可直接写进 accept 的环境前缀，如 JAVA_HOME=…>"}`。
@@ -30,4 +30,11 @@ codegraph 的 projectPath 使用职责 manifest 中的主检出路径，index_sh
 正常完成时 `status` 填 `done`、`error_class` 填 null；`unverified`/`deviations`/`needs` 没有就填空数组。只在假执行器/mock 上验证过的行为、没跑过的验收、凭推断的结论都写入 `unverified`；与卡片/plan 不一致的做法及原因写入 `deviations`。
 
 过程中正常调用工具读取、修改、测试、提交；全部完成后，最后一条回复只输出符合 output_format 的紧凑 JSON，字符串字段简短，不粘贴 diff、日志或源码。
-仅当范围/契约冲突无法靠完成最小必要改动解决（如任务书中的净增行数上限与目标冲突、任务契约自相矛盾）且需要操作者裁决时，返回 `status: blocked`、`error_class: scope_violation`（任务契约自身矛盾用 `plan_invalid`），并填写非空 `needs: [{cap: "scope_decision", why: "冲突双方与证据", minimal_ask: "最小裁决问题"}]`。此情形允许 blocked，引擎停止 repair 并保留裁决请求；不要伪装成产品缺陷或 redline。
+
+## 何时需要范围裁决
+
+- 净增行数上限永远不构成停下或申报 `scope_decision` 的理由。完成最小必要实现，在 `notes` 报告本包自己的净增行数。引擎验收负责计量，超限走 `human-budget`，批准后沿用原差异继续。
+- 必要越界未命中 `tiers.json policy.risk_paths` 时直接修改，在 `deviations` 逐项记录 `{path, why}`，继续验收和提交。卡片或 hint 已授权的事项、附录与代码细节不一致但能按最简解释完成的事项、复用原语或上游代码的既有问题，均继续完成本包并记入 `deviations`。
+- 只有两种情况可返回 `status: blocked` 并在 `needs` 中填一项 `{cap: "scope_decision", why, minimal_ask}`。
+  - 最小必要改动涉及命中 `policy.risk_paths` 的越界文件。在 `deviations` 逐项登记。提交且验收全绿后返回 `error_class: scope_violation`，在 `why` 列出文件、命中的规则和证明必须越界的实际反例，在 `minimal_ask` 列出待批准文件。引擎挂起该差异等待审批。
+  - 硬约束冲突有实际反例，且授权范围内没有可行解法。返回 `error_class: scope_violation`，任务契约自身矛盾时用 `plan_invalid`。在 `why` 写清硬约束、实际反例和最小方案为何无解，在 `minimal_ask` 写明所需的最小裁决。
