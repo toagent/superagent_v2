@@ -1,9 +1,10 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { createHash } from 'node:crypto';
 // prettier-ignore
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { getRun, runProjections, type RunView } from './archon';
-import { home } from './config';
+import { engineDay, home } from './config';
 
 // prettier-ignore
 interface DebtLedger { run_id: string; archon_run_id: string; repo: string; started_at?: string; rejected?: string }
@@ -249,13 +250,14 @@ export function debtMetrics(
   snapshot: DebtSnapshot,
   now = Date.now()
 ): Record<string, number | 'unknown'> {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const today = (at?: string): boolean =>
-    !!at && Date.parse(at) >= start.getTime() && Date.parse(at) <= now;
+  const day = engineDay(now);
+  const today = (at?: string): boolean => {
+    const time = parseDbTimestamp(at ?? '');
+    return time <= now && engineDay(time) === day;
+  };
   const open = snapshot.debts.filter(debt => debt.status === 'open').length;
   const uncertainToday = (dates: (string | undefined)[]): boolean =>
-    dates.some(at => !at || !Number.isFinite(Date.parse(at)) || today(at));
+    dates.some(at => !at || !Number.isFinite(parseDbTimestamp(at)) || today(at));
   return {
     debt: open,
     debt_open: open,

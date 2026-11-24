@@ -216,10 +216,12 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 
 ## 辅助入口
 
+2026-11-24 起，新 run id 中的时间默认为台北时间，此前为 UTC。`SUPERAGENT_TIMEZONE` 可覆盖引擎用于编号、面向人的钟点和每日统计的时区，默认 `Asia/Taipei`。历史 run id 保持原样，时间筛选和排序以各 run 的 ledger 时间为准。
+
 - `superagent jobs --all` 查看登记作业；
 - `superagent models --mode auto` 查看路由模型；
 - `superagent report --since <YYYYMMDD|ISO>` 查看运行质量与效率口径；
-- 夜报在本机时间 02:00 后认领当天首轮，`superagent nightly-evolve` 可提前认领；`superagent report` 的 `latest_night_report` 指向最新文件。
+- 夜报在引擎时区 02:00 后认领当天首轮，`superagent nightly-evolve` 可提前认领；`superagent report` 的 `latest_night_report` 指向最新文件。
 - 夜报复用 `report` 的终态首次通过判定、验收通过包的加权 token 和逻辑 run 耗时。首次通过率单列操作者取消和被取代的 run。每包耗时是已集成 run 的总耗时除以包数。
 - `attribution` 只使用派单时的特征。验收命令数和写范围 glob 数分为 0、1–3、4+ 三档。`failure_reasons` 按首次未通过 run 的包数统计原因占比，同一个包可计入多个原因。
 - 夜报的 `models` 记录本地与远程提炼状态，`sources` 记录各来源试验结果。本地提炼通过 Archon 的 Pi provider，需要在 Pi 的 `models.json` 注册 `splash/qwen3.8-27b`，使用 `openai-completions` 和 `http://127.0.0.1:18081/v1`。本地注册缺失时，远程提炼仍可运行。

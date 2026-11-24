@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { basename, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
@@ -21,7 +22,7 @@ interface Marshal { owner: Identity | 'unknown'; owner_key: (string | number | n
 export interface Heartbeat { at: string; reclaim_pending: number; legacy?: number; unowned: number; unreadable: number; heavy_queue?: Snapshot['heavy_queue']; marshals: Marshal[] }
 export const HEARTBEAT_INTERVAL_MS = 900_000;
 const age = (at: string | null | undefined, now: number): number | null => {
-  const value = Date.parse(at ?? '');
+  const value = parseDbTimestamp(at ?? '');
   return Number.isFinite(value) ? Math.max(0, Math.floor((now - value) / 1000)) : null;
 };
 const { key: ownerKey } = createRequire(import.meta.url)('../hooks/identity.cjs') as {

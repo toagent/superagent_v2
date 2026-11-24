@@ -36,6 +36,7 @@ import { integrationNodeTimeout } from './integration';
 import {
   WETAMP,
   assertSQLite,
+  engineDateTime,
   home,
   loadTiers,
   runAliases,
@@ -122,7 +123,9 @@ export const engineHash = (root = WETAMP, policyHash = snapshotPolicy(loadTiers(
 export const residentHash = (root = WETAMP): string => hashInputs(root, ['src'], engineHash(root));
 
 export function newRunId(now = new Date()): string {
-  const ts = now.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const time = engineDateTime(now);
+  if (!time) throw new RangeError('Invalid time value');
+  const ts = time.replace(/[-:]/g, '').replace(' ', '-');
   return `${ts}-${crypto.getRandomValues(new Uint16Array(1))[0].toString(16).padStart(4, '0')}`;
 }
 

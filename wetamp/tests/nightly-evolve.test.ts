@@ -37,7 +37,7 @@ const home = () => {
   process.env.ARCHON_HOME = join(path, 'archon');
   return path;
 };
-const at = (day: number, hour = 2, minute = 0) => +new Date(2026, 10, day, hour, minute);
+const at = (day: number, hour = 2, minute = 0) => Date.UTC(2026, 10, day, hour - 8, minute);
 const sample = (id: string, repo: string, first: number): Sample => ({
   id,
   at: at(18, 1),

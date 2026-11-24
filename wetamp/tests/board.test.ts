@@ -852,7 +852,7 @@ describe('time', () => {
       expect(text(instant).split('\n')[0]).toContain('ETA 未知');
   });
 
-  test('fmtClock uses the process time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
+  test('fmtClock uses the engine time zone: HH:MM:SS today, MM-DD HH:MM otherwise', () => {
     const saved = process.env.TZ;
     try {
       const t = '2026-10-10T03:53:29.000Z';
@@ -861,9 +861,9 @@ describe('time', () => {
       expect(fmtClock(at(t), at('2026-10-10T17:00:00Z'))).toBe('10-10 11:53'); // 上海已是 10-11
       expect(fmtClock('x', Date.now())).toBe('--:--:--');
       process.env.TZ = 'UTC';
-      expect(fmtClock(t, at('2026-10-10T03:54:00Z'))).toBe('03:53:29');
-      expect(fmtClock(t, at('2026-10-10T17:00:00Z'))).toBe('03:53:29');
-      expect(fmtClock(t, at('2026-10-11T00:00:01Z'))).toBe('10-10 03:53');
+      expect(fmtClock(t, at('2026-10-10T03:54:00Z'))).toBe('11:53:29');
+      expect(fmtClock(t, at('2026-10-10T17:00:00Z'))).toBe('10-10 11:53');
+      expect(fmtClock(t, at('2026-10-11T00:00:01Z'))).toBe('10-10 11:53');
     } finally {
       if (saved === undefined) delete process.env.TZ;
       else process.env.TZ = saved;

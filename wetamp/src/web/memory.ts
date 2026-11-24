@@ -1,3 +1,4 @@
+import { engineDateTime } from '../config';
 import { basename } from 'node:path';
 import { memoryData, type Episode, type Lesson } from '../memory';
 import { cockpit } from '../board/cockpit';
@@ -79,11 +80,7 @@ export function memoryOverview(s: Snapshot, data = memoryData(Date.parse(s.at)),
     引擎自修复次数: 0,
   };
   return {
-    at: new Date(now).toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }),
+    at: engineDateTime(now).slice(11, 16),
     metrics,
     reflection: data.reflection,
     queued: data.queued,

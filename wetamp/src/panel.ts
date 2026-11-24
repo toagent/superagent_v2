@@ -1,3 +1,4 @@
+import { engineDateTime } from './config';
 import { isAbsolute, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { tickHealth, type Heartbeat, type TickRecord } from './heartbeat';
@@ -204,15 +205,11 @@ export function renderPanel(
       : model.health.failedStages.length
         ? `巡检运行中·${model.health.failedStages.join('、')}异常`
         : '巡检正常',
-    lines = [
-      `心跳面板｜${model.projects}｜${new Date(now).toLocaleString('zh-CN', { hour12: false })}｜${health}`,
-      '',
-      '需要处理',
-    ];
+    lines = [`心跳面板｜${model.projects}｜${engineDateTime(now)}｜${health}`, '', '需要处理'];
   if (width < 60) {
     const attention = model.attention.at(0),
       current = model.attention.find(item => item.run)?.run ?? model.runs.at(0),
-      clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5),
+      clock = engineDateTime(now).slice(11, 16),
       headerFixed = `心跳｜｜${clock}｜${health}`,
       compact = [
         `心跳｜${fit(model.projects, Math.max(1, width - Bun.stringWidth(headerFixed)))}｜${clock}｜${health}`,

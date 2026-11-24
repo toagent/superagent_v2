@@ -246,6 +246,8 @@ describe('job registry', () => {
     const bytes = readFileSync(file, 'utf8'), j = { ...readJobs().jobs[0], pid: 99999999, wrapper_pid: 99999999 };
     const history = [100, 300, 900].map(s => ({ ...j, log: null, state: 'done' as const, ended_at: new Date(Date.parse(j.started_at) + s * 1000).toISOString() }));
     expect(projectJob(j, [...history, { ...history[2], kind: 'codex' }], NOW)).toMatchObject({ state: 'running', stalled: true, eta: new Date(NOW - 400_000).toISOString() });
+    history.forEach((job, i) => put({ ...job, id: `history-${String(i)}` }));
+    expect(sh('TZ=UTC bun src/cli.ts jobs --all', WETAMP)).toContain('eta 10-10 19:53(+08:00)');
     utimesSync(log, NOW / 1000, NOW / 1000);
     expect(projectJob(j, [], NOW)).toMatchObject({ stalled: false });
     expect(projectJob(j, [], NOW).eta).toBeUndefined(); expect(readFileSync(file, 'utf8')).toBe(bytes);

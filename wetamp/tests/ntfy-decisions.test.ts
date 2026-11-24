@@ -61,19 +61,19 @@ describe('ntfy decision channel', () => {
     queueNtfyAlert('second', 'Second', f.config);
     await publishPendingNtfy(f.config);
     expect(f.posts.map(post => post.body.title)).toEqual([
-      '#1 05-18 03:33｜Decision',
-      '#2 05-18 03:33｜',
-      '#3 05-18 03:33｜',
+      '#1 05-18 11:33｜Decision',
+      '#2 05-18 11:33｜',
+      '#3 05-18 11:33｜',
     ]);
     queueNtfyAlert('restart', 'Restart', f.config);
     await publishPendingNtfy(f.config);
-    expect(f.posts.at(-1)!.body.title).toBe('#4 05-18 03:33｜');
+    expect(f.posts.at(-1)!.body.title).toBe('#4 05-18 11:33｜');
 
     const legacy = fixture();
     queueNtfyAlert('legacy', 'Legacy', legacy.config);
     expect(JSON.parse(readFileSync(legacy.config.statePath, 'utf8'))).not.toHaveProperty('seq');
     await publishPendingNtfy(legacy.config);
-    expect(legacy.posts[0]!.body.title).toBe('#1 05-18 03:33｜');
+    expect(legacy.posts[0]!.body.title).toBe('#1 05-18 11:33｜');
   });
   test('links receipts to the published decision sequence while preserving legacy state', async () => {
     const f = fixture(), id = askNtfy(f.request('reply-sequence'), f.config); await publishPendingNtfy(f.config);

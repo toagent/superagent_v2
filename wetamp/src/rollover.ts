@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
-import { writeAtomic } from './config';
+import { formatEngineTime, writeAtomic } from './config';
 // prettier-ignore
 import { Coordination, caller, repoScope, runScope, same, type Identity, type RunRef } from './coord';
 import { launchAgent, orcaBin, type AgentLaunch } from './orca';
@@ -200,7 +200,7 @@ export class Rollover {
     return r;
   }
   private prompt(r: RolloverRecord, reason = '上下文过大自动交接'): string {
-    return `接手元帅会话（${this.d.now().toLocaleString()}，原因：${reason}）。第 1 步：cd ${r.cwd} && superagent rollover accept ${r.token}，按输出接手。第 2 步：superagent rollover context ${r.token}，读完用户原话与压缩摘要。第 3 步：读输出给出的任务栈文件，按「接手必读」「在途」「已核实与更正」继续；「待验证假设」须复测后才能当作事实。并按 accept 输出重新挂起 run 等待。首条汇报先逐条列出你确认的用户决定与纠正、主任务、下一步；汇报首行贴 superagent 输出的 quota 行。`;
+    return `接手元帅会话（${formatEngineTime(this.d.now())}，原因：${reason}）。第 1 步：cd ${r.cwd} && superagent rollover accept ${r.token}，按输出接手。第 2 步：superagent rollover context ${r.token}，读完用户原话与压缩摘要。第 3 步：读输出给出的任务栈文件，按「接手必读」「在途」「已核实与更正」继续；「待验证假设」须复测后才能当作事实。并按 accept 输出重新挂起 run 等待。首条汇报先逐条列出你确认的用户决定与纠正、主任务、下一步；汇报首行贴 superagent 输出的 quota 行。`;
   }
   async start(reason = '上下文过大自动交接', user?: string): Promise<Record<string, unknown>> {
     if (!this.d.env.ORCA_AGENT_SESSION_ID || !orcaBin(this.d.env, this.d.exists)) throw new Error('仅 Orca 内支持自动交接；其他客户端沿用：任务栈写断点并把状态改为被中断 → 新开会话 tasks.sh list → tasks.sh adopt <会话目录名>');

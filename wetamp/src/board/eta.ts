@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunView } from '../archon';
@@ -74,8 +75,8 @@ export function etaInput(
     }));
   const last = events
     .map(e => e.created_at)
-    .filter((at): at is string => !!at && Number.isFinite(Date.parse(at)))
-    .sort()
+    .filter((at): at is string => !!at && Number.isFinite(parseDbTimestamp(at)))
+    .sort((a, b) => parseDbTimestamp(a) - parseDbTimestamp(b))
     .at(-1);
   return {
     ledger,
@@ -145,7 +146,7 @@ export function estimate(
   active.forEach((n, i) => {
     if (n.state === 'completed') return;
     const expected = ws[i] * scale;
-    const start = Date.parse(n.startedAt ?? n.execution?.timing.startedAt ?? '');
+    const start = parseDbTimestamp(n.startedAt ?? n.execution?.timing.startedAt ?? '');
     if (n.state === 'running' && !Number.isFinite(start)) {
       remaining = NaN;
       return;
@@ -188,8 +189,12 @@ export function refreshEta(inputs: EtaInput[], now = Date.now()): void {
         .filter(n => n.state === 'running')
         .map(n => [
           n.nodeId,
-          estimate([n], samples, Math.max(0, (now - Date.parse(n.startedAt ?? '')) / 1000), now)
-            .progress,
+          estimate(
+            [n],
+            samples,
+            Math.max(0, (now - parseDbTimestamp(n.startedAt ?? '')) / 1000),
+            now
+          ).progress,
         ])
     );
   }

@@ -1,3 +1,4 @@
+import { formatEngineTime } from './config';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -54,7 +55,7 @@ const shorten = (value: string, path: string, line: number, limit: number): stri
 };
 const localTime = (value: unknown): string => {
   const time = typeof value === 'string' ? new Date(value) : new Date(NaN);
-  return Number.isNaN(time.valueOf()) ? '时间未知' : time.toLocaleString('sv-SE');
+  return Number.isNaN(time.valueOf()) ? '时间未知' : formatEngineTime(time);
 };
 const ignoredClaudeText = (value: string): boolean =>
   /^\s*<(?:local-command-stdout|local-command-caveat)>[\s\S]*<\/(?:local-command-stdout|local-command-caveat)>\s*$/.test(

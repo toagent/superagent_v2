@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptionsWithBufferEncoding } from 'node:child_process';
 import { mkdirSync, readFileSync, statSync } from 'node:fs';
@@ -6,7 +7,7 @@ import type { BoardRow, Snapshot } from './board/data';
 import { home, writeAtomic } from './config';
 import { nodePackages } from './execution';
 import { loadLedger } from './ledger';
-import { clock, planOf } from './ledger-metrics';
+import { planOf } from './ledger-metrics';
 import { covered } from './plan-precheck';
 import { redact } from './redact';
 
@@ -69,11 +70,11 @@ export const generalKey = (run: string, node: string): string => `${run}\0${node
 export function assessGeneral(prev: StallRecord | undefined, o: GeneralObservation, now: number): StallRecord {
   const same = prev?.node === o.node && prev.startedAt === o.startedAt;
   // Archon node times are SQLite UTC without a zone suffix; Date.parse would read them as local time.
-  const start = clock(o.startedAt), cpu = o.cpu ?? 0, entries = o.entries ?? '', mtime = o.mtime ?? 0;
+  const start = parseDbTimestamp(o.startedAt), cpu = o.cpu ?? 0, entries = o.entries ?? '', mtime = o.mtime ?? 0;
   const waiting_command = cpu >= 5 || !!o.root;
   const base = { node: o.node, startedAt: o.startedAt, entries, mtime, progressAt: same ? prev.progressAt : now, idle_s: 0, spinning: false, waiting_command, cpu, ...(o.root ? { root: o.root } : {}) };
   if (!o.coder) return { ...base, state: 'handed_back' };
-  const activity = clock(o.lastActivityAt ?? '');
+  const activity = parseDbTimestamp(o.lastActivityAt ?? '');
   if (o.error || !Number.isFinite(start) || !Number.isFinite(activity)) return { ...base, state: 'unknown', reason: o.error ?? 'invalid observation time', ...(same && prev.episode ? { episode: prev.episode } : {}) };
   if (prev && !same) return { ...base, state: 'working' };
   const progressed = same && (prev.entries !== entries || mtime > prev.mtime);

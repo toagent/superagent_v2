@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildNodeSummaries } from '../../packages/cli/src/commands/workflow';
 import { archonRunIds, reportRuns } from './archon';
-import { home, WETAMP, writeAtomic } from './config';
+import { engineDateTime, engineDay, home, WETAMP, writeAtomic } from './config';
 import { confined } from './board/workflow';
 import type { Ledger } from './ledger';
 import { deliveryProjection, publishProjection } from './land';
@@ -265,10 +265,6 @@ export function analyze(rows: Sample[], now: number) {
   };
   return { last_24h, last_7d, deviation, attribution, failure_reasons };
 }
-const localDay = (at: number) => {
-  const d = new Date(at);
-  return new Date(at - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
-};
 const sources = ['remote', 'local'] as const;
 type Source = (typeof sources)[number];
 const modelState = () => ({
@@ -305,8 +301,8 @@ export function evolve(
     source
   ) => nightlyReflection(input, undefined, source)
 ) {
-  if (!force && new Date(now).getHours() < 2) return 'not-due';
-  const day = localDay(now),
+  if (!force && engineDateTime(now).slice(11, 13) < '02') return 'not-due';
+  const day = engineDay(now),
     dir = join(sa, 'evolution'),
     path = join(dir, day + '.json');
   if (!force && existsSync(path)) return 'already-claimed';
@@ -480,7 +476,7 @@ export function evolve(
   const state = memoryState();
   const statusIds = (status: Lesson['status']) =>
     state.lessons
-      .filter(l => l.status === status && l.status_at && localDay(Date.parse(l.status_at)) === day)
+      .filter(l => l.status === status && l.status_at && engineDay(Date.parse(l.status_at)) === day)
       .map(l => l.id);
   save({
     ...stats,

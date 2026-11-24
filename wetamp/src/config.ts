@@ -25,6 +25,42 @@ export interface Alias {
   effort: string;
 }
 export const WETAMP = join(import.meta.dir, '..');
+
+export const engineTimeZone = (): string => process.env.SUPERAGENT_TIMEZONE ?? 'Asia/Taipei';
+
+let engineClock:
+  | { zone: string; clock: Intl.DateTimeFormat; offset: Intl.DateTimeFormat }
+  | undefined;
+function engineFormatters() {
+  const timeZone = engineTimeZone();
+  if (engineClock?.zone !== timeZone)
+    engineClock = {
+      zone: timeZone,
+      clock: new Intl.DateTimeFormat('sv-SE', {
+        timeZone,
+        dateStyle: 'short',
+        timeStyle: 'medium',
+      }),
+      offset: new Intl.DateTimeFormat('en', { timeZone, timeZoneName: 'longOffset' }),
+    };
+  return engineClock;
+}
+
+export const engineDateTime = (at: Date | number): string =>
+  Number.isFinite(Number(at)) ? engineFormatters().clock.format(at) : '';
+
+export const engineDay = (at: Date | number): string => engineDateTime(at).slice(0, 10);
+
+export const engineUtcOffset = (at: Date | number): string =>
+  engineFormatters()
+    .offset.formatToParts(at)
+    .find(part => part.type === 'timeZoneName')
+    ?.value.match(/[+-].+$/)?.[0] ?? '+00:00';
+
+export function formatEngineTime(at: Date | number): string {
+  if (!Number.isFinite(Number(at))) return '未知';
+  return `${engineDateTime(at).slice(5, 16)}(${engineUtcOffset(at)})`;
+}
 /** Archon worker 的 Codex 二进制：前置 exec_profiles 的 -c 保留原生 MCP。 */
 function codexWorkerPath(sa = process.env.SUPERAGENT_HOME): string {
   const current = sa && join(sa, 'engine', 'current');
@@ -245,7 +281,7 @@ function readBudgetState(t: Tiers, mode = 'auto', now = Date.now()): { degraded:
   try {
     if (!process.env.SUPERAGENT_HOME) throw new Error('no cache home');
     const c = JSON.parse(readFileSync(join(process.env.SUPERAGENT_HOME, 'relay-quota.json'), 'utf8')) as { at: number; claude_daily_usd: number };
-    if (!Number.isFinite(c.at) || c.at > now || now - c.at > 3600e3 || new Date(c.at).toDateString() !== new Date(now).toDateString() || !Number.isFinite(c.claude_daily_usd) || c.claude_daily_usd < 0) throw new Error('invalid cache');
+    if (!Number.isFinite(c.at) || c.at > now || now - c.at > 3600e3 || engineDay(c.at) !== engineDay(now) || !Number.isFinite(c.claude_daily_usd) || c.claude_daily_usd < 0) throw new Error('invalid cache');
     const degraded = c.claude_daily_usd >= t.routing.budget.claude_daily_usd;
     return { degraded, notice: degraded ? '已降级到 Codex' : '' };
   } catch { return { degraded: false, notice: '预算状态未知', unknown: true }; }

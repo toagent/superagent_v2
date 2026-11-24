@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { archonJson, archonRunIds, lock } from './archon';
-import { home, WETAMP, writeAtomic } from './config';
+import { engineDay, engineTimeZone, formatEngineTime, home, WETAMP, writeAtomic } from './config';
 import { ledgerIds, ledgerPath, loadLedger, parseArgs } from './cli';
 import type { Job } from './jobs';
 import { isTier, type Tier } from './roles';
@@ -300,7 +300,7 @@ export function readUsage(): UsageCache {
 export const usageCommand = (client: Client, mode: 'session' | 'daily', since?: string): string[] => ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', client, mode, '--json', ...(since ? ['--since', since] : [])];
 // prettier-ignore
 export async function capture(client: Client, mode: 'session' | 'daily', since?: string, cmd = usageCommand(client, mode, since)): Promise<unknown> {
-  const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', detached: true });
+  const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', detached: true, env: { ...process.env, TZ: engineTimeZone() } });
   const timeout = { expired: false };
   const timer = setTimeout(() => { timeout.expired = true; try { process.kill(-p.pid, 'SIGKILL'); } catch { /* Child already exited. */ } }, 120000);
   try {
@@ -315,7 +315,7 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
   const held = lock(join(root(), 'refresh.lock'));
   if (!held.ok) return readUsage();
   try {
-    const day = new Date().toLocaleDateString('sv-SE');
+    const day = engineDay(Date.now());
     const today: NonNullable<UsageCache['today']> = { day, status: 'ok', sessions: [] };
     const old = readUsage(), cache: UsageCache = { at: new Date().toISOString(), since, status: 'ok', sources: {}, source_at: {}, sessions: [], today, daily: [] };
     // bunx installs/links both clients from the same package cache; serialize under refresh.lock.
@@ -378,7 +378,7 @@ export function usageSummary(c: UsageCache): Record<string, unknown> {
 export function usageText(c: UsageCache): string {
   const summary = usageSummary(c);
   const row = (k: string, v: Counts): string => [k, v.input, v.output, v.reasoning, v.cacheRead, v.cacheWrite, v.total, v.sessions].join(' ');
-  return [c.repo ? `仓库 ${c.repo}（ccusage） · 仅有归属证据的本机会话` : '全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ?? '无'}`, String(summary.attribution), 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
+  return [c.repo ? `仓库 ${c.repo}（ccusage） · 仅有归属证据的本机会话` : '全量（ccusage） · 仅本机日志；开发机 / mini 不含', `${c.status} · 缓存 ${c.at ? formatEngineTime(Date.parse(c.at)) : '无'}`, String(summary.attribution), 'kind input output reasoning cacheRead cacheWrite 合计 会话数', ...Object.entries(summary.by_kind as Record<string, Counts>).map(([k, v]) => row(k, v)), '角色×模型', ...Object.entries(summary.by_role_model as Record<string, Counts>).map(([k, v]) => row(k, v)), 'Top 会话（其余汇总见 --json / Web）', ...[...c.sessions].sort((a, b) => b.total - a.total).slice(0, 5).map(s => `${s.id} ${s.owner?.kind ?? 'unknown'} ${fmtTokens(s.total)}`)].join('\n');
 }
 // prettier-ignore
 export const fmtTokens = (n: number): string => n >= 1e9 ? `${(n / 1e9).toFixed(1)}G` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);

@@ -13,7 +13,7 @@ import {
   tail,
   type RunView,
 } from '../archon';
-import { home } from '../config';
+import { engineDateTime, engineDay, home } from '../config';
 import {
   runScope,
   coord,
@@ -505,13 +505,13 @@ export function createLoader(signal?: AbortSignal, ownerOf?: (l: Ledger) => Retu
     const initialLedgers = new Map(ids.map(({ id, mtimeMs }) => { const saved = ledgerReadCache.get(id), value = saved?.mtimeMs === mtimeMs ? saved.value : ledgerReader(id); ledgerReadCache.set(id, { mtimeMs, value }); return [id, value] as const; }));
     mark('ledgers');
     let terminal = 0;
-    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const today = engineDay(now);
     const statuses = statusesOf();
     const visibleIds = statuses ? ids.filter(({ id }) => {
       const ledger = initialLedgers.get(id);
       if (typeof ledger === 'string' || !ledger) return true;
       const status = statuses.get(ledger.archon_run_id) ?? cache.get(id)?.run.status;
-      return !status || !FINAL.has(status) || clock(ledger.started_at) >= today.getTime() || terminal++ < limit;
+      return !status || !FINAL.has(status) || engineDay(clock(ledger.started_at)) >= today || terminal++ < limit;
     }) : ids;
     const visible = new Set(visibleIds.map(({ id }) => id));
     mark('statuses');
@@ -790,16 +790,14 @@ export function elapsedAt(r: Pick<BoardRow, 'span'>, now: number): number | null
   return Math.max(0, Math.round(((r.span.ended_ms ?? now) - r.span.started_ms) / 1000));
 }
 
-/** 进程本地时区（尊重 TZ）的时刻：与 now 同一天 `HH:MM:SS`，否则 `MM-DD HH:MM`；不可解析为 `--:--:--`。 */
+/** 引擎时区的时刻：与 now 同一天 `HH:MM:SS`，否则 `MM-DD HH:MM`；不可解析为 `--:--:--`。 */
 export function fmtClock(t: string | number, now: Date | number): string {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '--:--:--';
-  const n = new Date(now);
-  const p = (x: number): string => String(x).padStart(2, '0');
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  return d.toDateString() === n.toDateString()
-    ? `${hm}:${p(d.getSeconds())}`
-    : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
+  const at = typeof t === 'string' ? clock(t) : t;
+  if (!Number.isFinite(at)) return '--:--:--';
+  const dateTime = engineDateTime(at);
+  return dateTime.slice(0, 10) === engineDay(new Date(now))
+    ? dateTime.slice(11)
+    : dateTime.slice(5, 16);
 }
 
 /** 45s / 12m05s / 3h04m / 2d03h。 */

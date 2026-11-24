@@ -1,8 +1,9 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, chmodSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { home, loadTiers, WETAMP, writeAtomic } from '../config';
+import { engineDateTime, engineDay, home, loadTiers, WETAMP, writeAtomic } from '../config';
 import type { RelayQuotaCache, RelayQuotaPool } from '../relay-quota';
 import { residentHash } from '../generate';
 import { ownerLabel } from '../coord';
@@ -211,17 +212,16 @@ function quotaOverview() {
 export function overview(s: Snapshot, snapshotAt = s.at, servedAt = new Date().toISOString()) {
   const now = Date.parse(s.at),
     c = cockpit(s, now),
-    day = new Date(now).toLocaleDateString('sv-SE');
+    day = engineDay(now);
   const today = new Set(
     s.rows
       .filter(
         r =>
-          Date.parse(r.started_at) <= now &&
-          new Date(r.started_at).toLocaleDateString('sv-SE') === day
+          parseDbTimestamp(r.started_at) <= now && engineDay(parseDbTimestamp(r.started_at)) === day
       )
       .map(r => r.run_id)
   );
-  const order = new Map(s.rows.map(r => [r.run_id, Date.parse(r.started_at)]));
+  const order = new Map(s.rows.map(r => [r.run_id, parseDbTimestamp(r.started_at)]));
   const state = (v: string): string =>
     ({
       running: '进行中',
@@ -242,11 +242,7 @@ export function overview(s: Snapshot, snapshotAt = s.at, servedAt = new Date().t
     snapshot_at: snapshotAt,
     served_at: servedAt,
     quota: quotaOverview(),
-    at: new Date(now).toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }),
+    at: engineDateTime(now).slice(11, 16),
     metrics: c.metrics,
     running: c.tree.length,
     needs: c.needs.map(r => ({

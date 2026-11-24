@@ -1,8 +1,9 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { confined, OUTSIDE } from './board/workflow';
 // Ledger-derived measurements shared by report, board and cockpit.
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
-import { WETAMP } from './config';
+import { engineDay, WETAMP } from './config';
 import { join, resolve } from 'node:path';
 import { archonRunIds, type RunView } from './archon';
 import {
@@ -20,13 +21,9 @@ import type { SerializedNodeData } from '../../packages/workflows/src/node-recor
 import type { Event } from './report';
 import type { BoardRow } from './board/data';
 
-// SQLite CURRENT_TIMESTAMP is UTC, despite carrying no zone suffix.
-export const clock = (value = ''): number =>
-  Date.parse(
-    /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(value) ? value.replace(' ', 'T') + 'Z' : value
-  );
+export const clock = (value?: string | null): number => parseDbTimestamp(value ?? '');
 export const ms = (a?: string, b?: string): number | null => {
-  const delta = a && b ? clock(b) - clock(a) : NaN;
+  const delta = a && b ? parseDbTimestamp(b) - parseDbTimestamp(a) : NaN;
   return Number.isFinite(delta) && delta >= 0 ? delta : null;
 };
 export const runElapsedOf = ({ ledger, run }: Pair): number | null =>
@@ -95,7 +92,7 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
       continue;
     if (rows.has(e.step_name) || e.data?.invocation?.loopPath?.length) return unknown;
     const skipped = e.event_type === 'node_skipped';
-    const start = clock(e.data?.timing?.startedAt ?? e.data?.attempt?.startedAt ?? (skipped ? e.created_at : '') ?? '');
+    const start = parseDbTimestamp(e.data?.timing?.startedAt ?? e.data?.attempt?.startedAt ?? (skipped ? e.created_at : '') ?? '');
     const end = skipped ? start : start + (e.data?.timing?.durationMs ?? NaN);
     const queue = skipped ? 0 : ms(e.data?.invocation?.startedAt, e.data?.attempt?.startedAt);
     if (![start, end].every(Number.isFinite) || end < start || queue === null) return unknown;
@@ -120,8 +117,8 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
   };
   const last = [...rows].sort((a, b) => b[1].end - a[1].end)[0]?.[0];
   if (!last || !walk(last)) return unknown;
-  let cursor = clock(run.started_at ?? '');
-  const recordedEnd = clock(run.completed_at ?? '');
+  let cursor = parseDbTimestamp(run.started_at ?? '');
+  const recordedEnd = parseDbTimestamp(run.completed_at ?? '');
   // SQL terminal clocks truncate milliseconds; node persistence may finish after dispatch.
   const precision = precisionOf(run.completed_at ?? undefined);
   const end = Math.max(recordedEnd, ...[...rows.values()].map(r => r.end));
@@ -130,13 +127,13 @@ export function criticalPath( run: RunView, events: Event[], graph?: { id: strin
   for (const id of path) {
     const row = rows.get(id);
     if (!row) return unknown;
-    if (row.start < clock(run.started_at ?? '')) return unknown;
+    if (row.start < parseDbTimestamp(run.started_at ?? '')) return unknown;
     const queued = Math.max(cursor, row.start - row.queue), started = Math.max(queued, row.start);
     segments.push({ phase: 'unclassified_wait', ms: queued - cursor }, { phase: 'queue', node: id, ms: started - queued }, { phase: nodes.get(id)?.wait ? 'human_wait' : (/^(code|review|repair|fix|verify)-/.exec(id)?.[1] ?? 'script'), node: id, ms: Math.max(0, row.end - started), } );
     cursor = Math.max(cursor, row.end);
   }
   segments.push({ phase: 'unclassified_wait', ms: end - cursor });
-  return { status: 'measured', elapsed_ms: end - clock(run.started_at ?? ''), recorded_elapsed_ms: elapsed, clock_precision_ms: precision, path, segments, critical_path_ms: segments.filter(s => s.phase !== 'unclassified_wait').reduce((s,r) => s + r.ms, 0), reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
+  return { status: 'measured', elapsed_ms: end - parseDbTimestamp(run.started_at ?? ''), recorded_elapsed_ms: elapsed, clock_precision_ms: precision, path, segments, critical_path_ms: segments.filter(s => s.phase !== 'unclassified_wait').reduce((s,r) => s + r.ms, 0), reconciled_ms: segments.reduce((s, r) => s + r.ms, 0), unclassified_wait: 'unknown_cause', };
 }
 
 export function firstPassOf(pair: Pair, stats?: Record<string, unknown>): boolean | 'unknown' {
@@ -188,7 +185,7 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
     const d = e.data, identity = d?.invocation?.id && d.attempt?.id ? JSON.stringify([e.workflow_run_id ?? run.id, e.step_name, d.invocation.id, d.attempt.id]) : null;
     if (identity && seen.has(identity)) return [];
     if (identity) seen.add(identity);
-    const duration = d?.timing?.durationMs, start = clock(d?.timing?.startedAt ?? d?.attempt?.startedAt ?? '');
+    const duration = d?.timing?.durationMs, start = parseDbTimestamp(d?.timing?.startedAt ?? d?.attempt?.startedAt ?? '');
     const measured = !!identity && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && Number.isFinite(start);
     if (measured) intervals.push({ start, end: start + duration });
     const candidate = timings.find(t => t.run === (e.workflow_run_id ?? run.id) && t.node === e.step_name && t.attempt_id === d?.attempt?.id);
@@ -219,7 +216,7 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
     const key = JSON.stringify([kind, e.step_name]);
     if (['approval_requested', 'wait_started'].includes(e.event_type)) { if (waits.has(key)) waitUnknown = true; waits.set(key, e); }
     else if (['approval_received', 'wait_completed', 'wait_expired'].includes(e.event_type)) {
-      const start = waits.get(key)?.created_at, end = e.created_at, duration = ms(start, end); if (duration === null || !start || !end) waitUnknown = true; else holds.push({ start: clock(start), end: clock(end) }); waits.delete(key);
+      const start = waits.get(key)?.created_at, end = e.created_at, duration = ms(start, end); if (duration === null || !start || !end) waitUnknown = true; else holds.push({ start: parseDbTimestamp(start), end: parseDbTimestamp(end) }); waits.delete(key);
     }
   }
   const holdUnion: typeof intervals = [];
@@ -228,9 +225,9 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
   }
   const segments = path.status === 'measured' ? path.segments as { phase: string; ms: number }[] : null;
   const hold = segments ? segments.filter(s => s.phase === 'human_wait').reduce((sum,s) => sum + s.ms, 0) : !waitUnknown && !waits.size && holds.length ? holdUnion.reduce((sum,i) => sum + i.end - i.start, 0) : 'unknown';
-  return { k1: run.started_at && Number.isFinite(clock(run.started_at)) ? (clock(run.started_at) < clock('2026-10-14T16:01:23+08:00') ? 'pre' : 'post') : 'unknown', status: run.status,
+  return { k1: run.started_at && Number.isFinite(parseDbTimestamp(run.started_at)) ? (parseDbTimestamp(run.started_at) < parseDbTimestamp('2026-10-14T16:01:23+08:00') ? 'pre' : 'post') : 'unknown', status: run.status,
     cumulative_ms: nodes.length && nodes.every(n => typeof n.cumulative_ms === 'number') ? nodes.reduce((a,n) => a + Number(n.cumulative_ms), 0) : 'unknown',
-    wall_clock_ms: intervals.some(i => i.start < clock(run.started_at ?? '') || i.end > clock(run.completed_at ?? '') + precisionOf(run.completed_at ?? undefined)) ? 'unknown' : ms(run.started_at ?? undefined, run.completed_at ?? undefined) ?? 'unknown', hold_ms: hold,
+    wall_clock_ms: intervals.some(i => i.start < parseDbTimestamp(run.started_at ?? '') || i.end > parseDbTimestamp(run.completed_at ?? '') + precisionOf(run.completed_at ?? undefined)) ? 'unknown' : ms(run.started_at ?? undefined, run.completed_at ?? undefined) ?? 'unknown', hold_ms: hold,
     idle_ms: segments ? segments.filter(s => s.phase === 'unclassified_wait').reduce((sum,s) => sum + s.ms, 0) : nodes.length && intervals.length === nodes.length && typeof hold === 'number' ? union.slice(1).reduce((sum,i,k) => sum + i.start - union[k].end - holdUnion.reduce((covered,h) => covered + Math.max(0, Math.min(i.start,h.end) - Math.max(union[k].end,h.start)), 0), 0) : 'unknown',
     nodes: nodes.map(n => ({ ...n, execution: n.attempt === 'unknown' || n.invocation === 'unknown' ? 'unknown' : (counts.get(n.node) ?? 0) > 1 ? 'multiple' : 'single' })) };
 }
@@ -238,20 +235,20 @@ export function measurementOf(run: RunView, events: Event[], plan: Plan | null, 
 // Today is an operator-local calendar window; persisted SQL clocks remain UTC.
 // prettier-ignore
 export function metricsOf(rows: readonly BoardRow[], summary: Record<string, unknown>, now = Date.now(), unreadable = false) {
-  const start = new Date(now); start.setHours(0, 0, 0, 0);
-  const today = (at: number) => at >= start.getTime() && at <= now;
+  const day = engineDay(now);
+  const today = (at: number) => at <= now && engineDay(at) === day;
   const unreadableRows = rows.filter(r => r.state === 'unreadable');
-  const unreadableToday = unreadable || unreadableRows.some(r => { const at = clock(r.started_at); return !Number.isFinite(at) || today(at); });
+  const unreadableToday = unreadable || unreadableRows.some(r => { const at = parseDbTimestamp(r.started_at); return !Number.isFinite(at) || today(at); });
   const readable = rows.filter(r => r.state !== 'unreadable');
   const terminal = (r: BoardRow) => r.state === 'abandoned' || ['completed', 'failed', 'cancelled'].includes(r.nativeState ?? r.state) || r.state.startsWith('failed:');
-  const end = (r: BoardRow) => r.completed_at ? clock(r.completed_at) : r.span?.ended_ms ?? NaN;
+  const end = (r: BoardRow) => r.completed_at ? parseDbTimestamp(r.completed_at) : r.span?.ended_ms ?? NaN;
   const ended = readable.filter(r => terminal(r) && today(end(r)));
   const intervened = (r: BoardRow) => r.intervened === true || (r.interventions ?? 0) > 0;
   const achieved = ended.filter(r => r.state === 'completed' && r.landed && !intervened(r) && r.interventions === 0);
   return { completed: unreadableToday || ended.some(r => r.state === 'completed' && r.landed !== false && !intervened(r) && (r.landed === undefined || r.interventions === undefined)) ? 'unknown' : achieved.length, decided: unreadableToday || readable.some(r => terminal(r) && !Number.isFinite(end(r))) ? 'unknown' : ended.length,
     firstPass: unreadableToday || achieved.some(r => !r.engine || r.engine.firstPass === 'unknown') ? 'unknown' : achieved.filter(r => r.engine?.firstPass === true).length,
     firstPass_unknown: achieved.filter(r => !r.engine || r.engine.firstPass === 'unknown').length,
-    asks: unreadableToday || readable.some(r => !r.engine) ? 'unknown' : readable.reduce((n,r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(clock(d.at))).length ?? 0), 0),
+    asks: unreadableToday || readable.some(r => !r.engine) ? 'unknown' : readable.reduce((n,r) => n + (r.engine?.dispositions.filter(d => d.action === 'ask' && today(parseDbTimestamp(d.at))).length ?? 0), 0),
     unreadable_rows: unreadableRows.length,
     debt: typeof summary.debt_open === 'number' ? summary.debt_open : 'unknown',
     debt_open: typeof summary.debt_open === 'number' ? summary.debt_open : 'unknown',

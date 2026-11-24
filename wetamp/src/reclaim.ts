@@ -1,10 +1,11 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 // prettier-ignore
 import { Coordination, caller, coord, identityKey, ownerLabel, runScope, same, type Identity, type RunRef } from './coord';
 import { getRun, runStatuses } from './archon';
-import { writeAtomic } from './config';
+import { formatEngineTime, writeAtomic } from './config';
 import { loadLedger, mutateLedger } from './ledger';
 import { cleanJob, readJobs } from './jobs';
 import { askNtfy, supersedeNtfyDecisions } from './ntfy';
@@ -95,7 +96,7 @@ export class Reclaimer {
       const recent = old?.answered_at && this.now() - Date.parse(old.answered_at) < OFFLINE_CLEANUP_MS;
       const record: HeldAsk = { ref, ask_id: ref, owner, project: marshal.project, repo: marshal.cwd, runs, ...(old?.answer && recent ? { answer: old.answer, answered_at: old.answered_at, results: old.results } : {}) };
       active.push(ref); next.push(record); if (record.answer) continue;
-      const detail = runs.map(run => { const since = Date.parse(run.since), hours = Number.isFinite(since) ? `${String(Math.floor((this.now() - since) / 3_600_000))}h` : 'unknown'; return `${run.id}｜${run.title}｜${run.reason}｜${run.since}｜${hours}｜${ownerLabel(owner)}`; }).join('\n');
+      const detail = runs.map(run => { const since = parseDbTimestamp(run.since), hours = Number.isFinite(since) ? `${String(Math.floor((this.now() - since) / 3_600_000))}h` : 'unknown'; return `${run.id}｜${run.title}｜${run.reason}｜${formatEngineTime(since)}｜${hours}｜${ownerLabel(owner)}`; }).join('\n');
       askNtfy({ originator: { identity: owner, scope: { kind: 'run', id: runs[0].id, repo: marshal.cwd } }, source: { ref, initiator: 'superagent reclaim', queued_at: new Date(this.now()).toISOString() }, title: `${marshal.project} held run 清理`, body: detail, project: marshal.project, headline: `${String(runs.length)} 个 held run 已等待超过 24h`, purpose: detail, why: '在线负责人名下的 held run 不会自动离线回收', recommend: { option: '是', reason: '清理长期未处理的 held run' }, options: [{ id: 'yes', label: '是', effect: `abandon ${String(runs.length)} 个仍满足 CAS 的 run` }, { id: 'no', label: '否', effect: '保留并提醒负责人处理' }], risk: 'normal', expires_at: new Date(this.now() + 7 * OFFLINE_CLEANUP_MS).toISOString(), callback: { kind: 'held', ref }, dedupe_key: `held:${ref}` });
     }
     if (active.length || existsSync(join(this.c.d.sa, 'ntfy/state.json'))) supersedeNtfyDecisions(active, {}, () => ({ status: 'held group changed', at: new Date(this.now()).toISOString() }), 'held'); saveHeld(this.c, next);

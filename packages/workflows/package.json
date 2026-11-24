@@ -50,6 +50,7 @@
     "./dag-resume-snapshot": "./src/dag-resume-snapshot.ts",
     "./store-conformance": "./src/store-conformance.ts",
     "./execution-lifecycle": "./src/execution-lifecycle.ts",
+    "./duration": "./src/utils/duration.ts",
     "./policy-dispatch": "./src/policy-dispatch.ts",
     "./subprocess-output": "./src/subprocess-output.ts"
   },

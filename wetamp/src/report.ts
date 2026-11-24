@@ -387,7 +387,7 @@ function capturedGraph(run: RunView, workflow: string): Parameters<typeof critic
 
 const REASON_RECORDING_SINCE = Date.parse('2026-10-11T17:56:55.000Z');
 const missingReason = (at?: string | null): 'legacy' | 'unrecorded' =>
-  at != null && Date.parse(at) < REASON_RECORDING_SINCE ? 'legacy' : 'unrecorded';
+  at != null && clock(at) < REASON_RECORDING_SINCE ? 'legacy' : 'unrecorded';
 
 const cancelIntervention = (ledger: Ledger) =>
   ledger.intervention_events?.filter(e => e.action === 'cancel' && e.ok).at(-1);

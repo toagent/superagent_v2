@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { getArchonWorkspacesPath, getRunArtifactsDirForRoot } from '@archon/paths';
-import { home, writeAtomic } from './config';
+import { engineDateTime, engineUtcOffset, home, writeAtomic } from './config';
 import { lock } from './archon';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit, type Cockpit } from './board/cockpit';
@@ -186,7 +186,7 @@ async function setDeliveryComment(
   const comment = worktree.comment ?? '';
   if (typeof comment !== 'string') throw new Error('Invalid Orca worktree comment');
   const managed =
-    /^【引擎合入 (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}|T\d{2}:\d{2}:\d{2}\.\d{3}Z))】[^\n]*【\/引擎合入】\n/gm;
+    /^【引擎合入 (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2}[+-]\d{2}:\d{2})?|T\d{2}:\d{2}:\d{2}\.\d{3}Z))】[^\n]*【\/引擎合入】\n/gm;
   const blocks = new Map(entries.map(({ block, mtimeMs }) => [block, mtimeMs]));
   // Compare UTC and local headers on the same timeline while keeping the original text.
   for (const [block, time] of comment.matchAll(managed)) {
@@ -221,7 +221,7 @@ export async function syncOrcaMerge(
   if (!held.ok) throw new Error('Orca delivery comment update busy');
   try {
     const call = orcaCall(defaults, bin, AbortSignal.timeout(defaults.timeoutMs));
-    const time = new Date(at).toISOString();
+    const time = engineDateTime(at) + engineUtcOffset(at);
     const changes =
       receipt.commits
         ?.map(c => `${c.sha} ${c.title}`)
@@ -280,7 +280,7 @@ export async function syncOrcaDeliveries(): Promise<void> {
         .join('；')
         .replace(/[\r\n]/g, ' ');
       const count = String(receipt.commit_count ?? commits.length);
-      const time = st.mtime.toLocaleString('sv-SE').slice(0, 16);
+      const time = engineDateTime(st.mtime) + engineUtcOffset(st.mtime);
       const block = `【引擎合入 ${time}】run ${ledger.run_id}/${basename(file, '.json')} → ${target.branch}：${count} 个提交｜${changes}【/引擎合入】\n`;
       const entries = groups.get(target.checkout) ?? [];
       entries.push({ key, block, mtimeMs: st.mtimeMs });

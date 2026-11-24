@@ -1,3 +1,4 @@
+import { engineDay } from '../config';
 import { clock, metricsOf } from '../ledger-metrics';
 import { basename, dirname } from 'node:path';
 import { progressLabel, jobProgress, unknownProgress, type Progress } from './eta';
@@ -146,7 +147,7 @@ const decisionText = (d: NonNullable<CockpitRun['decision']>): string =>
   `${d.event} 是=${d.yes} 否=${d.no}`;
 /** Pure projection shared by Ink and HTTP; collection remains owned by the existing loader/cache. */
 export function cockpit(s: Snapshot, now = Date.now()): Cockpit {
-  const day = new Date(now).toLocaleDateString('sv-SE'),
+  const day = engineDay(now),
     c = s.usage;
   const daily = c?.daily.filter(d => d.day === day) ?? [];
   const known = c?.status === 'ok' && daily.length > 0;

@@ -1,3 +1,4 @@
+import { engineDateTime } from '../config';
 import { Box, Text, type TextProps } from 'ink';
 import type { ReactElement } from 'react';
 import {
@@ -16,11 +17,7 @@ const driftAt = (model: PanelModel, now: number): number =>
   Math.max(0, Math.floor((now - Date.parse(model.heartbeatAt)) / 1000));
 const ntfyPauseNotice = (model: PanelModel): string => {
   if (!model.ntfyPaused) return '';
-  const time = new Date(model.ntfyPaused.at).toLocaleTimeString('zh-CN', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const time = engineDateTime(Date.parse(model.ntfyPaused.at)).slice(11, 16);
   return ` · ⏸ ntfy 已暂停 ${time} ${model.ntfyPaused.by ?? '来源未知'}`;
 };
 const age = (seconds: number | null, drift: number, recent = false): string => {
@@ -233,7 +230,7 @@ function MobileHeartbeatFrame({
     attention = model.attention.at(0),
     current = model.attention.find(item => item.run)?.run ?? model.runs.at(0),
     checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
-    clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5),
+    clock = engineDateTime(now).slice(11, 16),
     health = !model.health.alive
       ? '⚠ 巡检可能停了'
       : model.health.failedStages.length
@@ -345,7 +342,7 @@ export function HeartbeatFrame({
     shown = model.runs.slice(0, capacity),
     hidden = model.runs.length - shown.length,
     checkedAge = Math.max(0, Math.floor((now - Date.parse(model.checkedAt)) / 1000)),
-    clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false }),
+    clock = engineDateTime(now).slice(11),
     health = !model.health.alive
       ? `⚠ 巡检可能停了：${model.health.messages.join('；')}`
       : model.health.failedStages.length

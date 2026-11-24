@@ -81,7 +81,7 @@ test('corruption becomes unknown and a due injected probe self-heals with bounde
   if (failed.state === 'down')
     expect(Date.parse(failed.next_probe_at!)).toBe(now + 1 + PROBE_BACKOFF_MS[0]);
   process.env.TZ = 'Asia/Shanghai';
-  expect(claudeHealthNotice(failed)).toContain('自 10:00');
+  expect(claudeHealthNotice(failed)).toContain('自 10-27 10:00(+08:00)');
   expect(CLAUDE_PROBE_BUDGET_USD).toBe(0.25);
 });
 

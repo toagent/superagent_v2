@@ -40,7 +40,7 @@ if (action === 'set') fs.writeFileSync(file, rest[1]);
 console.log(JSON.stringify({ ok: true, result: { worktree: { comment: fs.readFileSync(file, 'utf8') } } }));
 `, { mode: 0o700 });
   Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root, DATABASE_URL: '',
-    SA_ORCA: '1', SA_ORCA_BIN: bin, TEST_ORCA_TARGET: target, TEST_ORCA_COMMENT: comment, TZ: 'Asia/Taipei' });
+    SA_ORCA: '1', SA_ORCA_BIN: bin, TEST_ORCA_TARGET: target, TEST_ORCA_COMMENT: comment, TZ: 'UTC' });
   const tick = () => superviseTickCli(async () => undefined, async () => undefined, {},
     async () => ({ at: '', summary: {}, rows: [] }), () => undefined, () => undefined,
     async () => ({ accepted: 0, ignored: 0, failed: 0 }), async () => undefined,
@@ -57,11 +57,11 @@ console.log(JSON.stringify({ ok: true, result: { worktree: { comment: fs.readFil
     const result = readFileSync(comment, 'utf8');
     expect(result.match(/【引擎合入/g)).toHaveLength(5);
     const lines = result.split('\n');
-    expect(lines[0]).toStartWith('【引擎合入 2026-11-23 00:00】');
+    expect(lines[0]).toStartWith('【引擎合入 2026-11-23 00:00:01+08:00】');
     expect(lines[0]).toContain('666666666 change 6');
     expect(lines[1] + '\n').toBe(legacy);
     expect(lines[2]).toContain('555555555 change 5');
-    expect(lines[3]).toStartWith('【引擎合入 2026-11-22 23:59】');
+    expect(lines[3]).toStartWith('【引擎合入 2026-11-22 23:59:59+08:00】');
     expect(lines[4]).toContain('333333333 change 3');
     expect(result).not.toContain(expired);
     expect(result).toEndWith(manual);

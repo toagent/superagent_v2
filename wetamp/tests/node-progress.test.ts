@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunView } from '../src/archon';
+import { engineDay, formatEngineTime } from '../src/config';
 import { budgetSeconds, nodeProgress } from '../src/node-progress';
 import type { Plan } from '../src/plan';
 import { tmp } from './helpers';
@@ -66,6 +67,38 @@ test('从持久化 JSONL 投影在跑将军的时间预算与事件活跃度', (
       event_count: 2,
     },
   });
+});
+
+test('SQLite 的无时区节点时间按 UTC 计算', () => {
+  const run: RunView = {
+    id: 'utc-node',
+    status: 'running',
+    nodes: [{ nodeId: 'code-core', state: 'running', startedAt: '2026-11-23 13:19:03' }],
+  };
+  expect(
+    nodeProgress(run, plan(), Date.parse('2026-11-23T13:28:00Z'))['code-core']?.elapsed_s
+  ).toBe(537);
+});
+
+test('显示时间与日界线只取决于引擎时区', () => {
+  const { TZ, SUPERAGENT_TIMEZONE } = process.env;
+  try {
+    delete process.env.SUPERAGENT_TIMEZONE;
+    const at = new Date('2026-11-23T16:07:00Z');
+    for (const tz of ['UTC', 'Asia/Shanghai']) {
+      process.env.TZ = tz;
+      expect(formatEngineTime(at)).toBe('11-24 00:07(+08:00)');
+      expect(engineDay(at)).toBe('2026-11-24');
+    }
+    process.env.SUPERAGENT_TIMEZONE = 'UTC';
+    expect(formatEngineTime(at)).toBe('11-23 16:07(+00:00)');
+    expect(engineDay(at)).toBe('2026-11-23');
+  } finally {
+    if (TZ === undefined) delete process.env.TZ;
+    else process.env.TZ = TZ;
+    if (SUPERAGENT_TIMEZONE === undefined) delete process.env.SUPERAGENT_TIMEZONE;
+    else process.env.SUPERAGENT_TIMEZONE = SUPERAGENT_TIMEZONE;
+  }
 });
 
 test('缺失时钟和日志保持显式，覆盖值只改变预算', () => {

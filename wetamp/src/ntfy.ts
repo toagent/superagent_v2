@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   chmodSync,
@@ -12,7 +13,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { lock } from './archon';
-import { home, writeAtomic } from './config';
+import { engineDateTime, home, writeAtomic } from './config';
 import { caller, coord, same, type Identity, type Scope } from './coord';
 
 export interface NtfyOption {
@@ -484,7 +485,7 @@ async function publish(
   const seq = (state.seq ?? 0) + 1;
   const message = body.message;
   // prettier-ignore
-  const publishedAt = new Date(config.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-');
+  const publishedAt = engineDateTime(config.now()).slice(5, 16);
   let response: Response;
   try {
     response = await config.fetch(config.baseUrl, {
@@ -560,7 +561,7 @@ function decisionPresentation(decision: StoredDecision): { title: string; messag
   if (!decision.project && !decision.headline && !decision.purpose && !decision.why && !decision.recommend && typeof decision.source === 'string')
     return { title: decision.title, message: decision.body, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
   const source = typeof decision.source === 'string' ? undefined : decision.source;
-  const expires = new Date(decision.expires_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-');
+  const expires = engineDateTime(Date.parse(decision.expires_at)).slice(5, 16);
   let purpose = Array.from(decision.purpose ?? '').slice(0, 300).join('');
   const render = () => {
     const recommendation = decision.recommend ? [HEAVY, `建议：选「${decision.recommend.option}」——${decision.recommend.reason}`, `同意就直接点「${decision.recommend.option}」`, HEAVY] : [];
@@ -568,7 +569,7 @@ function decisionPresentation(decision: StoredDecision): { title: string; messag
     if (decision.default_on_expiry)
       options.push(`• 不处理｜= ${optionLabel(decision, decision.default_on_expiry)}｜${expires} 过期`);
     const risks = decision.options.flatMap(option => option.risk ? [`• 选${option.label}：${option.risk}`] : []);
-    const queued = source?.queued_at ? new Date(source.queued_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replaceAll('/', '-') : undefined;
+    const queued = source?.queued_at ? engineDateTime(parseDbTimestamp(source.queued_at)).slice(5, 16) : undefined;
     const origin = source ? [source.ref, source.initiator, queued].filter(Boolean).join('｜') : '';
     return [
       ...recommendation,

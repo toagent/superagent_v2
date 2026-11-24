@@ -1484,6 +1484,17 @@ describe('waitRun (archon stub)', () => {
     mkdirSync(join(output, 'logs'), { recursive: true });
     const response = JSON.parse(readFileSync(join(s.dir, 'get-000.json'), 'utf8'));
     response.output_root = output;
+    response.events = [
+      {
+        id: 'event',
+        workflow_run_id: 'r',
+        step_name: 'code-core',
+        step_index: null,
+        event_type: 'tool_called',
+        created_at: '2026-11-24 05:07:00',
+        data: {},
+      },
+    ];
     writeFileSync(join(s.dir, 'get-000.json'), JSON.stringify(response));
     writeFileSync(
       join(s.root, 'gen', 'plan.json'),
@@ -1507,10 +1518,12 @@ describe('waitRun (archon stub)', () => {
       json = captured(() => main(['status', 'sa1', '--json']));
     expect(compact).toEqual(brief);
     expect(compact.out.split('\n')).toHaveLength(7);
+    expect(compact.out).toContain('"at":"11-24 13:07(+08:00)"');
     expect(JSON.parse(json.out)).toMatchObject({
       run_id: 'sa1',
       state: 'running',
       nodes: '0/1 completed',
+      last_activity: { latest: { at: '2026-11-24 05:07:00' } },
       progress: {
         'code-core': {
           started_at: startedAt,
@@ -4860,7 +4873,7 @@ test.each(['verify-a', 'settle-a', 'diff-m1-r3', 'gate-m1-r3'])(
 test('last_activity aggregates adopted runs and exposes missing history honestly', () => {
   const ledger = { archon_run_id: 'new', repo: '/repo', adoptions: [{ from: 'old', to: 'new', at: '', engine_from: null, engine_to: '', reason: '' }] };
   const row = (id: string, type: string, at: string) => ({ id: 'e', workflow_run_id: id, event_type: type, step_name: 'code', step_index: null, created_at: at, data: {} });
-  const old = row('old', 'tool_called', '2026-10-16T01:00:00Z');
+  const old = row('old', 'tool_called', '2026-10-16 01:00:00');
   const query = (args: string[]) => ({ events: args[2] === 'old' ? [old] : [] });
   expect(cliMod.lastActivity(ledger, query)).toEqual({ latest: { run_id: 'old', node: 'code', at: old.created_at, type: 'tool_called' }, complete: true, missing: [] });
   const current = { ...row('new', 'provider_event', '2026-10-16T02:00:01Z'), data: { attemptId: 'a', seq: 1, observedAt: '2026-10-16T02:00:00Z', event: { type: 'agent_message_chunk', text: 'PRIVATE' } } };

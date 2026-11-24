@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { providerEventLineSchema } from '../../packages/workflows/src/schemas/provider-event';
@@ -81,7 +82,7 @@ export function nodeProgress(
   return Object.fromEntries(
     nodes.map(({ node, pkg }) => {
       const started = node.startedAt ?? null,
-        startedMs = Date.parse(started ?? ''),
+        startedMs = parseDbTimestamp(started ?? ''),
         found = activity.get(node.nodeId) ?? { count: 0, last: null },
         eventMs = Date.parse(found.last ?? '');
       return [

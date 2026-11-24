@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -30,7 +31,7 @@ export function nodeLeaseDecision(
   progress: StallRecord | undefined,
   now = Date.now()
 ): NodeLeaseDecision {
-  const startedMs = Date.parse(node.startedAt ?? '');
+  const startedMs = parseDbTimestamp(node.startedAt ?? '');
   if (!Number.isFinite(startedMs)) return { action: 'none' };
   const elapsed_s = Math.max(0, Math.floor((now - startedMs) / 1000));
   const same =

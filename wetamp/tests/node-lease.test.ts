@@ -17,8 +17,9 @@ afterEach(() => {
 });
 
 test('近期工作树进展只续租一次，并在 1.5 倍预算上报', () => {
+  process.env.TZ = 'Asia/Shanghai';
   const now = Date.parse('2026-11-15T10:20:00Z'),
-    startedAt = '2026-11-15T10:00:00Z',
+    startedAt = '2026-11-15 10:00:00',
     run = { id: 'engine', status: 'running' } as RunView,
     // prettier-ignore
     progress = { node: 'code-core', startedAt, progressAt: now - NODE_LEASE.progress_window_ms, entries: 'a', mtime: now, state: 'working', spinning: false, idle_s: 0, waiting_command: false, cpu: 0 } as const,

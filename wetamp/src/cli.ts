@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import {
   answerNtfyDecision,
   applyCoordIntents,
@@ -170,6 +171,7 @@ import {
   WETAMP,
   aliasDrift,
   codexWorkerProblem,
+  formatEngineTime,
   gitHead,
   home,
   loadTiers,
@@ -570,7 +572,7 @@ function retroCommand(l: Ledger, effect?: string[], improve?: string[], by?: Con
 // prettier-ignore
 function adoptionPackages(l: Ledger, run: RunView): Record<string, PackageHistory> {
   const prior: Partial<Record<string, PackageHistory>> = l.adoptions?.at(-1)?.packages ?? {},
-    measured = Date.parse(run.completed_at ?? '') - Date.parse(run.started_at ?? ''),
+    measured = parseDbTimestamp(run.completed_at ?? '') - parseDbTimestamp(run.started_at ?? ''),
     elapsed = Number.isFinite(measured) ? Math.max(0, measured) : 0;
   return Object.fromEntries(planOf(l).packages.map(p => {
     const failed = (run.nodes ?? []).filter(n => n.state === 'failed' &&
@@ -896,7 +898,8 @@ export function lastActivity(l: Pick<Ledger, 'archon_run_id' | 'adoptions' | 're
         const type = e.event_type === 'provider_event' ? (provider.success ? provider.data.event.type : null) : e.event_type;
         if (!type || type === 'heartbeat') continue;
         const at = provider.success ? provider.data.observedAt : e.created_at;
-        if (Number.isFinite(Date.parse(at)) && (!latest || Date.parse(at) >= Date.parse(latest.at)))
+        const atMs = parseDbTimestamp(at);
+        if (Number.isFinite(atMs) && (!latest || atMs >= parseDbTimestamp(latest.at)))
           latest = { run_id: id, node: e.step_name, at, type };
       }
     } catch { missing.push(id); }
@@ -1108,7 +1111,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
       failedNodes =
         run.status === 'failed' ? (run.nodes ?? []).filter(n => n.state === 'failed') : [];
     if (run.status === 'failed') {
-      const currentAttemptStartedAt = Date.parse(
+      const currentAttemptStartedAt = parseDbTimestamp(
           failedNodes.find(node => node.nodeId === c.node)?.startedAt ?? ''
         ),
         evidenceNode = failedNodes.find(
@@ -1116,7 +1119,7 @@ export function classifyRun(l: Ledger, run: RunView): Classified {
             /^(?:re)?sync-.+$|^publish-.+$/.test(authoredNodeId(node.nodeId)) &&
             (node.nodeId === c.node ||
               (Number.isFinite(currentAttemptStartedAt) &&
-                Date.parse(node.startedAt ?? '') >= currentAttemptStartedAt))
+                parseDbTimestamp(node.startedAt ?? '') >= currentAttemptStartedAt))
         )?.nodeId,
         projected = evidenceNode ? { ...c, node: evidenceNode } : c,
         authored = authoredNodeId(evidenceNode ?? c.node);
@@ -1932,7 +1935,7 @@ export function adoptCandidates(plan: Plan, now = Date.now()): AdoptCandidate[] 
         status = run?.status,
         state = previous.state === 'failed' ? 'failed' : status === 'paused' ? 'held:paused' : status,
         stopped = state === 'held:paused' ? run?.last_activity_at : run?.completed_at,
-        age = now - Date.parse(stopped ?? ''),
+        age = now - parseDbTimestamp(stopped ?? ''),
         listed = Bun.spawnSync(['git', '-C', previous.repo, 'worktree', 'list', '--porcelain', '-z'],
           { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }),
         worktree = listed.exitCode === 0 ? targetCheckout(listed.stdout.toString(), previous.branch) : undefined;
@@ -2970,7 +2973,7 @@ function brief(
   const lines = [
     `${l.run_id} ${String(s.state)}${node ? ` @${node}` : ''} nodes ${String(s.nodes)} branch ${
       l.branch
-    }`,
+    } · 启动 ${formatEngineTime(Date.parse(l.started_at))}`,
   ];
   const typed = s.receipt as
     | { state: string; failed_node: string | null; reason: string; action: string }
@@ -2991,7 +2994,15 @@ function brief(
       ? (s.deviations as { path: string; why: string }[]).map(item => `${item.path}: ${item.why}`)
       : []
   );
-  lines.push(`last_activity: ${JSON.stringify(s.last_activity)}`);
+  const activity = s.last_activity as ReturnType<typeof lastActivity> | undefined;
+  const latest = activity?.latest;
+  lines.push(
+    `last_activity: ${JSON.stringify(
+      latest
+        ? { ...activity, latest: { ...latest, at: formatEngineTime(parseDbTimestamp(latest.at)) } }
+        : activity
+    )}`
+  );
   const ownership = coord().owner(runScope(l));
   lines.push(
     `controller: ${JSON.stringify(ownership.owner)} ${ownership.presence.state}; inbox: ${String(
@@ -4373,7 +4384,7 @@ function decisionContext(
       .map(pkg => [pkg.title, pkg.goal].filter(Boolean).join('：'))
       .filter(Boolean)
       .join('；'),
-    why: `${p.text}；已等待${String(since ? Math.max(0, Math.floor((Date.now() - Date.parse(since)) / 60000)) : 0)}分钟；已完成${String(completed)}节点`,
+    why: `${p.text}；已等待${String(since ? Math.max(0, Math.floor((Date.now() - parseDbTimestamp(since)) / 60000)) : 0)}分钟；已完成${String(completed)}节点`,
     queued_at: since,
     initiator_label: l.launcher
       ? `${l.launcher.client} ${l.launcher.session_id?.slice(0, 8) ?? `pid:${String(l.launcher.pid)}`}`
@@ -4664,7 +4675,7 @@ function dispose(
     row.hold = hold;
     row.disposed =
       l.dispositions?.some(
-        d => d.reason === hold && d.ok && Date.parse(d.at) >= Date.parse(row.since)
+        d => d.reason === hold && d.ok && Date.parse(d.at) >= parseDbTimestamp(row.since)
       ) ?? false;
     const p: Policy = HOLD_POLICY[hold];
     if (['ask', 'signoff'].includes(p.do)) {

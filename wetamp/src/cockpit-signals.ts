@@ -1,4 +1,5 @@
 // 纯函数：驾驶舱与 tick 共用监测口径，不读取运行时或提醒列表。
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { createHash } from 'node:crypto';
 import { HOLD_POLICY } from './reasons';
 export interface Ask {
@@ -34,7 +35,7 @@ export function cockpitSignals(
     orphan_hold: holds.filter(
       h =>
         h.hold &&
-        now - Date.parse(h.since) > 600_000 &&
+        now - parseDbTimestamp(h.since) > 600_000 &&
         !h.disposed &&
         !counts.has(askKey(h.run_id, h.hold))
     ).length,

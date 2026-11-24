@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
@@ -27,7 +28,7 @@ const LIMIT_BYTES = 64 * 1024 * 1024;
 const sha = (value: string): string => createHash('sha256').update(value).digest('hex');
 const utc = (value: string | undefined | null): string | null => {
   if (!value) return null;
-  const time = Date.parse(value);
+  const time = parseDbTimestamp(value);
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 };
 const inWindow = (value: string | null, since: number, until: number): boolean => {
@@ -234,7 +235,7 @@ function usageOf(row: RunRow | undefined) {
   let metadata: Record<string, unknown> = {};
   try { metadata = typeof row?.metadata === 'string' ? object(JSON.parse(row.metadata)) : object(row?.metadata); } catch { /* Invalid metadata is unavailable. */ }
   const input = finite(metadata.total_tokens_in), output = finite(metadata.total_tokens_out), cached = finite(metadata.total_cache_read_tokens), cost = finite(metadata.total_cost_usd);
-  const duration = row?.started_at && row.completed_at ? Math.max(0, Date.parse(row.completed_at) - Date.parse(row.started_at)) : null;
+  const duration = row?.started_at && row.completed_at ? Math.max(0, parseDbTimestamp(row.completed_at) - parseDbTimestamp(row.started_at)) : null;
   if ([input, output, cached, cost, duration].every(value => value === null)) return null;
   const amount = cost === null ? null : cost.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
   return { scope: 'inclusive', duration_ms: Number.isFinite(duration) ? duration : null, input_tokens: input, output_tokens: output, cached_input_tokens: cached, cost: amount === null ? null : { amount, currency: 'USD' } };

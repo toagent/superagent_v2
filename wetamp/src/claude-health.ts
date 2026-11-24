@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, type Lock } from './archon';
-import { loadTiers, resolveRoute, type Tiers } from './config';
+import { formatEngineTime, loadTiers, resolveRoute, type Tiers } from './config';
 import { redact } from './redact';
 export const TRIP_RETRIES = 10,
   PROBE_BACKOFF_MS = [5, 10, 20, 30].map(n => n * 60_000),
@@ -183,11 +183,7 @@ export function claudeHealthNotice(h: ClaudeHealth): string {
   return `全 Codex 模式：Claude 不可用，自 ${localHealthTime(h.changed_at)}（${String(h.cause?.class)}，连续重试 ${String(h.cause?.retries)} 次）；下次探测 ${localHealthTime(h.next_probe_at)}`;
 }
 export const localHealthTime = (value?: string): string =>
-  new Date(value ?? '').toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: process.env.TZ,
-  });
+  formatEngineTime(Date.parse(value ?? ''));
 export function claudeAdmission(mode: string | undefined, h: ClaudeHealth) {
   if (mode !== 'single:claude' || h.state === 'up') return { ok: true } as const;
   return { ok: false, reason: 'claude_unavailable', detail: claudeHealthNotice(h) } as const;

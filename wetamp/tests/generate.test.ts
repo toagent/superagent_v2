@@ -2135,8 +2135,8 @@ describe('renderBrief', () => {
   });
 });
 
-test('newRunId is sortable timestamp plus 4 hex', () => {
-  expect(newRunId(new Date('2026-10-09T01:02:03Z'))).toMatch(/^20261009-010203-[0-9a-f]{4}$/);
+test('newRunId uses engine time and retains the existing identifier format', () => {
+  expect(newRunId(new Date('2026-11-24T06:37:02Z'))).toMatch(/^20261124-143702-[0-9a-f]{4}$/);
 });
 
 test.each(['stable', 'dirty-before', 'dirty-during', 'commit-during', 'invalid'] as const)(

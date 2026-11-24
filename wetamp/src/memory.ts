@@ -1,3 +1,4 @@
+import { parseDbTimestamp } from '@archon/workflows/duration';
 // Episodes and lessons are evidence projections; qualified publications and scoped lessons feed learning.
 import {
   appendFileSync,
@@ -15,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { isPathInside } from '@archon/paths';
 import type { infer as Infer } from '../../packages/workflows/node_modules/zod';
 import { archonJson, getRun, lock, runRevision, type RunView } from './archon';
-import { home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
+import { engineDay, home, loadTiers, runAliases, WETAMP, writeAtomic } from './config';
 import { artifactsOf, classifyRun, ledgerIds, loadLedger, type Ledger } from './cli';
 import { cockpitSignals, type Asks } from './cockpit-signals';
 import { etaInput } from './board/eta';
@@ -614,7 +615,7 @@ function evidenceRows(
           n => n.state === 'failed' && n.nodeId.split('.').at(-1) === file.slice(0, -'.json'.length)
         );
         if (run.status !== 'failed' || !node) return [];
-        const started = Date.parse(node.execution?.timing.startedAt ?? node.startedAt ?? '');
+        const started = parseDbTimestamp(node.execution?.timing.startedAt ?? node.startedAt ?? '');
         const duration = node.execution?.timing.durationMs ?? node.durationMs ?? NaN;
         const parsed = evidenceSchema.safeParse(memoryJson<unknown>(join(art, file), null, l));
         if (!parsed.success || !['fail', 'adjudicate'].some(d => d === parsed.data.disposition))
@@ -777,8 +778,8 @@ export function foldEpisode(
     reasons.push('engine_suspect');
   const duration_ms = Math.max(
     0,
-    Date.parse(run.completed_at ?? new Date(now).toISOString()) -
-      Date.parse(run.started_at ?? l.started_at)
+    parseDbTimestamp(run.completed_at ?? new Date(now).toISOString()) -
+      parseDbTimestamp(run.started_at ?? l.started_at)
   );
   const acceptance = plan.packages.flatMap(p => {
     const check =
@@ -1228,7 +1229,7 @@ export function maintainLessons(
       for (const p of packages.filter(
         p =>
           p.ids.includes(l.id) &&
-          (!p.exposed_at || Date.parse(p.exposed_at) >= Date.parse(l.curated_at))
+          (!p.exposed_at || parseDbTimestamp(p.exposed_at) >= Date.parse(l.curated_at))
       )) {
         l.exposures = (l.exposures ?? 0) + 1;
         const exposed = p.exposed_at ?? at;
@@ -1339,7 +1340,7 @@ export function memoryData(now = Date.now()): {
 } {
   const s = memoryState(),
     all = episodes(),
-    day = new Date(now).toLocaleDateString('sv-SE'),
+    day = engineDay(now),
     tokens = s.entries.filter(e => e.day === day).reduce((n, e) => n + (e.tokens ?? 0), 0),
     done = new Map(
       s.entries
@@ -1460,7 +1461,7 @@ export function memoryTick(
     errors: [] as { id: string; reason: string }[],
   };
   if (!memoryOn() && !dryRun) return result;
-  const day = new Date(now).toLocaleDateString('sv-SE'),
+  const day = engineDay(now),
     indexFile = join(root(), 'fold-index.json');
   const index = dryRun
     ? ({ day: '', terminal: {}, samples: {} } as FoldIndex)
@@ -1593,7 +1594,8 @@ export function memoryTick(
               );
             const duration =
               plan.packages.length === 1
-                ? Date.parse(run.completed_at ?? '') - Date.parse(run.started_at ?? l.started_at)
+                ? parseDbTimestamp(run.completed_at ?? '') -
+                  parseDbTimestamp(run.started_at ?? l.started_at)
                 : calls.every(c => c.exec_ms !== null)
                   ? calls.reduce((n, c) => n + (c.exec_ms ?? 0), 0)
                   : 0;

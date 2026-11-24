@@ -135,11 +135,7 @@ test('ntfy pause notice 显示来源、未知来源且未暂停输出不变', ()
   const value = heartbeat([]),
     baseline = frame(value, 100, 20);
   const paused = { at: '2026-10-30T12:05:00Z', by: 'codex superagent_v2' },
-    pauseTime = new Date(paused.at).toLocaleTimeString('zh-CN', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    pauseTime = '20:05';
   expect(frame(value, 100, 20, undefined, undefined, tick, paused)).toContain(
     `⏸ ntfy 已暂停 ${pauseTime} codex superagent_v2`
   );
@@ -224,7 +220,7 @@ test('长项目名与额度在各尺寸下不超宽高预算', () => {
     '⚠️ Codex 超 $500 · Claude 今日 $423.10 · （2/2 可用） | Codex 今日 $810.46 · 5h 余 100% · 7d 余 36% · （3/4 可用）'.repeat(
       2
     );
-  const clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false });
+  const clock = '20:10:00';
   for (const columns of [50, 78, 100, 140]) {
     for (const rows of [16, 30]) {
       const lines = frame(value, columns, rows, quota).split('\n');

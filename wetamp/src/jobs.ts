@@ -13,7 +13,7 @@ import { launcher, type Launcher } from './launcher';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
-import { home, loadTiers, routeNotice, routeState } from './config';
+import { formatEngineTime, home, loadTiers, routeNotice, routeState } from './config';
 import { claudeAdmission, recordClaudeOutcome, refreshClaudeHealth } from './claude-health';
 import {
   describeExecution,
@@ -482,7 +482,7 @@ export async function jobCli(
     else
       for (const j of shown)
         console.log(
-          `${j.id}${j.self ? ' (本作业)' : ''} ${j.stalled ? 'stalled' : j.state}${j.eta ? ` eta ${new Date(j.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
+          `${j.id}${j.self ? ' (本作业)' : ''} ${j.stalled ? 'stalled' : j.state}${j.eta ? ` eta ${formatEngineTime(Date.parse(j.eta))}` : ''}${j.signal ? ` ${j.signal}` : j.exit_code === undefined ? '' : ` exit ${String(j.exit_code)}`} ${j.kind} ${j.model ?? '-'} ${j.role ?? '-'} ${j.title}`
         );
     for (const b of bad) console.error(`jobs: unreadable ${b}`);
     return bad.length ? 1 : 0;

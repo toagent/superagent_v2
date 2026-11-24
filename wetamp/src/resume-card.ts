@@ -1,3 +1,4 @@
+import { engineDateTime } from './config';
 import {
   createReadStream,
   existsSync,
@@ -169,9 +170,7 @@ const timestampOf = (v: unknown): number | null => {
 const timeOf = (v: unknown): string => {
   const value = timestampOf(v);
   if (value === null) return '-- --:--';
-  const d = new Date(value),
-    pad = (n: number): string => String(n).padStart(2, '0');
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return engineDateTime(value).slice(5, 16);
 };
 function safePath(payload: Payload, client: Client): string | null {
   try {
