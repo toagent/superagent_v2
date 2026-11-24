@@ -413,8 +413,11 @@ const obj = (v: unknown): Obj =>
 export function runAliases(c: Console, t = loadTiers(), mode = 'auto', state = HEALTHY_ROUTE) {
   const route = (role: Parameters<typeof resolveRoute>[3], authors: string[] = []) =>
     resolveRoute(t, c, mode, role, 'G1', 1, authors, state).candidates;
-  const coder = (mode === 'single:gemini' ? resolveRoute(t, c).candidates : route('code'))[0],
-    reviewers = route('review', [coder.model]);
+  // Neon uses @sa-agy-coder. Pin its fallback to the Codex pool in every Neon mode.
+  const coder = usesNeonCoder(c, mode)
+    ? resolveRoute(t, c, 'single:chatgpt').candidates[0]
+    : route('code')[0];
+  const reviewers = route('review', [coder.model]);
   const reviewer = reviewers[0];
   return {
     '@sa-coder': { ...coder, effort: 'high' },

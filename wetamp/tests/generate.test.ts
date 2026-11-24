@@ -12,7 +12,15 @@ import {
   newRunId,
   renderBrief,
 } from '../src/generate';
-import { install, loadTiers, resolveRoute, snapshotPolicy, WETAMP } from '../src/config';
+import {
+  CONSOLES,
+  install,
+  loadTiers,
+  resolveRoute,
+  snapshotPolicy,
+  usesNeonCoder,
+  WETAMP,
+} from '../src/config';
 import * as coord from '../src/coord';
 import * as archon from '../src/archon';
 import { lastJson } from '../src/archon';
@@ -56,11 +64,46 @@ import type { CoderOutput } from '../src/contract';
 import { REASONS } from '../src/reasons';
 import reasonMirror from '../templates/.archon/scripts/reasons.json';
 import { integrationLockTimeout, integrationNodeTimeout } from '../src/integration';
+import { loadWorkflowRunConfigFile } from '../../packages/core/src/config/run-config';
+import { installPolicyExecutor } from '../src/policy-executor';
 
 const MAX_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 const RESYNC_MAX_ROUNDS = MAX_ROUNDS;
 const ACCEPTANCE_FIXED_BUDGET_MS =
   CHECK_AUX_BUDGET_MS + 5_000 + RESOURCE_WAIT_BUDGET_S * 1000 + PROCESS_TREE_RECOVERY_MS;
+
+test('generated run aliases pass Archon strict validation across consoles and modes', async () => {
+  installPolicyExecutor();
+  const plan = { ...fixture, repo: gitRepo(tmp()) };
+  const engine = spyOn(coord, 'cleanEngine').mockReturnValue('fixture');
+  const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
+  try {
+    const modes = ['auto', 'strict', 'single:gemini', 'single:chatgpt', 'single:claude'] as const;
+    const fallback = resolveRoute(loadTiers(), 'codex', 'single:chatgpt').candidates[0];
+    for (const console of CONSOLES) {
+      for (const mode of modes) {
+        const run = `alias-${console}-${mode.replace(':', '-')}`;
+        const { config } = generate({ ...plan, console, mode }, run);
+        const { layer } = await loadWorkflowRunConfigFile(config);
+        const aliases = layer.aliases ?? {};
+        expect(aliases['@sa-reviewer']).toBeDefined();
+        expect(aliases['@sa-reviewer-G0']).toBeDefined();
+        if (usesNeonCoder(console, mode)) {
+          expect(aliases['@sa-agy-coder']).toEqual({
+            provider: 'agy',
+            model: 'gemini-4-neon-%78high',
+          });
+          expect(aliases['@sa-coder']).toMatchObject({ provider: 'codex', model: fallback.model });
+          for (const [name, alias] of Object.entries(aliases))
+            if (name.startsWith('@sa-reviewer')) expect(alias.model).not.toMatch(/^gemini-/);
+        } else expect(aliases['@sa-agy-coder']).toBeUndefined();
+      }
+    }
+  } finally {
+    validation.mockRestore();
+    engine.mockRestore();
+  }
+}, 60_000);
 
 test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through stable attempt paths', () => {
   const gen = tmp(),

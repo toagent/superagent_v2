@@ -52,6 +52,10 @@ test('single:gemini lists only the ordered agy candidates and leaves review inde
   expect(() => resolveRoute(tiers, 'codex', 'single:gemini', 'repair')).toThrow(
     'no eligible repair model'
   );
+  tiers.routing.coder.models = resolveRoute(tiers, 'gemini', 'single:claude').candidates.map(
+    a => a.model
+  );
+  expect(() => runAliases('gemini', tiers, 'strict')).toThrow('no eligible code model');
 });
 const decide = (input: Omit<Parameters<typeof rawDecide>[0], 'reviewRounds'>) =>
   rawDecide({ ...input, reviewRounds: POLICY_ROUNDS });
