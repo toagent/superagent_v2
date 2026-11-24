@@ -6,6 +6,9 @@ import { TerminalStatusWriteError } from './terminal-status-write';
 import { NodeEventWriteError } from './node-event-write';
 import { buildTerminalRecord } from './terminal-record';
 import { buildRunTerminalTelemetry } from './run-terminal-telemetry';
+import { foldDagResumeSnapshot } from './dag-resume-snapshot';
+import { finishNodeExecution } from './node-execution';
+import { serializeNodeStateRecord } from './node-record-serialization';
 import { RUN_GRAPH_METADATA_KEY } from './schemas/terminal-record';
 import {
   describe,
@@ -13829,6 +13832,111 @@ describe('executeDagWorkflow -- prior-success cache invalidated by dep re-execut
     expect(data.invalidating_deps).toEqual(['producer']);
     expect(data.prior_output).toBe('STALE_CACHED_CONSUMER');
   });
+
+  it.each(['advance', 'repair'])(
+    'checks when before reusing prior repair on resume: %s',
+    async disposition => {
+      const runId = 'resume-repair-when';
+      const dispositionPath = join(testDir, 'disposition');
+      const needs = JSON.stringify({ needs: [{ cap: 'budget' }, { cap: 'scope' }] });
+      const workflow = {
+        name: runId,
+        nodes: [
+          { id: 'verify', bash: 'cat disposition', always_run: true },
+          {
+            id: 'budget',
+            approval: { message: 'Approve the retry budget' },
+            depends_on: ['verify'],
+            when: "$INPUTS.retry == 'yes'",
+          },
+          { id: 'ready', bash: ':', depends_on: ['budget'], trigger_rule: 'all_done' },
+          {
+            id: 'repair',
+            bash: `printf '%s' '${needs}'`,
+            // The ordering dependency stays unchanged while the ancestor's condition can change.
+            depends_on: ['ready'],
+            when: "$verify.output == 'repair'",
+          },
+          {
+            id: 'settle',
+            script: `
+            const repaired = JSON.parse(process.env.INPUTS_REPAIRED);
+            if (process.env.INPUTS_RETRY === 'no' && repaired.needs.length === 2) process.exit(1);
+            console.log(JSON.stringify(repaired));
+          `,
+            runtime: 'bun',
+            depends_on: ['verify', 'repair'],
+            trigger_rule: 'none_failed_min_one_success',
+            with: { repaired: { from: '$repair.output', if_skipped: null } },
+          },
+        ].map(node => dagNodeSchema.parse(node)),
+      };
+      const run = (
+        store: MockWorkflowStore,
+        metadata: WorkflowRun['metadata'],
+        priorCompletedNodes?: Map<string, PersistedNodeOutput>
+      ) =>
+        executeDagWorkflow(
+          dagOptions({
+            cwd: testDir,
+            deps: createMockDeps(store),
+            workflow,
+            workflowRun: makeWorkflowRun(runId, { metadata }),
+            priorCompletedNodes,
+          })
+        );
+      const snapshot = (events: ReturnType<typeof persistedEvents>) =>
+        foldDagResumeSnapshot(
+          events.map(event => ({ ...event, data: event.data ?? undefined })),
+          runId
+        );
+
+      await writeFile(dispositionPath, 'repair');
+      const initial = createMockStore();
+      await run(initial, { inputs_values: { retry: 'no' } });
+      const initialEvents = persistedEvents(initial);
+      expect(initial.failWorkflowRun).toHaveBeenCalledTimes(1);
+      const initialSnapshot = await snapshot(initialEvents);
+      expect(initialSnapshot.completedNodeOutputs.get('repair')?.output).toBe(needs);
+      expect(initialSnapshot.completedNodeOutputs.has('settle')).toBe(false);
+
+      await writeFile(dispositionPath, disposition);
+      const pending = createEscalationStore(runId);
+      const retryInputs = { inputs_values: { retry: 'yes' } };
+      await run(pending, retryInputs, initialSnapshot.completedNodeOutputs);
+      expect(pending.getState().status).toBe('paused');
+      const approval = pending.getState().metadata.approval;
+      if (!isApprovalContext(approval) || !approval.execution)
+        throw new Error('Expected the suspended budget execution');
+      const approved = serializeNodeStateRecord(
+        finishNodeExecution(
+          approval.execution,
+          { status: 'completed' },
+          { output: { text: '' }, diagnostics: { approvalDecision: 'approved' } }
+        )
+      );
+      const pendingEvents = [...initialEvents, ...persistedEvents(pending), approved];
+      const resumed = createMockStore();
+      const result = await run(
+        resumed,
+        { ...retryInputs, approval: { ...approval, resolved: 'approved' } },
+        (await snapshot(pendingEvents)).completedNodeOutputs
+      );
+      const resumedEvents = persistedEvents(resumed);
+      const repairEvents = resumedEvents.filter(event => event.step_name === 'repair');
+      expect(repairEvents.map(event => [event.event_type, event.data?.reason])).toEqual(
+        disposition === 'advance'
+          ? [['node_skipped', 'when_condition']]
+          : [['node_skipped_prior_success', 'prior_success']]
+      );
+      expect(result).toBe(disposition === 'advance' ? 'null' : needs);
+      expect(resumed.completeWorkflowRun).toHaveBeenCalledTimes(1);
+      const resumedSnapshot = await snapshot([...pendingEvents, ...resumedEvents]);
+      expect(resumedSnapshot.completedNodeOutputs.get('repair')?.output).toBe(
+        disposition === 'advance' ? undefined : needs
+      );
+    }
+  );
 
   it('invalidates a cached downstream when a PREVIOUSLY-CACHED dep fails fresh with output matching its prior success (#2705 R1)', async () => {
     // Every failure arm in the executor returns `output: ''`. When a dependency WAS
@@ -37424,15 +37532,17 @@ describe('#2707 step 3: gate-terminated loop_group pause escalation', () => {
       return node;
     });
     const workflow = resolveWorkflow({ ...loaded.workflow, nodes });
-    const activeNodeIds = new Set(['ci-attention', 'flip-ready', 'outcome']);
-    // One persisted value stands in for every completed ancestor. Resume re-checks an
-    // include's `when:` even for a cached descendant, so the value carries every field
-    // a conditional include reads, set so each one was active: the pre-PR simplify
-    // findings, the CI fix's review, fork validation, and the CI fix (an introduced
-    // cause). An include the condition turned off could not also have completed.
+    const uncachedNodeIds = new Set(['validate__compare', 'ci-attention', 'flip-ready', 'outcome']);
+    // One persisted value stands in for every completed ancestor. Resume re-checks
+    // node and include conditions, so the fixture enables the review corrections,
+    // pre-PR reshape, fork validation, and CI fix branches whose outputs it seeds.
     const inheritedRoute = {
       number: 3115,
+      action: 'correct',
       attention: true,
+      comparison: false,
+      docs: 'true',
+      errors: 'true',
       red_cause: 'inherited',
       cause: 'introduced',
       findings: true,
@@ -37441,11 +37551,13 @@ describe('#2707 step 3: gate-terminated loop_group pause escalation', () => {
       continuation: false,
       full: true,
       state: 'red',
+      status: 'red',
+      tier: 'focused',
     };
     const inheritedRouteText = JSON.stringify(inheritedRoute);
     const completedBeforeAttention = new Map<string, PersistedNodeOutput>(
       workflow.nodes
-        .filter(node => !activeNodeIds.has(node.id))
+        .filter(node => !uncachedNodeIds.has(node.id))
         .map(node => [node.id, { output: inheritedRouteText, structuredOutput: inheritedRoute }])
     );
 
