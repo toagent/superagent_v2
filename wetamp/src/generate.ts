@@ -525,7 +525,7 @@ export function buildWorkflow(
     const publishId = `publish-${m.id}`;
     const syncHandle = output<SyncOutput>(syncId);
     const readyHandle = output<SyncOutput>(syncReady);
-    const resolveHandle = conditionalOutput<CoderOutput>(resolveId);
+    const resolveHandle = conditionalOutput<CoderOutput | ''>(resolveId);
     const publishHandle = output<PublishOutput>(publishId);
     const gateHashes = Object.fromEntries(
       gateBindings.map(binding => [
@@ -600,23 +600,16 @@ export function buildWorkflow(
               when: `$${syncId}.output.status == 'conflict'`,
               output_format: coderOutputFormat,
             },
-            {
-              id: resolveDecision,
-              depends_on: [resolveId],
-              when: `$${syncId}.output.status == 'conflict'`,
-              script: [
-                "const coder = JSON.parse(process.env.INPUTS_CODER ?? '{}');",
-                "const ok = coder.status === 'done' && coder.error_class == null;",
-                "const reason = coder.needs?.length ? 'coder_needs' : 'coder_partial';",
-                "const decision = { kind: ok ? 'advance' : 'block', reason: ok ? null : reason, evidence: [], debt: [], blockers: coder.blockers ?? [], needs: coder.needs ?? [] };",
-                `const out = { decision, disposition: ok ? 'advance' : 'fail', reason: decision.reason };`,
-                `await Bun.write(process.env.ARTIFACTS_DIR + '/${resolveDecision}.json', JSON.stringify(out));`,
-                'process.stdout.write(JSON.stringify(out));',
-                'if (!ok) process.exit(1);',
-              ].join('\n'),
-              runtime: 'bun',
-              with: { coder: ref.optionalValue(resolveHandle, null) },
-            },
+            check(
+              resolveDecision,
+              [resolveId],
+              {
+                kind: 'resolveDecision',
+                tag: resolveDecision,
+                coder: ref.optionalValue(resolveHandle, null),
+              },
+              { when: `$${syncId}.output.status == 'conflict'` }
+            ),
           ]
         : []),
       {
@@ -733,6 +726,7 @@ export function buildWorkflow(
                   delta_base: ref.value(output<string>(resyncBase)),
                   terminal: 'unless_resolved',
                   sync_status: ref.required(readyHandle, 'status'),
+                  ...(delivery && !fake ? { coder: ref.optionalValue(resolveHandle, '') } : {}),
                 }
               : {
                   coder: ref.optionalValue(

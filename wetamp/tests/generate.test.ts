@@ -290,6 +290,38 @@ const allNodesOf = (w: unknown): N[] => {
 };
 const validNodes = (nodes: N[]) =>
   nodes.map(n => (n.command ? dagNodeSchema.parse(n) : (n as DagNode)));
+// prettier-ignore
+test('generated resync decision gates resolver self-reports', () => {
+  const art = tmp(), delivery = { checkout: '/target', branch: 'delivery-target', head: 'a'.repeat(40) };
+  const workflow = buildWorkflow(fixture, milestones(fixture), 'de1e-0001', art, false, NOW, loadTiers(), undefined, delivery);
+  const node = dagNodeSchema.parse(allNodesOf(workflow).find(n => n.id === 'resolve-resync-m1-decision'));
+  if (!('script' in node)) throw new Error('expected a script node');
+  const script = join(WETAMP, 'templates/.archon/scripts', `${node.script}.ts`);
+  const needs = [{ cap: 'environment', why: 'missing tool', minimal_ask: 'install tool' }];
+  for (const [coder, reason, ignored] of [
+    [{ status: 'done', error_class: 'task', blockers: [], needs: [] }, null, true],
+    [{ status: 'partial', error_class: null, blockers: ['unresolved'] }, 'coder_partial', undefined],
+    [{ status: 'blocked', needs }, 'coder_needs', undefined],
+    [{ status: 'done', needs }, 'coder_needs', undefined],
+    [null, 'coder_partial', undefined],
+  ] as const) {
+    const env = inputEnvVars(node, {
+      workflowRun: { id: 'resync', user_message: '', metadata: {} },
+      artifactsDir: art, stateDir: art, baseBranch: '', docsDir: '',
+      nodeOutputs: new Map(coder ? [['resolve-resync-m1', {
+        state: 'completed', output: JSON.stringify(coder), structuredOutput: coder,
+      }]] : [['resolve-resync-m1', { state: 'skipped', output: '', cause: { kind: 'condition', expr: '' } }]]),
+    });
+    const run = Bun.spawnSync([process.execPath, '--no-env-file', 'run', script], {
+      env: { ...process.env, ...env, ARTIFACTS_DIR: art }, stdout: 'pipe', stderr: 'pipe',
+    });
+    const out = JSON.parse(run.stdout.toString());
+    expect(out).toMatchObject({ reason, disposition: reason ? 'fail' : 'advance' });
+    expect({ exit: run.exitCode, ignored: out.error_class_ignored }).toEqual({ exit: reason ? 1 : 0, ignored });
+    expect(out.decision.needs).toEqual(coder && 'needs' in coder ? coder.needs : []);
+    expect(JSON.parse(readFileSync(join(art, `${node.id}.json`), 'utf8'))).toEqual(out);
+  }
+});
 test('every generated delivery agent node resolves to a frozen execution contract', () => {
   const tiers = fixtureTiers();
   const workflow = buildWorkflow(

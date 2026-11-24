@@ -1049,6 +1049,38 @@ function onlyScopeDecision(raw: string): boolean {
   }
 }
 
+function classifyCoderReport(coder: Coder | null | undefined) {
+  const reason = coder?.needs?.length
+    ? 'coder_needs'
+    : coder?.status === 'done'
+      ? null
+      : 'coder_partial';
+  return { reason, errorClassIgnored: Boolean(coder?.error_class) };
+}
+
+function resolveDecision(): void {
+  const coder = JSON.parse(env('CODER') || 'null') as Coder | null;
+  const { reason, errorClassIgnored } = classifyCoderReport(coder);
+  const decision: DeliveryDecision = {
+    kind: reason ? 'block' : 'advance',
+    reason,
+    evidence: [],
+    debt: [],
+    blockers: coder?.blockers ?? [],
+    needs: coder?.needs ?? [],
+  };
+  const disposition = nextDisposition(decision);
+  const out = {
+    decision,
+    disposition,
+    reason,
+    ...(errorClassIgnored ? { error_class_ignored: true } : {}),
+  };
+  writeFileSync(join(artifacts, `${env('TAG')}.json`), JSON.stringify(out));
+  emit(out);
+  if (disposition === 'fail') process.exitCode = 1;
+}
+
 /** Route structured blocks without turning acceptance failures into human waits. */
 export function nextDisposition(decision: DeliveryDecision): Disposition {
   const reason = reasons.find(r => r.code === decision.reason);
@@ -2392,17 +2424,18 @@ export function deliveryDecision(input: {
   } catch {
     /* Self-report is diagnostic only. */
   }
+  const report = classifyCoderReport(coder);
   const adjudication =
     coder?.status !== 'done' &&
     ['scope_violation', 'plan_invalid'].includes(coder?.error_class ?? '') &&
-    coder?.needs?.length &&
+    report.reason === 'coder_needs' &&
     !onlyScopeDecision(input.selfReport ?? '');
   const audit = {
-    ...(coder && (coder.status !== 'done' || coder.error_class || coder.needs?.length)
+    ...(coder && (report.reason || report.errorClassIgnored)
       ? { self_report_conflict: true as const }
       : {}),
     ...(coder?.status === 'partial' ? { coder_partial: true as const } : {}),
-    ...(coder?.error_class && !adjudication ? { error_class_ignored: true as const } : {}),
+    ...(report.errorClassIgnored && !adjudication ? { error_class_ignored: true as const } : {}),
   };
   const reviews = input.reviews ?? [];
   const rounds = reviews.length;
@@ -2541,7 +2574,7 @@ export function deliveryDecision(input: {
     return result;
   }
   if (check.no_changes === true && coder && coder.status !== 'done') {
-    const result = out('block', coder.needs?.length ? 'coder_needs' : 'coder_partial');
+    const result = out('block', report.reason);
     Object.assign(result.decision, { blockers: coder.blockers ?? [], needs: coder.needs ?? [] });
     return result;
   }
@@ -2701,13 +2734,13 @@ interface RunEvent {
 const CODER_NODE = /^(code|repair|fix|resolve)-/;
 /** Terminal node metadata and provider events are the only evidence used here. */
 export function falseHandbackEvidence(events: RunEvent[], raw: string): string | undefined {
-  let coder: Coder | undefined;
+  let coder: Coder | null;
   try {
-    coder = JSON.parse(raw) as Coder;
+    coder = JSON.parse(raw) as Coder | null;
   } catch {
     return undefined;
   }
-  if (coder.status === 'done' && !coder.needs?.length) return undefined;
+  if (!coder || classifyCoderReport(coder).reason === null) return undefined;
   const terminals = events
     .map((event, index) => ({ event, index }))
     .filter(
@@ -3678,6 +3711,7 @@ if (import.meta.main) {
     settle,
     gate,
     land,
+    resolveDecision,
   };
   const fn = kinds[env('KIND')];
   try {

@@ -15,6 +15,14 @@ type Mutation = {
 };
 const mutations: Mutation[] = [
   {
+    file: 'templates/.archon/scripts/sa-check.ts',
+    from: "coder?.status === 'done'\n      ? null",
+    to: "coder?.status === 'done' && !coder.error_class\n      ? null",
+    test: 'tests/generate.test.ts',
+    name: 'generated resync decision gates resolver self-reports',
+    expectedError: '"reason": "coder_partial"',
+  },
+  {
     file: 'src/generate.ts',
     from: "const merge = ['merge', '--no-edit', tip];",
     to: 'const merge = ancestor;',
