@@ -9817,6 +9817,56 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
                 ctx.nodeOutputs
               );
 
+            const skipWhenConditionFails = async (
+              when: string
+            ): Promise<LayerNodeResult | undefined> => {
+              // This run's named inputs are threaded in so `when: "$INPUTS.mode == 'fast'"`
+              // branches on a caller's `with:` value. Without it a sub-run child could READ
+              // `$INPUTS.mode` in a prompt but never branch on it — the ref parsed as a node
+              // called `INPUTS` and failed the node (#2453 defect 1).
+              const { result: conditionPasses, parsed: conditionParsed } = evaluateCondition(
+                when,
+                ctx.nodeOutputs,
+                resolveRunInputs(ctx.workflowRun),
+                { loopPrevOutputs: ctx.loopPrevOutputs }
+              );
+              if (!conditionParsed) {
+                const cause: SkipCause = {
+                  kind: 'condition_parse_error',
+                  expr: when,
+                };
+                const parseErrMsg = `⚠️ Node '${node.id}': unparseable \`when:\` expression "${when}" — node skipped (fail-closed). Check syntax: \`$nodeId.output == 'VALUE'\`, \`$nodeId.output > '5'\`, or compound \`$a.output == 'X' && $b.output != 'Y'\`.`;
+                await safeSendMessage(ctx.platform, ctx.conversationId, parseErrMsg, {
+                  workflowId: ctx.workflowRun.id,
+                  nodeName: node.id,
+                });
+                getLog().error({ nodeId: node.id, when }, 'dag_node_skipped_condition_parse_error');
+                const output = await recordNodeState(
+                  { store: ctx.deps.store, logDir: ctx.logDir },
+                  finishNodeExecution(
+                    beginExecution(ctx, node),
+                    { status: 'skipped', reason: 'when_condition_parse_error', cause },
+                    { output: { text: '' }, diagnostics: { iteration, expr: when } }
+                  )
+                );
+                return { nodeId: node.id, output };
+              }
+              if (!conditionPasses) {
+                const cause: SkipCause = { kind: 'condition', expr: when };
+                getLog().info({ nodeId: node.id, when }, 'dag_node_skipped_condition');
+                const output = await recordNodeState(
+                  { store: ctx.deps.store, logDir: ctx.logDir },
+                  finishNodeExecution(
+                    beginExecution(ctx, node),
+                    { status: 'skipped', reason: 'when_condition', cause },
+                    { output: { text: '' }, diagnostics: { iteration, expr: when } }
+                  )
+                );
+                return { nodeId: node.id, output };
+              }
+              return undefined;
+            };
+
             // A prior success is reusable only while every enclosing include is still active.
             // Unlike ordinary node-local rules, a composed boundary governs the whole block,
             // so resume must not let a stale completed descendant cross a newly-false gate.
@@ -9831,8 +9881,8 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
             );
 
             // 0. Skip if this node completed successfully in a prior run (resume path),
-            // unless its composed boundary is now inactive. `always_run: true` opts the
-            // node out of resume caching and re-executes it.
+            // provided its composed boundary and local condition still allow it.
+            // `always_run: true` opts the node out of resume caching.
             if (priorCompletedNodes?.has(node.id)) {
               // Three sites below (always_run reset, cache invalidation, and the
               // prior-success skip re-emit) all persist THIS node's prior output through
@@ -9913,6 +9963,11 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
                   );
                   // falls through to re-execute the node with fresh dep output
                 } else {
+                  if (node.when !== undefined) {
+                    const skipped = await skipWhenConditionFails(node.when);
+                    if (skipped !== undefined) return skipped;
+                  }
+
                   getLog().info({ nodeId: node.id }, 'dag.node_skipped_prior_success');
                   const skipStepName = ctx.stepNamePrefix + node.id;
                   // Preserve incomplete recovery as a preview with its original provenance.
@@ -10021,53 +10076,8 @@ async function runLayers(parentCtx: RunLayersContext): Promise<void> {
 
             // 2. Evaluate when: condition
             if (node.when !== undefined) {
-              // This run's named inputs are threaded in so `when: "$INPUTS.mode == 'fast'"`
-              // branches on a caller's `with:` value. Without it a sub-run child could READ
-              // `$INPUTS.mode` in a prompt but never branch on it — the ref parsed as a node
-              // called `INPUTS` and failed the node (#2453 defect 1).
-              const { result: conditionPasses, parsed: conditionParsed } = evaluateCondition(
-                node.when,
-                ctx.nodeOutputs,
-                resolveRunInputs(ctx.workflowRun),
-                { loopPrevOutputs: ctx.loopPrevOutputs }
-              );
-              if (!conditionParsed) {
-                const cause: SkipCause = {
-                  kind: 'condition_parse_error',
-                  expr: node.when,
-                };
-                const parseErrMsg = `⚠️ Node '${node.id}': unparseable \`when:\` expression "${node.when}" — node skipped (fail-closed). Check syntax: \`$nodeId.output == 'VALUE'\`, \`$nodeId.output > '5'\`, or compound \`$a.output == 'X' && $b.output != 'Y'\`.`;
-                await safeSendMessage(ctx.platform, ctx.conversationId, parseErrMsg, {
-                  workflowId: ctx.workflowRun.id,
-                  nodeName: node.id,
-                });
-                getLog().error(
-                  { nodeId: node.id, when: node.when },
-                  'dag_node_skipped_condition_parse_error'
-                );
-                const output = await recordNodeState(
-                  { store: ctx.deps.store, logDir: ctx.logDir },
-                  finishNodeExecution(
-                    beginExecution(ctx, node),
-                    { status: 'skipped', reason: 'when_condition_parse_error', cause },
-                    { output: { text: '' }, diagnostics: { iteration, expr: node.when } }
-                  )
-                );
-                return { nodeId: node.id, output };
-              }
-              if (!conditionPasses) {
-                const cause: SkipCause = { kind: 'condition', expr: node.when };
-                getLog().info({ nodeId: node.id, when: node.when }, 'dag_node_skipped_condition');
-                const output = await recordNodeState(
-                  { store: ctx.deps.store, logDir: ctx.logDir },
-                  finishNodeExecution(
-                    beginExecution(ctx, node),
-                    { status: 'skipped', reason: 'when_condition', cause },
-                    { output: { text: '' }, diagnostics: { iteration, expr: node.when } }
-                  )
-                );
-                return { nodeId: node.id, output };
-              }
+              const skipped = await skipWhenConditionFails(node.when);
+              if (skipped !== undefined) return skipped;
             }
 
             // 3. Non-agent node dispatch. A real `switch (node.kind)` (not a chain of
