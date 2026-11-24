@@ -24,6 +24,7 @@ const categories = [
   'command',
   'flag',
   'missing-path',
+  'remote-path',
   'artifact-path',
   'missing-index-target',
   'unindexed',
@@ -81,7 +82,10 @@ function checkCommand(snippet: string, report: Report): void {
   }
 }
 
-function checkPaths(line: string, report: Report): void {
+const remoteHost = /(?:^|[^a-z\d])(?:twin[-_]\w+|air|mini|nas|ssh(?=\s))(?![a-z\d])/i;
+
+function checkPaths(line: string, file: string, report: Report): void {
+  const remote = remoteHost.test(line) || remoteHost.test(basename(file));
   const start = /(?<![\w/:$])(?:~\/|\/Users\/|\$HOME\/|\/(?:private\/)?tmp\/)/g;
   for (const match of line.matchAll(start)) {
     const rest = line.slice(match.index);
@@ -100,7 +104,7 @@ function checkPaths(line: string, report: Report): void {
       full.startsWith(join(home, '.superagent/scratch') + '/')
     )
       report('artifact-path', path);
-    else if (!existsSync(full)) report('missing-path', path);
+    else if (!existsSync(full)) report(remote ? 'remote-path' : 'missing-path', path);
   }
 }
 
@@ -121,6 +125,52 @@ function defaultRoots(): string[] {
   ];
 }
 
+function checkIndex(file: string, findings: Finding[]): void {
+  const dir = dirname(file);
+  const siblings = readdirSync(dir, { withFileTypes: true })
+    .filter(child => child.isFile() && child.name.endsWith('.md'))
+    .map(child => join(dir, child.name));
+  const available = new Set(siblings);
+  const indexed = new Set([file]);
+  for (const source of indexed) {
+    let fence = '';
+    const lines = readFileSync(source, 'utf8').split(/\r?\n/);
+    const prose = lines
+      .map(line => {
+        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        if (marker) {
+          if (!fence) fence = marker[1];
+          else if (marker[1].startsWith(fence) && !marker[2].trim()) fence = '';
+        }
+        return fence || marker || /^(?: {4}|\t)/.test(line) ? '' : line;
+      })
+      .join('\n')
+      .replace(/(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g, span =>
+        span.replace(/[^\n]/g, ' ')
+      );
+    prose.split('\n').forEach((line, i) => {
+      for (const m of line.matchAll(/\[[^\]]*\]\((?:<([^>]+\.md)>|([^)\s]+\.md))\)/g)) {
+        const target = m[1] ?? m[2];
+        if (isAbsolute(target) || /^[\w-]+:/.test(target)) continue;
+        const full = resolve(dir, target);
+        if (dirname(full) !== dir || !safe(full)) continue;
+        if (available.has(full)) indexed.add(full);
+        else if (!existsSync(full))
+          findings.push({
+            category: 'missing-index-target',
+            file: source,
+            line: i + 1,
+            snippet: lines[i].slice(m.index, m.index + m[0].length),
+          });
+      }
+    });
+  }
+  for (const sibling of siblings) {
+    if (!indexed.has(sibling))
+      findings.push({ category: 'unindexed', file: sibling, line: 1, snippet: basename(sibling) });
+  }
+}
+
 function scan(roots: string[]): Finding[] {
   const findings: Finding[] = [],
     seen = new Set<string>();
@@ -137,7 +187,6 @@ function scan(roots: string[]): Finding[] {
         return;
       }
       if (!info.isFile() || !/\.(md|mdx|txt|rst)$/i.test(file)) return;
-      const indexed = basename(file) === 'MEMORY.md' ? new Set<string>() : undefined;
       const lines = readFileSync(file, 'utf8').split(/\r?\n/);
       lines.forEach((line, i) => {
         const report: Report = (category, snippet) =>
@@ -151,28 +200,9 @@ function scan(roots: string[]): Finding[] {
             snippet = snippet.slice(0, -1) + ' ' + lines[j].trim();
           checkCommand(snippet, report);
         }
-        checkPaths(line, report);
-        if (!indexed) return;
-        for (const m of line.matchAll(/\[[^\]]*\]\((?:<([^>]+\.md)>|([^)\s]+\.md))\)/g)) {
-          const target = m[1] ?? m[2];
-          if (isAbsolute(target) || /^[\w-]+:/.test(target)) continue;
-          const full = resolve(dirname(file), target);
-          if (!safe(full)) continue;
-          indexed.add(full);
-          if (!existsSync(full)) report('missing-index-target', m[0]);
-        }
+        checkPaths(line, file, report);
       });
-      if (!indexed) return;
-      for (const child of readdirSync(dirname(file), { withFileTypes: true })) {
-        const sibling = join(dirname(file), child.name);
-        if (
-          child.isFile() &&
-          child.name.endsWith('.md') &&
-          sibling !== file &&
-          !indexed.has(sibling)
-        )
-          findings.push({ category: 'unindexed', file: sibling, line: 1, snippet: child.name });
-      }
+      if (basename(file) === 'MEMORY.md') checkIndex(file, findings);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('无法扫描', path);
     }
