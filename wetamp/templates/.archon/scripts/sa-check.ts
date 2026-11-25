@@ -1338,15 +1338,41 @@ export function approvableScopeTests(paths: string[], write: string[], root = pr
   });
 }
 
+interface ScopeApproval {
+  diff_hash?: unknown;
+  files?: unknown;
+  blobs?: Record<string, unknown>;
+}
+
 // prettier-ignore
-function approvedDiff(kind: 'scope' | 'budget', pkg: string, hash: string, paths: string[] = [], blobs: Record<string, string> = {}): boolean {
+function readDiffApproval(kind: 'scope' | 'budget', pkg: string) {
   try {
-    const value = JSON.parse(readFileSync(join(dirname(env('PLAN')), 'approvals', `human-${kind}-${pkg}.json`), 'utf8')) as { diff_hash?: unknown; files?: unknown; blobs?: unknown };
-    if (kind !== 'scope') return value.diff_hash === hash;
-    const sorted = [...paths].sort(), filesMatch = JSON.stringify(value.files) === JSON.stringify(sorted);
-    const approvedBlobs = value.blobs && typeof value.blobs === 'object' ? value.blobs as Record<string, unknown> : undefined;
-    return filesMatch && (approvedBlobs === undefined ? value.diff_hash === hash : JSON.stringify(Object.keys(approvedBlobs).sort()) === JSON.stringify(sorted) && sorted.every(path => approvedBlobs[path] === blobs[path]));
-  } catch { return false; }
+    return JSON.parse(readFileSync(join(dirname(env('PLAN')), 'approvals', `human-${kind}-${pkg}.json`), 'utf8')) as ScopeApproval & { approvals?: ScopeApproval[] };
+  } catch { return undefined; }
+}
+
+function approvedScopePaths(packages: Pkg[]): Set<string> {
+  const paths = new Set<string>();
+  for (const { id } of packages) {
+    const saved = readDiffApproval('scope', id);
+    for (const approval of Array.isArray(saved?.approvals) ? saved.approvals : [saved]) {
+      if (!Array.isArray(approval?.files)) continue;
+      const files: unknown[] = approval.files;
+      if (!files.every((path): path is string => typeof path === 'string' && path.length > 0))
+        continue;
+      const blobs = approval.blobs;
+      const hasBlobs =
+        blobs &&
+        files.every(path => {
+          const blob = blobs[path];
+          return typeof blob === 'string' && /^[0-9a-f]{40,64}$/.test(blob);
+        });
+      if (hasBlobs || (typeof approval.diff_hash === 'string' && approval.diff_hash)) {
+        for (const path of files) paths.add(path);
+      }
+    }
+  }
+  return paths;
 }
 
 // prettier-ignore
@@ -1611,9 +1637,11 @@ async function acceptOnce(
       failure.evidence = `${approvalPath}; ${candidate.report}`;
     } else adjudication ??= pending;
   }
+  const approvedPaths = scope.out_of_scope.length ? approvedScopePaths(covered) : undefined;
+  const pendingScope = scope.out_of_scope.filter(path => !approvedPaths?.has(path));
   const scopeAutoApproved =
-    scope.out_of_scope.length > 0 &&
-    autoApproveScope(scope.out_of_scope, policy(), await scopeConflicts(scope.out_of_scope, p));
+    pendingScope.length > 0 &&
+    autoApproveScope(pendingScope, policy(), await scopeConflicts(pendingScope, p));
   const scopeDecisionRequest = scope.out_of_scope.length > 0 && onlyScopeDecision(coder);
   const result = {
     ...disposition(
@@ -1664,7 +1692,7 @@ async function acceptOnce(
     lines &&
     budgetExceeded(lines.limit, lines.used) &&
     result.disposition === 'advance' &&
-    !approvedDiff('budget', pkgs[0].id, hash)
+    readDiffApproval('budget', pkgs[0].id)?.diff_hash !== hash
   )
     Object.assign(result, {
       reason: 'budget_exceeded',
@@ -1677,40 +1705,43 @@ async function acceptOnce(
       decision: { ...result.decision, kind: 'block', reason: 'acceptance_failed+review_limit' },
     });
   const scopeApproval =
-    scope.out_of_scope.length > 0 &&
+    pendingScope.length > 0 &&
+    result.disposition === 'advance' &&
     (scopeDecisionRequest ||
+      reviewRound > 0 ||
+      tag.startsWith('settle-') ||
       approvableScopeTests(
-        scope.out_of_scope,
+        pendingScope,
         covered.flatMap(k => k.scope.write)
       ));
-  const scopeBlobs = Object.fromEntries(
-    [...scope.out_of_scope].sort().flatMap(path => {
-      try {
-        return [[path, git('rev-parse', `HEAD:${path}`).trim()]];
-      } catch {
-        return [];
-      }
-    })
-  );
-  const scopeReason =
-    scopeApproval && result.disposition === 'advance' ? 'scope_approval' : 'scope_violation';
+  const scopeBlobs =
+    scopeApproval && !scopeAutoApproved
+      ? Object.fromEntries(
+          [...scope.out_of_scope].sort().flatMap(path => {
+            try {
+              return [[path, git('rev-parse', `HEAD:${path}`).trim()]];
+            } catch {
+              return [];
+            }
+          })
+        )
+      : undefined;
+  const scopeReason = scopeApproval ? 'scope_approval' : 'scope_violation';
   if (
-    scope.out_of_scope.length &&
+    pendingScope.length &&
     !scopeAutoApproved &&
-    (result.disposition === 'advance' || result.disposition === 'repair') &&
-    !approvedDiff('scope', pkgs[0].id, hash, scope.out_of_scope, scopeBlobs)
+    (result.disposition === 'advance' || result.disposition === 'repair')
   ) {
-    const approval = scopeApproval && result.disposition === 'advance';
-    result.disposition = approval ? 'fail' : 'repair';
+    result.disposition = scopeApproval ? 'fail' : 'repair';
     result.reason = scopeReason;
     result.decision = {
       ...result.decision,
-      kind: approval ? 'block' : 'repair',
+      kind: scopeApproval ? 'block' : 'repair',
       reason: scopeReason,
       evidence: [
         ...result.decision.evidence,
-        ...scope.out_of_scope,
-        approval
+        ...pendingScope,
+        scopeApproval
           ? 'Approve this scope expansion or reject it.'
           : 'Keep only goal-required out-of-scope changes; after acceptance passes report only scope_decision so the engine holds this diff for approval. Revert all other out-of-scope changes.',
       ],
@@ -1745,8 +1776,8 @@ async function acceptOnce(
     base_results: baseResults,
     ...baseline,
     ...scope,
-    ...(scopeAutoApproved ? { scope_auto_approved: scope.out_of_scope } : {}),
-    ...(scopeApproval ? { scope_package: pkgs[0].id, scope_blobs: scopeBlobs } : {}),
+    ...(scopeAutoApproved ? { scope_auto_approved: pendingScope } : {}),
+    ...(scopeBlobs ? { scope_package: pkgs[0].id, scope_blobs: scopeBlobs } : {}),
     ...(lines ? { net_lines: lines } : {}),
     head,
     checkout_fingerprint: fingerprint,

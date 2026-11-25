@@ -2835,7 +2835,7 @@ describe('decide (archon stub)', () => {
       expect(readFileSync(join(s.ledger.gen_dir, 'attempts', scope), 'utf8')).toBe('1');
   });
   // prettier-ignore
-  test('scope decision request holds for approval and approval is content-bound', () => {
+  test('scope decision request holds and approval preserves earlier paths', () => {
     const scope = stub([run('failed', { nodes: [{ nodeId: 'diff-m1-r2', state: 'failed' }] })]);
     packageRework(scope);
     const art = join(scope.root, 'out/artifacts/runs/r');
@@ -2844,8 +2844,13 @@ describe('decide (archon stub)', () => {
     const view = JSON.parse(readFileSync(join(scope.dir, 'get-000.json'), 'utf8'));
     view.output_root = join(scope.root, 'out');
     writeFileSync(join(scope.dir, 'get-000.json'), JSON.stringify(view));
+    const approvalPath = join(scope.ledger.gen_dir, 'approvals/human-scope-core.json');
+    mkdirSync(join(scope.ledger.gen_dir, 'approvals'), { recursive: true });
+    const previous = { files: ['previously-approved.ts'], diff_hash: 'diff-previous' };
+    writeFileSync(approvalPath, JSON.stringify(previous));
     expect(captured(() => main(['decide', 'sa1', 'approve'])).code).toBe(0);
-    expect(JSON.parse(readFileSync(join(scope.ledger.gen_dir, 'approvals/human-scope-core.json'), 'utf8'))).toEqual({ files: ['tests/core.test.ts'], blobs: { 'tests/core.test.ts': 'a'.repeat(40) } });
+    const current = { files: ['tests/core.test.ts'], blobs: { 'tests/core.test.ts': 'a'.repeat(40) } };
+    expect(JSON.parse(readFileSync(approvalPath, 'utf8'))).toEqual({ ...current, approvals: [previous, current] });
 
     const budget = stub([run('paused', { metadata: { approval: { nodeId: 'human-budget-core' } } })]);
     expect(captured(() => main(['decide', 'sa1', 'reject', '--hint', 'remove wrapper'])).code).toBe(0);
@@ -2857,7 +2862,7 @@ describe('decide (archon stub)', () => {
     });
   });
   // prettier-ignore
-  test('settle scope approval resumes with content-bound approval', () => {
+  test('settle scope approval records the paths before resuming', () => {
     const scope = stub([run('failed', { nodes: [{ nodeId: 'settle-a', state: 'failed' }] })]);
     packageRework(scope);
     const art = join(scope.root, 'out/artifacts/runs/r');

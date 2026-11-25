@@ -2872,7 +2872,15 @@ function recordScopeApproval(l: Ledger, run: RunView, node: string): () => void 
   if (!stable && (typeof out.diff_hash !== 'string' || !out.diff_hash)) throw new Error('scope approval evidence missing fingerprint');
   mkdirSync(join(l.gen_dir, 'approvals'), { recursive: true });
   const path = join(l.gen_dir, 'approvals', `human-scope-${out.scope_package}.json`), prior = existsSync(path) ? readFileSync(path) : undefined;
-  writeFileSync(path, JSON.stringify(stable ? { files, blobs } : { diff_hash: out.diff_hash, files }) + '\n');
+  const approval = stable ? { files, blobs } : { diff_hash: out.diff_hash, files };
+  let history: unknown[] = [];
+  if (prior) {
+    try {
+      const saved = JSON.parse(prior.toString()) as { approvals?: unknown[] } | null;
+      history = Array.isArray(saved?.approvals) ? saved.approvals : [saved];
+    } catch { /* invalid records grant no paths */ }
+  }
+  writeFileSync(path, JSON.stringify(history.length ? { ...approval, approvals: [...history, approval] } : approval) + '\n');
   return () => { if (prior) writeFileSync(path, prior); else rmSync(path, { force: true }); };
 }
 
