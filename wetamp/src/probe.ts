@@ -374,6 +374,27 @@ function* probe(
   const decision = { ok: base.ok && !reason && !judgement.diagnostic, reason };
   if (!decision.ok && latest)
     judgement.diagnostic = [judgement.diagnostic, outputTail(latest)].filter(Boolean).join('\n');
+  if (suite?.scenario === 'scope' && judgement.launch_run_id && judgement.state === 'held:scope') {
+    try {
+      const cleanup = yield {
+        args: [
+          shim,
+          'abandon',
+          judgement.launch_run_id,
+          '--reason',
+          'engine probe scope scenario evidence collected',
+        ],
+        cwd: repo,
+        env,
+        timeout: 30_000,
+      };
+      if (cleanup.exitCode !== 0)
+        throw new Error(`exit ${String(cleanup.exitCode)}\n${outputTail(cleanup)}`);
+    } catch (error) {
+      const diagnostic = `abandon failed: ${redact(error instanceof Error ? error.message : String(error))}`;
+      judgement.diagnostic = [judgement.diagnostic, diagnostic].filter(Boolean).join('\n');
+    }
+  }
   const evidence: ProbeEvidence | ScenarioEvidence = {
     ok: decision.ok,
     level,
@@ -453,13 +474,21 @@ export async function runScenarioProbe(
     let step = sequence.next();
     while (!step.done) {
       const { args, ...options } = step.value;
-      const child = Bun.spawn(args, { ...options, ...spawnOptions });
-      const [exitCode, stdout, stderr] = await Promise.all([
-        child.exited,
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-      ]);
-      step = sequence.next({ exitCode, stdout, stderr });
+      let result: CommandResult;
+      try {
+        const child = Bun.spawn(args, { ...options, ...spawnOptions });
+        const [exitCode, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        result = { exitCode, stdout, stderr };
+      } catch (error) {
+        if (args[1] !== 'abandon') throw error;
+        step = sequence.throw(error);
+        continue;
+      }
+      step = sequence.next(result);
     }
     if (!('console' in step.value)) throw new Error('probe: scenario evidence missing');
     return step.value;

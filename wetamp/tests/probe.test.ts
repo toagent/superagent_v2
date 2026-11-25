@@ -112,6 +112,46 @@ test('repair acceptance rejects the first candidate even with both markers and a
   expect(scenarioFor('G1', 'scope').scope).toBe('README.md');
 });
 
+// prettier-ignore
+test('scope probe abandons after reading held run evidence and records cleanup failure', async () => {
+  const snapshot = resolve(import.meta.dir, '../..');
+  const commit = Bun.spawnSync(['git', '-C', snapshot, 'rev-parse', 'HEAD']).stdout.toString().trim();
+  for (const [scenario, state, runId, exit] of [
+    ['scope', 'held:scope', 'run-1', 0],
+    ['scope', 'held:scope', 'run-1', 7],
+    ['scope', 'held:gate', 'run-1', 0],
+    ['scope', 'held:scope', '', 0],
+    ['simple', 'held:scope', 'run-1', 0],
+  ] as const) {
+    const root = tmp(), shim = join(root, 'shim'), trace = join(root, 'commands');
+    const sa = join(root, 'sa'), art = join(sa, 'archon/artifacts/runs/archon-1');
+    const ledger = join(sa, 'runs/run-1.json'), attempts = join(art, 'policy-attempts.json');
+    mkdirSync(art, { recursive: true });
+    mkdirSync(join(sa, 'runs'));
+    writeFileSync(ledger, JSON.stringify({ run_id: runId, engine_commit: commit, engine_snapshot: snapshot, console: 'claude', archon_run_id: 'archon-1' }));
+    writeFileSync(attempts, JSON.stringify([{ id: '1', node: 'code-quick', provider: 'codex', model: 'test', status: 'completed' }]));
+    writeFileSync(shim, `#!/bin/sh
+printf '%s\\n' "$1" >> '${trace}'
+case "$1" in
+quick) echo '${JSON.stringify({ run_id: runId })}' ;;
+wait) echo '${JSON.stringify({ run_id: runId, state, delivery_state: 'not_reached', evidence: art })}'; exit 3 ;;
+abandon) [ "$#" = 4 ] && [ "$2" = run-1 ] && [ "$3" = --reason ] && [ "$4" = 'engine probe scope scenario evidence collected' ] || exit 9
+  : > '${ledger}'; : > '${attempts}'; echo 'fixture cleanup' >&2; exit ${exit} ;;
+esac
+`, { mode: 0o755 });
+    Object.assign(process.env, { SUPERAGENT_HOME: sa, ARCHON_HOME: join(sa, 'archon') });
+    const evidence = await runScenarioProbe('G1', 'claude', scenario, shim);
+    const shouldAbandon = scenario === 'scope' && state === 'held:scope' && !!runId;
+    const commands = ['quick', ...(runId ? ['wait'] : []), ...(shouldAbandon ? ['abandon'] : [])];
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(commands);
+    expect(evidence.ok).toBe(shouldAbandon);
+    if (shouldAbandon) expect(evidence.state).toBe('held:scope');
+    if (exit) expect(evidence.error).toContain('fixture cleanup');
+    if (exit) expect(JSON.parse(readFileSync(evidence.evidence_path, 'utf8'))).toMatchObject({ judgement: { diagnostic: evidence.error } });
+    else if (shouldAbandon) expect(evidence.error).toBeUndefined();
+  }
+});
+
 test('outage serves loopback 503 and saves provider failover evidence, then closes the port', async () => {
   const root = tmp(),
     shim = join(root, 'shim'),
