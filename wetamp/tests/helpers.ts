@@ -17,7 +17,16 @@ import { trackTestRoot } from './preload';
 
 export { trackTestChild } from './preload';
 
+export const clashPaths = [
+  'Library/Application Support/com.follow.clash',
+  'work/clash-vault',
+  'work/_donot_delete/flclash',
+  '.flclash-backup',
+  '.local/share/neko-agent-flclash',
+];
+
 export const privatePathCases = [
+  ...clashPaths.map(path => [`${path}/fixture`, '凭据文件'] as const),
   [
     'work/repo/node_modules/.pnpm/workbox-core@7.4.0/node_modules/workbox-core_tmp_1/_private',
     null,

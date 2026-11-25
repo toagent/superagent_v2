@@ -1,5 +1,7 @@
 (version 1)
 (allow default)
+; 封锁 Clash 控制口，避免监控进程命令行中的令牌被用于控制 Clash。
+(deny network-outbound (remote ip "localhost:9090"))
 ; 本机真实 seatbelt 实测按大小写不敏感匹配正则，保留字符类以在区分大小写的卷上仍能拒绝受保护路径。
 (deny file-read* file-write*
   (subpath "__HOME_LITERAL__/Library/Mobile Documents")

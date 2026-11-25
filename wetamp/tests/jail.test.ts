@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { alreadySandboxed, privatePathCases, tmp } from './helpers';
+import { alreadySandboxed, clashPaths, privatePathCases, tmp } from './helpers';
 
 const WETAMP = join(import.meta.dir, '..');
 const INSTALL = join(WETAMP, 'scripts/install.sh');
@@ -43,6 +43,9 @@ describe('ai-jail', () => {
     const profile = join(home, '.wetamp/jail/ai-deny.sb');
     const result = Bun.spawnSync(['/usr/bin/sandbox-exec', '-f', profile, '/usr/bin/true']);
     expect(result.exitCode, result.stderr.toString()).toBe(alreadySandboxed() ? 71 : 0);
+    const policy = readFileSync(profile, 'utf8');
+    for (const path of clashPaths) expect(policy).toContain(`(subpath "${home}/${path}")`);
+    expect(policy).toContain('(deny network-outbound (remote ip "localhost:9090"))');
   });
 
   seatbeltTest(seatbeltTitle, () => {
@@ -83,6 +86,19 @@ describe('ai-jail', () => {
       expect(write.exitCode, file).not.toBe(0);
       expect(write.stderr.toString(), file).toMatch(/Operation not permitted/);
       expect(readFileSync(file, 'utf8'), file).toBe('before');
+    }
+    const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } });
+    try {
+      expect(run('/usr/bin/nc', '-z', '-G', '2', '127.0.0.1', String(listener.port)).exitCode).toBe(
+        0
+      );
+      for (const host of ['127.0.0.1', '::1']) {
+        const control = run('/usr/bin/nc', '-z', '-G', '2', host, '9090');
+        expect(control.exitCode, host).not.toBe(0);
+        expect(control.stderr.toString(), host).toContain('Operation not permitted');
+      }
+    } finally {
+      listener.stop(true);
     }
     for (const [file] of privatePathCases.filter(([, kind]) => kind === null)) {
       const target = join(home, file.endsWith('/_private') ? file + '/a' : file);

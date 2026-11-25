@@ -1,7 +1,22 @@
 import { expect, test } from 'bun:test';
 import { join } from 'node:path';
+import { scanText } from '../src/secrets/scan';
 
 const config = join(import.meta.dir, '../secrets/gitleaks.toml');
+
+test('Clash 令牌的两种参数写法均保留参数名并遮蔽值', () => {
+  const redact = (text: string) => scanText(text, { config, secrets: [], keyValues: false });
+  const value = ['fixture', 'v1'].join('-');
+  for (const flag of ['--gateway-token', '--backend-token']) {
+    for (const separator of [' ', '=']) {
+      const argument = `${flag}${separator}${value}`;
+      const command = `neko-agent ${argument} ${argument}`;
+      expect(redact(command)).toBe(command.replaceAll(value, '[REDACTED:gitleaks]'));
+    }
+  }
+  const ordinary = 'neko-agent --port=7890 --gateway-token= --backend-token --help';
+  expect(redact(ordinary)).toBe(ordinary);
+});
 // prettier-ignore
 const scan = (text: string) => Bun.spawnSync(['gitleaks', 'stdin', '--config', config, '--no-banner', '--report-format', 'json', '--report-path', '-'], { stdin: Buffer.from(text), stdout: 'pipe', stderr: 'pipe' });
 
