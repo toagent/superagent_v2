@@ -11,7 +11,10 @@ export interface Launcher {
 }
 export const { launcher, cliOf } = createRequire(import.meta.url)('../hooks/live.cjs') as {
   launcher: (home: string, env?: NodeJS.ProcessEnv) => Launcher | undefined;
-  cliOf: (argv: string[]) => { kind: Exclude<Launcher['client'], 'agy'>; headless: boolean } | null;
+  cliOf: (
+    argv: string[],
+    controller?: boolean
+  ) => { kind: Launcher['client']; headless: boolean } | null;
 };
 
 export const { inspect: inspectProcess } = createRequire(import.meta.url)(

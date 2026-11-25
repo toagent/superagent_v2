@@ -185,14 +185,16 @@ function agyResult(
   return { ...result, text, structuredOutput };
 }
 
-async function* runAgy(
+export async function* runAgy(
   executable: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-  options: Parameters<IAgentProvider['sendQuery']>[3]
+  options: Parameters<IAgentProvider['sendQuery']>[3],
+  job?: { spawned: (pid: number) => void; unserved: () => void }
 ): AsyncGenerator<MessageChunk> {
   const signal = options?.abortSignal;
+  signal?.throwIfAborted();
   const secrets = collectCredentialValues(env, options?.protectedEnvKeys);
   const redact = (text: string) => redactCredentialValues(text, secrets);
   let child;
@@ -235,6 +237,7 @@ async function* runAgy(
   let invalid = false;
   let result: ResultChunk;
   try {
+    job?.spawned(child.pid);
     for await (const line of lines) {
       signal?.throwIfAborted();
       if (!line.trim()) continue;
@@ -324,6 +327,14 @@ async function* runAgy(
     else if (invalid && terminal) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
+    if (
+      !sawTool &&
+      !invalid &&
+      terminal?.status === 'ERROR' &&
+      result.failure?.class === 'transient' &&
+      result.tokens?.total === 0
+    )
+      job?.unserved();
   } finally {
     signal?.removeEventListener('abort', stop);
     lines.close();
@@ -351,6 +362,41 @@ async function* runAgy(
   yield result.isError ? { ...result, text: undefined, structuredOutput: undefined } : result;
   yield { type: 'settled' };
 }
+
+export function agyLaunch(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  config: {
+    executable?: string;
+    hooksPath?: string;
+  } = {}
+) {
+  const home = (env.HOME === '' ? undefined : env.HOME) ?? homedir();
+  const hooksPath = config.hooksPath ?? join(home, '.gemini/config/hooks.json');
+  const executable = Bun.which(config.executable ?? 'agy', { PATH: env.PATH ?? '', cwd });
+  const key = env.AGY_LLM_GATEWAY_API_KEY?.trim()
+    ? env.AGY_LLM_GATEWAY_API_KEY
+    : env.ANTIGRAVITY_API_KEY;
+  if (!executable) return { problem: '找不到 agy 可执行文件' } as const;
+  if (!env.AGY_LLM_GATEWAY_URL?.trim()) return { problem: 'agy 缺少 AGY_LLM_GATEWAY_URL' } as const;
+  if (!key?.trim())
+    return { problem: 'agy 缺少 AGY_LLM_GATEWAY_API_KEY 或 ANTIGRAVITY_API_KEY' } as const;
+  if (!isAbsolute(hooksPath) || !hasManagedHook(hooksPath, env, home))
+    return { problem: 'agy hooks.json 缺少匹配且启用的 superagent PreToolUse 命令' } as const;
+  return { executable, env: { ...env, AGY_LLM_GATEWAY_API_KEY: key } } as const;
+}
+
+export const agyArgs = (prompt: string, model: string, extra: string[] = []): string[] => [
+  '--print',
+  prompt,
+  '--output-format',
+  'stream-json',
+  '--model',
+  model,
+  ...extra,
+  '--dangerously-skip-permissions',
+];
+
 export function createAgyProvider(
   config: { executable?: string; hooksPath?: string } = {}
 ): IAgentProvider {
@@ -360,42 +406,25 @@ export function createAgyProvider(
     checkCredential: () => Promise.resolve({ state: 'not_checked', source: 'native' }),
     async *sendQuery(prompt, cwd, resume, options) {
       options?.abortSignal?.throwIfAborted();
-      const env = buildProviderSubprocessEnv(options);
-      const home = (env.HOME === '' ? undefined : env.HOME) ?? homedir();
-      const hooksPath = config.hooksPath ?? join(home, '.gemini/config/hooks.json');
-      const executable = Bun.which(config.executable ?? 'agy', { PATH: env.PATH ?? '', cwd });
-      const gatewayKey = env.AGY_LLM_GATEWAY_API_KEY?.trim()
-        ? env.AGY_LLM_GATEWAY_API_KEY
-        : env.ANTIGRAVITY_API_KEY;
+      const launch = agyLaunch(cwd, buildProviderSubprocessEnv(options), config);
       const model = options?.model;
-      let problem: string | undefined;
-      if (!executable) problem = '找不到 agy 可执行文件';
-      else if (!env.AGY_LLM_GATEWAY_URL?.trim()) problem = 'agy 缺少 AGY_LLM_GATEWAY_URL';
-      else if (!gatewayKey?.trim())
-        problem = 'agy 缺少 AGY_LLM_GATEWAY_API_KEY 或 ANTIGRAVITY_API_KEY';
-      else if (!isAbsolute(hooksPath) || !hasManagedHook(hooksPath, env, home))
-        problem = 'agy hooks.json 缺少匹配且启用的 superagent PreToolUse 命令';
-      else if (resume !== undefined || options?.execContext?.kind === 'container')
-        problem = 'agy 仅支持主机上的新会话';
-      if (!executable || problem || !model?.trim()) {
+      const problem =
+        launch.problem ??
+        (resume !== undefined || options?.execContext?.kind === 'container'
+          ? 'agy 仅支持主机上的新会话'
+          : undefined);
+      if (!launch.executable || problem || !model?.trim()) {
         yield failure('misconfigured', problem ?? 'agy 缺少模型标识');
         yield { type: 'settled' };
         return;
       }
-      const args = ['--print', prompt, '--output-format', 'stream-json', '--model', model];
+      const extra: string[] = [];
       if (options?.outputFormat) {
         const schema: unknown = JSON.parse(JSON.stringify(options.outputFormat.schema));
         translateSchema(object(schema));
-        args.push('--json-schema', JSON.stringify(schema));
+        extra.push('--json-schema', JSON.stringify(schema));
       }
-      args.push('--dangerously-skip-permissions');
-      yield* runAgy(
-        executable,
-        args,
-        cwd,
-        { ...env, AGY_LLM_GATEWAY_API_KEY: gatewayKey },
-        options
-      );
+      yield* runAgy(launch.executable, agyArgs(prompt, model, extra), cwd, launch.env, options);
     },
   };
 }

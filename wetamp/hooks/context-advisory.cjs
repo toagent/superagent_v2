@@ -304,4 +304,4 @@ if (require.main === module) {
   } catch {}
   // Never emit a denial or a nonzero status, even if state/transcript I/O fails.
 }
-module.exports = { recentUsage, latestAgyInput, advise, main, roleLimit, contextLimits, rolloverNotice, agyAdvisory, LIMIT };
+module.exports = { agyTranscript, recentUsage, latestAgyInput, advise, main, roleLimit, contextLimits, rolloverNotice, agyAdvisory, LIMIT };

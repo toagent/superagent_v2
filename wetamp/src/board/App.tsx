@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { fmtClock, fmtElapsed, type Snapshot } from './data';
 import { cockpit, decisionHeader, fit, type Cockpit } from './cockpit';
 import { residentHash } from '../generate';
+import { shortModel } from '../models';
 
 export const ENGINE_CHANGED = 75;
 export const boardExitCode = (started: string, current = residentHash()): number =>
@@ -140,6 +141,23 @@ export function Frame({ snap, width, height, now, view }: FrameProps): ReactElem
   }
   if (shown < cards.length && lines.length < bodyEnd)
     text(`还有 ${cards.length - shown} 项任务未显示`, undefined, false, true);
+  for (const t of snap.activity?.terms ?? []) {
+    if (lines.length >= bodyEnd) break;
+    if (t.kind === 'agy') {
+      const state = t.state === 'idle' ? '等待输入' : t.state === 'busy' ? t.tool ?? '执行中' : '状态未知';
+      const label = t.tty === 'ACP' ? `Orca ${t.session_id?.slice(0, 8) ?? t.pid}` : t.tty;
+      text(['Neon', label, shortModel(t.model), state].filter(Boolean).join(' · '));
+    }
+  }
+  const neonWorkers = [
+    ...(snap.activity?.procs ?? []).filter(p => p.kind === 'agy').map(p => String(p.pid)),
+    ...jobs.filter(j => j.kind === 'agy' && j.state === 'running' && j.pidAlive &&
+      !active.some(r => r.id === j.id)).map(j => j.title),
+  ];
+  for (const worker of neonWorkers) {
+    if (lines.length >= bodyEnd) break;
+    text(`Neon · 将军 ${worker} · 执行中`);
+  }
   text(footer, undefined, false, true);
   return (
     <Box flexDirection="column" width={width}>

@@ -375,6 +375,24 @@ async function scan(
   const ps = await capture(['ps', '-axo', PS_FIELDS], SOURCE_TIMEOUT_MS, signal);
   if (ps.code !== 0) throw new Error(`ps exited ${String(ps.code)}`);
   const rows = psRows(ps.out);
+  // ps drops quoting in Orca's executable path. Confirm the executable for split paths.
+  const split = [...rows].filter(
+    ([, r]) =>
+      !term.cliOf(r.argv) && r.argv.slice(1).some(arg => arg.endsWith('/agy_acp_server.par'))
+  );
+  if (split.length) {
+    const left = Math.max(1, SOURCE_TIMEOUT_MS - (Date.now() - t0));
+    const { out } = await capture(
+      ['ps', '-p', split.map(([pid]) => pid).join(','), '-o', 'pid=,comm='],
+      left,
+      signal
+    );
+    for (const line of out.split('\n')) {
+      const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+      const row = match && rows.get(Number(match[1]));
+      if (row && basename(match[2]) === 'agy_acp_server.par') row.argv = ['agy_acp_server.par'];
+    }
+  }
   const active = processJobs(jobs);
   const wrappers = new Set(active.map(j => j.wrapper_pid));
   const procs = parsePs(rows, now, wrappers);
