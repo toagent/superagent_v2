@@ -118,7 +118,7 @@ Orca 对话版 Neon 与终端 `agy` 共用 superagent 护栏和 `gemini` 控制�
 Claude 和 Codex 控制台沿用预算降级规则。Gemini 控制台的 Neon 将军复用下文的
 Antigravity CLI 前提检查。启用 Neon 将军时，`gemini_review` 必须关闭。
 
-`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台，军师走 Gemini 评审池，将军跳过 Neon 并选首个可执行候选。
+`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台，军师走 Gemini 评审池，将军优先使用 Neon。启动前检查失败，或 Neon 回执明确显示零用量且没有工具活动时，自动路由可切到 Codex 后备。
 
 ## 单次使用 Gemini Neon
 

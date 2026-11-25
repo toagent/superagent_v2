@@ -148,3 +148,41 @@ test('run evidence compacts events and reuses legacy cache without changing ETA 
   writeFileSync(file, JSON.stringify(second.runs));
   expect(readFileSync(file, 'utf8')).not.toContain('events');
 });
+
+// prettier-ignore
+test('Neon usage joins engine receipts with ACP transcript snapshots', () => {
+  const root = tmp(), at = '2026-11-25T04:00:00Z';
+  Object.assign(process.env, { SUPERAGENT_HOME: root, ARCHON_HOME: root });
+  for (const dir of ['runs', 'live', 'brain/chat/.system_generated/logs'])
+    mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, 'runs/run.json'), JSON.stringify({
+    run_id: 'run', archon_run_id: 'archon', gen_dir: root, repo: root,
+    branch: 'task', workflow: 'fixture', started_at: at,
+  }));
+  writeFileSync(join(root, 'live/chat.json'), JSON.stringify({
+    client: 'agy', session_id: 'chat', at, role: 'commander', cwd: root,
+    transcript_path: join(root, 'conversations/chat.db'),
+  }));
+  const model = 'gemini-4-neon-%68igh';
+  writeFileSync(join(root, 'brain/chat/.system_generated/logs/transcript_full.jsonl'), [
+    { type: 'PLANNER_RESPONSE', input_tokens: 9, cache_read_tokens: 2, output_tokens: 1, model },
+    { type: 'PLANNER_RESPONSE', input_tokens: 5, cache_read_tokens: 0, output_tokens: 1, model },
+    { type: 'USER_INPUT', input_tokens: 9000 },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const unavailable = { source: 'unavailable', reason: 'not_reported' };
+  const receipt = { event_type: 'node_completed', step_name: 'code', created_at: at, data: {
+    node: { id: 'code', kind: 'agent', source: { kind: 'inline' } },
+    invocation: { id: 'invocation', startedAt: at, loopPath: [] },
+    attempt: { id: 'attempt', startedAt: at }, binding: { provider: 'agy' },
+    session_id: 'general', model, timing: { startedAt: at, durationMs: 10 }, accounting: 'node',
+    spend: { tokens: { source: 'provider', value: { input: 12, output: 3, cacheRead: 2 } },
+      costUsd: unavailable, stopReason: unavailable, numTurns: unavailable },
+  } };
+  const evidence = usageEvidence(() => ({
+    id: 'archon', status: 'completed', events: [receipt, receipt],
+  }));
+  expect(evidence.agySessions).toMatchObject([
+    { id: 'general', client: 'agy', model, input: 12, total: 15 },
+    { id: 'chat', client: 'agy', model, input: 5, total: 6 },
+  ]);
+});

@@ -24,6 +24,7 @@ import {
 } from '../src/jobs';
 import { loadTiers } from '../src/config';
 import { caller } from '../src/coord';
+import { agyGuardCommand } from '../src/install-hooks';
 import { codexFixtureEnv, gitRepo, sh, tmp } from './helpers';
 
 test('shell fixtures suppress inherited role/job and dotenv values, preserving explicit overrides', () => {
@@ -904,30 +905,26 @@ else if (process.argv[1].endsWith('/claude')) {
     }
     const models = run(['models', '--json']); expect(await models.exited).toBe(0);
     const routes = JSON.parse(await new Response(models.stdout as ReadableStream).text());
-    for (const role of ['general', 'strategist'] as const) {
+    await Promise.all((['general', 'strategist'] as const).map(async role => {
       const p = run(['job', 'exec', '--title', role, '--role', role, '--', codex, 'exec', 'prompt']);
       expect(await p.exited).toBe(0); const { args } = JSON.parse(await new Response(p.stdout as ReadableStream).text());
       expect(args[args.indexOf('--model') + 1]).toBe(routes.claude[role].find((m: string) => m.startsWith('gpt-')));
       expect(routes.codex[role]).toContain(args[args.indexOf('--model') + 1]);
       expect(readJobs().jobs.find(j => j.title === role)?.execution).toMatchObject({ policy: { effort: role === 'general' ? 'medium' : 'high' } });
       expect(args.some((a: string) => a.startsWith('mcp_servers='))).toBe(false);
-    }
+    }));
     const changedCwd = run(['job', 'exec', '--title', 'cwd', '--role', 'general', '--', codex, 'exec', '-C', root, 'prompt']);
     expect(await changedCwd.exited).toBe(0); const launched = JSON.parse(await new Response(changedCwd.stdout as ReadableStream).text());
     expect(launched).toMatchObject({ cwd: root }); expect(launched.args).not.toContain('-C'); expect(readJobs().jobs.find(j => j.title === 'cwd')?.cwd).toBe(root);
     const rejected = run(['job', 'exec', '--title', 'sandbox', '--role', 'general', '--', codex, 'exec', '-s', 'read-only', 'prompt']);
     expect(await rejected.exited).not.toBe(0); expect(await new Response(rejected.stderr as ReadableStream).text()).toContain('allowed options: -m, --model, -C');
-    for (const cmd of [[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']]) {
+    await Promise.all([[codex, 'exec', '-m', 'unconfigured'], [claude, '-p']].map(async cmd => {
       const p = run(['job', 'exec', '--title', 'bad', '--role', 'general', '--', ...cmd]);
       expect(await p.exited).not.toBe(0); expect(await new Response(p.stderr as ReadableStream).text()).toContain('candidates:');
-    }
+    }));
     const p = run(['job', 'exec', '--title', 'explicit', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
     expect(await p.exited).toBe(0); expect(await new Response(p.stdout as ReadableStream).text()).toContain(loadTiers().routing.coder.models.find(m => m.startsWith('claude-'))!);
     const jobsBefore = readJobs().jobs.length;
-    const prompt = join(root, 'prompt.md'); writeFileSync(prompt, 'fixture prompt');
-    const neon = run(['job', 'exec', '--title', 'neon', '--role', 'general', '--mode', 'single:gemini', '--prompt-file', prompt]);
-    expect(await neon.exited).not.toBe(0); expect(await new Response(neon.stderr as ReadableStream).text()).toContain('requires superagent run');
-    expect(readJobs().jobs).toHaveLength(jobsBefore);
     setClaudeDown();
     writeFileSync(join(process.env.SUPERAGENT_HOME!, 'relay-quota.json'), JSON.stringify({ at: Date.now(), claude_daily_usd: loadTiers().routing.budget.claude_daily_usd }));
     const unavailable = run(['job', 'exec', '--title', 'down', '--role', 'general', '--mode', 'single:claude', '--', claude, '-p']);
@@ -938,7 +935,7 @@ else if (process.argv[1].endsWith('/claude')) {
     expect(downgradedExit).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('claude_unavailable');
   });
   // prettier-ignore
-  test('automatic jobs route by launcher and skip Neon on the Gemini console', async () => {
+  test('automatic jobs route by launcher and fall back when Neon is unavailable', async () => {
     const root = tmp(), preload = join(root, 'launcher.cjs'), prompt = join(root, 'prompt.md');
     writeFileSync(preload, `require(${JSON.stringify(join(WETAMP, 'hooks/live.cjs'))}).launcher = () => ({ client: process.env.FIXTURE_CLIENT, pid: process.pid, tty: null, cwd: process.cwd() });\n`);
     writeFileSync(prompt, 'fixture prompt');
@@ -955,13 +952,62 @@ else if (process.argv[1].endsWith('/claude')) {
     const selected = [];
     for (const [client, role] of cases) {
       const title = `${client}-${role}`, p = run(promptArgs(title, role, prompt, '--risk', 'G0'), '', root, {
-        BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`, FIXTURE_CLIENT: client,
+        BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`, FIXTURE_CLIENT: client, AGY_LLM_GATEWAY_URL: '',
       });
       const [stderr, exit] = await Promise.all([new Response(p.stderr as ReadableStream).text(), p.exited]);
       expect(exit, stderr).toBe(0);
-      selected.push([readJobs().jobs.find(j => j.title === title)?.model, stderr.includes('job exec 不执行 agy，已跳过 Neon')]);
+      selected.push([readJobs().jobs.find(j => j.title === title)?.model, stderr.includes('Neon 不可用')]);
     }
     expect(selected).toEqual(cases.map(([, , model, skipped]) => [model, skipped]));
+    const neon = run(promptArgs('single-neon', 'general', prompt, '--mode', 'single:gemini'), '', root, { AGY_LLM_GATEWAY_URL: '' });
+    expect(await neon.exited).not.toBe(0);
+    expect(await new Response(neon.stderr as ReadableStream).text()).toContain('Neon 不可用');
+    expect(readJobs().jobs).toHaveLength(cases.length);
+  });
+  // prettier-ignore
+  test('Neon uses native launch flags and persists the returned session and spend', async () => {
+    const root = tmp(), preload = join(root, 'launcher.cjs'), prompt = join(root, 'prompt.md');
+    const hooks = join(root, '.gemini/config');
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(hooks, 'hooks.json'), JSON.stringify({ superagent: {
+      PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: agyGuardCommand() }] }],
+    } }));
+    writeFileSync(preload, `require(${JSON.stringify(join(WETAMP, 'hooks/live.cjs'))}).launcher = () => ({ client: 'agy', pid: process.pid, tty: null, cwd: process.cwd() });`);
+    writeFileSync(prompt, 'fixture prompt');
+    writeFileSync(join(root, 'agy'), `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+await Bun.write('args.json', JSON.stringify(args));
+const path = ${JSON.stringify(join(WETAMP, 'tests/fixtures/agy'))};
+const fixture = process.env.FIXTURE_AGY_RESULT;
+if (fixture !== 'missing') console.log((await Bun.file(path + '/' + (fixture || 'success') + '.ndjson').text())
+  .replaceAll('gemini-4-neon-xhigh', args[args.indexOf('--model') + 1]));
+if (fixture) process.exit(3);
+`, { mode: 0o755 });
+    writeFileSync(join(root, 'codex'), '#!/bin/sh\ncat > /dev/null\n', { mode: 0o755 });
+    const env = {
+      BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`,
+      HOME: root, XDG_STATE_HOME: root, AGY_LLM_GATEWAY_URL: 'https://example.invalid',
+      AGY_LLM_GATEWAY_API_KEY: 'fixture-gateway-key',
+    };
+    const p = run(promptArgs('neon', 'general', prompt), '', root, env);
+    const [stderr, exit] = await Promise.all([new Response(p.stderr as ReadableStream).text(), p.exited]);
+    expect(exit, stderr).toBe(0);
+    const model = loadTiers().routing.gemini!.code![0];
+    expect(JSON.parse(readFileSync(join(root, 'args.json'), 'utf8'))).toEqual([
+      '--print', expect.stringContaining('fixture prompt'), '--output-format', 'stream-json',
+      '--model', model, '--dangerously-skip-permissions',
+    ]);
+    expect(only()).toMatchObject({ kind: 'agy', model, execution: { provider: 'agy' },
+      session_id: 'fixture-session', receipt: { tokens: { input: 18531, output: 589 } } });
+    const explicit = run(['job', 'exec', '--title', 'explicit-neon', '--role', 'general', '--',
+      join(root, 'agy'), '--print', 'fixture prompt', '--output-format', 'stream-json',
+      '--model', model, '--dangerously-skip-permissions'], '', root, env);
+    expect(await explicit.exited).toBe(0);
+    for (const [fixture, provider, exit] of [['outage', 'codex', 0], ['missing', 'agy', 1]] as const) {
+      const p = run(promptArgs(fixture, 'general', prompt), '', root, { ...env, FIXTURE_AGY_RESULT: fixture });
+      expect(await p.exited, await new Response(p.stderr as ReadableStream).text()).toBe(exit);
+      expect(readJobs().jobs.find(j => j.title === fixture)?.execution?.provider).toBe(provider);
+    }
   });
   test('automatic roles route to Codex while down and keep prompt bytes out of argv', async () => {
     const root = tmp(),

@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { attach, psRows, rankOf } from '../src/board/activity';
+import { attach, parsePs, psRows, rankOf } from '../src/board/activity';
 import type { Job } from '../src/jobs';
 import {
   bindLive,
@@ -77,6 +77,25 @@ const liveOf = (o: Partial<Live>): Live => ({
 });
 
 describe('interactive sessions from ps', () => {
+  // prettier-ignore
+  test('Neon TTY, Orca ACP and print jobs get distinct rows and tool states', () => {
+    const rows = psRows('10 1 tty01 0.0 00:20 agy\n11 1 ?? 0.0 00:10 agy_acp_server.par\n12 10 ?? 0.0 00:05 agy --print fixture');
+    const sessions = findSessions(rows);
+    const procs = parsePs(rows, NOW, new Set());
+    expect(procs.map(p => [p.pid, p.kind])).toEqual([[12, 'agy']]);
+    const file = join(tmp(), 'transcript_full.jsonl');
+    writeFileSync(file, JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'reply' }) + '\n');
+    const lives = [
+      liveOf({ pid: 10, event: 'PreToolUse', tool: 'run_command' }),
+      liveOf({ pid: 11, event: 'PreInvocation', session_id: 'conversation', transcript_path: file, at: iso(NOW - 5000) }),
+    ];
+    const { bound } = attach(rows, sessions, [], procs, lives, null);
+    const terms = settle(sessions, bound, new Map(), new Map(), NOW);
+    expect(terms).toMatchObject([
+      { pid: 10, kind: 'agy', tty: 'tty01', state: 'busy', tool: 'run_command' },
+      { pid: 11, kind: 'agy', tty: 'ACP', session_id: 'conversation', state: 'idle', tool: null },
+    ]);
+  });
   test('keeps tty-bound interactive CLIs, merges codex launcher + native, excludes headless/servers', () => {
     const s = findSessions(ROWS);
     expect(s.map(x => [x.kind, x.pids, x.tty])).toEqual([

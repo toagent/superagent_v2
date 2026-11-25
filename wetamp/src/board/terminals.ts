@@ -1,12 +1,12 @@
 // board 的“终端”行：用户在终端里交互运行的 claude / codex / opencode 会话。进程来自活动区那次 ps；状态优先取
 // hooks/live.cjs 的心跳文件，过期时读 transcript / rollout 尾部（≤64KB，只看事件类型与 stop_reason），
 // 都没有就按 %CPU 粗判并标 `?`。只留 client/角色/状态/tool_name/cwd/tty/时长：不取 prompt、argv 或 transcript 正文。
-import { cliOf } from '../launcher';
+import { cliOf as agentCli } from '../launcher';
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { alive, isTier, type Kind, type Tier } from '../jobs';
-import { sessionModel } from '../models';
+import { agyTranscript, sessionModel } from '../models';
 import { logSessionId } from '../usage';
 
 export interface PsRow {
@@ -54,9 +54,11 @@ export interface Session {
   etime: number; // 最外层进程已运行的秒数
 }
 type Raw = Partial<Record<keyof Live | 'derived', unknown>>;
-type Tail = { state: 'busy' | 'idle'; mtime: number } | null;
+type Tail = { state: 'busy' | 'idle'; mtime: number; toolFinished?: boolean } | null;
 interface Entry {
   type?: unknown;
+  content?: unknown;
+  tool_calls?: unknown;
   isMeta?: unknown;
   message?: { stop_reason?: unknown; content?: unknown };
 }
@@ -73,7 +75,11 @@ const BUSY_CPU = 3;
  * argv 跑的 AI CLI（也认 `node …/codex` 这种经解释器启动的）：headless 为 `claude -p/--print`、`codex exec`、
  * `opencode run`；mcp / app-server / serve 这类服务进程两者都不是，为 null。
  */
-export { cliOf };
+export const cliOf = (argv: string[]) => {
+  const neon = agentCli(argv, true);
+  return neon?.kind === 'agy' ? neon : agentCli(argv);
+};
+const isAcp = (r: PsRow): boolean => basename(r.argv[0] ?? '') === 'agy_acp_server.par';
 export const interactiveKind = (argv: string[]): Kind | null => {
   const c = cliOf(argv);
   return c && !c.headless ? c.kind : null;
@@ -83,17 +89,24 @@ export const interactiveKind = (argv: string[]): Kind | null => {
 export function findSessions(rows: Rows): Session[] {
   const byLeader = new Map<number, Session>();
   for (const [pid, r] of rows) {
-    const kind = r.tty === '??' ? null : interactiveKind(r.argv);
-    if (!kind) continue;
+    const acp = isAcp(r);
+    const kind = acp ? 'agy' : r.tty === '??' ? null : interactiveKind(r.argv);
+    if (!kind || (!acp && kind === 'agy' && r.tty === '?')) continue;
     let leader = pid;
-    for (let p = r.ppid, n = 0; n < 64; n++) {
+    for (let p = r.ppid, n = 0; !acp && n < 64; n++) {
       const up = rows.get(p);
       if (up?.tty !== r.tty) break;
-      if (interactiveKind(up.argv) === kind) leader = p;
+      if (!isAcp(up) && interactiveKind(up.argv) === kind) leader = p;
       p = up.ppid;
     }
     const etime = rows.get(leader)?.etime ?? r.etime;
-    const s = byLeader.get(leader) ?? { kind, pids: [leader], tty: r.tty, cpu: 0, etime };
+    const s = byLeader.get(leader) ?? {
+      kind,
+      pids: [leader],
+      tty: acp ? 'ACP' : r.tty,
+      cpu: 0,
+      etime,
+    };
     if (pid !== leader) s.pids.push(pid);
     s.cpu += r.cpu;
     byLeader.set(leader, s);
@@ -170,16 +183,17 @@ const interrupted = (c: unknown): boolean =>
   Array.isArray(c) && c.some((b: Block) => String(b?.text).startsWith(INTERRUPTED));
 
 /** transcript（Claude）或 rollout（Codex）尾部的回合状态；判不出为 null。 */
-export function tailState(text: string, kind: Kind): 'busy' | 'idle' | null {
+function tailEvent(text: string, kind: Kind): 'busy' | 'idle' | 'tool-finished' | null {
   const lines = text.split('\n');
   let parsed = false;
   for (let i = lines.length - 1; i >= 0; i--) {
-    let e: Entry & { payload?: Entry };
+    let e: (Entry & { payload?: Entry }) | null;
     try {
       e = JSON.parse(lines[i]) as typeof e;
     } catch {
       continue;
     }
+    if (!e || typeof e !== 'object') continue;
     parsed = true;
     if (kind === 'claude') {
       if (e.type === 'user' && e.isMeta !== true)
@@ -189,6 +203,13 @@ export function tailState(text: string, kind: Kind): 'busy' | 'idle' | null {
         return [null, undefined, 'tool_use'].includes(e.message?.stop_reason as string)
           ? 'busy'
           : 'idle';
+    } else if (kind === 'agy') {
+      if (e.type === 'USER_INPUT') return 'busy';
+      if (e.type === 'TOOL_RESPONSE') return 'tool-finished';
+      if (e.type === 'PLANNER_RESPONSE') {
+        if (Array.isArray(e.tool_calls) && e.tool_calls.length) return 'busy';
+        if (typeof e.content === 'string' && e.content.trim()) return 'idle';
+      }
     } else if (e.type === 'event_msg') {
       if (e.payload?.type === 'task_started') return 'busy';
       if (e.payload?.type === 'task_complete' || e.payload?.type === 'turn_aborted') return 'idle';
@@ -196,6 +217,11 @@ export function tailState(text: string, kind: Kind): 'busy' | 'idle' | null {
   }
   // 回合结束时 task_complete 必在末尾：64KB 内一条回合标记都没有，是一个长回合还在跑
   return kind === 'codex' && parsed ? 'busy' : null;
+}
+
+export function tailState(text: string, kind: Kind): 'busy' | 'idle' | null {
+  const event = tailEvent(text, kind);
+  return event === 'tool-finished' ? 'busy' : event;
 }
 
 /** 文件头部或尾部 ≤64KB（尾部被截断的首行丢掉）；读不了为 null。 */
@@ -217,9 +243,14 @@ function readChunk(file: string, head: boolean): { text: string; mtime: number }
 }
 
 export function readTail(file: string, kind: Kind): Tail {
-  const c = readChunk(file, false);
-  const state = c ? tailState(c.text, kind) : null;
-  return c && state ? { state, mtime: c.mtime } : null;
+  const path = kind === 'agy' ? agyTranscript(file) : file;
+  const c = path ? readChunk(path, false) : null;
+  const state = c ? tailEvent(c.text, kind) : null;
+  return c && state
+    ? state === 'tool-finished'
+      ? { state: 'busy', mtime: c.mtime, toolFinished: true }
+      : { state, mtime: c.mtime }
+    : null;
 }
 
 const DAY_MS = 86_400_000;
@@ -266,10 +297,14 @@ export function classify(
   if (live) {
     const at = Date.parse(live.at);
     if (live.event === 'Stop') return is('idle', at);
-    if (live.event === 'PreToolUse') {
+    if (live.event === 'PreToolUse' || (live.event === 'PreInvocation' && now - at < FRESH_MS)) {
       // 工具没等到 PostToolUse 就被中断：尾部在心跳之后已判为结束，就是在等输入
       const t = tail();
-      return t?.state === 'idle' && t.mtime >= at ? is('idle', t.mtime) : is('busy', at, live.tool);
+      if (t && t.mtime >= at) {
+        if (t.state === 'idle') return is('idle', t.mtime);
+        if (t.toolFinished) return is('busy', turn ?? at);
+      }
+      return is('busy', at, live.tool);
     }
     if (now - at < FRESH_MS) return is('busy', turn ?? at);
   }
@@ -318,7 +353,7 @@ export function settle(
       tty: s.tty,
       cwd: dir,
       model: live?.model ?? sessionModel(file, s.kind),
-      session_id: live?.session_id ?? logSessionId(file, s.kind),
+      session_id: live?.session_id ?? (s.kind === 'agy' ? null : logSessionId(file, s.kind)),
       ...c,
     });
   }

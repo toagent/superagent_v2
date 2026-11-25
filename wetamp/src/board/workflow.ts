@@ -28,7 +28,7 @@ export const nodeRole = (n: { model?: unknown; wait?: unknown }): Role =>
   n.model === '@sa-coder' || n.model === '@sa-agy-coder'
     ? 'coder'
     : n.model === '@sa-reviewer' ||
-        n.model === '@sa-reviewer-alt' ||
+        (typeof n.model === 'string' && n.model.startsWith('@sa-reviewer-')) ||
         n.model === '@sa-gemini-review'
       ? 'reviewer'
       : n.wait

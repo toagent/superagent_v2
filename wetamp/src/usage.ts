@@ -9,11 +9,12 @@ import { ledgerIds, ledgerPath, loadLedger, parseArgs } from './cli';
 import type { Job } from './jobs';
 import { isTier, type Tier } from './roles';
 import { shortModel } from './models';
-import { sessionModel } from './models';
+import { agyPlanner, sessionModel } from './models';
 import type { SerializedNodeData } from '../../packages/workflows/src/node-record-serialization';
 import { etaInput, refreshEta, type EtaInput } from './board/eta';
 import type { RunView } from './archon';
 import type { WorkflowEventRow } from '../../packages/workflows/src/schemas/workflow-event';
+import { parseDbTimestamp } from '../../packages/workflows/src/utils/duration';
 import { workflowRoles } from './board/workflow';
 import type { TokenUsage } from '../../packages/provider-contract/src/result';
 import { redact } from './redact';
@@ -53,7 +54,7 @@ export function tokenTotals(rows: ReportTokens[]): Record<string, number | 'unkn
 }
 // prettier-ignore
 export function sessionTokens(s: UsageSession): ReportTokens {
-  return normalizeTokens({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, ...(s.cost !== null ? { cost: s.cost } : {}) }, 'session');
+  return normalizeTokens({ input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total, ...(s.cost !== null ? { cost: s.cost } : {}) }, s.client === 'agy' ? 'gross' : 'session');
 }
 // prettier-ignore
 export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
@@ -66,7 +67,10 @@ export function tokenFees(rows: ReportTokens[]): number | 'unknown' {
 export function investmentOf(calls: { provider: string | null; session: string | null; identity: string | null; tokens: ReportTokens | null }[], sessions: UsageSession[], missing = 0) {
   const snapshots = new Map<string, UsageSession>();
   let conflict = sessions.some(s => s.owner?.conflict);
+  const agyReceipts = new Set(calls.flatMap(c =>
+    c.provider === 'agy' && c.session && c.identity && c.tokens ? [sessionKey(c.session)] : []));
   for (const s of sessions) {
+    if (s.client === 'agy' && s.owner?.kind === 'run' && agyReceipts.has(sessionKey(s.id))) continue;
     const k = key(s.client, s.id), old = snapshots.get(k);
     if (old?.owner?.request_ref && s.owner?.request_ref && old.owner.request_ref !== s.owner.request_ref) conflict = true;
     if (!old || s.total >= old.total) snapshots.set(k, s);
@@ -94,7 +98,8 @@ export function investmentOf(calls: { provider: string | null; session: string |
     status: complete && sources > 0 ? 'known' : 'unknown' };
 }
 
-export type Client = 'claude' | 'codex';
+type CcusageClient = 'claude' | 'codex';
+export type Client = CcusageClient | 'agy';
 // prettier-ignore
 export interface Counts { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number; sessions: number }
 // prettier-ignore
@@ -181,12 +186,13 @@ interface RunEvidence {
   fingerprint: string;
   status: RunView['status'];
   claims: { id: string; owner: Owner }[];
+  agySessions?: UsageSession[];
   eta: EtaInput;
 }
 // prettier-ignore
 const compactEta = ({ ledger: l, run: r, samples }: EtaInput): EtaInput => ({ ledger: { run_id: l.run_id, gen_dir: l.gen_dir, repo: l.repo, workflow: l.workflow, started_at: l.started_at } as EtaInput['ledger'], run: { id: r.id, status: r.status, last_activity_at: r.last_activity_at, nodes: r.nodes?.map(n => ({ nodeId: n.nodeId, state: n.state, ...(n.startedAt ?? n.execution?.timing.startedAt ? { startedAt: n.startedAt ?? n.execution?.timing.startedAt } : {}), ...(n.durationMs !== undefined ? { durationMs: n.durationMs } : {}) })) }, samples });
 // prettier-ignore
-const compactEvidence = (e: RunEvidence): RunEvidence => ({ fingerprint: e.fingerprint, status: e.status, claims: e.claims, eta: compactEta(e.eta) });
+const compactEvidence = (e: RunEvidence): RunEvidence => ({ fingerprint: e.fingerprint, status: e.status, claims: e.claims, agySessions: e.agySessions, eta: compactEta(e.eta) });
 const eventsKey = Buffer.from('"events"');
 /** Legacy events are already reduced into nodes/samples; skip their payload before JSON.parse allocates it. */
 // prettier-ignore
@@ -230,13 +236,70 @@ function priorEvidence(file: string): Partial<Record<string, RunEvidence>> {
   } catch { return {}; } finally { if (fd !== undefined) closeSync(fd); }
   return out;
 }
+function agySession(
+  id: string,
+  model: string | null,
+  at: string,
+  tokens: Partial<TokenUsage>,
+  reasoning = 0
+): UsageSession | null {
+  const { input, output, cacheRead = 0, cacheWrite = 0 } = tokens;
+  if (
+    !Number.isFinite(Date.parse(at)) ||
+    typeof input !== 'number' ||
+    typeof output !== 'number' ||
+    ![input, output, cacheRead, cacheWrite].every(n => Number.isSafeInteger(n) && n >= 0) ||
+    cacheRead + cacheWrite > input
+  )
+    return null;
+  const total =
+    typeof tokens.total === 'number' && tokens.total >= input + output
+      ? tokens.total
+      : input + output;
+  return {
+    id: sessionKey(id),
+    client: 'agy',
+    model,
+    at,
+    ...empty(),
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    reasoning,
+    total,
+    sessions: 1,
+    cost: null,
+  };
+}
+
 /** Read-only evidence collection; cache writes belong to refreshUsage. */
 // prettier-ignore
-export function usageEvidence(query = archonJson): { claims: { id: string; owner: Owner }[]; eta: EtaInput[]; runs: Record<string, RunEvidence> } {
+export function usageEvidence(query = archonJson, since?: string) {
   const prior = priorEvidence(join(root(), 'runs.json'));
   const runs: Record<string, RunEvidence> = {};
   const claims: { id: string; owner: Owner }[] = [];
   const eta: EtaInput[] = [];
+  const agySessions = new Map<string, UsageSession>();
+  const agyDays = new Map<string, Map<string, UsageSession>>();
+  const merge = (map: Map<string, UsageSession>, s: UsageSession, receipt: boolean) => {
+    const old = map.get(s.id);
+    if (!old) map.set(s.id, { ...s });
+    else if (receipt) {
+      for (const key of ['input', 'output', 'reasoning', 'cacheRead', 'cacheWrite', 'total'] as const)
+        old[key] += s[key];
+      if (s.at >= old.at) Object.assign(old, { at: s.at, model: s.model ?? old.model });
+    }
+  };
+  const add = (s: UsageSession, receipt = true) => {
+    const day = engineDay(Date.parse(s.at));
+    if (since && day.replaceAll('-', '') < since) return;
+    merge(agySessions, s, receipt);
+    if (!receipt) return;
+    const rows = agyDays.get(day) ?? new Map<string, UsageSession>();
+    merge(rows, s, true);
+    agyDays.set(day, rows);
+  };
   for (const id of ledgerIds()) {
     try {
       const l = loadLedger(id), stamp = statSync(ledgerPath(id));
@@ -245,8 +308,9 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
       const ref = str(obj(json(join(l.gen_dir, 'plan.json'))).request_ref);
       for (const runId of [l.archon_run_id, ...archonRunIds(l).filter(runId => runId !== l.archon_run_id)]) {
         const cacheKey = JSON.stringify([id, runId]), hit = prior[cacheKey];
-        if (hit?.fingerprint === fingerprint && ['completed', 'cancelled'].includes(hit.status)) {
+        if (hit?.fingerprint === fingerprint && hit.agySessions && ['completed', 'cancelled'].includes(hit.status)) {
           runs[cacheKey] = hit;
+          hit.agySessions.forEach(s => { add(s); });
           claims.push(...hit.claims.map(c => ({ ...c, owner: { ...c.owner, ...(ref ? { request_ref: ref } : {}) } })));
           if (runId === l.archon_run_id) eta.push(hit.eta);
           continue;
@@ -256,19 +320,30 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
           const events = arr(run.events) as WorkflowEventRow[];
           const input = compactEta(etaInput(l, run as unknown as RunView, events));
           const runClaims: RunEvidence['claims'] = [];
+          const receipts = new Map<string, UsageSession>();
           for (const raw of arr(run.events)) {
             const e = obj(raw), d = obj(e.data) as Partial<SerializedNodeData>, m = d.binding?.model;
             const client = d.binding?.provider ?? d.provider;
-            if (client !== 'codex' && client !== 'claude') continue;
+            if (client !== 'codex' && client !== 'claude' && client !== 'agy') continue;
             const role = roles?.get(String(e.step_name));
             const cwd = str(run.working_path), started = d.invocation?.startedAt;
             // Only the latest active launch may use bounded metadata matching; terminal/history nodes require a session id.
             const active = runId === l.archon_run_id && input.run.status === 'running' && input.run.nodes?.some(n => n.nodeId === e.step_name && n.state === 'running') && arr(run.events).slice().reverse().find(v => obj(v).step_name === e.step_name && obj(v).event_type === 'node_started') === raw;
             const session = d.session_id ?? (active && cwd && started ? jobSession({ kind: client, cwd, started_at: started }, true) : null);
             if (!session) continue;
-            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model: m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null, cwd: cwd ?? l.repo, kind: d.session_id ? 'run' : 'inferred', run_id: id, ...(ref && d.session_id ? { request_ref: ref } : {}) } });
+            const model = m?.resolved.source === 'provider' ? m.resolved.value : m?.requested ?? d.model ?? null;
+            const spend = d.spend?.tokens;
+            const tokens = spend?.source === 'provider' ? spend.value : d.tokens;
+            if (client === 'agy' && tokens && d.attempt?.id && (e.event_type === 'node_completed' || e.event_type === 'node_failed')) {
+              const at = parseDbTimestamp(String(e.created_at));
+              const row = Number.isFinite(at) && agySession(session, model, new Date(at).toISOString(), tokens);
+              if (row) receipts.set(JSON.stringify([e.step_name, d.invocation?.id, d.attempt.id]), row);
+            }
+            runClaims.push({ id: session, owner: { client, role: role === 'reviewer' ? 'strategist' : role === 'coder' ? 'general' : null, model, cwd: cwd ?? l.repo, kind: d.session_id ? 'run' : 'inferred', run_id: id, ...(ref && d.session_id ? { request_ref: ref } : {}) } });
           }
-          runs[cacheKey] = { fingerprint, status: input.run.status, claims: runClaims, eta: input };
+          const rows = [...receipts.values()];
+          runs[cacheKey] = { fingerprint, status: input.run.status, claims: runClaims, agySessions: rows, eta: input };
+          rows.forEach(s => { add(s); });
           claims.push(...runClaims);
           if (runId === l.archon_run_id) eta.push(input);
         } catch { /* Retry unavailable evidence next time; never freeze an unknown lifecycle. */ }
@@ -279,17 +354,30 @@ export function usageEvidence(query = archonJson): { claims: { id: string; owner
   for (const j of jobs) {
     if (j.pid === 0) continue; // 内存准入等待/失败的作业从未拥有 provider 会话。
     const id = j.session_id ?? jobSession(j);
+    if (id && j.kind === 'agy') {
+      const row = j.receipt?.tokens && agySession(id, j.model, j.ended_at ?? j.started_at, j.receipt.tokens);
+      if (row) add(row);
+      claims.push({ id, owner: { client: 'agy', role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'job', job_id: j.id, request_ref: j.request_ref } });
+    }
     // Persisted job session_id is also produced by cwd/time matching, not a provider receipt.
     if (id && (j.kind === 'claude' || j.kind === 'codex')) claims.push({ id, owner: { client: j.kind, role: j.role ?? null, model: j.model, cwd: j.cwd, kind: 'inferred', job_id: j.id } });
   }
   for (const f of files(join(home().sa, 'live'))) {
     const l = obj(json(f)), client = l.client, id = str(l.session_id);
-    if (!id || (client !== 'claude' && client !== 'codex')) continue;
-    const hits = jobs.filter(j => j.pid !== 0 && j.cwd === l.cwd && j.kind === client && Math.abs(Date.parse(String(l.turn_at ?? l.at)) - Date.parse(j.started_at)) <= 60000);
+    if (!id || (client !== 'claude' && client !== 'codex' && client !== 'agy')) continue;
+    if (client === 'agy') {
+      const planner = agyPlanner(str(l.transcript_path));
+      if (planner?.input !== undefined && planner.cacheRead !== undefined) {
+        const row = agySession(id, str(l.model) ?? planner.model, planner.at,
+          { ...planner, input: planner.input + planner.cacheRead }, planner.reasoning);
+        if (row) add(row, false);
+      }
+    }
+    const hits = client === 'agy' ? [] : jobs.filter(j => j.pid !== 0 && j.cwd === l.cwd && j.kind === client && Math.abs(Date.parse(String(l.turn_at ?? l.at)) - Date.parse(j.started_at)) <= 60000);
     const role = isTier(l.role) ? l.role : l.derived === true ? 'general' : l.derived === false ? 'commander' : null;
     claims.push({ id, owner: hits.length === 1 ? { client, role: hits[0].role ?? role, model: hits[0].model, cwd: hits[0].cwd, kind: 'inferred', job_id: hits[0].id } : { client, role, model: str(l.model) ?? sessionModel(str(l.transcript_path), client), cwd: str(l.cwd), kind: 'interactive' } });
   }
-  return { claims, eta, runs };
+  return { claims, eta, runs, agySessions: [...agySessions.values()], agyDays };
 }
 // prettier-ignore
 export function readUsage(): UsageCache {
@@ -297,9 +385,9 @@ export function readUsage(): UsageCache {
   return Array.isArray(c.sessions) && Array.isArray(c.daily) ? c as unknown as UsageCache : { at: null, status: '用量未知（ccusage 不可用：未刷新）', sources: {}, sessions: [], daily: [] };
 }
 // prettier-ignore
-export const usageCommand = (client: Client, mode: 'session' | 'daily', since?: string): string[] => ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', client, mode, '--json', ...(since ? ['--since', since] : [])];
+export const usageCommand = (client: CcusageClient, mode: 'session' | 'daily', since?: string): string[] => ['nice', '-n', '10', 'bunx', 'ccusage@20.0.28', client, mode, '--json', ...(since ? ['--since', since] : [])];
 // prettier-ignore
-export async function capture(client: Client, mode: 'session' | 'daily', since?: string, cmd = usageCommand(client, mode, since)): Promise<unknown> {
+export async function capture(client: CcusageClient, mode: 'session' | 'daily', since?: string, cmd = usageCommand(client, mode, since)): Promise<unknown> {
   const p = Bun.spawn(cmd, { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', detached: true, env: { ...process.env, TZ: engineTimeZone() } });
   const timeout = { expired: false };
   const timer = setTimeout(() => { timeout.expired = true; try { process.kill(-p.pid, 'SIGKILL'); } catch { /* Child already exited. */ } }, 120000);
@@ -338,7 +426,21 @@ export async function refreshUsage(since?: string, collect = capture): Promise<U
       catch { today.status = 'unavailable'; }
     }
     if (Object.values(cache.sources).some(s => s !== 'ok')) cache.status = `用量未知（ccusage 不可用：${Object.entries(cache.sources).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}:${v}`).join(', ')}）；保留旧缓存`;
-    const evidence = usageEvidence(); refreshEta(evidence.eta);
+    const evidence = usageEvidence(archonJson, since); refreshEta(evidence.eta);
+    if (evidence.agySessions.length) {
+      cache.sources.agy = 'ok';
+      cache.source_at = { ...cache.source_at, agy: cache.at };
+      cache.sessions.push(...evidence.agySessions);
+      // Planner snapshots measure context, so only provider spend belongs in daily totals.
+      today.sessions.push(...(evidence.agyDays.get(day)?.values() ?? []));
+      for (const [date, rows] of evidence.agyDays) {
+        const totals = empty();
+        for (const row of rows.values())
+          for (const field of ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'total'] as const)
+            totals[field] += row[field];
+        cache.daily.push({ ...totals, day: date, client: 'agy', sessions: null });
+      }
+    }
     writeAtomic(join(root(), 'runs.json'), JSON.stringify(evidence.runs));
     const index = attribute(cache.sessions, evidence.claims, obj(json(join(root(), 'sessions.json'))) as Record<string, Owner>);
     attribute(today.sessions, [], index);

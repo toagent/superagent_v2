@@ -44,10 +44,11 @@ import { scanText } from './secrets/scan';
 import { ROUTE_ROLE, type Tier } from './roles';
 import { envPrecheck, provisionEnvironment } from '../templates/.archon/scripts/env-precheck';
 import { memoryReading, type MemoryReading } from './memory-pressure';
+import type { TokenUsage } from '../../packages/provider-contract/src/result';
 export { memoryReading, type MemoryReading } from './memory-pressure';
 export { TIERS, isTier, type Tier } from './roles';
 
-export type Kind = 'claude' | 'codex' | 'opencode' | 'other';
+export type Kind = 'claude' | 'codex' | 'opencode' | 'agy' | 'other';
 /** tiers.json 的档位键（元帅/将军/军师）；中文只在展示层。 */
 export interface Job {
   id: string;
@@ -61,14 +62,14 @@ export interface Job {
   role?: Tier | null; // 旧记录没有
   execution?: Pick<ExecutionDescriptor, 'role' | 'risk' | 'round'> & {
     model: string;
-    provider: 'codex' | 'claude';
+    provider: 'codex' | 'claude' | 'agy';
     policy: LaunchPolicy;
   };
   session_id?: string | null;
   request_ref?: string;
   review_reason?: string;
   review_round?: number;
-  receipt?: ExecutionReceipt;
+  receipt?: ExecutionReceipt & { tokens?: TokenUsage };
   wrapper_pid: number;
   pid: number;
   started_at: string;
@@ -97,7 +98,7 @@ export const SIMPLIFIED_CHINESE_REQUIREMENT =
 export const RECENT_MS = 3_600_000;
 export const kindOf = (argv0: string): Kind => {
   const b = basename(argv0);
-  return b === 'claude' || b === 'codex' || b === 'opencode' ? b : 'other';
+  return b === 'claude' || b === 'codex' || b === 'opencode' || b === 'agy' ? b : 'other';
 };
 
 /** 只认 `--model x`、`--model=x`、`-m x`；其余 argv 一概不看。 */
@@ -222,7 +223,7 @@ export function cleanJob(id: string): void {
 // prettier-ignore
 async function exec(
   cmd: string[],
-  f: { title: string; card?: string; input?: string; output?: string; log?: string; role: Tier | null; execution?: Job['execution']; automatic?: boolean; worktree?: string; base?: string; request_ref?: string; review_reason?: string; review_round?: number },
+  f: { title: string; card?: string; input?: string; output?: string; log?: string; role: Tier | null; execution?: Job['execution']; fallback?: Job['execution']; automatic?: boolean; worktree?: string; base?: string; request_ref?: string; review_reason?: string; review_round?: number },
   probe: () => MemoryReading
 ): Promise<number> {
   mkdirSync(dir(), { recursive: true });
@@ -230,9 +231,9 @@ async function exec(
   const requestRef = f.request_ref ?? process.env.SA_JOB_REQUEST_REF?.trim();
   const id = newRunId();
   // The caller chose cwd; Codex's git-repo trust check would otherwise reject non-git dirs.
-  if (f.automatic && f.execution) cmd = f.execution.provider === 'codex'
-    ? ['codex', 'exec', '--json', '--skip-git-repo-check', '-o', resolve(f.output ?? join(dir(), `${id}.output`)), '-']
-    : ['claude', '-p'];
+  const codexCommand = () => ['codex', 'exec', '--json', '--skip-git-repo-check', '-o', resolve(f.output ?? join(dir(), `${id}.output`)), '-'];
+  if (f.automatic && f.execution) cmd = f.execution.provider === 'codex' ? codexCommand()
+    : f.execution.provider === 'agy' ? ['agy'] : ['claude', '-p'];
   const job: Job = {
     id,
     title: f.title,
@@ -251,7 +252,8 @@ async function exec(
     started_at: new Date().toISOString(),
     state: 'queued',
   };
-  const receipt = job.receipt = { enqueued_at: job.started_at };
+  const receipt: NonNullable<Job['receipt']> = { enqueued_at: job.started_at };
+  job.receipt = receipt;
   let child: ReturnType<typeof Bun.spawn> | undefined,
     identity: ReturnType<typeof setInterval> | undefined,
     code = 0;
@@ -355,13 +357,79 @@ async function exec(
       }
       save(job);
     }
+    // Structured launch identity lets tools read the registered input directly.
+    // Empty values clear a parent job's binding, including Bun's .env fallback.
+    const env = {
+      ...process.env,
+      // Derived roles cannot be relaxed by a requested role; strategist is the native reviewer.
+      SUPERAGENT_ROLE: process.env.SUPERAGENT_ROLE && process.env.SUPERAGENT_ROLE !== 'commander'
+        ? process.env.SUPERAGENT_ROLE
+        : job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE ?? '',
+      SA_JOB_ID: job.id,
+      SA_JOB_CARD: job.card ?? '',
+      SA_JOB_REQUEST_REF: job.request_ref ?? '',
+      ARCHON_PROVIDER_OUTCOME: outcomePath ?? '',
+    };
+    const running = (pid: number): void => {
+      job.pid = pid;
+      job.state = 'running';
+      delete job.reason;
+      job.started_at = new Date().toISOString();
+      receipt.spawned_at = job.started_at;
+      save(job);
+    };
     if (!code && !stop.signal.aborted) {
       job.receipt.admitted_at = new Date().toISOString();
       save(job);
+      if (job.execution?.provider === 'agy') {
+        const { agyArgs, agyLaunch, runAgy } = await import('./agy-provider');
+        stop.signal.throwIfAborted();
+        const launch = agyLaunch(job.cwd, env, { executable: cmd[0] });
+        const attempt = { unserved: false };
+        if (launch.executable) {
+          const prompt = f.automatic ? await input?.text() : cmd[2];
+          if (!prompt) throw new Error('job: Neon 缺少任务输入');
+          for await (const chunk of runAgy(launch.executable, agyArgs(prompt, job.execution.model),
+            job.cwd, launch.env, { abortSignal: stop.signal }, {
+              spawned: running, unserved: () => { attempt.unserved = true; },
+            })) {
+            if (chunk.type !== 'result') continue;
+            job.session_id = chunk.sessionId ?? null;
+            if (chunk.resolvedModel) job.model = job.execution.model = chunk.resolvedModel.id;
+            receipt.tokens = chunk.tokens;
+            code = chunk.isError ? 1 : 0;
+            if (chunk.failure) console.error(`job: ${chunk.failure.evidence}`);
+            if (chunk.text) {
+              console.log(chunk.text);
+              if (f.output) writeFileSync(resolve(f.output), chunk.text);
+            }
+          }
+        } else {
+          code = 1;
+          console.error('job:', launch.problem);
+        }
+        if (code && f.fallback && (!job.pid || attempt.unserved)) {
+          stop.signal.throwIfAborted();
+          job.execution = f.fallback;
+          job.kind = 'codex';
+          job.model = f.fallback.model;
+          job.session_id = null;
+          delete receipt.tokens;
+          delete receipt.spawned_at;
+          job.pid = 0;
+          job.state = 'queued';
+          save(job);
+          console.error(`job: Neon 不可用，后备 codex/${job.model}`);
+          cmd = codexCommand();
+          code = 0;
+        }
+      }
+    }
+    if (!code && !stop.signal.aborted && job.execution?.provider !== 'agy') {
       // Headless jobs receive finite registered input or EOF, never an inherited terminal.
-      if (f.execution) {
-        cmd = await prepareRoleCommand(cmd, f.execution.provider, f.execution.model, f.execution.policy, job.cwd);
-        if (f.execution.provider === 'codex') {
+      if (job.execution) {
+        cmd = await prepareRoleCommand(cmd, job.execution.provider, job.execution.model, job.execution.policy, job.cwd);
+        if (job.execution.provider === 'codex') {
           let index;
           while (
             (index = cmd
@@ -380,69 +448,52 @@ async function exec(
       const launchSignal = stop.signal;
       if (!launchSignal.aborted) child = Bun.spawn(cmd, {
         cwd: job.cwd,
-        // Structured launch identity lets tools read the registered input directly.
-        // Empty values clear a parent job's binding, including Bun's .env fallback.
-        env: {
-          ...process.env,
-          // Derived roles cannot be relaxed by a requested role; strategist is the native reviewer.
-          SUPERAGENT_ROLE: process.env.SUPERAGENT_ROLE && process.env.SUPERAGENT_ROLE !== 'commander'
-            ? process.env.SUPERAGENT_ROLE
-            : job.role === 'strategist' ? 'reviewer' : job.role ?? process.env.SUPERAGENT_ROLE ?? '',
-          SA_JOB_ID: job.id,
-          SA_JOB_CARD: job.card ?? '',
-          SA_JOB_REQUEST_REF: job.request_ref ?? '',
-          ARCHON_PROVIDER_OUTCOME: outcomePath ?? '',
-        },
+        env,
         stdin: input ?? 'ignore',
         stdout: f.output && f.execution?.provider === 'claude' ? 'pipe' : 'inherit',
         stderr: 'inherit',
       });
       if (child) {
-      const output = child.stdout instanceof ReadableStream
-        ? new Response(child.stdout).text().then(text => {
-            process.stdout.write(text);
-            if (f.output) writeFileSync(resolve(f.output), text);
-          })
-        : undefined;
-      job.pid = child.pid;
-      job.state = 'running';
-      delete job.reason;
-      job.started_at = new Date().toISOString();
-      job.receipt.spawned_at = job.started_at;
-      save(job);
-      identity = setInterval(() => {
-        if (!job.session_id) {
-          job.session_id = jobSession(job);
-          if (job.session_id) save(job);
+        const output = child.stdout instanceof ReadableStream
+          ? new Response(child.stdout).text().then(text => {
+              process.stdout.write(text);
+              if (f.output) writeFileSync(resolve(f.output), text);
+            })
+          : undefined;
+        running(child.pid);
+        identity = setInterval(() => {
+          if (!job.session_id) {
+            job.session_id = jobSession(job);
+            if (job.session_id) save(job);
+          }
+        }, 5000);
+        code = await child.exited;
+        await output;
+        if (outcomePath) {
+          try {
+            const value = JSON.parse(readFileSync(outcomePath, 'utf8')) as Record<string, unknown>;
+            const failure = value.failure as Record<string, unknown> | undefined;
+            if (value.ok !== true && (!failure || typeof failure.class !== 'string' ||
+              typeof failure.evidence !== 'string' ||
+              (failure.retries !== undefined && (!Number.isInteger(failure.retries) || Number(failure.retries) < 0)) ||
+              (failure.resetAt !== undefined && typeof failure.resetAt !== 'string')))
+              throw new Error('invalid typed outcome');
+            const recorded = recordClaudeOutcome({ provider: 'claude', source: 'job', model: job.model ?? undefined,
+              run: job.id, ok: value.ok === true, class: failure?.class as string | undefined,
+              retries: failure?.retries as number | undefined, resetAt: failure?.resetAt as string | undefined });
+            if (!recorded.persisted) console.error(`job: Claude outcome was not persisted: ${String(recorded.error)}`);
+          } catch (error) {
+            console.error(`job: Claude outcome unavailable: ${(error as Error).message}`);
+          }
         }
-      }, 5000);
-      code = await child.exited;
-      await output;
-      if (outcomePath) {
-        try {
-          const value = JSON.parse(readFileSync(outcomePath, 'utf8')) as Record<string, unknown>;
-          const failure = value.failure as Record<string, unknown> | undefined;
-          if (value.ok !== true && (!failure || typeof failure.class !== 'string' ||
-            typeof failure.evidence !== 'string' ||
-            (failure.retries !== undefined && (!Number.isInteger(failure.retries) || Number(failure.retries) < 0)) ||
-            (failure.resetAt !== undefined && typeof failure.resetAt !== 'string')))
-            throw new Error('invalid typed outcome');
-          const recorded = recordClaudeOutcome({ provider: 'claude', source: 'job', model: job.model ?? undefined,
-            run: job.id, ok: value.ok === true, class: failure?.class as string | undefined,
-            retries: failure?.retries as number | undefined, resetAt: failure?.resetAt as string | undefined });
-          if (!recorded.persisted) console.error(`job: Claude outcome was not persisted: ${String(recorded.error)}`);
-        } catch (error) {
-          console.error(`job: Claude outcome unavailable: ${(error as Error).message}`);
+        if (reviewBefore !== undefined && reviewTree() !== reviewBefore) {
+          job.reason = 'review_modified_checkout';
+          code = 1;
+          console.error('job: review invalid: tracked checkout changed; changes preserved for operator');
         }
-      }
-      if (reviewBefore !== undefined && reviewTree() !== reviewBefore) {
-        job.reason = 'review_modified_checkout';
-        code = 1;
-        console.error('job: review invalid: tracked checkout changed; changes preserved for operator');
-      }
       }
     }
-    const session_id = child ? (job.session_id ?? jobSession(job)) : null;
+    const session_id = job.session_id ?? (child ? jobSession(job) : null);
     // Spawn/bookkeeping can outlast a short child; deliver pending signals before the provisional write.
     await yieldEventLoop();
     code = interrupted || code;
@@ -520,8 +571,21 @@ export async function jobCli(
       return EXIT_USAGE;
     }
   }
-  if (!automatic && jobRole && !['codex', 'claude'].includes(kindOf(cmd[0])))
-    throw new Error('job: unsupported role provider; expected codex or claude');
+  const explicitProvider = automatic ? null : kindOf(cmd[0]);
+  if (!automatic && jobRole && explicitProvider !== 'codex' && explicitProvider !== 'claude' && explicitProvider !== 'agy')
+    throw new Error('job: unsupported role provider; expected codex, claude or agy');
+  let agyModel: string | null = null;
+  if (jobRole && explicitProvider === 'agy') {
+    const flags = cmd.slice(3);
+    if (flags.at(-1) === '--dangerously-skip-permissions') flags.pop();
+    if (flags[0] === '--output-format' && flags[1] === 'stream-json') flags.splice(0, 2);
+    const [flag, value] = flags;
+    const hasModel = (flags.length === 1 && /^--model=\S+$/.test(flag)) ||
+      (flags.length === 2 && ['--model', '-m'].includes(flag) && /^\S+$/.test(value));
+    if (!['--print', '-p'].includes(cmd[1]) || !cmd[2]?.trim() || (flags.length && !hasModel))
+      throw new Error('job: role agy requires --print <prompt> [--output-format stream-json] [--model <model>]');
+    agyModel = modelOf(flags);
+  }
   if (a.flags['request-ref'] !== undefined && !a.flags['request-ref'].trim()) throw new Error('job: empty request-ref');
   const authors = a.flags['author-model'] ?? [], reviewReason = a.flags['review-reason']?.trim();
   const reviewRound = Number(a.flags.round ?? 1);
@@ -532,7 +596,7 @@ export async function jobCli(
     (j.review_reason !== undefined || j.execution?.role === 'review') && ['queued', 'running', 'done'].includes(j.state)))
     throw new Error('job: this --card and --round already has a review');
   refreshBudgetQuota();
-  let execution: Job['execution'];
+  let execution: Job['execution'], fallback: Job['execution'];
   if (jobRole) {
     const tiers = loadTiers();
     const health = refreshClaudeHealth().health, admission = claudeAdmission(a.flags.mode, health);
@@ -540,31 +604,42 @@ export async function jobCli(
       !automatic && kindOf(cmd[0]) === 'claude' ? '; remove -- <cmd> and use --prompt-file for automatic routing' : ''}`);
     const state = routeState(tiers, a.flags.mode, Date.now(), health);
     const client = launcher(home().sa)?.client;
-    const c = client === 'codex' ? 'codex' : consoleForClient(automatic ? client ?? '' : '');
+    const c = client === 'codex' ? 'codex' : consoleForClient(automatic || explicitProvider === 'agy' ? client ?? '' : '');
     const risk = a.flags.risk ?? 'G1';
     if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2') throw new Error('job: invalid risk');
     if (jobRole === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
       throw new Error('job: independent review requires --author-model');
     const descriptor = describeExecution(tiers, ROUTE_ROLE[jobRole], risk, Number(a.flags.round ?? 1));
     const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, state).candidates;
-    const skipNeon = automatic && c === 'gemini' && candidates[0].provider === 'agy';
-    const routed = (skipNeon ? candidates.find(a => a.provider !== 'agy') : undefined) ?? candidates[0];
-    const provider = automatic ? routed.provider : kindOf(cmd[0]) as 'codex' | 'claude';
-    if (provider === 'agy') throw new Error('job: single:gemini requires superagent run <plan>');
-    if (!automatic && provider === 'claude' && health.state !== 'up')
+    let routed = candidates[0];
+    if (!automatic && explicitProvider === 'claude' && health.state !== 'up')
       throw new Error(`claude_unavailable: ${routeNotice(state)}; remove -- <cmd> and use --prompt-file for automatic routing`);
-    const model = automatic ? null : modelOf(cmd.slice(1));
-    const candidate = automatic ? routed : candidates.find(a => a.provider === provider && (model === null || a.model === model));
+    const model = automatic ? null : explicitProvider === 'agy' ? agyModel : modelOf(cmd.slice(1));
+    const bind = (candidate: typeof routed): NonNullable<Job['execution']> => ({
+      role: descriptor.role, risk: descriptor.risk, round: descriptor.round,
+      model: candidate.model, provider: candidate.provider, policy: executionLaunch(descriptor, candidate),
+    });
+    const candidate = automatic ? routed : candidates.find(a => a.provider === explicitProvider && (model === null || a.model === model));
     if (!candidate)
       throw new Error(`job ${jobRole}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
-    const policy = executionLaunch(descriptor, candidate);
-    roleCommandArgs(automatic
+    routed = candidate;
+    if (routed.provider === 'agy') {
+      const { agyLaunch } = await import('./agy-provider');
+      const backup = automatic ? candidates.find(a => a.provider === 'codex') : undefined;
+      const { problem } = agyLaunch(process.cwd(), process.env, { executable: automatic ? 'agy' : cmd[0] });
+      if (problem) {
+        if (!backup) throw new Error(`job: Neon 不可用：${problem}`);
+        console.error(`job: Neon 不可用：${problem}`);
+        routed = backup;
+      } else if (backup) fallback = bind(backup);
+    }
+    const provider = routed.provider;
+    if (provider !== 'agy') roleCommandArgs(automatic
       ? provider === 'codex' ? ['codex', 'exec', '--json', '--skip-git-repo-check', '-o', 'output', '-'] : ['claude', '-p']
-      : cmd, provider, candidate.model); // Validate before registering or creating a worktree.
-    execution = { role: descriptor.role, risk: descriptor.risk, round: descriptor.round,
-      model: candidate.model, provider, policy };
-    if (automatic) console.error(`job: selected ${provider}/${candidate.model}; ${skipNeon ? 'job exec 不执行 agy，已跳过 Neon' : 'first routed candidate'}${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
+      : cmd, provider, routed.model);
+    execution = bind(routed);
+    if (automatic) console.error(`job: selected ${provider}/${routed.model}; first routed candidate${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
   }
 
-  return exec(cmd, { title, card, input, output, log, role: roleOf(jobRole), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'], review_reason: reviewReason, review_round: authors.length ? reviewRound : undefined }, probe);
+  return exec(cmd, { title, card, input, output, log, role: roleOf(jobRole), execution, fallback, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'], review_reason: reviewReason, review_round: authors.length ? reviewRound : undefined }, probe);
 }

@@ -271,15 +271,22 @@ describe('data rows', () => {
     });
   });
 
+  // prettier-ignore
   test('generated Gemini aliases resolve to the board roles', () => {
     const l = ledger('gemini', { status: 'running' });
     const dir = join(l.gen_dir, '.archon', 'workflows', l.workflow);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, `${l.workflow}.yaml`),
-      'nodes: [{id: code, model: "@sa-agy-coder"}, {id: review, model: "@sa-gemini-review"}, {id: script, model: ""}]'
+      'nodes: [{id: code, model: "@sa-agy-coder"}, {id: review, model: "@sa-gemini-review"}, {id: risk, model: "@sa-reviewer-G0"}, {id: script, model: ""}]'
     );
-    expect([...(workflowRoles(l)?.values() ?? [])]).toEqual(['coder', 'reviewer', 'script']);
+    expect([...(workflowRoles(l)?.values() ?? [])]).toEqual(['coder', 'reviewer', 'reviewer', 'script']);
+    const now = new Date(), term = { kind: 'agy' as const, tier: 'commander' as const, pid: 42, tty: 'ACP',
+      state: 'idle' as const, tool: null, cwd: null, since_ms: null, bound: true, session_id: 'fixture-conversation' };
+    const snap = { summary: {}, at: now.toISOString(), rows: [],
+      activity: { terms: [term], jobs: [], procs: [], remote: [], notes: [] } };
+    expect(renderToString(createElement(Frame, { snap, width: 80, height: 20, now })))
+      .toContain('Neon · Orca fixture- · 等待输入');
   });
 
   test('abandoned paused runs are terminal while an ordinary held gate stays unverified', () => {
