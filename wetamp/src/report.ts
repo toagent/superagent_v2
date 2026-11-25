@@ -24,10 +24,10 @@ import { snapshotOf } from './board/data';
 import { decisionsFromSnapshot } from './decisions';
 // superagent report（F-22）：run 计数摘要 + 执行层用量台账。用量只来自 Archon 事件里的 spend/binding/timing，
 // 未回执的用量记 unknown，从不当 0；不折算金额。
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { confined } from './board/workflow';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { archonJson, archonRunIds, getRun, tail, reportRuns } from './archon';
 import { buildNodeSummaries } from '../../packages/cli/src/commands/workflow';
 import { home, loadTiers, WETAMP } from './config';
@@ -191,6 +191,19 @@ function modelOf(e: Event): string {
   return m?.requested ? `${m.requested}(pinned)` : 'unknown';
 }
 
+const jobContextBytes = (j: Job): number | 'n/a' => {
+  const recorded = (j.receipt as { context_bytes?: unknown } | undefined)?.context_bytes;
+  if (typeof recorded === 'number' && Number.isFinite(recorded) && recorded >= 0) return recorded;
+  if (!j.card) return 'n/a';
+  const path = isAbsolute(j.card) ? j.card : j.cwd ? join(j.cwd, j.card) : j.card;
+  try {
+    const stat = statSync(path);
+    return stat.isFile() ? stat.size : 'n/a';
+  } catch {
+    return 'n/a';
+  }
+};
+
 /** No prompt, argv or session body; policy is the resolved execution owner receipt. */
 export function jobReceipt(j: Job): Record<string, unknown> {
   const r = j.receipt;
@@ -204,11 +217,11 @@ export function jobReceipt(j: Job): Record<string, unknown> {
     queue_ms: ms(r?.enqueued_at, r?.admitted_at) ?? 'unknown',
     prepare_ms: ms(r?.admitted_at, r?.spawned_at) ?? 'unknown',
     exec_ms: ms(r?.spawned_at, r?.settled_at) ?? 'unknown',
-    context_bytes: 'unknown',
-    first_token_ms: 'unknown',
-    model_calls: 'unknown',
-    tool_calls: 'unknown',
-    provider_timing: 'unknown',
+    context_bytes: jobContextBytes(j),
+    first_token_ms: 'n/a',
+    model_calls: 'n/a',
+    tool_calls: 'n/a',
+    provider_timing: 'n/a',
   };
 }
 

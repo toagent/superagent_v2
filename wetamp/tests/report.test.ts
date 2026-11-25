@@ -802,7 +802,7 @@ describe('F-22 report', () => {
           },
         ],
       });
-      expect(jobReceipt({ id: 'native', state: 'done' } as Job).provider_timing).toBe('unknown');
+      expect(jobReceipt({ id: 'native', state: 'done' } as Job).provider_timing).toBe('n/a');
     } finally {
       keys.forEach((k, i) => {
         if (saved[i] === undefined) delete process.env[k];
@@ -1062,14 +1062,56 @@ describe('F-22 report', () => {
       prepare_ms: 1000,
       exec_ms: 7000,
       context_ref: job.card,
-      first_token_ms: 'unknown',
-      model_calls: 'unknown',
+      context_bytes: 'n/a',
+      first_token_ms: 'n/a',
+      model_calls: 'n/a',
+      tool_calls: 'n/a',
+      provider_timing: 'n/a',
     });
     job.receipt.admitted_at = 'invalid';
     expect(jobReceipt(job)).toMatchObject({ queue_ms: 'unknown', prepare_ms: 'unknown' });
     expect(
       rollup(callsOf('r', [ev('node_completed', 'code-core', { timing: undefined })], plan))
     ).toMatchObject({ phase_coverage: { queue_ms: '1/1', exec_ms: '0/1' } });
+  });
+  test('jobReceipt reads local card bytes and excludes uncollected fields from unknown_counts', () => {
+    const dir = tmp(),
+      card = join(dir, 'card.md');
+    writeFileSync(card, 'hello card');
+    const complete = {
+      id: 'job-ok',
+      state: 'done',
+      role: 'general',
+      card,
+      execution: { role: 'code', risk: 'G1', round: 1, model: 'm', provider: 'codex', policy: {} },
+      receipt: {
+        enqueued_at: '2026-10-10T00:00:00Z',
+        admitted_at: '2026-10-10T00:00:01Z',
+        spawned_at: '2026-10-10T00:00:02Z',
+        settled_at: '2026-10-10T00:00:05Z',
+      },
+    } as unknown as Job;
+    expect(jobReceipt(complete)).toMatchObject({
+      context_bytes: Buffer.byteLength('hello card'),
+      first_token_ms: 'n/a',
+      model_calls: 'n/a',
+      tool_calls: 'n/a',
+      provider_timing: 'n/a',
+    });
+    expect(jobReceipt({ ...complete, card: null }).context_bytes).toBe('n/a');
+    expect(jobReceipt({ ...complete, card: dir }).context_bytes).toBe('n/a');
+    const summary = reportSummary({
+      runs: 0,
+      metrics: {},
+      cancellations: {},
+      interventions: { by_run: {} },
+      demands: { unknown_runs: [] },
+      repo_missing: [],
+      unreadable: [],
+      usage: { unreadable: [] },
+      jobs: { receipts: [jobReceipt(complete)], unreadable: [], phase_coverage: {} },
+    });
+    expect(summary.unknown_counts).toEqual({});
   });
   test('generation identities reuse adoption endpoints once in ledger order', () => {
     expect(archonRunIds({ archon_run_id: 'latest' })).toEqual(['latest']);
