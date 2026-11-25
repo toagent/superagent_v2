@@ -16,6 +16,7 @@ export type ClaudeHealth = Times & {
   state: 'up' | 'down' | 'unknown';
   cause?: Cause;
   probe_failures: number;
+  unserved_failures?: number;
 };
 export type ClaudeOutcome = Partial<Omit<Cause, 'source'>> & {
   provider: string;
@@ -43,7 +44,13 @@ function readHealth(provider: HealthProvider, now: number): ClaudeHealth {
     if (!process.env.SUPERAGENT_HOME || !existsSync(path(provider)))
       return { state: 'up', probe_failures: 0 };
     const health = JSON.parse(readFileSync(path(provider), 'utf8')) as ClaudeHealth;
-    if (!valid(health) || !Number.isFinite(now)) throw new Error('invalid state');
+    const failures = health.unserved_failures ?? 0;
+    if (
+      !valid(health) ||
+      !Number.isFinite(now) ||
+      (provider === 'agy' && (!Number.isSafeInteger(failures) || failures < 0))
+    )
+      throw new Error('invalid state');
     return health;
   } catch {
     return { state: 'unknown', probe_failures: 0 };
@@ -71,13 +78,21 @@ function acquire(
     return error as Error;
   }
 }
-function persist(provider: HealthProvider, health: ClaudeHealth, observed: number) {
+function persist(
+  provider: HealthProvider,
+  observed: number | undefined,
+  update: (current: ClaudeHealth, now: number) => ClaudeHealth
+) {
   const lease = acquire(provider, '.lock', 2000);
-  if (lease instanceof Error) return { health, persisted: false, error: lease.message };
+  const now = observed ?? Date.now();
+  const current = readHealth(provider, now);
+  if (lease instanceof Error)
+    return { health: update(current, now), persisted: false, error: lease.message };
+  let health = current;
   try {
-    const current = readHealth(provider, observed);
-    if (Date.parse(current.observed_at ?? '') > observed)
-      return { health: current, persisted: true };
+    if (Date.parse(current.observed_at ?? '') > now) return { health, persisted: true };
+    health = update(current, now);
+    if (health === current) return { health, persisted: true };
     writeFileSync(path(provider, '.tmp'), JSON.stringify(health) + '\n');
     renameSync(path(provider, '.tmp'), path(provider));
     return { health, persisted: true };
@@ -114,19 +129,33 @@ function recordOutcome(provider: HealthProvider, o: ClaudeOutcome, trip: boolean
   if (o.provider !== provider) return { health: h, persisted: true };
   if (!o.ok && !trip) return { health: h, persisted: true }; // SDK ceilings below TRIP_RETRIES stay node-local.
   const next = Math.max(now + PROBE_BACKOFF_MS[0], Date.parse(o.resetAt ?? '') || 0);
-  return persist(
-    provider,
-    health(h, { ...o, retries, resetAt: new Date(next).toISOString() }, now),
-    now
+  return persist(provider, now, () =>
+    health(h, { ...o, retries, resetAt: new Date(next).toISOString() }, now)
   );
 }
 export const recordClaudeOutcome = (o: ClaudeOutcome, now = Date.now()) =>
   recordOutcome('claude', o, claudeOutcomeTrips(o), now);
-export const recordAgyOutcome = (o: ClaudeOutcome, now = Date.now()) =>
-  recordOutcome('agy', o, agyOutcomeTrips(o), now);
-// Neon emits one error step per retry and a separate terminal error for the final failure.
-export const agyOutcomeTrips = (o: ClaudeOutcome): boolean =>
-  !o.ok && o.class === 'transient' && (o.retries ?? 0) + 1 >= TRIP_RETRIES;
+export function recordAgyOutcome(o: ClaudeOutcome, now?: number) {
+  if (o.provider !== 'agy' || (!o.ok && o.class !== 'transient'))
+    return { health: readAgyHealth(now), persisted: true };
+  return persist('agy', now, (current, at) => {
+    if (o.ok) return health(current, o, at);
+    // Older down records have already tripped. Count each settled attempt under the write lock.
+    const failures =
+      (current.unserved_failures ?? (current.state === 'down' ? TRIP_RETRIES : 0)) + 1;
+    if (failures < TRIP_RETRIES)
+      return {
+        ...current,
+        state: 'up',
+        observed_at: new Date(at).toISOString(),
+        unserved_failures: failures,
+      };
+    const resetAt = isAgyAvailable(current, at)
+      ? new Date(at + PROBE_BACKOFF_MS[0]).toISOString()
+      : current.next_probe_at;
+    return { ...health(current, { ...o, resetAt }, at), unserved_failures: failures };
+  });
+}
 export const claudeOutcomeTrips = (o: ClaudeOutcome): boolean =>
   o.class === 'quota_exhausted' ||
   (!o.ok &&
@@ -190,7 +219,7 @@ export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
     const failures = Math.min(h.probe_failures + 1, PROBE_BACKOFF_MS.length);
     outcome.class ??= 'probe_failed';
     outcome.resetAt = new Date(now + PROBE_BACKOFF_MS[failures - 1]).toISOString();
-    return persist('claude', health(h, outcome, now, failures), now);
+    return persist('claude', now, () => health(h, outcome, now, failures));
   } catch {
     return { health: h, persisted: true };
   } finally {

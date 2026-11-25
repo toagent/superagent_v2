@@ -13,7 +13,7 @@ import { getRegistration } from '@archon/providers';
 import { executePolicy } from '@archon/workflows/policy-dispatch';
 import { providerChunkSchema } from '../../packages/provider-contract/src';
 import { createAgyProvider } from '../src/agy-provider';
-import { readAgyHealth, readClaudeHealth } from '../src/claude-health';
+import { readAgyHealth, readClaudeHealth, TRIP_RETRIES } from '../src/claude-health';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import { executionTable } from '../src/execution';
 import { agyGuardCommand, agyGuardPath } from '../src/install-hooks';
@@ -187,6 +187,8 @@ test('没有输出、空回执、非成功状态、坏行、非零退出或工�
   const [active, , terminal] = readFileSync(join(fixtures, 'denied.ndjson'), 'utf8').split('\n');
   const cases = [
     ['', '0', '未收到结果'],
+    ['{', '0', '无效事件'],
+    ['{', '3', '无效事件'],
     ['{"event":"result","result":{"status":"SUCCESS","response":" "}}', '0', '未产生输出'],
     [failed, '0', 'ERROR'],
     [failed, '3', '3'],
@@ -203,6 +205,7 @@ test('没有输出、空回执、非成功状态、坏行、非零退出或工�
       })
     );
     const result = chunks.at(-2);
+    if (output === '{') expect(result).toMatchObject({ failure: { class: 'unknown' } });
     if (output === failed && result?.type === 'result') {
       const detail = `schema rejected [REDACTED] ${'x'.repeat(2000)}`.slice(0, 1000);
       expect(result.failure?.evidence).toEndWith(detail);
@@ -257,6 +260,17 @@ test('503 实录报告状态和 error_id，并经真实策略切换到 Codex', a
   }, '检查', f.cwd));
   expect(chunks.at(-2)).toMatchObject({ text: 'Codex 接手' });
   expect(readPolicyAttempts(artifacts).map(a => [a.provider, a.failure])).toEqual([['agy', 'transient'], ['codex', undefined]]);
+
+  const legacy = readFileSync(env.FIXTURE_STREAM, 'utf8').trimEnd().split('\n');
+  const terminal = JSON.parse(legacy.pop()!);
+  delete terminal.result.usage;
+  writeFileSync(f.output, [...legacy, JSON.stringify(terminal)].join('\n'));
+  const incomplete = await collect(provider.sendQuery('检查', f.cwd, undefined, {
+    model, env: { ...env, FIXTURE_STREAM: f.output },
+  }));
+  expect(incomplete.at(-2)).toMatchObject({
+    failure: { class: 'transient', retries: 9, evidence: expect.stringMatching(/异常退出.*ERROR.*c2bb91fe/) },
+  });
 });
 
 // prettier-ignore
@@ -492,31 +506,36 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
         };
       }
     );
-    const dispatch = (outage: boolean, requiresExactSession = false) =>
+    const refusal = join(f.home, 'refusal');
+    writeFileSync(refusal, 'Connection refused\n');
+    const empty = join(f.home, 'empty');
+    writeFileSync(empty, '');
+    const dispatch = (outage: boolean) =>
       collect(
-        fallback.sendQuery('检查', f.cwd, requiresExactSession ? 'original' : undefined, {
+        fallback.sendQuery('检查', f.cwd, undefined, {
           model,
-          nodeConfig: { nodeId: `repair-${plan.packages[0].id}`, requiresExactSession },
+          nodeConfig: { nodeId: `repair-${plan.packages[0].id}` },
           env: {
             ...f.env,
             SA_POLICY_PATH: policy,
             ...(outage
-              ? { FIXTURE_STREAM: join(fixtures, 'outage.ndjson'), FIXTURE_EXIT: '3' }
+              ? { FIXTURE_STREAM: empty, FIXTURE_STDERR: refusal, FIXTURE_EXIT: '3' }
               : {}),
           },
         })
       );
-    expect(() => dispatch(false, true)).toThrow('requires an exact provider session');
-    expect(readPolicyAttempts(artifacts)).toEqual(attempts);
-    expect((await dispatch(true)).at(-2)).toMatchObject({ text: 'Codex 接手' });
-    expect(
-      readPolicyAttempts(artifacts)
+    let failed = 0;
+    for (let i = 0; failed < TRIP_RETRIES && i < TRIP_RETRIES; i++) {
+      expect((await dispatch(true)).at(-2)).toMatchObject({ text: 'Codex 接手' });
+      failed = readPolicyAttempts(artifacts)
         .slice(attempts.length)
-        .map(a => a.provider)
-    ).toEqual(['agy', 'codex']);
+        .filter(a => a.provider === 'agy' && a.failure === 'transient').length;
+      expect(readAgyHealth().state).toBe(failed < TRIP_RETRIES ? 'up' : 'down');
+    }
+    expect(failed).toBe(TRIP_RETRIES);
 
     const down = readAgyHealth();
-    expect(down).toMatchObject({ state: 'down', cause: { class: 'transient', retries: 9 } });
+    expect(down).toMatchObject({ state: 'down', unserved_failures: TRIP_RETRIES });
     expect(readClaudeHealth(Date.now()).state).toBe('up');
     db.run("UPDATE remote_agent_workflow_runs SET id='next-run'");
     const nextArtifacts = join(f.home, 'artifacts/runs/next-run');

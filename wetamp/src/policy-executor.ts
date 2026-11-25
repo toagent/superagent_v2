@@ -18,7 +18,6 @@ import {
 import { registerBuiltinProviders } from '@archon/providers/in-process';
 import { isGeminiModel, routeState, usesNeonCoder, type Alias, type Tiers } from './config';
 import {
-  agyOutcomeTrips,
   claudeOutcomeTrips,
   isAgyAvailable,
   readAgyHealth,
@@ -260,11 +259,10 @@ function runtimeExecution(
         run: run.id,
         node,
       };
-      if (provider === 'agy') {
-        if (agyOutcomeTrips(outcome)) agyAvailable = false;
-      } else if (outcome.ok) claudeAvailable = true;
-      else if (claudeOutcomeTrips(outcome)) claudeAvailable = false;
       const saved = provider === 'agy' ? recordAgyOutcome(outcome) : recordClaudeOutcome(outcome);
+      if (provider === 'agy') agyAvailable = isAgyAvailable(saved.health);
+      else if (outcome.ok) claudeAvailable = true;
+      else if (claudeOutcomeTrips(outcome)) claudeAvailable = false;
       if (!saved.persisted) {
         const error = 'error' in saved && typeof saved.error === 'string' ? saved.error : 'unknown';
         return Promise.resolve({
@@ -340,8 +338,6 @@ export function wrapPolicyProvider(
     const path = options?.env?.SA_POLICY_PATH;
     if (!path || !options.nodeConfig?.nodeId || options.purpose === 'title-generation')
       return send(prompt, cwd, resume, options);
-    if (provider === 'agy' && options.nodeConfig.requiresExactSession)
-      throw new Error('policy: agy cannot run a node that requires an exact provider session');
     const runtime = runtimeExecution(path, cwd, options, send, provider, sendQueryFor);
     if (runtime.gemini) {
       if (resume !== undefined) throw new Error('policy: Gemini review cannot resume a session');

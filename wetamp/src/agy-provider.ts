@@ -170,7 +170,9 @@ function agyResult(
       ...failure(
         unserved ? 'transient' : 'unknown',
         `agy 结果状态 ${status ?? '未知'}`,
-        unserved && status === 'ERROR' && errorSteps > 0 ? errorSteps : undefined
+        !sawTool && status === 'ERROR' && (unserved || body.usage === undefined) && errorSteps > 0
+          ? errorSteps
+          : undefined
       ),
     };
   }
@@ -235,6 +237,7 @@ export async function* runAgy(
   let model: string | undefined;
   let terminal: Record<string, unknown> | undefined;
   let invalid = false;
+  let sawEvent = false;
   let result: ResultChunk;
   try {
     job?.spawned(child.pid);
@@ -262,6 +265,7 @@ export async function* runAgy(
         invalid = true;
         continue;
       }
+      sawEvent = true;
       if (event?.event === 'init') model = string(body.model);
       if (event?.event === 'result') terminal = body;
       if (event?.event !== 'step_update') continue;
@@ -319,12 +323,26 @@ export async function* runAgy(
       ? agyResult(terminal, model, sawTool, errorSteps.size)
       : incomplete('agy 未收到结果');
     // 缺少结构化用量的旧回执沿用退出码规则，已观察到工具步骤则保留终态分类。
-    if (
+    if (invalid && !sawEvent) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
+    else if (
       abnormalExit &&
       (!terminal || terminal.status === 'SUCCESS' || (!sawTool && terminal.usage === undefined))
-    )
-      Object.assign(result, incomplete(`agy 进程异常退出（${String(child.signalCode ?? code)}）`));
-    else if (invalid && terminal) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
+    ) {
+      const prior = result.failure;
+      const exit = `agy 进程异常退出（${String(child.signalCode ?? code)}）`;
+      result.isError = true;
+      result.failure = {
+        ...prior,
+        class: sawTool ? 'unknown' : 'transient',
+        evidence: [
+          exit,
+          terminal ? prior?.evidence : undefined,
+          sawTool ? '已有工具活动' : undefined,
+        ]
+          .filter(Boolean)
+          .join('，'),
+      };
+    } else if (invalid && terminal) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
     if (

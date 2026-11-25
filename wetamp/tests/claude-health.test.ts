@@ -5,6 +5,7 @@ import { lock } from '../src/archon';
 import {
   CLAUDE_PROBE_BUDGET_USD,
   PROBE_BACKOFF_MS,
+  TRIP_RETRIES,
   claudeProbeModel,
   isAgyAvailable,
   readAgyHealth,
@@ -43,19 +44,22 @@ const failure = (patch: Record<string, unknown> = {}) => ({
 test('Neon 熔断只接受达到阈值的未服务失败，冷却到期重新准入', () => {
   useHome();
   const now = Date.parse('2026-10-27T01:00:00Z');
-  const outage = failure({ provider: 'agy', class: 'transient', retries: 8 });
-  for (const outcome of [
-    outage,
-    { ...outage, retries: undefined },
-    { ...outage, class: 'unknown', retries: 9 },
-  ])
-    expect(recordAgyOutcome(outcome, now).health.state).toBe('up');
-  expect(recordAgyOutcome({ ...outage, retries: 9 }, now).persisted).toBeTrue();
+  const outage = failure({ provider: 'agy', class: 'transient', retries: 99 });
+  expect(recordAgyOutcome(outage, now).health.unserved_failures).toBe(1);
+  expect(recordAgyOutcome({ ...outage, class: 'unknown' }, now).health.unserved_failures).toBe(1);
+  const success = { provider: 'agy', ok: true, source: 'dispatch' } as const;
+  expect(recordAgyOutcome(success, now).health.unserved_failures).toBeUndefined();
+  for (let i = 1; i < TRIP_RETRIES; i++)
+    expect(recordAgyOutcome(outage, now).health.state).toBe('up');
+  expect(recordAgyOutcome(outage, now).persisted).toBeTrue();
   const down = readAgyHealth(now);
   const due = now + PROBE_BACKOFF_MS[0];
   expect(down.next_probe_at).toBe(new Date(due).toISOString());
   expect(isAgyAvailable(down, due - 1)).toBeFalse();
   expect(isAgyAvailable(down, due)).toBeTrue();
+  expect(recordAgyOutcome(outage, due).health.next_probe_at).toBe(
+    new Date(due + PROBE_BACKOFF_MS[0]).toISOString()
+  );
 });
 
 test('health trips on typed retry/quota boundaries, honors resetAt, and closes on success', () => {
