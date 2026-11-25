@@ -8,18 +8,44 @@ const LIMIT = 256 * 1024;
 // Neon agy statusLine reports context_window.context_window_size:
 // https://antigravity.google/docs/cli/statusline
 const AGY_WINDOW = 1048576;
+function agyTranscript(file) {
+  if (!file || path.extname(file) !== '.db') return file;
+  const conversations = path.dirname(file), id = path.basename(file, '.db');
+  if (path.basename(conversations) !== 'conversations' || !id || id === '.' || id === '..') return null;
+  return path.join(path.dirname(conversations), 'brain', id, '.system_generated/logs/transcript_full.jsonl');
+}
+function latestAgyPrompt(file) {
+  let fd;
+  try {
+    fd = fs.openSync(agyTranscript(file), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return null;
+    let tail = Buffer.alloc(0);
+    for (let end = stat.size; end > 0;) {
+      const start = Math.max(0, end - LIMIT), chunk = Buffer.alloc(end - start);
+      const read = fs.readSync(fd, chunk, 0, chunk.length, start);
+      const bytes = Buffer.concat([chunk.subarray(0, read), tail]);
+      let right = bytes.length;
+      for (let left; right > 0; right = left) {
+        left = bytes.lastIndexOf(10, right - 1);
+        if (left < 0 && start) break;
+        try {
+          const event = JSON.parse(bytes.toString('utf8', left + 1, right));
+          if (event?.type === 'USER_INPUT') return typeof event.content === 'string' ? event.content : null;
+        } catch {}
+      }
+      tail = bytes.subarray(0, right);
+      end = start;
+    }
+  } catch {} finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return null;
+}
 function recentUsage(file, client = 'claude') {
   let fd;
   try {
-    if (client === 'agy' && path.extname(file) === '.db') {
-      const conversations = path.dirname(file),
-        id = path.basename(file, '.db');
-      if (path.basename(conversations) !== 'conversations' || !id || id === '.' || id === '..')
-        return null;
-      file = path.join(
-        path.dirname(conversations), 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl'
-      );
-    }
+    if (client === 'agy') file = agyTranscript(file);
     fd = fs.openSync(file, 'r');
     const size = fs.fstatSync(fd).size,
       start = Math.max(0, size - LIMIT);
@@ -203,24 +229,20 @@ function advisoryFile(input, env) {
       .digest('hex');
   return path.join(home, 'hooks', 'context-advisory', `${key}.json`);
 }
-function agyRollover(input, env) {
-  const notice = rolloverNotice(input, 'agy', env);
-  if (notice) return notice;
+function agyAdvisory(input, env) {
   const usage = recentUsage(input.transcript_path, 'agy');
   if (!usage) return null;
-  const { rollover, rolloverStep, window } = contextLimits('commander', 'agy', usage.window, env);
-  if (rollover === null) return null;
+  const { threshold, rollover, advisoryStep, rolloverStep, window } =
+    contextLimits('commander', 'agy', usage.window, env);
   return require('./hook-state.cjs').withState(advisoryFile(input, env), state => {
-    if (usage.tokens <= rollover) {
-      delete state.rollover_at;
+    const { tokens } = usage;
+    if (rollover !== null && tokens <= rollover) delete state.rollover_at;
+    if (tokens <= threshold) delete state.warned_at;
+    // Keep cooldown state while usage fluctuates above either threshold.
+    if (tokens > (rollover ?? Infinity) ? tokens < state.rollover_at : tokens < state.warned_at)
       return null;
-    }
-    // Keep the last reminder while usage fluctuates above the line.
-    if (Number.isSafeInteger(state.rollover_at) && usage.tokens < state.rollover_at + rolloverStep)
-      return null;
-    // agy has no non-interrupting advisory channel. PreToolUse can only deliver a denial reason.
-    const result = advise(input, usage.tokens, state, false, Infinity, rollover, env, 0, rolloverStep, window);
-    state.rollover_at = result.state.rollover_at;
+    const result = advise(input, tokens, state, false, threshold, rollover, env, advisoryStep, rolloverStep, window);
+    Object.assign(state, result.state);
     return result.messages[0] ?? null;
   });
 }
@@ -281,4 +303,4 @@ if (require.main === module) {
   } catch {}
   // Never emit a denial or a nonzero status, even if state/transcript I/O fails.
 }
-module.exports = { recentUsage, advise, main, roleLimit, contextLimits, rolloverNotice, agyRollover, LIMIT };
+module.exports = { recentUsage, latestAgyPrompt, advise, main, roleLimit, contextLimits, rolloverNotice, agyAdvisory, LIMIT };

@@ -22,11 +22,12 @@ function contextPolicy(value = {}) {
 }
 function contextReason(client, name, input, policy) {
   const native = client === 'codex' && name === 'spawn_agent';
+  const neon = client === 'agy' && name === 'invoke_subagent';
   const agent =
     ['claude', 'codex'].includes(client) &&
     ['Agent', 'Task', 'mcp__claude__Agent', 'claude.Agent'].includes(name);
-  if (!native && !agent) return null;
-  for (const field of native ? ['message'] : ['prompt']) {
+  if (!native && !agent && !neon) return null;
+  for (const field of native ? ['message'] : neon ? ['Prompt', 'Task', 'prompt'] : ['prompt']) {
     if (input[field] !== undefined && typeof input[field] !== 'string')
       return `G-2: ${field} 须为字符串；用短任务卡和文件路径派发。`;
     if (typeof input[field] === 'string' && input[field].length > policy.max_prompt_chars)

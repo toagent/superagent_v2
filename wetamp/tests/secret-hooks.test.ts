@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmp } from './helpers';
 const require = createRequire(import.meta.url);
@@ -8,6 +8,38 @@ const guard = require('../hooks/guard.cjs') as {
 };
 // prettier-ignore
 const scanner = () => { const file = `${tmp()}/scan.cjs`; writeFileSync(file, `exports.scanText = (text, options) => { if (options?.keyValues !== false) throw new Error('keyValues enabled'); let result = text.replaceAll('synthetic-secret-value', '[REDACTED:test]'); if (options?.heuristics !== false) result = result.replaceAll('synthetic-heuristic-value', '[REDACTED:heuristic]'); return result; };`); return file; };
+test('ACP 在整回合拦截最新含凭据的 USER_INPUT，空的新输入解除拦截', () => {
+  const home = tmp(),
+    logs = `${home}/brain/fixture/.system_generated/logs`;
+  mkdirSync(logs, { recursive: true });
+  const file = `${logs}/transcript_full.jsonl`;
+  const input = (content: string) => ({ type: 'USER_INPUT', content });
+  const save = (...events: object[]) =>
+    writeFileSync(file, events.map(event => JSON.stringify(event)).join('\n'));
+  const env = {
+    ...process.env,
+    HOME: home,
+    SUPERAGENT_HOME: home,
+    SA_SECRET_SCAN_MODULE: scanner(),
+  };
+  const call = (name: string) => {
+    const payload = { transcriptPath: `${home}/conversations/fixture.db`, toolCall: { name } };
+    const result = Bun.spawnSync(['node', 'hooks/guard.cjs', 'agy'], {
+      stdin: Buffer.from(JSON.stringify(payload)),
+      cwd: process.cwd(),
+      env,
+    });
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout.toString());
+  };
+  expect(call('finish')).toEqual({ decision: 'allow' });
+  const old = input('synthetic-secret-value');
+  save(old, { type: 'TOOL_RESPONSE', content: 'x'.repeat(300_000) });
+  for (const name of ['finish', 'invoke_subagent'])
+    expect(call(name)).toMatchObject({ decision: 'deny', reason: expect.stringContaining('轮换') });
+  save(old, input(''));
+  expect(call('finish')).toEqual({ decision: 'allow' });
+});
 test('shell commands are wrapped once for Claude and Codex', async () => {
   await require('../hooks/redline.cjs').init();
   const env = { ...process.env, SA_SECRET_SCAN_MODULE: scanner() };

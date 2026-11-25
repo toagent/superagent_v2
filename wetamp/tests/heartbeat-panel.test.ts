@@ -82,6 +82,39 @@ test('ensurePanel only detaches inside Orca and a git worktree', () => {
   expect(panel.ensurePanel({ cwd: root }, { ORCA_AGENT_SESSION_ID: 's' })).toBe(false);
 });
 
+test('首个 Neon 元帅 hook 通过真实面板模块恢复 Orca 心跳', async () => {
+  const f = fixture('restored');
+  mkdirSync(join(f.home, 'panels'), { recursive: true });
+  const saved = record(f.home, f.repo);
+  writeFileSync(saved, JSON.stringify({ handle: 'restored', incarnationId: 'previous' }));
+  const env = {
+    ...f.env,
+    HOME: f.home,
+    ORCA_AGENT_SESSION_ID: 'neon-panel',
+    SUPERAGENT_ROLE: 'commander',
+    AI_DISPATCH_ROLE: '',
+    TWIN_AGENT_REMOTE: '',
+    SA_SECRET_SCAN_MODULE: '',
+  };
+  const hook = () =>
+    Bun.spawnSync(['node', join(import.meta.dir, '../hooks/guard.cjs'), 'agy'], {
+      env,
+      cwd: f.repo,
+      stdin: Buffer.from(
+        JSON.stringify({
+          conversationId: 'neon-panel',
+          toolCall: { name: 'finish' },
+        })
+      ),
+    });
+  expect(hook().exitCode).toBe(0);
+  for (let i = 0; i < 100 && !readFileSync(saved, 'utf8').includes('"old"'); i++)
+    await Bun.sleep(30);
+  expect(JSON.parse(readFileSync(saved, 'utf8')).incarnationId).toBe('old');
+  expect(hook().exitCode).toBe(0);
+  expect(invocations(f.calls).map(call => call[1])).toEqual(['list', 'close', 'send']);
+});
+
 test('pinned restored panel is re-armed in place', () => {
   const restored = fixture('restored');
   mkdirSync(join(restored.home, 'panels'), { recursive: true });

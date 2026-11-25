@@ -162,7 +162,8 @@ function beat(client, input, roleOf = () => null, env = process.env) {
     // Only a repeat of the same tool event is throttled: a PostToolUse right after its PreToolUse always
     // lands, so the board never keeps showing a tool that has already finished.
     const toolRun = !ALWAYS.has(event) && prior?.event === event;
-    if (toolRun && !turn && now - mtime < THROTTLE_MS) return;
+    if (toolRun && !turn && now - mtime < THROTTLE_MS)
+      return client === 'agy' ? { record: prior } : undefined;
     // Cache only a verified process identity; a transient miss must retry ancestry discovery.
     const probe = prior?.pid ? identity.inspect(prior.pid) : null;
     const keep = prior?.pid && probe?.state === 'online' && probe.start === prior.pid_start;
@@ -218,7 +219,9 @@ function beat(client, input, roleOf = () => null, env = process.env) {
         fs.unlinkSync(tmp);
       } catch {}
     }
-    return notifications;
+    return client === 'agy'
+      ? { record, first: !prior, reconnected: Boolean(record.pid_start && !keep) }
+      : notifications;
   } catch {}
 }
 module.exports = { beat, agentOf, cliOf, owner, launcher, THROTTLE_MS };

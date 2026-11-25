@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildSecrets } from '../src/secrets/build';
 import { gitRepo, privatePathCases, tmp } from './helpers';
@@ -155,7 +156,7 @@ function agyFixture() {
   return {
     home,
     repo,
-    call: (name: string, args: object, hookEventName = 'PreToolUse') =>
+    call: (name: string, args: object, hookEventName = 'PreToolUse', id = 'call-1') =>
       run(
         'guard.cjs',
         'agy',
@@ -163,7 +164,7 @@ function agyFixture() {
           hookEventName,
           conversationId: 'fixture',
           cwd: repo,
-          toolCall: { id: 'call-1', name, args },
+          toolCall: { id, name, args },
         },
         { HOME: home, SUPERAGENT_HOME: home, SA_SECRET_SCAN_MODULE: '' }
       ),
@@ -200,6 +201,9 @@ test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重�
     call('pretooluse-3-create_file', { TargetFile: 'ordinary.txt', CodeContent: '_private' })
   ).toEqual(allow);
   expect(call('pretooluse-3-create_file', { TargetFile: secret })).toEqual(deny);
+  expect(call('pretooluse-3-create_file', { TargetFile: pathToFileURL(secret).href })).toEqual(
+    deny
+  );
   for (const Path of [undefined, '', 'ordinary.txt'])
     expect(call('pretooluse-4-edit_file', { Path, TargetFile: secret })).toEqual(deny);
   expect(call(command, { Cwd: cwd, CommandLine: 'git push --force origin main' })).toEqual(deny);
@@ -209,6 +213,9 @@ test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重�
   for (const file of ['sa-redact.sh', 'gitleaks.toml'])
     cpSync(join(HOOKS, '..', 'secrets', file), join(jail, file));
   expect(call(view, { AbsolutePath: 'ordinary.txt' })).toEqual(allow);
+  const literal = join(cwd, 'ordinary $HOME #.txt');
+  writeFileSync(literal, 'ok');
+  expect(call(view, { AbsolutePath: pathToFileURL(literal).href })).toEqual(allow);
   const prefix = '. ~/.wetamp/jail/sa-redact.sh;';
   expect(call(command, { Cwd: cwd, CommandLine: 'echo ok' })).toEqual({
     decision: 'deny',
@@ -294,6 +301,7 @@ test('Neon 换会话提醒按会话节流并保留原护栏判定', () => {
   };
   for (const acp of [false, true]) {
     const id = acp ? 'acp' : 'terminal';
+    expect(call(acp, id, 524288)?.reason).toContain('advisory');
     expect(call(acp, id, 524288)).toEqual(allow);
     expect(call(acp, id, 786432, 'echo ok', 'general')).toEqual(allow);
     expect(call(acp, id, 786432, 'git push --force')).toMatchObject(pushDenied);
@@ -301,7 +309,7 @@ test('Neon 换会话提醒按会话节流并保留原护栏判定', () => {
     expect(call(acp, id, 786432)).toEqual(allow);
     expect(call(acp, id, 780000)).toEqual(allow);
     expect(call(acp, id, 891289)).toEqual(rollover);
-    expect(call(acp, id, 524288)).toEqual(allow);
+    expect(call(acp, id, 200000)).toEqual(allow);
     expect(call(acp, id, 786432)).toEqual(rollover);
   }
   const state = join(
@@ -325,7 +333,98 @@ test('Neon 换会话提醒按会话节流并保留原护栏判定', () => {
     decision: 'deny',
     reason: expect.stringContaining('立即停止写入'),
   });
+  expect(call(true, 'acp', 524288)?.reason).toContain('立即停止写入');
   expect(call(true, 'acp', 900000, 'git push --force')).toMatchObject(pushDenied);
+});
+
+test('Neon 通知交接与缺失等待，同一内容只提示一次', () => {
+  const home = tmp(),
+    archon = join(home, 'archon'),
+    session = 'neon-wait';
+  const env = {
+    HOME: home,
+    SUPERAGENT_HOME: home,
+    ARCHON_HOME: archon,
+    DATABASE_URL: '',
+    SA_SECRET_SCAN_MODULE: '',
+  };
+  const payload = { conversationId: session, toolCall: { name: 'finish' } };
+  const call = () => run('guard.cjs', 'agy', payload, env, HOOKS, 0, home);
+  expect(call()).toEqual({ decision: 'allow' });
+  const heartbeat = join(home, 'live', readdirSync(join(home, 'live'))[0]);
+  const owner = JSON.parse(readFileSync(heartbeat, 'utf8'));
+  const inbox = join(home, 'coord/inbox');
+  mkdirSync(inbox, { recursive: true });
+  writeFileSync(
+    join(inbox, 'handoff.json'),
+    JSON.stringify({ id: 'handoff', type: 'receipt', recipient: owner })
+  );
+  expect(call()?.reason).toStartWith('SUPERAGENT 通知（非错误）：');
+  expect(call()).toEqual({ decision: 'allow' });
+
+  mkdirSync(join(home, 'runs'));
+  mkdirSync(archon);
+  writeFileSync(
+    join(home, 'runs/run-wait.json'),
+    JSON.stringify({
+      run_id: 'run-wait',
+      archon_run_id: 'archon-wait',
+      controller: owner,
+      repo: '/missing-fixture',
+    })
+  );
+  const db = new Database(join(archon, 'archon.db'));
+  db.exec(
+    "CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT); INSERT INTO remote_agent_workflow_runs VALUES ('archon-wait', 'running')"
+  );
+  db.close();
+  expect(call()?.reason).toContain('superagent wait run-wait --timeout 3000');
+  expect(call()).toEqual({ decision: 'allow' });
+
+  mkdirSync(join(home, 'ntfy'));
+  writeFileSync(
+    join(home, 'ntfy/state.json'),
+    JSON.stringify({
+      decisions: {
+        ask: {
+          id: 'ask-fixture',
+          status: 'pending',
+          title: '测试问询',
+          originator: { identity: owner },
+          expires_at: '2099-01-01T00:00:00Z',
+        },
+      },
+    })
+  );
+  expect(call()?.reason).toContain('superagent inbox --wait --timeout 3000');
+  expect(call()).toEqual({ decision: 'allow' });
+}, 30_000);
+
+test('Neon 微改计量通过后持久化，提示和重试不重复计数', () => {
+  const { home, repo, call } = agyFixture();
+  const args = {
+    TargetFile: pathToFileURL(join(repo, 'new.ts')).href,
+    CodeContent: 'let x = 1;\n',
+  };
+  expect(call('write_to_file', args)?.reason).toContain('本会话已改 1 行');
+  for (let i = 0; i < 2; i++)
+    expect(call('write_to_file', args, 'PreToolUse', 'retry')).toEqual({ decision: 'allow' });
+  const file = join(home, 'hooks', createHash('sha256').update('fixture').digest('hex') + '.json');
+  expect(JSON.parse(readFileSync(file, 'utf8')).micro).toMatchObject({ lines: 1 });
+  writeFileSync(join(repo, 'new.ts'), args.CodeContent);
+  const edit = { ...args, TargetContent: 'let x = 1;', ReplacementContent: 'let x = 2;' };
+  expect(call('replace_file_content', edit)).toEqual({ decision: 'allow' });
+  expect(JSON.parse(readFileSync(file, 'utf8')).micro).toMatchObject({ lines: 2 });
+  const command = { CommandLine: 'echo ok > new.ts', Cwd: repo };
+  expect(call('run_command', command)?.reason).toContain('无法可靠计量 shell 代码写入');
+  expect(call('run_command', command)).toEqual({ decision: 'allow' });
+});
+
+test('Neon 子代理任务超出派单上下文预算时提示一次', () => {
+  const { call } = agyFixture();
+  const input = { Prompt: 'x'.repeat(20_000) };
+  expect(call('invoke_subagent', input)?.reason).toContain('G-2: Prompt 超过');
+  expect(call('invoke_subagent', input)).toEqual({ decision: 'allow' });
 });
 
 test('Orca ACP 只作为控制台识别', () => {
@@ -397,10 +496,11 @@ test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
 }, 30_000);
 
 test('agy 放行普通操作、第三方包路径及未处理事件', () => {
-  const { call, home } = agyFixture();
+  const { call, home, repo } = agyFixture();
   const allow = { decision: 'allow' };
   for (const [file, kind] of privatePathCases)
     if (kind === null) expect(call('read_file', { Path: join(home, file) })).toEqual(allow);
+  writeFileSync(join(repo, 'a.ts'), '');
   expect(call('write_to_file', { TargetFile: 'a.ts', CodeContent: '~/.netrc' })).toEqual(allow);
   expect(call('grep_search', { SearchPath: '.', Query: '_private' })).toEqual(allow);
   expect(call('run_command', { CommandLine: 'grep _private src', Cwd: '' })).toEqual(allow);
