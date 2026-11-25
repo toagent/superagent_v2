@@ -25,7 +25,7 @@ import {
 import { loadTiers } from '../src/config';
 import { caller } from '../src/coord';
 import { agyGuardCommand } from '../src/install-hooks';
-import { codexFixtureEnv, gitRepo, sh, tmp } from './helpers';
+import { codexFixtureEnv, gitRepo, hookFixtureEnv, sh, tmp } from './helpers';
 
 test('shell fixtures suppress inherited role/job and dotenv values, preserving explicit overrides', () => {
   const root = tmp();
@@ -986,7 +986,7 @@ if (fixture) process.exit(3);
     writeFileSync(join(root, 'codex'), '#!/bin/sh\ncat > /dev/null\n', { mode: 0o755 });
     const env = {
       BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`,
-      HOME: root, XDG_STATE_HOME: root, AGY_LLM_GATEWAY_URL: 'https://example.invalid',
+      ...hookFixtureEnv(root), XDG_STATE_HOME: root, AGY_LLM_GATEWAY_URL: 'https://example.invalid',
       AGY_LLM_GATEWAY_API_KEY: 'fixture-gateway-key',
     };
     const p = run(promptArgs('neon', 'general', prompt), '', root, env);

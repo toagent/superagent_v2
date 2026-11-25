@@ -78,6 +78,11 @@ export const tmp = (): string => {
   return d;
 };
 
+export const hookFixtureEnv = (home: string) => ({
+  HOME: home,
+  ORCA_USER_DATA_PATH: join(home, 'Library/Application Support/orca'),
+});
+
 /** Codex child fixtures route from a synthetic Codex controller, never the runner's ancestors. */
 export function codexFixtureEnv(): { BUN_OPTIONS: string } {
   const preload = join(tmp(), 'launcher.cjs');

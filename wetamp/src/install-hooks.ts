@@ -14,8 +14,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { getArchonWorkspacesPath, isPathInside } from '@archon/paths';
 import { WETAMP } from './config';
 import { createRequire } from 'node:module';
 const { withLock, atomicWrite } = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
@@ -44,6 +45,45 @@ const isV1 = (c: string): boolean => new RegExp(V1_HOOKS.source).test(c);
 const V2_HOOKS = join(WETAMP, 'hooks') + '/';
 const envOr = (key: string, fallback: string, env = process.env): string =>
   env[key] === '' ? fallback : (env[key] ?? fallback);
+
+let accountHome: string | undefined;
+function realUserHome(): string {
+  // Bun also captures HOME for userInfo().homedir. Query without inherited env or .env.
+  if (accountHome) return accountHome;
+  const child = Bun.spawnSync(
+    [process.execPath, '--no-env-file', '-e', 'process.stdout.write(require("node:os").homedir())'],
+    { env: {} }
+  );
+  const path = child.stdout.toString();
+  if (child.exitCode !== 0 || !isAbsolute(path)) throw new Error('无法确定系统用户主目录');
+  return (accountHome = path);
+}
+
+// A config may not exist yet. Resolve its existing ancestors before checking containment.
+function canonicalPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch (error) {
+    const parent = dirname(absolute);
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || parent === absolute) throw error;
+    return join(canonicalPath(parent), basename(absolute));
+  }
+}
+
+function rejectTemporaryGuard(guard: string, ...files: string[]): void {
+  const realHome = realUserHome();
+  const defaultSa = join(realHome, '.superagent');
+  const roots = [tmpdir(), '/tmp', getArchonWorkspacesPath()];
+  for (const root of [defaultSa, envOr('SUPERAGENT_HOME', defaultSa)])
+    roots.push(join(root, 'archon/workspaces'), join(root, 'engine/verify'));
+  const source = canonicalPath(guard);
+  if (!roots.some(root => isPathInside(root, guard) || isPathInside(canonicalPath(root), source)))
+    return;
+  for (const file of files)
+    if (isPathInside(realHome, file) || isPathInside(canonicalPath(realHome), canonicalPath(file)))
+      throw new Error(`拒绝将临时护栏 ${guard} 安装到用户配置 ${file}`);
+}
 const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
 const cmd = (file: string, client?: Client): string =>
   `node ${quote(V2_HOOKS + file)}${client ? ` ${client}` : ''}`;
@@ -83,7 +123,11 @@ const paths = (home: string, env = process.env): Record<Client | 'agy', string> 
   agy: join(home, '.gemini/config/hooks.json'),
 });
 export function agyChatHooksFile(home: string, env = process.env): string | undefined {
-  const data = envOr('ORCA_USER_DATA_PATH', join(home, 'Library/Application Support/orca'), env);
+  const fallback = join(home, 'Library/Application Support/orca');
+  const data =
+    canonicalPath(home) === canonicalPath(realUserHome())
+      ? envOr('ORCA_USER_DATA_PATH', fallback, env)
+      : fallback;
   const chat = join(data, 'antigravity-chat');
   return statSync(chat, { throwIfNoEntry: false })?.isDirectory()
     ? join(chat, 'config/hooks.json')
@@ -322,10 +366,10 @@ export function installedOpenCodeGuard(): string {
   }
 }
 
-function installOpenCode(dryRun: boolean, stamp: string): string {
+function openCodeTargets(guard: string): [file: string, text: string, source: string][] {
   const home = homedir();
-  const guard = installedOpenCodeGuard();
-  const files = [
+  const wrapperGuard = join(dirname(guard), 'git-guardrail.cjs');
+  return [
     [
       join(
         envOr(
@@ -335,12 +379,21 @@ function installOpenCode(dryRun: boolean, stamp: string): string {
         'plugins/git-guardrail.js'
       ),
       openCodeGuard(guard),
+      guard,
     ],
     [
       join(home, '.wetamp/bin/git-guardrail.sh'),
-      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(join(dirname(guard), 'git-guardrail.cjs'))} "$@"\n`,
+      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(wrapperGuard)} "$@"\n`,
+      wrapperGuard,
     ],
   ];
+}
+
+function installOpenCode(
+  files: ReturnType<typeof openCodeTargets>,
+  dryRun: boolean,
+  stamp: string
+): string {
   let out = '';
   for (const [file, next] of files) {
     const update = (): void => {
@@ -377,18 +430,25 @@ function installOpenCode(dryRun: boolean, stamp: string): string {
 export function installHooks(dryRun: boolean, purge = false, only?: InstallClient): string {
   let out = '';
   const stamp = utc();
-  const openCode = !purge && (!only || only === 'opencode');
-  if (openCode) installedOpenCodeGuard();
+  const openCode = !purge && (!only || only === 'opencode') ? installedOpenCodeGuard() : undefined;
+  const adapters = openCode ? openCodeTargets(openCode) : [];
   const home = homedir();
   const targets = Object.entries(paths(home)) as [Client | 'agy', string][];
   const chat = !only || only === 'agy' ? agyChatHooksFile(home) : undefined;
   if (chat) targets.push(['agy', chat]);
-  for (const [client, file] of targets) {
-    if (only && client !== only) continue;
+  const selected = targets.filter(([client, file]) => {
+    if (only && client !== only) return false;
     if (client === 'agy' && file !== chat && !agyTerminalAvailable(home)) {
       out += 'agy: 未找到 agy 或 ~/.gemini，跳过\n';
-      continue;
+      return false;
     }
+    return true;
+  });
+  if (!dryRun && !purge) {
+    if (selected.length) rejectTemporaryGuard(agyGuardPath(), ...selected.map(([, file]) => file));
+    for (const [file, , source] of adapters) rejectTemporaryGuard(source, file);
+  }
+  for (const [client, file] of selected) {
     if (client === 'agy' && purge && !existsSync(file)) continue;
     const update = (): void => {
       const exists = existsSync(file);
@@ -410,7 +470,7 @@ export function installHooks(dryRun: boolean, purge = false, only?: InstallClien
     if (dryRun) update();
     else withLock(file, update);
   }
-  return out + (openCode ? installOpenCode(dryRun, stamp) : '');
+  return out + installOpenCode(adapters, dryRun, stamp);
 }
 
 /** V1 文件残留：带 managed 标记的子代理、release/state 目录、V1 checkout（--hooks 产生的 V2 install.json 所在目录除外）。 */

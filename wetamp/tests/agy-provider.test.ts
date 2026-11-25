@@ -21,7 +21,7 @@ import { installPolicyExecutor, wrapPolicyProvider } from '../src/policy-executo
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import { readAuthorEvidence } from '../templates/.archon/scripts/sa-check';
 import { loadPlan } from '../src/plan';
-import { fixturePlan, gitRepo, tmp } from './helpers';
+import { fixturePlan, gitRepo, hookFixtureEnv, tmp } from './helpers';
 
 const fixtures = join(import.meta.dir, 'fixtures/agy');
 const model = 'gemini-4-neon-%78high';
@@ -42,7 +42,7 @@ function fixture() {
   mkdirSync(dirname(hooksPath), { recursive: true });
   writeFileSync(hooksPath, JSON.stringify({ superagent: managed }));
   const env = {
-    HOME: home,
+    ...hookFixtureEnv(home),
     XDG_STATE_HOME: home,
     AGY_LLM_GATEWAY_URL: 'https://example.invalid',
     AGY_LLM_GATEWAY_API_KEY: 'fixture-gateway-key',

@@ -15,7 +15,7 @@ import { WETAMP } from '../src/config';
 import { installMode } from '../src/install-mode';
 import { testTimeout } from '@archon/paths/test-utils';
 import { mergeHooks, openCodeGuard } from '../src/install-hooks';
-import { tmp } from './helpers';
+import { hookFixtureEnv, tmp } from './helpers';
 const state = createRequire(import.meta.url)('../hooks/hook-state.cjs') as {
   withLock: <T>(file: string, fn: () => T) => T;
   withState: <T>(file: string, fn: (s: Record<string, unknown>) => T) => T;
@@ -142,13 +142,12 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
     Bun.spawnSync([process.execPath, join(WETAMP, 'src/install-hooks.ts'), ...args], {
       env: {
         ...process.env,
-        HOME: root,
+        ...hookFixtureEnv(root),
         PATH: `${bin}:/usr/bin:/bin`,
         SUPERAGENT_HOME: join(root, 'sa'),
         CLAUDE_CONFIG_DIR: join(root, '.claude'),
         CODEX_HOME: join(root, '.codex'),
         OPENCODE_CONFIG_DIR: join(root, '.config/opencode'),
-        ORCA_USER_DATA_PATH: join(root, 'orca'),
         XDG_CONFIG_HOME: join(root, '.config'),
         XDG_STATE_HOME: join(root, '.local/state'),
       },
@@ -162,11 +161,12 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
   expect(skipped.exitCode).toBe(0);
   expect(skipped.stdout.toString()).toContain('agy: 未找到 agy 或 ~/.gemini，跳过');
   expect(existsSync(join(root, '.gemini'))).toBe(false);
-  expect(existsSync(join(root, 'orca'))).toBe(false);
+  const orca = hookFixtureEnv(root).ORCA_USER_DATA_PATH;
+  expect(existsSync(orca)).toBe(false);
   writeFileSync(join(bin, 'agy'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const codex = join(root, '.codex/hooks.json');
   const agy = join(root, '.gemini/config/hooks.json');
-  const chat = join(root, 'orca/antigravity-chat/config/hooks.json');
+  const chat = join(orca, 'antigravity-chat/config/hooks.json');
   const otherGroup = { 'orca-status': { enabled: true } };
   mkdirSync(join(chat, '..'), { recursive: true });
   mkdirSync(join(codex, '..'), { recursive: true });
@@ -247,7 +247,7 @@ test('installer refuses a worktree source before writing any global adapter', ()
   const p = Bun.spawnSync([process.execPath, join(WETAMP, 'src/install-hooks.ts')], {
     env: {
       ...process.env,
-      HOME: root,
+      ...hookFixtureEnv(root),
       XDG_STATE_HOME: join(root, 'state'),
       CLAUDE_CONFIG_DIR: join(root, '.claude'),
       CODEX_HOME: join(root, '.codex'),
@@ -356,7 +356,7 @@ test('F-12: concurrent hook installation serializes RMW, preserves other config 
   stableInstallation(root);
   const env = {
     ...process.env,
-    HOME: root,
+    ...hookFixtureEnv(root),
     OPENCODE_CONFIG_DIR: join(root, '.config/opencode'),
     XDG_CONFIG_HOME: join(root, '.config'),
     XDG_STATE_HOME: join(root, '.local/state'),

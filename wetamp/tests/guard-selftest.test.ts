@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { guardSelftest } from '../src/guard-selftest';
 import { agyGuardCommand } from '../src/install-hooks';
-import { tmp } from './helpers';
+import { hookFixtureEnv, tmp } from './helpers';
 
 function check(broken?: { client: 'codex' | 'agy' | 'agy-acp'; source?: string }) {
   const home = tmp();
@@ -12,7 +12,7 @@ function check(broken?: { client: 'codex' | 'agy' | 'agy-acp'; source?: string }
   mkdirSync(dirname(script), { recursive: true });
   if (broken?.source !== undefined) writeFileSync(script, broken.source);
   const env = {
-    HOME: home,
+    ...hookFixtureEnv(home),
     PATH: process.env.PATH,
     SUPERAGENT_HOME: join(home, 'sa'),
     ARCHON_HOME: join(home, 'archon'),

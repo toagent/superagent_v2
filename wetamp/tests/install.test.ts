@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
-import { fixtureTiers, fixtureTiersEnv, stableInstall } from './helpers';
+import { fixtureTiers, fixtureTiersEnv, hookFixtureEnv, stableInstall } from './helpers';
 import { openCodeGuard } from '../src/install-hooks';
 import {
   assertAuthorNotReviewer,
@@ -47,7 +47,7 @@ function runInstall(
     env: {
       ...process.env,
       ...fixtureTiersEnv(),
-      HOME: home,
+      ...hookFixtureEnv(home),
       SUPERAGENT_HOME: home,
       ARCHON_HOME: archonHome,
       SA_LAUNCHD_DIR: launchd,
@@ -287,7 +287,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       const p = Bun.spawnSync(['bash', join(WETAMP, 'scripts', 'install.sh'), ...args], {
         env: {
           ...process.env,
-          HOME: home,
+          ...hookFixtureEnv(home),
           SUPERAGENT_HOME: join(home, '.superagent'),
           CLAUDE_CONFIG_DIR: '',
           CODEX_HOME: '',
