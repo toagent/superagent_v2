@@ -32,7 +32,14 @@ import {
   maintenanceTick,
   type Ledger,
 } from '../src/cli';
-import { collectEngineSnapshots, gc as collect, LIVE_RETENTION_MS } from '../src/gc';
+import {
+  collectEngineSnapshots,
+  collectEngineVerify,
+  collectPlans,
+  collectSuperviseLocks,
+  gc as collect,
+  LIVE_RETENTION_MS,
+} from '../src/gc';
 import { fixturePlan, gitRepo, tmp } from './helpers';
 
 const keys = [
@@ -1037,3 +1044,141 @@ test.each(['old', 'fresh', 'referenced', 'alias', 'bad-ledger', 'symlink', 'root
     if (state === 'symlink') expect(existsSync(join(root, 'link'))).toBe(true);
   }
 );
+
+test('supervise lock gc removes stale offline locks and preserves primary, active, live, fresh, and symlink locks', () => {
+  const root = tmp(),
+    engine = join(root, 'engine'),
+    outside = join(tmp(), 'outside.lock'),
+    old = new Date(Date.now() - 25 * 60 * 60_000);
+  process.env.SUPERAGENT_HOME = root;
+  mkdirSync(join(engine, 'aaaaaaa'), { recursive: true });
+  symlinkSync(join(engine, 'aaaaaaa'), join(engine, 'current'));
+  writeFileSync(outside, 'keep');
+  const writeLock = (name: string, payload: unknown, stale = true) => {
+    const p = join(root, name);
+    writeFileSync(p, JSON.stringify(payload));
+    if (stale) utimesSync(p, old, old);
+    return p;
+  };
+  const primary = writeLock('supervise.lock', { pid: 99999999, host: hostname() }),
+    active = writeLock('supervise.aaaaaaa.lock', { pid: 99999999, host: hostname() }),
+    live = writeLock('supervise.bbbbbbb.lock', { pid: process.pid, host: hostname() }),
+    fresh = writeLock('supervise.ccccccc.lock', { pid: 99999999, host: hostname() }, false),
+    stale = writeLock('supervise.ddddddd.lock', { pid: 99999999, host: hostname() }),
+    link = join(root, 'supervise.eeeeeee.lock');
+  symlinkSync(outside, link);
+  const dry = gc(true).filter(e => e.object === 'supervise_lock');
+  expect(dry.filter(e => e.action === 'would_remove').map(e => e.run_id)).toEqual([
+    'supervise.ddddddd.lock',
+  ]);
+  expect(dry.some(e => e.run_id === 'supervise.lock')).toBe(false);
+  expect(existsSync(stale)).toBe(true);
+  const removed = collectSuperviseLocks(false).filter(e => e.action === 'removed');
+  expect(removed.map(e => e.run_id)).toEqual(['supervise.ddddddd.lock']);
+  expect(existsSync(stale)).toBe(false);
+  for (const keep of [primary, active, live, fresh, link, outside])
+    expect(existsSync(keep)).toBe(true);
+});
+
+test('engine verify gc removes stale dirs under engine.lock and preserves active, fresh, locked, and symlink entries', () => {
+  const root = tmp(),
+    engine = join(root, 'engine'),
+    verify = join(engine, 'verify'),
+    promos = join(engine, 'promotions'),
+    outside = join(tmp(), 'outside-verify'),
+    old = new Date(Date.now() - 25 * 60 * 60_000),
+    id = inspectProcess(process.pid);
+  process.env.SUPERAGENT_HOME = root;
+  mkdirSync(promos, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const staleDir = join(verify, 'ddddddd'),
+    activeDir = join(verify, 'eeeeeee'),
+    freshDir = join(verify, 'fffffff'),
+    link = join(verify, '1111111');
+  for (const d of [staleDir, activeDir, freshDir]) {
+    mkdirSync(join(d, 'attempt1'), { recursive: true });
+    writeFileSync(join(d, 'attempt1', 'file'), 'x');
+  }
+  utimesSync(join(staleDir, 'attempt1'), old, old);
+  utimesSync(staleDir, old, old);
+  utimesSync(join(activeDir, 'attempt1'), old, old);
+  utimesSync(activeDir, old, old);
+  chmodSync(join(staleDir, 'attempt1', 'file'), 0o444);
+  chmodSync(join(staleDir, 'attempt1'), 0o555);
+  writeFileSync(
+    join(promos, 'eeeeeee.verify.json'),
+    JSON.stringify({
+      sha: 'eeeeeee',
+      status: 'running',
+      host: hostname(),
+      pid: process.pid,
+      pid_start: id.state === 'online' ? id.start : '',
+    })
+  );
+  symlinkSync(outside, link);
+  const dry = collectEngineVerify(true);
+  expect(dry.filter(e => e.action === 'would_remove').map(e => e.run_id)).toEqual(['ddddddd']);
+  expect(existsSync(join(engine, 'engine.lock'))).toBe(false);
+  expect(
+    gc(true)
+      .filter(e => e.object === 'engine_verify' && e.action === 'would_remove')
+      .map(e => e.run_id)
+  ).toEqual(['ddddddd']);
+  const held = lock(join(engine, 'engine.lock'));
+  expect(held.ok).toBe(true);
+  expect(collectEngineVerify(false)[0]).toMatchObject({
+    action: 'skipped',
+    reason: 'engine.lock held',
+  });
+  expect(existsSync(staleDir)).toBe(true);
+  if (held.ok) held.release();
+  expect(
+    collectEngineVerify(false)
+      .filter(e => e.action === 'removed')
+      .map(e => e.run_id)
+  ).toEqual(['ddddddd']);
+  expect(existsSync(staleDir)).toBe(false);
+  for (const keep of [activeDir, freshDir, link, outside]) expect(existsSync(keep)).toBe(true);
+});
+
+test('plans gc removes old unreferenced plans and preserves referenced, fresh, bad-ledger, and symlink entries', () => {
+  const f = fixture('running', false),
+    plans = join(f.root, 'sa', 'plans'),
+    outside = join(tmp(), 'outside-plan'),
+    old = new Date(Date.now() - 31 * 24 * 60 * 60_000);
+  mkdirSync(plans, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const staleFile = join(plans, 'quick-old.json'),
+    staleDir = join(plans, 'old-bundle'),
+    freshFile = join(plans, 'quick-fresh.json'),
+    refFile = join(plans, 'referenced.json'),
+    link = join(plans, 'link');
+  writeFileSync(staleFile, '{}');
+  mkdirSync(staleDir, { recursive: true });
+  writeFileSync(join(staleDir, 'plan.json'), '{}');
+  writeFileSync(freshFile, '{}');
+  writeFileSync(refFile, '{}');
+  symlinkSync(outside, link);
+  for (const p of [staleFile, join(staleDir, 'plan.json'), staleDir, refFile])
+    utimesSync(p, old, old);
+  f.ledger.plan = refFile;
+  f.save();
+  const dry = gc(true).filter(e => e.object === 'plan');
+  expect(
+    dry
+      .filter(e => e.action === 'would_remove')
+      .map(e => e.run_id)
+      .sort()
+  ).toEqual(['old-bundle', 'quick-old.json']);
+  expect(existsSync(staleFile)).toBe(true);
+  expect(
+    collectPlans(false)
+      .filter(e => e.action === 'removed')
+      .map(e => e.run_id)
+      .sort()
+  ).toEqual(['old-bundle', 'quick-old.json']);
+  expect([existsSync(staleFile), existsSync(staleDir)]).toEqual([false, false]);
+  for (const keep of [freshFile, refFile, link, outside]) expect(existsSync(keep)).toBe(true);
+  writeFileSync(ledgerPath(f.id), '{');
+  expect(collectPlans(false)[0]).toMatchObject({ run_id: '*', object: 'plan', action: 'skipped' });
+});
