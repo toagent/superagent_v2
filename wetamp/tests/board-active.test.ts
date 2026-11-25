@@ -93,20 +93,24 @@ test('activity discovery reuses ps and remote results within their TTLs', async 
     process.env.SUPERAGENT_HOME = home;
     process.env.TWIN_AGENT_QUEUE_CLIENT = bin;
     Bun.spawn = ((cmd, options) => {
-      if (Array.isArray(cmd) && (cmd[0] === 'ps' || cmd[0] === bin)) seen.push([...cmd]);
-      return spawn(cmd, options);
+      if (!Array.isArray(cmd)) return spawn(cmd, options);
+      if (cmd[0] === 'ps' || cmd[0] === bin) seen.push([...cmd]);
+      if (cmd[0] !== 'ps') return spawn(cmd, options);
+      const row = cmd[1] === '-p' ? '999999' : '999999 1 ?? 0.0 00:01';
+      return spawn(
+        ['/bin/sh', '-c', `printf '%s /App Support/agy_acp_server.par\\n' '${row}'`],
+        options
+      );
     }) as typeof Bun.spawn;
-    await loadActivity(Date.now());
+    const first = await loadActivity(Date.now());
     const firstCount = seen.length;
+    expect(first.notes).toEqual([]);
     expect(seen.filter(c => c[0] === 'ps' && c[1] === '-axo')).toHaveLength(1);
     expect(seen.filter(c => c[0] === bin)).toHaveLength(1);
-    expect(
-      seen.every(
-        c =>
-          c[0] === bin ||
-          (c[0] === 'ps' && (c[1] === '-axo' || (c[1] === '-p' && c.includes('pid=,comm='))))
-      )
-    ).toBe(true);
+    const allowed = (c: string[]): boolean =>
+      c[0] === bin ||
+      (c[0] === 'ps' && (c[1] === '-axo' || (c[1] === '-p' && c.includes('pid=,comm='))));
+    expect(seen.every(allowed)).toBe(true);
     await loadActivity(Date.now());
     expect(seen).toHaveLength(firstCount);
   } finally {
