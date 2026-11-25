@@ -339,7 +339,8 @@ export function resolveRoute(
   if (console !== 'gemini' && claudeDegraded) mode = 'single:chatgpt';
   const neonCoder = usesNeonCoder(console, mode);
   if (mode === 'single:chatgpt') console = 'codex';
-  const vendor = mode === 'single:claude' ? 'claude' : mode === 'single:chatgpt' ? 'codex' : null;
+  const vendor = mode === 'single:claude' ? 'claude'
+    : mode === 'single:chatgpt' || (role === 'review' && claudeDegraded) ? 'codex' : null;
   const coderProvider = mode === 'single:claude' ? 'claude' : 'codex';
   const coding = role === 'code' || role === 'repair';
   // single:chatgpt keeps reviews on Codex; only single:claude opens the configured review pool.

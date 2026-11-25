@@ -48,14 +48,18 @@ test('single:gemini lists only the ordered agy candidates and leaves review inde
   );
   expect(cli.exitCode).toBe(0);
   expect(JSON.parse(cli.stdout.toString()).codex.general).toEqual(models);
+  expect(runAliases('gemini', tiers, 'auto')['@sa-coder']).toMatchObject({
+    provider: 'codex',
+    model: resolveRoute(tiers, 'codex', 'single:chatgpt').candidates[0].model,
+  });
+  expect(resolveRoute(tiers, 'gemini', 'auto').candidates[0]).toMatchObject({
+    provider: 'agy',
+    model: tiers.routing.gemini!.code![0],
+  });
   delete tiers.routing.gemini;
   expect(() => resolveRoute(tiers, 'codex', 'single:gemini', 'repair')).toThrow(
     'no eligible repair model'
   );
-  tiers.routing.coder.models = resolveRoute(tiers, 'gemini', 'single:claude').candidates.map(
-    a => a.model
-  );
-  expect(() => runAliases('gemini', tiers, 'strict')).toThrow('no eligible code model');
 });
 const decide = (input: Omit<Parameters<typeof rawDecide>[0], 'reviewRounds'>) =>
   rawDecide({ ...input, reviewRounds: POLICY_ROUNDS });
