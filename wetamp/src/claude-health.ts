@@ -135,14 +135,19 @@ function recordOutcome(provider: HealthProvider, o: ClaudeOutcome, trip: boolean
 }
 export const recordClaudeOutcome = (o: ClaudeOutcome, now = Date.now()) =>
   recordOutcome('claude', o, claudeOutcomeTrips(o), now);
+const AGY_IMMEDIATE_TRIP =
+  /No available Gemini accounts|no available accounts|RESOURCE_EXHAUSTED|ECONNREFUSED|connect: connection refused/i;
+export const agyOutcomeImmediateTrip = (o: ClaudeOutcome): boolean =>
+  !o.ok && (o.class === 'quota_exhausted' || AGY_IMMEDIATE_TRIP.test(o.evidence ?? ''));
 export function recordAgyOutcome(o: ClaudeOutcome, now?: number) {
-  if (o.provider !== 'agy' || (!o.ok && o.class !== 'transient'))
+  const immediate = agyOutcomeImmediateTrip(o);
+  if (o.provider !== 'agy' || (!o.ok && o.class !== 'transient' && !immediate))
     return { health: readAgyHealth(now), persisted: true };
   return persist('agy', now, (current, at) => {
     if (o.ok) return health(current, o, at);
     // Older down records have already tripped. Count each settled attempt under the write lock.
-    const failures =
-      (current.unserved_failures ?? (current.state === 'down' ? TRIP_RETRIES : 0)) + 1;
+    const next = (current.unserved_failures ?? (current.state === 'down' ? TRIP_RETRIES : 0)) + 1;
+    const failures = immediate ? Math.max(TRIP_RETRIES, next) : next;
     if (failures < TRIP_RETRIES)
       return {
         ...current,

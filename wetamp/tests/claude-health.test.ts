@@ -62,6 +62,28 @@ test('Neon 熔断只接受达到阈值的未服务失败，冷却到期重新准
   );
 });
 
+test('Neon 账号耗尽或网关拒连立即熔断', () => {
+  const now = Date.parse('2026-10-27T01:00:00Z');
+  for (const patch of [
+    { class: 'quota_exhausted', retries: 0 },
+    {
+      class: 'unknown',
+      retries: 0,
+      evidence: 'agy 结果状态 ERROR：No available Gemini accounts: no available accounts',
+    },
+    {
+      class: 'transient',
+      retries: 0,
+      evidence: 'dial tcp 127.0.0.1:1: connect: connection refused',
+    },
+  ]) {
+    useHome();
+    const res = recordAgyOutcome(failure({ provider: 'agy', ...patch }), now);
+    expect(res.health.state).toBe('down');
+    expect(isAgyAvailable(res.health, now + 1)).toBeFalse();
+  }
+});
+
 test('health trips on typed retry/quota boundaries, honors resetAt, and closes on success', () => {
   const home = useHome(),
     now = Date.parse('2026-10-27T01:00:00Z');

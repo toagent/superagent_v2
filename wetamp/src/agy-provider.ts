@@ -137,11 +137,15 @@ function usage(value: unknown): ResultChunk['tokens'] {
   };
 }
 
+const ACCOUNT_EXHAUSTED = /No available Gemini accounts|no available accounts|RESOURCE_EXHAUSTED/i;
+const GATEWAY_REFUSED = /ECONNREFUSED|connection refused/i;
+
 function agyResult(
   body: Record<string, unknown>,
   model: string | undefined,
   sawTool: boolean,
-  errorSteps: number
+  errorSteps: number,
+  errorStatus?: string
 ): ResultChunk {
   const text = string(body.response);
   const structuredOutput = body.structured_output;
@@ -157,6 +161,7 @@ function agyResult(
       status => status === body.status
     );
     const reported = object(body.usage);
+    const detail = string(body.error) ?? '';
     const unserved =
       status &&
       !sawTool &&
@@ -165,12 +170,24 @@ function agyResult(
         const tokens = reported[`${field}_tokens`];
         return tokens === undefined || tokens === 0;
       });
+    const exhausted = errorStatus === 'RESOURCE_EXHAUSTED' || ACCOUNT_EXHAUSTED.test(detail);
+    const refused = errorStatus === 'UNAVAILABLE' || GATEWAY_REFUSED.test(detail);
+    const classification: NonNullable<ResultChunk['failure']>['class'] = sawTool
+      ? 'unknown'
+      : exhausted
+        ? 'quota_exhausted'
+        : unserved || (status === 'ERROR' && refused)
+          ? 'transient'
+          : 'unknown';
     return {
       ...result,
       ...failure(
-        unserved ? 'transient' : 'unknown',
+        classification,
         `agy 结果状态 ${status ?? '未知'}`,
-        !sawTool && status === 'ERROR' && (unserved || body.usage === undefined) && errorSteps > 0
+        !sawTool &&
+          status === 'ERROR' &&
+          (unserved || body.usage === undefined || exhausted || refused) &&
+          errorSteps > 0
           ? errorSteps
           : undefined
       ),
@@ -187,9 +204,13 @@ function agyResult(
   return { ...result, text, structuredOutput };
 }
 
+export const agyInput = (prompt: string): string =>
+  `${JSON.stringify({ event: 'user', message: { role: 'user', content: prompt } })}\n`;
+
 export async function* runAgy(
   executable: string,
   args: string[],
+  prompt: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
   options: Parameters<IAgentProvider['sendQuery']>[3],
@@ -205,7 +226,13 @@ export async function* runAgy(
   const redact = (text: string) => redactCredentialValues(text, secrets);
   let child;
   try {
-    child = Bun.spawn([executable, ...args], { cwd, env, detached: true, stderr: 'pipe' });
+    child = Bun.spawn([executable, ...args], {
+      cwd,
+      env,
+      detached: true,
+      stdin: new Blob([agyInput(prompt)]),
+      stderr: 'pipe',
+    });
   } catch {
     yield failure('misconfigured', '无法启动 agy');
     yield { type: 'settled' };
@@ -213,12 +240,17 @@ export async function* runAgy(
   }
   const lines = createInterface({ input: Readable.from(child.stdout), crlfDelay: Infinity });
   const diagnostics = createInterface({ input: Readable.from(child.stderr), crlfDelay: Infinity });
-  let errorId: string | undefined;
+  const diag: { errorId?: string; status?: string; gatewayRefused: boolean } = {
+    gatewayRefused: false,
+  };
   const readDiagnostics = (async () => {
     for await (const line of diagnostics) {
+      if (GATEWAY_REFUSED.test(line)) diag.gatewayRefused = true;
       if (!line.startsWith('AGY_ERROR: ')) continue;
       try {
-        errorId = string(object(JSON.parse(line.slice('AGY_ERROR: '.length)))?.error_id) ?? errorId;
+        const parsed = object(JSON.parse(line.slice('AGY_ERROR: '.length)));
+        diag.errorId = string(parsed?.error_id) ?? diag.errorId;
+        diag.status = string(parsed?.status) ?? diag.status;
       } catch {
         // stderr 只补充诊断，分类由 stdout 事件和退出状态决定。
       }
@@ -322,12 +354,17 @@ export async function* runAgy(
     }
     const code = await child.exited;
     finished = true;
+    await readDiagnostics;
     signal?.throwIfAborted();
     const abnormalExit = code !== 0 || child.signalCode;
     const incomplete = (evidence: string): ResultChunk =>
-      failure(sawTool ? 'unknown' : 'transient', `${evidence}${sawTool ? '，已有工具活动' : ''}`);
+      failure(
+        sawTool ? 'unknown' : 'transient',
+        `${evidence}${sawTool ? '，已有工具活动' : ''}`,
+        !sawTool && errorSteps.size > 0 ? errorSteps.size : undefined
+      );
     result = terminal
-      ? agyResult(terminal, model, sawTool, errorSteps.size)
+      ? agyResult(terminal, model, sawTool, errorSteps.size, diag.status)
       : incomplete('agy 未收到结果');
     // 缺少结构化用量的旧回执沿用退出码规则，已观察到工具步骤则保留终态分类。
     if (invalid && !sawEvent) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
@@ -337,10 +374,16 @@ export async function* runAgy(
     ) {
       const prior = result.failure;
       const exit = `agy 进程异常退出（${String(child.signalCode ?? code)}）`;
+      const exitClass: NonNullable<ResultChunk['failure']>['class'] =
+        sawTool || terminal?.status === 'SUCCESS'
+          ? 'unknown'
+          : prior?.class === 'quota_exhausted'
+            ? 'quota_exhausted'
+            : 'transient';
       result.isError = true;
       result.failure = {
         ...prior,
-        class: sawTool ? 'unknown' : 'transient',
+        class: exitClass,
         evidence: [
           exit,
           terminal ? prior?.evidence : undefined,
@@ -352,12 +395,19 @@ export async function* runAgy(
     } else if (invalid && terminal) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
+    const unservedGateway =
+      !terminal &&
+      Boolean(abnormalExit) &&
+      (diag.gatewayRefused ||
+        diag.status === 'UNAVAILABLE' ||
+        diag.status === 'RESOURCE_EXHAUSTED');
     if (
       !sawTool &&
       !invalid &&
-      terminal?.status === 'ERROR' &&
-      result.failure?.class === 'transient' &&
-      result.tokens?.total === 0
+      (unservedGateway ||
+        (terminal?.status === 'ERROR' &&
+          (result.failure?.class === 'transient' || result.failure?.class === 'quota_exhausted') &&
+          (result.tokens === undefined || result.tokens.total === 0)))
     )
       job?.unserved();
   } finally {
@@ -369,8 +419,8 @@ export async function* runAgy(
     await readDiagnostics;
   }
   const detail = string(terminal?.error)?.trim();
-  if (result.failure && errorId)
-    result.failure.evidence += `（error_id: ${redact(errorId).slice(0, 128)}）`;
+  if (result.failure && diag.errorId)
+    result.failure.evidence += `（error_id: ${redact(diag.errorId).slice(0, 128)}）`;
   if (result.failure && detail) result.failure.evidence += `：${detail.slice(0, 1000)}`;
   for (const [index, state] of tools)
     if (state === 'active')
@@ -411,9 +461,9 @@ export function agyLaunch(
   return { executable, env: { ...env, AGY_LLM_GATEWAY_API_KEY: key } } as const;
 }
 
-export const agyArgs = (prompt: string, model: string, extra: string[] = []): string[] => [
-  '--print',
-  prompt,
+export const agyArgs = (model: string, extra: string[] = []): string[] => [
+  '--input-format',
+  'stream-json',
   '--output-format',
   'stream-json',
   '--model',
@@ -449,7 +499,7 @@ export function createAgyProvider(
         translateSchema(object(schema));
         extra.push('--json-schema', JSON.stringify(schema));
       }
-      yield* runAgy(launch.executable, agyArgs(prompt, model, extra), cwd, launch.env, options);
+      yield* runAgy(launch.executable, agyArgs(model, extra), prompt, cwd, launch.env, options);
     },
   };
 }
