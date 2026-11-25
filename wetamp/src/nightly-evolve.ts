@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildNodeSummaries } from '../../packages/cli/src/commands/workflow';
 import { archonRunIds, reportRuns } from './archon';
-import { engineDateTime, engineDay, home, WETAMP, writeAtomic } from './config';
+import { engineDateTime, engineDay, home, writeAtomic } from './config';
 import { confined } from './board/workflow';
 import type { Ledger } from './ledger';
 import { deliveryProjection, publishProjection } from './land';
@@ -30,7 +30,7 @@ import {
   wilson,
   type Lesson,
 } from './memory';
-import { curate, decodeNightlyOutput, nightlyReflection } from './memory-reflect';
+import { curate, decodeNightlyOutput, nightlyPrompt, nightlyReflection } from './memory-reflect';
 import { redact } from './redact';
 
 const DAY = 86_400_000;
@@ -250,12 +250,17 @@ export function analyze(rows: Sample[], now: number) {
     })
     .sort((a, b) => b.impact - a.impact)
     .slice(0, 3);
+  // 与 memory.ts:308 口径一致：排除非失败码 review_not_required，有真实原因时不重复计 unclassified。
   const failures = weekly.filter(r => r.first === 0);
   const denominator = failures.reduce((sum, row) => sum + row.packages, 0);
   const counts = new Map<string, number>();
   for (const { packages, reasons } of failures) {
     if (!packages) continue;
-    for (const reason of new Set(reasons)) counts.set(reason, (counts.get(reason) ?? 0) + packages);
+    const real = [...new Set(reasons)].filter(
+      r => r !== 'review_not_required' && r !== 'unclassified'
+    );
+    for (const reason of real.length ? real : ['unclassified'])
+      counts.set(reason, (counts.get(reason) ?? 0) + packages);
   }
   const failure_reasons = {
     denominator,
@@ -280,6 +285,43 @@ const modelState = () => ({
   produced: 0,
   filtered: {} as Record<string, number>,
 });
+
+const LOCAL_COOLDOWN_STREAK = 3;
+const LOCAL_COOLDOWN_DAYS = 7;
+const ZERO_YIELD_STATUSES = new Set(['failed', 'all_filtered', 'schema_invalid']);
+function localCooldownReason(dir: string, day: string): string | null {
+  if (!existsSync(dir)) return null;
+  const files = readdirSync(dir)
+    .filter(f => /^\d{4}-\d{2}-\d{2}\.json$/.test(f) && f.slice(0, 10) < day)
+    .sort()
+    .reverse();
+  let streak = 0,
+    lastAttemptDay: string | null = null;
+  for (const file of files) {
+    let local: { status?: unknown; produced?: unknown } | undefined;
+    try {
+      local = (
+        JSON.parse(readFileSync(join(dir, file), 'utf8')) as {
+          models?: { local?: { status?: unknown; produced?: unknown } };
+        }
+      ).models?.local;
+    } catch {
+      continue;
+    }
+    if (!local || typeof local.status !== 'string' || local.status === 'skipped') continue;
+    lastAttemptDay ??= file.slice(0, 10);
+    if (ZERO_YIELD_STATUSES.has(local.status) && (local.produced ?? 0) === 0) {
+      if (++streak >= LOCAL_COOLDOWN_STREAK) break;
+    } else return null;
+  }
+  if (streak < LOCAL_COOLDOWN_STREAK || !lastAttemptDay) return null;
+  const daysSince = Math.floor(
+    (Date.parse(`${day}T00:00:00Z`) - Date.parse(`${lastAttemptDay}T00:00:00Z`)) / DAY
+  );
+  return daysSince < LOCAL_COOLDOWN_DAYS
+    ? `连续 ${String(LOCAL_COOLDOWN_STREAK)} 天零产出，冷却跳过（距上次尝试 ${String(daysSince)} 天，满 ${String(LOCAL_COOLDOWN_DAYS)} 天探测）`
+    : null;
+}
 
 export function latestNightReport(sa: string): string | undefined {
   const dir = join(sa, 'evolution');
@@ -330,25 +372,24 @@ export function evolve(
   model.status = 'skipped';
   for (const source of sources) models[source].status = 'skipped';
   if (memoryOn() && safe.length) {
-    const template = readFileSync(join(WETAMP, 'templates', 'memory-reflect.md'), 'utf8');
     const input = () =>
-      template +
-      '\n仅 ADD 项目或任务类型经验，必须引用 episode ID，禁止以完成度换 token。\n' +
-      redact(
-        JSON.stringify({
-          groups: safe.map(a => ({
-            ...a,
-            examples: a.examples.filter(id => examples.some(e => e.id === id)),
-          })),
-          episodes: examples.map(({ id, project, tag, reasons, retro, status }) => ({
-            id,
-            project,
-            tag,
-            reasons,
-            retro,
-            status,
-          })),
-        })
+      nightlyPrompt(
+        redact(
+          JSON.stringify({
+            groups: safe.map(a => ({
+              ...a,
+              examples: a.examples.filter(id => examples.some(e => e.id === id)),
+            })),
+            episodes: examples.map(({ id, project, tag, reasons, retro, status }) => ({
+              id,
+              project,
+              tag,
+              reasons,
+              retro,
+              status,
+            })),
+          })
+        )
       );
     while (examples.length && Buffer.byteLength(input()) > 24_000) examples.pop();
     const prompt = input(),
@@ -401,7 +442,12 @@ export function evolve(
     };
     if (Buffer.byteLength(prompt) <= 24_000) {
       model.called = true;
-      const pending = { remote: propose('remote'), local: propose('local') };
+      const cooldown = force ? null : localCooldownReason(dir, day);
+      if (cooldown) models.local.reason = cooldown;
+      const pending = {
+        remote: propose('remote'),
+        local: cooldown ? [] : propose('local'),
+      };
       const discard = (source: Source, reason: string) => {
         const counts = models[source].filtered;
         counts[reason] = (counts[reason] ?? 0) + 1;

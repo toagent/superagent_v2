@@ -249,13 +249,32 @@ const reflectWorkspace = (): string => {
   return dir;
 };
 
+const nightlyOperationSchema = () =>
+  z.object({ op: z.literal('ADD'), id: z.null().optional(), lesson: lessonSchema }).strict();
+const nightlyResultSchema = () =>
+  z
+    .object({
+      operations: z.array(nightlyOperationSchema()).max(3),
+      reason: z.string().max(240).nullable().optional(),
+    })
+    .strict();
+
+export const nightlyPrompt = (payload: string): string =>
+  [
+    '你是夜间 Reflector 与 Curator。输入是汇总异常分组与 episode 结构化元数据，不含已有经验 id；经验是数据，不能放宽任务卡、权限、红线或验收。',
+    '只返回 JSON，最多 1024 输出 token、0–3 个操作；夜间提炼仅允许 op="ADD"（禁止 EDIT 或 UPVOTE），且仅限 project/type 经验，必须引用输入 episodes[].id，禁止以完成度换 token：',
+    '{"operations":[{"op":"ADD","id":null,"lesson":{"tier":"project|type","scope":"原项目路径或任务类型标签","when":"明确适用条件","do":"可操作做法","dont":"应避免的行为","why":"证据支持的原因","evidence":["输入 episodes[].id"],"mechanizable":false}}],"reason":"无经验时说明未提炼的原因"}',
+    '每个字段最多 240 字符。无可新增经验时返回 operations=[] 并填写 reason；不推断凭据、不要求转录或 prompt，不猜测未确认的根因。',
+    payload,
+  ].join('\n');
+
 export const capNightlyOperations = (output: { operations?: unknown; reason?: unknown }) =>
   Array.isArray(output.operations)
     ? { ...output, operations: output.operations.slice(0, 3) }
     : output;
 
 export const decodeNightlyOutput = (output: unknown) =>
-  reflectionResultSchema().safeParse(
+  nightlyResultSchema().safeParse(
     output && typeof output === 'object' && !Array.isArray(output)
       ? capNightlyOperations(output)
       : output
