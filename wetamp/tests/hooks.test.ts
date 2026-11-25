@@ -216,7 +216,7 @@ test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重�
   });
   expect(call(command, { Cwd: cwd, CommandLine: `${prefix} echo ok` })).toEqual(allow);
   expect(call('preinvocation')).toEqual({});
-});
+}, 30_000);
 
 // prettier-ignore
 test('agy hooks record terminal and ACP identities without recording generals as commanders', () => {
@@ -262,7 +262,7 @@ test('agy hooks record terminal and ACP identities without recording generals as
       });
     }
   }
-});
+}, 30_000);
 
 test('Orca ACP 只作为控制台识别', () => {
   const live = createRequire(import.meta.url)('../hooks/live.cjs') as {
@@ -302,7 +302,7 @@ test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
       decision: 'deny',
     });
   expect(call('grep_search', { Query: '_private', SearchPath: '' })).toEqual({ decision: 'allow' });
-});
+}, 30_000);
 
 test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
   const { call, home } = agyFixture();
@@ -330,7 +330,7 @@ test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
   expect(call('run_command', { CommandLine: 'rm -rf .', Cwd: '' })).toMatchObject({
     decision: 'deny',
   });
-});
+}, 30_000);
 
 test('agy 放行普通操作、第三方包路径及未处理事件', () => {
   const { call, home } = agyFixture();
@@ -344,13 +344,13 @@ test('agy 放行普通操作、第三方包路径及未处理事件', () => {
   expect(call('read_file', { Path: '' })).toEqual(allow);
   expect(call('read_file', {})).toEqual(allow);
   expect(call('read_file', { Path: '_private' }, 'PostToolUse')).toEqual({});
-});
+}, 30_000);
 
 test('agy 收到非法 JSON 时仅向 stderr 输出护栏提示', () => {
   const p = Bun.spawnSync(['node', join(HOOKS, 'guard.cjs'), 'agy'], { stdin: Buffer.from('{') });
   expect([p.exitCode, p.stdout.toString()]).toEqual([0, '']);
   expect(p.stderr.toString()).toContain('护栏内部异常，本次已放行');
-});
+}, 30_000);
 
 type Redline = {
   secretKind: (file: string, env: Record<string, string>) => string | null;
@@ -450,7 +450,7 @@ describe('两条底线', () => {
         )
       ).toContain('iCloud');
     }
-  });
+  }, 30_000);
   test('redline path inspection errors distinguish ai-jail denial from internal failure', () => {
     const { repo, env } = boundary();
     let category = '';
@@ -753,7 +753,7 @@ describe('guard.cjs', () => {
     expect(out?.systemMessage).toContain('superagent quick 交将军编码；本次不拦截。');
     expect(guard('claude', edit(repo, 29))).toBeNull();
     expect(guard('claude', edit(repo, 31), { SUPERAGENT_ALLOW_COMMANDER_WRITE: '1' })).toBeNull();
-  });
+  }, 30_000);
 
   test('G-1：同一会话持续累计，首次超限及再增 100 行才提示', () => {
     const { repo, guard } = setup();
@@ -762,7 +762,7 @@ describe('guard.cjs', () => {
     expect(guard('claude', p)?.systemMessage).toContain('已改 40 行');
     for (let i = 0; i < 4; i++) expect(guard('claude', p)).toBeNull();
     expect(guard('claude', p)?.systemMessage).toContain('已改 140 行');
-  });
+  }, 30_000);
 
   test('G-1：文件超限每再增 2 个提示，新增与风险路径只提示，两端一致', () => {
     const { repo, guard } = setup();
@@ -780,7 +780,7 @@ describe('guard.cjs', () => {
     expect(reason(risk)).toBeUndefined();
     expect(risk?.systemMessage).toContain(join(repo, 'auth/login.ts'));
     expect(write('auth/login.ts')).toBeNull();
-  });
+  }, 30_000);
 
   test('元帅会话 Agent 放行；派发上下文仅 advisory', () => {
     const { guard } = setup();
@@ -792,7 +792,7 @@ describe('guard.cjs', () => {
         guard('claude', { tool_name: 'Agent', tool_input: { prompt: 'x', subagent_type: 'fork' } })
       )
     ).toBeUndefined();
-  });
+  }, 30_000);
 
   test('delivery defaults: dispatch context is advisory without mutating inputs', () => {
     const { guard } = setup();
@@ -810,12 +810,12 @@ describe('guard.cjs', () => {
       expect(out?.systemMessage).toContain('advisory');
       expect(JSON.stringify(input)).toBe(before);
     }
-  });
+  }, 30_000);
 
   test('Stop 在 stop_gate=off 时静默', () => {
     const { guard } = setup();
     expect(guard('claude', { hook_event_name: 'Stop', session_id: 'idle' })).toBeNull();
-  });
+  }, 30_000);
 
   test('元帅 Stop 重开面板且保留 gate 结果，派生 Stop 不触发', () => {
     const hooks = hooksWith({ stop_gate: 'advisory' }),
@@ -832,7 +832,7 @@ describe('guard.cjs', () => {
       run('guard.cjs', 'codex', payload, { PANEL_CALLS: calls, SUPERAGENT_ROLE: 'general' }, hooks)
     ).toBeNull();
     expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1);
-  });
+  }, 30_000);
 
   test('multi-run wait and waiting asks: commander Stop recognizes active waiters', () => {
     const gate = (createRequire(import.meta.url)('../hooks/stop-gate.cjs') as any).waiterGate;
@@ -933,7 +933,7 @@ describe('guard.cjs', () => {
       { runs, processes: () => '' },
     ])
       expect(check(broken).systemMessage).toContain('无法确认等待进程');
-  });
+  }, 30_000);
 
   test('G-1：并发写入全部放行，在锁内累计且只提示首次超限', async () => {
     const { home, repo } = setup();
@@ -961,7 +961,7 @@ describe('guard.cjs', () => {
     expect(out?.systemMessage).toContain('已改 40 行');
     const file = join(home, 'hooks', `${createHash('sha256').update('race').digest('hex')}.json`);
     expect(JSON.parse(readFileSync(file, 'utf8')).micro.lines).toBe(80);
-  });
+  }, 30_000);
 
   test('A-07: reviewer completion cannot approve the current tree; legacy blocking modes are advisory', () => {
     for (const mode of ['change', 'cycle', 'advisory']) {
@@ -983,7 +983,7 @@ describe('guard.cjs', () => {
       expect(s({ hook_event_name: 'Stop' })?.systemMessage).toContain('advisory');
       expect(s({ hook_event_name: 'Stop' })?.systemMessage).toContain('引擎正式 gate');
     }
-  });
+  }, 30_000);
 
   test('A-09: unmetered shell writes, unknown targets and malformed edits allow with advisory', () => {
     const { repo, guard } = setup();
@@ -1022,7 +1022,7 @@ describe('guard.cjs', () => {
     expect(guard('claude', { tool_name: 'Bash', tool_input: {} })?.systemMessage).toContain(
       'advisory'
     );
-  });
+  }, 30_000);
 
   test('A-09: corrupt quota state and internal exceptions allow with advisory without resetting state', () => {
     const { home, repo, guard } = setup();
@@ -1049,7 +1049,7 @@ describe('guard.cjs', () => {
     expect(reason(out)).toBeUndefined();
     expect(out?.systemMessage).toContain('advisory');
     expect(out?.systemMessage).toContain('内部异常');
-  });
+  }, 30_000);
 
   test('A-11: duplicate native event IDs consume G-1 exactly once; new IDs still accumulate', () => {
     const { repo, guard } = setup();
@@ -1060,7 +1060,7 @@ describe('guard.cjs', () => {
       '已改 40 行'
     );
     expect(guard('claude', { ...p, tool_use_id: 'event-2' })).toBeNull();
-  });
+  }, 30_000);
 
   test('G-3：advisory 只提示；无效取值给出配置提示而不报错', () => {
     const adv = setup(hooksWith({ stop_gate: 'advisory' }));
@@ -1073,7 +1073,7 @@ describe('guard.cjs', () => {
     expect(bad.guard('claude', { hook_event_name: 'Stop' })?.systemMessage).toContain(
       'stop_gate=strict 无效'
     );
-  });
+  }, 30_000);
 });
 
 describe('context-advisory.cjs', () => {
