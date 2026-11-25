@@ -1,11 +1,16 @@
 import { afterEach, expect, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { buildSecrets } from '../src/secrets/build';
 import { secretCommand } from '../src/secrets/command';
-import { exactPatterns, redactGitleaksFindings, scanText } from '../src/secrets/scan';
+import {
+  exactPatterns,
+  fieldsContainSecret,
+  redactGitleaksFindings,
+  scanText,
+} from '../src/secrets/scan';
 import { fixtureTiersEnv, tmp } from './helpers';
 
 const config = join(import.meta.dir, '../secrets/gitleaks.toml');
@@ -108,6 +113,15 @@ test('built cjs stays consistent and the stream redacts bytewise chunks or fails
   expect(await run(paths, {})).toBe(paths);
   const plainPaths = paths.replace('[REDACTED:gitleaks]', 'wetamp/tests/fixtures/agy');
   expect(await run(plainPaths, {})).toBe(plainPaths);
+  const segments = createHash('sha256').update('synthetic path-lookalike').digest('base64url');
+  const synthetic = `${segments.slice(0, 12)}/${segments.slice(12, 24)}/${segments.slice(24, 36)}`;
+  for (const field of ['db.password', 'config.token', 'secret-example.ts']) {
+    const input = `${field}, "${synthetic}"\n`;
+    expect((await run(input, {})).includes('[REDACTED:gitleaks]')).toBeTrue();
+  }
+  expect(
+    fieldsContainSecret([`props.put("spring.datasource.password", "${synthetic}");`])
+  ).toBeTrue();
   const vendor = `ghp_${randomBytes(18).toString('hex')}`;
   expect(await run(plainPaths + vendor + '\n', {})).toBe(plainPaths + '[REDACTED:gitleaks]\n');
   expect(await run('plain output', { SA_GITLEAKS_CONFIG: join(out, 'missing.toml') })).toBe(

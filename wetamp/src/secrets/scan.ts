@@ -84,8 +84,27 @@ export const redactGitleaksFindings = (text: string, findings: Finding[]): strin
   return lines.join('\n');
 };
 // Gitleaks can interpret a comma between two paths as a generic key assignment.
-// prettier-ignore
-const PATH_PAIR = /^[\w.-]+\.[a-z][\w-]*["']?,[ \t]*["'`]?(?:[\w.-]+\/)+[\w.-]+\/?["'`]?[ \t;]*$/i;
+const PATH_PAIR =
+  /^[\w.-]+\.(?:[cm]?[jt]sx?|py|go|rs|java|sh|json|toml|ya?ml|md|txt)["']?,[ \t]*["'`]?((?:[\w.-]+\/)+[\w.-]+\/?)['"`]?[ \t;]*$/i;
+
+function isPathPair({ Match, Secret }: Finding): boolean {
+  const path = PATH_PAIR.exec(Match ?? '')?.[1];
+  if (!path || path !== Secret) return false;
+  // Check individual segments so the combined character diversity of ordinary paths is allowed.
+  return path
+    .replace(/\/$/, '')
+    .split('/')
+    .every(segment => {
+      const counts = new Map<string, number>();
+      for (const char of segment) counts.set(char, (counts.get(char) ?? 0) + 1);
+      let entropy = 0;
+      for (const count of counts.values()) {
+        const probability = count / segment.length;
+        entropy -= probability * Math.log2(probability);
+      }
+      return entropy <= 3.25;
+    });
+}
 
 // prettier-ignore
 function gitleaks(text: string, options: ScanOptions): Finding[] {
@@ -99,7 +118,7 @@ function gitleaks(text: string, options: ScanOptions): Finding[] {
     if (!Array.isArray(findings) || !findings.length) throw new Error('invalid report');
     return findings.filter(finding => {
       if (options.heuristics === false && HEURISTIC_RULES.has(finding.RuleID ?? '')) return false;
-      return finding.RuleID !== 'generic-api-key' || !PATH_PAIR.test(finding.Match ?? '');
+      return finding.RuleID !== 'generic-api-key' || !isPathPair(finding);
     });
   } catch {
     throw new Error('scan_failed');
