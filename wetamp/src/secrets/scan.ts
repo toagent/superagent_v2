@@ -16,6 +16,21 @@ const KEY_VALUES: RegExp[] = [
 ];
 export const redactKeyValues = (text: string): string =>
   KEY_VALUES.reduce((value, rule) => value.replace(rule, '$1$2***'), text);
+
+const BASIC_AUTH =
+  /(?<![\w-])(?:proxy-)?authorization["']?[ \t]*:[ \t]*["']?basic[ \t]+([A-Za-z0-9+/]{4,4096}={0,2})(?![\w+/=-])/gi;
+
+function redactBasicAuth(text: string): string {
+  return text.replace(BASIC_AUTH, (header: string, encoded: string) => {
+    const bytes = Buffer.from(encoded, 'base64');
+    const canonical = bytes.toString('base64');
+    // Buffer accepts malformed padding and trailing bits. Require canonical Base64.
+    if (encoded !== canonical && encoded !== canonical.replace(/=+$/, '')) return header;
+    const colon = ':'.charCodeAt(0);
+    if (!bytes.includes(colon) || bytes.some(byte => byte < 0x20 || byte === 0x7f)) return header;
+    return `${header.slice(0, -encoded.length)}[REDACTED:basic-auth]`;
+  });
+}
 // prettier-ignore
 const strings = (value: unknown, key = ''): string[] => typeof value === 'string' ? (/token|key|secret|password/i.test(key) ? [value] : []) : value && typeof value === 'object' ? Object.entries(value).flatMap(([name, child]) => strings(child, name)) : [];
 // prettier-ignore
@@ -78,7 +93,7 @@ function gitleaks(text: string, config: string, heuristics = true): string {
 }
 // prettier-ignore
 export function scanText(text: string, options: ScanOptions = {}): string {
-  let result = text;
+  let result = redactBasicAuth(text);
   for (const { name, value } of exactPatterns(options.secrets)) result = result.replaceAll(value, `[REDACTED:${name}]`);
   if (options.keyValues !== false) result = redactKeyValues(result);
   return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? defaultConfig(), options.heuristics);

@@ -47,6 +47,26 @@ test('quick freeze and job inputs reject a managed value with exit 64', async ()
   expect(() => main(['plan', 'check', plan])).toThrow('secret_in_input');
 });
 
+// prettier-ignore
+test('plan admission scans scope entries and multiline notes independently', async () => {
+  const { value } = managed(), repo = gitRepo(tmp()), card = join(tmp(), 'card.md');
+  process.env.SUPERAGENT_WRITE_ROOTS = join(repo, '..');
+  const notes = 'hook 进程环境有 `ORCA_AGENT_SESSION_ID`。\n样本：`wetamp/tests/fixtures/agy/acp/`。';
+  writeFileSync(card, notes);
+  const plan = quickPlan({ _: ['quick'], flags: {
+    card, repo, accept: ['true'],
+    scope: ['wetamp/tests/secret-hooks.test.ts', 'wetamp/tests/fixtures/agy/acp/', 'wetamp/docs/agent.md'],
+  }} as never);
+  expect(() => main(['plan', 'check', plan])).not.toThrow();
+  const frozen = await Bun.file(plan).json();
+  expect(frozen.packages[0].notes).toBe(notes);
+  for (const secret of [value, `Authorization: Basic ${Buffer.from('fixture:only-for-tests').toString('base64')}`]) {
+    frozen.packages[0].notes = `${notes}\n${secret}`;
+    writeFileSync(plan, JSON.stringify(frozen));
+    expect(() => main(['plan', 'check', plan])).toThrow('secret_in_input');
+  }
+});
+
 test('publication range rejects a managed value in added lines', () => {
   const { value } = managed(),
     repo = gitRepo(tmp()),

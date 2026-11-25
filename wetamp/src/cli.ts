@@ -33,7 +33,7 @@ import { installMode } from './install-mode';
 import { guardSelftest } from './guard-selftest';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { scanText } from './secrets/scan';
+import { managedSecrets, scanText } from './secrets/scan';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import { canonicalRepo, closeDebts, debtMetrics, debtSnapshot } from './debt';
 import {
@@ -401,8 +401,20 @@ export const EXIT_ALIAS_DRIFT = 5;
 export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 class SecretInputError extends Error {}
-const assertSecretFree = (text: string): void => {
-  if (scanText(text, { keyValues: false }) !== text) throw new SecretInputError('secret_in_input');
+const assertSecretFree = (input: unknown): void => {
+  const secrets = managedSecrets();
+  const scanned = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (!value || scanned.has(value)) return;
+      if (scanText(value, { secrets, keyValues: false }) !== value)
+        throw new SecretInputError('secret_in_input');
+      scanned.add(value);
+    } else if (value && typeof value === 'object') {
+      for (const child of Object.values(value)) visit(child);
+    }
+  };
+  visit(input);
 };
 
 type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };
@@ -1817,7 +1829,6 @@ export function quickPlan(a: Args): string {
     throw new Error('quick requires either --goal <text> or --card <file>, not both');
   // Snapshot the full brief into the existing plan so later edits cannot change the run.
   const card = a.flags.card !== undefined ? readFileSync(a.flags.card, 'utf8') : undefined;
-  assertSecretFree(card ?? a.flags.goal ?? '');
   const goal =
     a.flags.card !== undefined
       ? `执行卡片 ${basename(a.flags.card)}，完整要求见备注。`
@@ -1883,6 +1894,7 @@ export function quickPlan(a: Args): string {
       },
     ],
   };
+  assertSecretFree(plan);
   const path = join(home().sa, 'plans', `quick-${newRunId()}.json`);
   mkdirSync(dirname(path), { recursive: true });
   writeAtomic(path, JSON.stringify(plan, null, 2) + '\n');
@@ -1913,7 +1925,7 @@ function planDelivery(plan: Plan): DeliveryTarget {
 
 function checkedPlan(planPath: string, override?: string) {
   const rules = applyPlanRules(loadPlan(planPath), override);
-  assertSecretFree(JSON.stringify(rules.plan));
+  assertSecretFree(rules.plan);
   const plan_lint = lintPlan(rules.plan, override),
     precheck = planPrecheck(rules.plan, rules.plan.repo, override);
   plan_lint.warnings.push(...rules.warnings, ...precheck.blocking, ...precheck.info);
