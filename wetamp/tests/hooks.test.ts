@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -14,6 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildSecrets } from '../src/secrets/build';
+import { Intake, intakeRoot, type Input } from '../src/intake';
 import { gitRepo, privatePathCases, tmp } from './helpers';
 import { testTimeout } from '@archon/paths/test-utils';
 await (
@@ -238,41 +240,90 @@ test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重�
 }, 30_000);
 
 // prettier-ignore
-test('agy hooks record terminal and ACP identities without recording generals as commanders', () => {
+test('agy hooks record terminal and ACP identities, scratch and intake only for commanders', () => {
+  const { createScratch } = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
+    createScratch: (root: string) => {
+      clean: (session: string, dryRun: boolean, referenced: () => boolean) => unknown;
+    };
+  };
   for (const [name, file, model] of [
     ['agy', 'terminal-pretooluse.json', 'gemini-4-neon-%78high'],
     ['agy_acp_server.par', 'acp/acp-preinvocation.json', null],
   ] as const) {
-    const home = tmp(), wrapper = join(home, name);
+    const home = tmp(), wrapper = join(home, name), repo = realpathSync(gitRepo(home));
+    const acp = name !== 'agy';
     const payload = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures/agy', file), 'utf8'));
+    const log = join(home, 'brain', payload.conversationId, '.system_generated/logs/transcript_full.jsonl');
+    mkdirSync(join(log, '..'), { recursive: true });
+    payload.transcriptPath = acp ? join(home, 'conversations', `${payload.conversationId}.db`) : log;
+    if (!acp) payload.cwd = repo;
     writeFileSync(wrapper, `
       const {spawnSync} = require('node:child_process');
       const guard = process.argv[2];
-      const run = spawnSync(process.execPath, [guard, 'agy'], {
-        input: require('node:fs').readFileSync(0), encoding: 'utf8'
-      });
+      const fs = require('node:fs');
+      const { payload, acp, log } = JSON.parse(fs.readFileSync(0));
+      const call = data => {
+        const run = spawnSync(process.execPath, [guard, 'agy'], { input: JSON.stringify(data), encoding: 'utf8' });
+        if (run.status !== 0) throw new Error(run.stderr);
+        return JSON.parse(run.stdout);
+      };
+      const invocation = acp ? payload : { ...payload, hookEventName: 'PreInvocation', toolCall: undefined };
+      const tool = { conversationId: payload.conversationId, transcriptPath: payload.transcriptPath,
+        ...(acp ? {} : { hookEventName: 'PreToolUse', cwd: payload.cwd, modelName: payload.modelName }),
+        toolCall: { name: 'finish' } };
+      const pre = call(invocation);
+      const allocated = fs.existsSync(require('node:path').join(process.env.SUPERAGENT_HOME, 'scratch'));
+      const results = [];
+      for (const [step_index, content] of [[0, 'first'], [1, ''], [undefined, 'missing step'], [3, 'first'], [4, 'synthetic-secret-value']]) {
+        fs.appendFileSync(log, JSON.stringify({ type: 'USER_INPUT', step_index, content }) + '\\n');
+        if (!acp) {
+          call({ ...invocation, stepIdx: step_index, lastUserInput: content });
+          if (step_index === 0) call({ ...invocation, stepIdx: 7, lastUserInput: content });
+        }
+        results.push(call(tool), call(tool));
+      }
       const live = require('node:path').join(require('node:path').dirname(guard), 'live.cjs');
       const probe = spawnSync(process.execPath, ['-e',
         'console.log(JSON.stringify(require(process.argv[1]).launcher(process.env.SUPERAGENT_HOME) ?? null))', live
       ], { encoding: 'utf8' });
-      console.log(JSON.stringify({ pid: process.pid, status: run.status, out: JSON.parse(run.stdout), who: JSON.parse(probe.stdout) }));
+      console.log(JSON.stringify({ pid: process.pid, pre, allocated, results, who: JSON.parse(probe.stdout) }));
     `);
+    const scan = join(home, 'scan.cjs');
+    writeFileSync(scan, "exports.scanText = text => text.replaceAll('synthetic-secret-value', '[REDACTED]');");
     for (const role of ['commander', 'general']) {
       const sa = join(home, role);
+      writeFileSync(log, '');
+      const root = intakeRoot(sa, repo), store = new Intake(root);
+      store.apply({ source: 'agy', session: payload.conversationId, message: 'seed', text: 'seed',
+        repo, actor: 'operator', owner: 'commander' }, [{ kind: 'create', ref: 'a', brief: 'brief', acceptance: 'check' }]);
       const p = Bun.spawnSync(['node', wrapper, join(HOOKS, 'guard.cjs'), ...(role === 'general' ? ['--print'] : [])], {
-        stdin: Buffer.from(JSON.stringify(payload)), cwd: home,
-        env: { ...baseEnv, HOME: home, SUPERAGENT_HOME: sa, SA_SECRET_SCAN_MODULE: '',
+        stdin: Buffer.from(JSON.stringify({ payload, acp, log })), cwd: repo,
+        env: { ...baseEnv, HOME: home, SUPERAGENT_HOME: sa, SA_SECRET_SCAN_MODULE: scan,
           ORCA_AGENT_SESSION_ID: 'orca-source', SUPERAGENT_ROLE: role },
       });
       expect(p.exitCode).toBe(0);
-      const { pid, status, out, who } = JSON.parse(p.stdout.toString());
-      expect(status).toBe(0);
-      expect(out).toEqual(model ? { decision: 'allow' } : {});
+      const { pid, pre, allocated, results, who } = JSON.parse(p.stdout.toString());
+      expect(pre).toEqual({});
+      expect(allocated).toBe(role === 'commander');
+      const notices = results.filter((out: Out) => out?.reason?.startsWith('SUPERAGENT 通知（非错误）'));
+      const { inputs } = JSON.parse(readFileSync(join(root, 'state.json'), 'utf8')) as { inputs: { input: Input }[] };
       const live = join(sa, 'live');
       if (role === 'general') {
         expect(existsSync(live)).toBe(false);
+        expect(notices).toEqual([]);
+        expect(inputs.map(row => row.input.message)).toEqual(['seed']);
         continue;
       }
+      const [dir] = readdirSync(join(sa, 'scratch'), { withFileTypes: true }).filter(entry => entry.isDirectory());
+      const scratch = join(sa, 'scratch', dir.name);
+      expect(notices).toEqual([{ decision: 'deny', reason: expect.stringContaining(`scratch: ${scratch}/`) }]);
+      expect(results[1]).toEqual({ decision: 'allow' });
+      expect(JSON.parse(readFileSync(join(scratch, '.owner.json'), 'utf8'))).toMatchObject({ client: 'agy', session: payload.conversationId, pid });
+      expect(createScratch(join(sa, 'scratch')).clean(payload.conversationId, true, () => false)).toEqual([
+        { path: scratch, action: 'would_remove', reason: 'scratch owner exited' },
+      ]);
+      expect(inputs.slice(1).map(row => row.input.text)).toEqual(acp ? ['first', 'first'] : ['first', 'missing step', 'first']);
+      if (acp) expect(inputs.slice(1).map(row => row.input.message)).toEqual(['0', '3']);
       const [beat] = readdirSync(live);
       expect(who).toMatchObject({ client: 'agy', pid, session_id: payload.conversationId });
       expect(JSON.parse(readFileSync(join(live, beat), 'utf8'))).toMatchObject({
