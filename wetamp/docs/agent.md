@@ -118,7 +118,7 @@ Orca 对话版 Neon 与终端 `agy` 共用 superagent 护栏和 `gemini` 控制�
 Claude 和 Codex 控制台沿用预算降级规则。Gemini 控制台的 Neon 将军复用下文的
 Antigravity CLI 前提检查。启用 Neon 将军时，`gemini_review` 必须关闭。
 
-`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台，军师走 Gemini 评审池，将军跳过 Neon 并选首个可执行候选。
+`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台。军师走 Gemini 评审池。将军首选 Neon。Neon 无法启动或可确认未受理作业时，切到可用的 Codex 候选。
 
 ## 单次使用 Gemini Neon
 
@@ -146,11 +146,27 @@ superagent plan draft task.md plan.json > plan.receipt.json && superagent plan c
 hook 进程非零退出时，本次工具调用失败。护栏脚本无法加载会导致全部工具调用失败，可用 `superagent health` 检查。
 在引擎安装检出根目录运行 `bun wetamp/src/install-hooks.ts --only agy --purge-v1` 可备份并撤下 agy 的受管 hook。
 
-终端与 Orca 对话中的 Neon 元帅在工具调用时收到 `SUPERAGENT 通知（非错误）`。
-收到交接、上下文、微改或缺失等待提醒后，按提示处理，再原样重试工具。交接完成的旧会话会持续拒绝工具调用。
-派单或发出问询后，在前台运行 `superagent wait <run> --timeout 3000` 或
-`superagent inbox --wait --timeout 3000`。Neon 的回合结束事件无法强制继续，缺失等待进程会在下一次工具调用时提醒。
-Orca 对话的 hook 在首次工具调用时检查最新用户输入。输入已发送，发现凭据后会拦截本回合工具调用并提示轮换。
+### Neon 元帅与 Orca ACP
+
+Orca ACP 会等后台命令结束才继续。Neon 元帅和 Codex 一样，在前台运行
+`superagent wait <run> --timeout 3000` 或 `superagent inbox --wait --timeout 3000`。
+ACP 的 Stop 无法强制继续。有运行中的 run 或待答复问询且缺少等待进程时，下一次工具调用会收到一次提醒。
+
+ACP 只能通过 `PreToolUse` 的拒绝理由向模型送达通知。交接、责任清单、30% 与 70% 上下文提醒
+以 `SUPERAGENT 通知（非错误）` 送达。监督者通过同一入口送达 `【监督者纠偏】` 或 `【监督者暂停】`。
+每条通知只送一次。终端 Neon 使用同一通知格式。按提示处理后重试工具。
+交接完成后，旧会话的工具调用会持续被拒绝。
+
+启用秘密防火墙时，ACP 命令须以 `. ~/.wetamp/jail/sa-redact.sh;` 开头。
+ACP 在工具调用时检查已发送的最新用户输入，发现凭据会拦截本回合工具调用并提示轮换。
+修改秘密扫描规则后，在引擎检出根目录用普通终端执行
+`bun wetamp/src/secrets/build.ts ~/.wetamp/jail` 重建产物。AI 会话没有该目录写权限。
+
+Neon 暂无压缩复位卡。终端 `/compact` 没有公开的完成事件，ACP 样本中也未见 compaction 事件。
+
+Orca 对话版 Neon 的默认目录为 `~/Library/Application Support/orca/antigravity-chat`。
+护栏位于 `config/hooks.json`，协议文件 `GEMINI.md` 软链到 `~/.gemini/GEMINI.md`。
+涉及 Orca 护栏安装的测试须把 `ORCA_USER_DATA_PATH` 指向测试临时目录。
 
 ## 引擎稳定性探测
 
@@ -262,7 +278,7 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 - `superagent debt list [--repo <path>] [--open] [--json]` 列出稳定债 ID；`superagent debt close <id>... --reason <text>` 显式关闭。计划包可用 `closes_debt: [<id>]` 在成功集成后关闭；
 - `superagent quota` 查看当前配额投影；
 - `superagent rollover start --reason "<reason>"` 创建会话换手令牌。
-- Orca 中的 Neon 元帅（终端 agy 和 Orca 对话版）首次超过 70% 上下文用量时，护栏会拒绝一次工具调用并附上 `superagent rollover start` 换会话指令。用量每再增加窗口的 10% 时提醒一次。用户也可手动要求换会话，使用 `superagent rollover start --user "<原话>"`。Orca 使用默认模型启动接手会话，Neon 暂无会话 scratch。已有监督登记时须先解除登记。
+- Orca 中的 Neon 元帅（终端 agy 和 Orca 对话版）首次超过 70% 上下文用量时，护栏会拒绝一次工具调用并附上 `superagent rollover start` 换会话指令。用量每再增加窗口的 10% 时提醒一次。用户也可手动要求换会话，使用 `superagent rollover start --user "<原话>"`。Orca 使用默认模型启动接手会话，接手时移交已有的会话 scratch。已有监督登记时须先解除登记。
 
 完整参数看 `superagent --help`；运维命令看 `superagent --help --all`。
 
