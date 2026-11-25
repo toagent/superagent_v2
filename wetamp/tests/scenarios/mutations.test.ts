@@ -236,6 +236,14 @@ const mutations: Mutation[] = [
   },
   {
     file: 'templates/.archon/scripts/sa-context.ts',
+    from: '`${packPath}.no-skills.md`,',
+    to: '`${packPath}.wrong-variant.md`,',
+    test: 'tests/generate.test.ts',
+    name: 'CONTEXT_PACK runtime code/repair/fix',
+    expectedError: 'generated provider context missing',
+  },
+  {
+    file: 'templates/.archon/scripts/sa-context.ts',
     from: "(context.refs.head === head || completedGate.verdict === 'fix');",
     to: 'context.refs.head === head;',
     test: 'tests/scenarios/scenario-rest.test.ts',

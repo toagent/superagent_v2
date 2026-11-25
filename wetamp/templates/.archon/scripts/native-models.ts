@@ -5,13 +5,18 @@ export function nativeEvidence(text: string, kind: Kind) {
   const models = new Set<string>(),
     sessions = new Set<string>();
   let final = '',
-    inputs = '';
+    inputs = '',
+    agyInit = '';
   for (const line of text.split('\n').filter(Boolean)) {
     const e = JSON.parse(line) as {
       type?: string;
       sessionId?: string;
       message?: { model?: string; content?: { type: string; text?: string }[] | string };
       payload?: { id?: string; model?: string; role?: string; content?: { text?: string }[] };
+      event?: string;
+      conversation_id?: string;
+      init?: { model?: string };
+      result?: { conversation_id?: string; status?: string };
     };
     if (kind === 'claude') {
       if (e.sessionId) sessions.add(e.sessionId);
@@ -32,6 +37,19 @@ export function nativeEvidence(text: string, kind: Kind) {
       if (e.type === 'turn_context' && e.payload?.model) models.add(e.payload.model);
       if (e.type === 'response_item' && e.payload?.role === 'user')
         inputs += e.payload.content?.map(c => c.text ?? '').join('') ?? '';
+    } else if (kind === 'agy') {
+      if (sessions.size) throw new Error('recovery: agy event after result');
+      if (e.event === 'init' && !agyInit && e.conversation_id?.trim() && e.init?.model?.trim()) {
+        agyInit = e.conversation_id;
+        models.add(e.init.model);
+      } else if (
+        e.event === 'result' &&
+        e.result?.status === 'SUCCESS' &&
+        agyInit &&
+        e.result.conversation_id === agyInit
+      )
+        sessions.add(agyInit);
+      else if (e.event !== 'step_update') throw new Error('recovery: invalid agy native record');
     } else throw new Error('recovery: unsupported native provider');
   }
   return { models: [...models], sessions: [...sessions], final, inputs };

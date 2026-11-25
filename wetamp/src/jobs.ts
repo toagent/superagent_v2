@@ -1,5 +1,6 @@
 // `superagent job exec` / `superagent jobs`：登记不经 superagent run、直接派出的作业（后台 `claude -p`、`codex exec`…），
 // 让 board 看得见。只记标题、可执行文件种类与 --model，不记完整 argv/prompt。
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -66,6 +67,7 @@ export interface Job {
     policy: LaunchPolicy;
   };
   session_id?: string | null;
+  agy_input_sha256?: string;
   request_ref?: string;
   review_reason?: string;
   review_round?: number;
@@ -306,8 +308,9 @@ async function exec(
     if (job.card && !statSync(job.card).isFile()) throw new Error('job: card must be a file');
     if (f.input && !statSync(f.input).isFile()) throw new Error('job: prompt-file must be a file');
     // Snapshot registered input before checkout/admission; never depend on native shell env visibility.
+    const inputPrefix = `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\njobs 列表中 ${job.id} 即你本身。\n\n`;
     const input = f.input ? new Blob([
-      `${SIMPLIFIED_CHINESE_REQUIREMENT}\n\njobs 列表中 ${job.id} 即你本身。\n\n`, readFileSync(f.input),
+      inputPrefix, readFileSync(f.input),
     ]) : f.execution && job.card ? new Blob([
       `Registered job input: ${JSON.stringify({ id: job.id, card: job.card, request_ref: job.request_ref ?? null })}\n\n`,
       readFileSync(job.card),
@@ -389,15 +392,32 @@ async function exec(
         if (launch.executable) {
           const prompt = f.automatic ? await input?.text() : cmd[2];
           if (!prompt) throw new Error('job: Neon 缺少任务输入');
+          const cardBytes = job.card ? readFileSync(job.card) : undefined;
+          const submitted = f.automatic ? prompt.slice(inputPrefix.length) : prompt;
+          const cardHash = cardBytes?.equals(Buffer.from(submitted))
+            ? createHash('sha256').update(cardBytes).digest('hex') : undefined;
+          const nativeInit: { event: 'init'; conversation_id: string; init: { model: string } }[] = [];
           for await (const chunk of runAgy(launch.executable, agyArgs(prompt, job.execution.model),
             job.cwd, launch.env, { abortSignal: stop.signal }, {
               spawned: running, unserved: () => { attempt.unserved = true; },
+              init: (session, model) => nativeInit.push({ event: 'init', conversation_id: session, init: { model } }),
             })) {
             if (chunk.type !== 'result') continue;
             job.session_id = chunk.sessionId ?? null;
             if (chunk.resolvedModel) job.model = job.execution.model = chunk.resolvedModel.id;
             receipt.tokens = chunk.tokens;
             code = chunk.isError ? 1 : 0;
+            const model = chunk.resolvedModel?.id, session = chunk.sessionId;
+            if (!code && cardHash && model?.trim() && session?.trim() &&
+              nativeInit.length === 1 && nativeInit[0].conversation_id === session &&
+              nativeInit[0].init.model === model) {
+              // Persist only native identity fields and a digest of the submitted card.
+              writeFileSync(join(dir(), `${job.id}.agy.jsonl`), [
+                nativeInit[0],
+                { event: 'result', result: { conversation_id: session, status: 'SUCCESS' } },
+              ].map(event => JSON.stringify(event)).join('\n'));
+              job.agy_input_sha256 = cardHash;
+            }
             if (chunk.failure) console.error(`job: ${chunk.failure.evidence}`);
             if (chunk.text) {
               console.log(chunk.text);

@@ -152,7 +152,9 @@ test('CONTEXT_PACK runtime code/repair/fix read fresh bounded source through sta
     expect(template).not.toContain('先读取职责证据指针');
     expect(template).not.toContain('先完整阅读任务书');
     expect(template).toContain('$$INPUTS.context_node.output.context_pack_path');
-    return readFileSync(JSON.parse(run.stdout.toString()).context_pack_path, 'utf8');
+    const path = JSON.parse(run.stdout.toString()).context_pack_path;
+    expect(existsSync(`${path}.no-skills.md`), 'generated provider context missing').toBe(true);
+    return readFileSync(path, 'utf8');
   };
   const attempts = nodes.filter(n => n.id.startsWith('package-attempt-'));
   const before = attempts.map(n => runAttempt(n, repo, gen).stdout.toString());

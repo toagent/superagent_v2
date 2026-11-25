@@ -12,7 +12,7 @@ import type { Plan } from '../../../src/plan';
 import type { ExecutionDescriptor } from '../../../src/execution';
 import type { Learning, LessonExposure } from '../../../src/learning';
 import type { CoderOutput } from '../../../src/contract';
-import { capabilityGuidance, resolveCapabilities } from './capabilities';
+import { capabilityGuidance, resolveCapabilities, withoutSkills } from './capabilities';
 import {
   readAttempt,
   netLineInputsPath,
@@ -195,7 +195,8 @@ export function contextPack(
   gen: string,
   context: RoleContext,
   packages = context.execution.packages,
-  exposure?: LessonExposure
+  exposure?: LessonExposure,
+  skills = true
 ): string {
   const plan = read(join(gen, 'plan.json')) as Plan | 'unknown';
   if (plan === 'unknown') throw new Error('context: missing plan');
@@ -217,6 +218,7 @@ export function contextPack(
           /\.pem$/i.test(part) ||
           /key/i.test(part)
       );
+  const capabilities = skills ? context.capabilities : withoutSkills(context.capabilities);
   const sections = [
     '## 职责 manifest\n' +
       JSON.stringify(
@@ -228,16 +230,14 @@ export function contextPack(
           scope: context.execution.scope,
           environment: context.environment,
           environment_check: context.environment_check,
-          capabilities: context.capabilities,
+          capabilities,
         },
         null,
         2
       ),
   ];
   if (existsSync(join(gen, 'capabilities.json')))
-    sections.push(
-      ...capabilityGuidance(join(gen, 'capabilities.json'), context.capabilities.injected)
-    );
+    sections.push(...capabilityGuidance(join(gen, 'capabilities.json'), capabilities.injected));
   const entries = new Set<string>();
   for (const p of plan.packages.filter(p => packages.includes(p.id))) {
     sections.push(`## 任务书 ${p.id}\n` + readFileSync(join(gen, 'briefs', `${p.id}.md`), 'utf8'));
@@ -450,13 +450,15 @@ if (import.meta.main) {
         packPath = join(artifacts, 'contexts', `${node}.md`);
         mkdirSync(dirname(packPath), { recursive: true });
         const exposure: LessonExposure = { ids: [] };
-        const markdown = contextPack(
-          gen,
-          context,
-          process.env.INPUTS_CONTEXT_PACKAGES
-            ? (JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[])
-            : undefined,
-          exposure
+        const packages = process.env.INPUTS_CONTEXT_PACKAGES
+          ? (JSON.parse(process.env.INPUTS_CONTEXT_PACKAGES) as string[])
+          : undefined;
+        const markdown = contextPack(gen, context, packages, exposure);
+        writeFileSync(
+          `${packPath}.no-skills.md`,
+          context.capabilities.injected.length
+            ? contextPack(gen, context, packages, undefined, false)
+            : markdown
         );
         writeFileSync(packPath, markdown);
         if (pkg)

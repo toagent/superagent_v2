@@ -989,7 +989,7 @@ if (fixture) process.exit(3);
       ...hookFixtureEnv(root), XDG_STATE_HOME: root, AGY_LLM_GATEWAY_URL: 'https://example.invalid',
       AGY_LLM_GATEWAY_API_KEY: 'fixture-gateway-key',
     };
-    const p = run(promptArgs('neon', 'general', prompt), '', root, env);
+    const p = run([...promptArgs('neon', 'general', prompt), '--card', prompt], '', root, env);
     const [stderr, exit] = await Promise.all([new Response(p.stderr as ReadableStream).text(), p.exited]);
     expect(exit, stderr).toBe(0);
     const model = loadTiers().routing.gemini!.code![0];
@@ -998,7 +998,13 @@ if (fixture) process.exit(3);
       '--model', model, '--dangerously-skip-permissions',
     ]);
     expect(only()).toMatchObject({ kind: 'agy', model, execution: { provider: 'agy' },
-      session_id: 'fixture-session', receipt: { tokens: { input: 18531, output: 589 } } });
+      session_id: 'fixture-session', agy_input_sha256: new Bun.CryptoHasher('sha256').update('fixture prompt').digest('hex'),
+      receipt: { tokens: { input: 18531, output: 589 } } });
+    const mismatched = join(root, 'other-card.md');
+    writeFileSync(mismatched, 'different card');
+    const mismatch = run([...promptArgs('mismatched-card', 'general', prompt), '--card', mismatched], '', root, env);
+    expect(await mismatch.exited).toBe(0);
+    expect(readJobs().jobs.find(j => j.title === 'mismatched-card')?.agy_input_sha256).toBeUndefined();
     const explicit = run(['job', 'exec', '--title', 'explicit-neon', '--role', 'general', '--',
       join(root, 'agy'), '--print', 'fixture prompt', '--output-format', 'stream-json',
       '--model', model, '--dangerously-skip-permissions'], '', root, env);

@@ -3221,11 +3221,19 @@ export function validateRecovery(
       j.role === role &&
       j.session_id &&
       j.card, 'job not qualified');
+    if (j.kind === 'agy')
+      require(role === 'general' &&
+        a.native.path === join(jobs, `${j.id}.agy.jsonl`), 'native registry binding');
     const n = nativeEvidence(bytes(a.native), j.kind);
+    const inputBound =
+      j.kind === 'agy'
+        ? j.model === n.models[0] &&
+          Boolean(j.agy_input_sha256 && recoveryHash(j.card) === j.agy_input_sha256)
+        : n.inputs.includes(j.card);
     require(n.sessions.length === 1 &&
       n.sessions[0] === j.session_id &&
       n.models.length === 1 &&
-      n.inputs.includes(j.card), 'native identity binding');
+      inputBound, 'native identity binding');
     return {
       native: n,
       job: j,

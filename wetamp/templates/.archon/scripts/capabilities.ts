@@ -52,6 +52,11 @@ export const capabilityGuidance = (path: string, ids: string[]) =>
         `可用技能 Claude: ${capability.use.claude}；Codex: ${capability.use.codex}：${capability.purpose}；本节点最多调用一次，不调用其编排/发布类子流程`
     );
 
+export const withoutSkills = (evidence: { injected: string[]; unavailable: string[] }) => ({
+  injected: [],
+  unavailable: [...evidence.unavailable, ...evidence.injected],
+});
+
 export function resolveCapabilities(path: string, home: string, input: CapabilityInput) {
   const drift = capabilityDrift(path, home);
   const matched = loadCapabilities(path).filter(capability => matches(capability, input));

@@ -193,7 +193,11 @@ export async function* runAgy(
   cwd: string,
   env: NodeJS.ProcessEnv,
   options: Parameters<IAgentProvider['sendQuery']>[3],
-  job?: { spawned: (pid: number) => void; unserved: () => void }
+  job?: {
+    spawned: (pid: number) => void;
+    unserved: () => void;
+    init?: (id: string, model: string) => void;
+  }
 ): AsyncGenerator<MessageChunk> {
   const signal = options?.abortSignal;
   signal?.throwIfAborted();
@@ -266,7 +270,10 @@ export async function* runAgy(
         continue;
       }
       sawEvent = true;
-      if (event?.event === 'init') model = string(body.model);
+      if (event?.event === 'init') {
+        model = string(body.model);
+        job?.init?.(string(event.conversation_id) ?? '', model ?? '');
+      }
       if (event?.event === 'result') terminal = body;
       if (event?.event !== 'step_update') continue;
       sawTool ||= body.step_type === 'tool';

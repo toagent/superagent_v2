@@ -418,6 +418,9 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
   writeFileSync(join(f.home, 'execution.json'), JSON.stringify(executionTable(plan, tiers)));
   const artifacts = join(f.home, 'artifacts/runs/run');
   mkdirSync(artifacts, { recursive: true });
+  const pack = join(artifacts, 'contexts', `repair-${plan.packages[0].id}.md`);
+  mkdirSync(dirname(pack));
+  writeFileSync(`${pack}.no-skills.md`, 'provider context');
   using db = new Database(join(f.home, 'archon.db'));
   db.exec(`CREATE TABLE remote_agent_workflow_runs (id, working_path, status, output_root, metadata, codebase_id, adopted_from_run_id);
     CREATE TABLE remote_agent_workflow_events (workflow_run_id, event_type, step_name, data, event_order);`);
@@ -438,7 +441,7 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
     const provider = getRegistration('agy').factory();
     const invoke = (role: 'code' | 'repair') =>
       collect(
-        provider.sendQuery('检查', f.cwd, undefined, {
+        provider.sendQuery(pack, f.cwd, undefined, {
           model,
           nodeConfig: { nodeId: `${role}-${plan.packages[0].id}` },
           env: { ...f.env, PATH: `${f.home}:${process.env.PATH ?? ''}`, SA_POLICY_PATH: policy },
@@ -468,6 +471,7 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
       })
     );
     expect((await invoke('repair')).at(-2)).toMatchObject({ structuredOutput: { ok: true } });
+    expect(readFileSync(join(f.home, 'args'), 'utf8')).toContain(`${pack}.no-skills.md\n`);
     const attempts = readPolicyAttempts(artifacts);
     expect(attempts.map(a => [a.node, a.provider, a.status])).toEqual([
       [`code-${plan.packages[0].id}`, 'agy', 'failed'],
@@ -499,7 +503,8 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
       'agy',
       candidate => {
         expect(candidate.provider).toBe('codex');
-        return async function* (_prompt, _cwd, resume) {
+        return async function* (prompt, _cwd, resume) {
+          expect(prompt).toBe(pack);
           expect(resume).toBeUndefined();
           yield { type: 'result', text: 'Codex 接手' };
           yield { type: 'settled' };
@@ -512,7 +517,7 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
     writeFileSync(empty, '');
     const dispatch = (outage: boolean) =>
       collect(
-        fallback.sendQuery('检查', f.cwd, undefined, {
+        fallback.sendQuery(pack, f.cwd, undefined, {
           model,
           nodeConfig: { nodeId: `repair-${plan.packages[0].id}` },
           env: {

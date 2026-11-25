@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import type {
@@ -211,10 +211,23 @@ function runtimeExecution(
   const tracksAgy = candidates.some(candidate => candidate.provider === 'agy');
   let agyAvailable = !tracksAgy || isAgyAvailable(readAgyHealth());
   const nativeProvider = gemini ? (candidates[0]?.provider ?? 'codex') : provider;
-  const nativeSend: typeof sendQueryFor = candidate =>
-    gemini
-      ? validatedReview((...args) => sendQueryFor(candidate)(...args))
-      : sendQueryFor(candidate);
+  const agyContext =
+    (send: IAgentProvider['sendQuery']): IAgentProvider['sendQuery'] =>
+    (prompt, ...args) => {
+      const pack = join(artifacts, 'contexts', `${contract}.md`);
+      const variant = `${pack}.no-skills.md`;
+      return send(
+        !agyCapabilities.skills && existsSync(variant)
+          ? prompt.replace(pack, () => variant)
+          : prompt,
+        ...args
+      );
+    };
+  const nativeSend: typeof sendQueryFor = candidate => {
+    if (gemini) return validatedReview((...args) => sendQueryFor(candidate)(...args));
+    const send = sendQueryFor(candidate);
+    return candidate.provider === 'agy' ? agyContext(send) : send;
+  };
   // prettier-ignore
   const review = gemini ? {
     models: policy.routing.gemini?.review ?? [],
@@ -232,7 +245,12 @@ function runtimeExecution(
     requestedModel: options.model,
     requiresExactSession: options.nodeConfig?.requiresExactSession,
     provider: nativeProvider,
-    sendQuery: gemini && candidates[0] ? nativeSend(candidates[0]) : sendQuery,
+    sendQuery:
+      gemini && candidates[0]
+        ? nativeSend(candidates[0])
+        : provider === 'agy'
+          ? agyContext(sendQuery)
+          : sendQuery,
     sendQueryFor: nativeSend,
     gemini: review,
     ...(tracksAgy ||

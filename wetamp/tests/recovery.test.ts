@@ -343,6 +343,43 @@ function checkRecovery(limit: number): void {
     change(copy);
     expect(() => run(copy)).toThrow(reason);
   };
+  if (limit === 3) {
+    const author = e.rounds[0].authors[0];
+    const { path } = author.job;
+    const originalJob = readFileSync(path, 'utf8');
+    const job = { ...JSON.parse(originalJob), kind: 'agy', model: 'neon', agy_input_sha256: '' };
+    job.agy_input_sha256 = recoveryHash(job.card);
+    const nativePath = join(jobs, `${job.id}.agy.jsonl`);
+    writeFileSync(
+      nativePath,
+      [
+        { event: 'init', conversation_id: job.session_id, init: { model: job.model } },
+        { event: 'result', result: { conversation_id: job.session_id, status: 'SUCCESS' } },
+      ]
+        .map(event => JSON.stringify(event))
+        .join('\n')
+    );
+    const neon = structuredClone(e);
+    const actor = neon.rounds[0].authors[0];
+    actor.native = { path: nativePath, sha256: recoveryHash(nativePath) };
+    const setJob = (record: unknown) => {
+      writeFileSync(path, JSON.stringify(record));
+      actor.job.sha256 = recoveryHash(path);
+    };
+    setJob(job);
+    expect(run(neon).identity.authors).toContainEqual({ model: 'neon', strength: 'provider' });
+    for (const field of ['session_id', 'model', 'card', 'agy_input_sha256', 'cwd', 'id'] as const)
+      for (const value of ['', undefined]) {
+        setJob({ ...job, [field]: value });
+        expect(() => run(neon)).toThrow('recovery:');
+      }
+    setJob({ ...job, card: nativePath });
+    expect(() => run(neon)).toThrow('native identity binding');
+    setJob(job);
+    actor.native.path += '.missing';
+    expect(() => run(neon)).toThrow('native registry binding');
+    writeFileSync(path, originalJob);
+  }
   // prettier-ignore
   const cases: [(x: RecoveryEvidence) => void, string][] = [
     [x => { x.engine_run_id = 'wrong'; }, 'run binding'],

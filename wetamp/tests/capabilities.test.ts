@@ -46,6 +46,9 @@ test('context uses scope and effective risk to emit mapped guidance', () => {
     const base = { gen, artifacts, cwd: repo, base: 'base', head: 'head', environment: 'env' };
     const code = roleContext({ ...base, node: `code-${plan.packages[0].id}` });
     expect(code.capabilities.injected).toEqual(['qa.visual']); expect(contextPack(gen, code).split('\n').filter(line => line.startsWith('可用技能'))).toHaveLength(1);
+    const neon = contextPack(gen, code, undefined, undefined, false);
+    expect(neon).toContain('"unavailable": [\n      "qa.visual"');
+    expect(neon).not.toContain('可用技能');
     const fix = Object.keys(table).find(key => key.startsWith('fix-'))!, d = table[fix];
     writeFileSync(join(artifacts, `gate-${d.milestone}-r${d.round - 1}.ledger.json`), JSON.stringify({ blocking: [{ failure_class: 'product' }], debt: [], closed: [] }));
     expect(roleContext({ ...base, node: fix }).capabilities.injected).toEqual(['qa.visual']);
