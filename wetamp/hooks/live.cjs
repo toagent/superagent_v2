@@ -37,6 +37,7 @@ function cliOf(argv, controller = false) {
   if (k === 'codex' && !['mcp', 'mcp-server', ...(!controller ? ['app-server'] : [])].includes(sub))
     return { kind: k, headless: sub === 'exec' };
   if (k === 'opencode' && sub !== 'serve') return { kind: k, headless: sub === 'run' };
+  if (k === 'agy_acp_server.par' && controller) return { kind: 'agy', headless: false };
   if (k === 'agy' && controller)
     return { kind: k, headless: a.some(t => t === '-p' || t === '--print') };
   return null;
@@ -60,7 +61,18 @@ function inspectPid(pid) {
     timeout: 1000,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
-  return r.status === 0 && /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(r.stdout.trim());
+  const row = r.status === 0 && /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(r.stdout.trim());
+  if (row && /\/agy_acp_server\.par(?=\s|$)/.test(row[3])) {
+    // ps flattens argv without quoting paths like Orca's Application Support directory.
+    const executable = spawnSync('ps', ['-o', 'comm=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (executable.status === 0 && programOf(executable.stdout.trim()) === 'agy_acp_server.par')
+      row[3] = 'agy_acp_server.par';
+  }
+  return row;
 }
 // Only identity metadata is returned; absent/ambiguous heartbeat identity stays absent.
 function launcher(home, env = process.env) {

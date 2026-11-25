@@ -82,6 +82,16 @@ const paths = (home: string, env = process.env): Record<Client | 'agy', string> 
   codex: join(envOr('CODEX_HOME', join(home, '.codex'), env), 'hooks.json'),
   agy: join(home, '.gemini/config/hooks.json'),
 });
+export function agyChatHooksFile(home: string, env = process.env): string | undefined {
+  const data = envOr('ORCA_USER_DATA_PATH', join(home, 'Library/Application Support/orca'), env);
+  const chat = join(data, 'antigravity-chat');
+  return statSync(chat, { throwIfNoEntry: false })?.isDirectory()
+    ? join(chat, 'config/hooks.json')
+    : undefined;
+}
+export const agyTerminalAvailable = (home: string, env = process.env): boolean =>
+  !!statSync(join(home, '.gemini'), { throwIfNoEntry: false })?.isDirectory() ||
+  Bun.which('agy', { PATH: env.PATH }) !== null;
 const ours = (h: Handler): boolean =>
   typeof h.command === 'string' && (isV1(h.command) || h.command.includes(V2_HOOKS));
 
@@ -98,9 +108,10 @@ const condition = (g: Group): string => {
 };
 const ALL = condition({});
 // prettier-ignore
-export function configuredGuard(client: Client | 'agy', env: NodeJS.ProcessEnv): string | undefined {
-  const file = paths(envOr('HOME', homedir(), env), env)[client];
-  if (!existsSync(file)) return undefined;
+export function configuredGuard(client: Client | 'agy', env: NodeJS.ProcessEnv, acp = false): string | undefined {
+  const home = envOr('HOME', homedir(), env);
+  const file = acp ? agyChatHooksFile(home, env) : paths(home, env)[client];
+  if (!file || !existsSync(file)) return undefined;
   const doc = JSON.parse(readFileSync(file, 'utf8')) as { hooks?: Partial<Hooks>; superagent?: Partial<Hooks> & { enabled?: boolean } };
   if (client === 'agy' && ![true, undefined].includes(doc.superagent?.enabled)) return undefined;
   const groups = (client === 'agy' ? doc.superagent : doc.hooks)?.PreToolUse;
@@ -368,13 +379,13 @@ export function installHooks(dryRun: boolean, purge = false, only?: InstallClien
   const stamp = utc();
   const openCode = !purge && (!only || only === 'opencode');
   if (openCode) installedOpenCodeGuard();
-  const agyHome = join(homedir(), '.gemini');
-  const agyInstalled =
-    (!only || only === 'agy') &&
-    (!!statSync(agyHome, { throwIfNoEntry: false })?.isDirectory() || Bun.which('agy') !== null);
-  for (const [client, file] of Object.entries(paths(homedir())) as [Client | 'agy', string][]) {
+  const home = homedir();
+  const targets = Object.entries(paths(home)) as [Client | 'agy', string][];
+  const chat = !only || only === 'agy' ? agyChatHooksFile(home) : undefined;
+  if (chat) targets.push(['agy', chat]);
+  for (const [client, file] of targets) {
     if (only && client !== only) continue;
-    if (client === 'agy' && !agyInstalled) {
+    if (client === 'agy' && file !== chat && !agyTerminalAvailable(home)) {
       out += 'agy: 未找到 agy 或 ~/.gemini，跳过\n';
       continue;
     }

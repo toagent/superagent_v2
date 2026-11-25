@@ -1,0 +1,21 @@
+{
+  "toolCall": {
+    "name": "run_command",
+    "args": {
+      "CommandLine": "ls -la",
+      "Cwd": "/fixture/workspace-0",
+      "WaitMsBeforeAsync": 5000
+    }
+  },
+  "stepIdx": 2,
+  "conversationId": "acp-fixture",
+  "workspacePaths": [
+    "/fixture/workspace-0",
+    "/fixture/workspace-1",
+    "/fixture/workspace-2",
+    "/fixture/workspace-3",
+    "/fixture/workspace-4"
+  ],
+  "transcriptPath": "/fixture/transcriptPath",
+  "artifactDirectoryPath": "/fixture/artifactDirectoryPath"
+}

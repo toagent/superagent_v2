@@ -1,15 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { configuredGuard } from './install-hooks';
+import { agyChatHooksFile, agyTerminalAvailable, configuredGuard } from './install-hooks';
 // prettier-ignore
 export function guardSelftest(env = process.env) {
-  return (['claude', 'codex', 'agy'] as const).map(client => {
-    const failed = (reason: string) => ({ client, ok: false, reason });
+  const home = env.HOME === undefined || env.HOME === '' ? homedir() : env.HOME;
+  const probe = (client: 'claude' | 'codex' | 'agy', acp = false) => {
+    const failed = (reason: string) => ({ client, ok: false as const, reason: acp ? `Orca ACP：${reason}` : reason });
     let cwd: string | undefined;
     try {
-      const script = configuredGuard(client, env);
+      const script = configuredGuard(client, env, acp);
       if (!script || !existsSync(script)) return failed(script ? '护栏脚本缺失' : '未配置受管 PreToolUse 护栏');
       cwd = mkdtempSync(join(tmpdir(), 'sa-guard-selftest-'));
       const isolated = { PATH: env.PATH, HOME: cwd, TMPDIR: cwd, SUPERAGENT_HOME: cwd, ARCHON_HOME: cwd, GIT_CEILING_DIRECTORIES: dirname(cwd) };
@@ -18,7 +19,10 @@ export function guardSelftest(env = process.env) {
           ? { tool_name: 'Bash', tool_input: { command } }
           : { tool_name: 'exec_command', tool_input: { cmd: command } };
         const payload = client === 'agy'
-          ? { cwd, hookEventName: 'PreToolUse', toolCall: { name: 'run_command', args: { CommandLine: command } } }
+          ? {
+              ...(acp ? {} : { cwd, hookEventName: 'PreToolUse' }),
+              toolCall: { name: 'run_command', args: { CommandLine: command, Cwd: cwd } },
+            }
           : { cwd, session_id: 'guard-selftest', hook_event_name: 'PreToolUse', ...tool };
         const result = spawnSync('node', [script, client], {
           cwd, env: isolated, input: JSON.stringify(payload), encoding: 'utf8', timeout: 3000, killSignal: 'SIGKILL',
@@ -32,11 +36,21 @@ export function guardSelftest(env = process.env) {
           : !out.systemMessage && !out.decision && out.continue !== false && permission !== 'deny';
         if (deny ? permission !== 'deny' : !allowed) return failed(deny ? '强制推送未被拒绝' : '无害命令未正常放行');
       }
-      return { client, ok: true };
+      return { client, ok: true as const };
     } catch {
       return failed('无法读取护栏配置或解析探针结果');
     } finally {
       if (cwd) rmSync(cwd, { recursive: true, force: true });
+    }
+  };
+  return (['claude', 'codex', 'agy'] as const).map(client => {
+    if (client !== 'agy') return probe(client);
+    try {
+      if (!agyChatHooksFile(home, env)) return probe(client);
+      const chat = probe(client, true);
+      return chat.ok && agyTerminalAvailable(home, env) ? probe(client) : chat;
+    } catch {
+      return { client, ok: false as const, reason: '无法检查 agy 安装位置' };
     }
   });
 }

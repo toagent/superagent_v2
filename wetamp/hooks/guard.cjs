@@ -382,7 +382,10 @@ function agyReadReason(file, cwd, env) {
   }
   return '无法完成文件秘密扫描';
 }
+const isAcpToolUse = payload => payload?.hookEventName === undefined && Boolean(payload?.toolCall);
 async function decideAgy(payload, env = process.env) {
+  const acp = isAcpToolUse(payload);
+  // ACP PreInvocation has no toolCall and does not supply lastUserInput for secret scanning.
   if (payload?.hookEventName === 'PreInvocation') {
     if (!firewallInstalled(env) || safePrompt(String(payload.lastUserInput || ''), env)) return {};
     return {
@@ -390,10 +393,10 @@ async function decideAgy(payload, env = process.env) {
       injectSteps: [{ errorMessage: { userMessage: PROMPT_SECRET_REASON } }],
     };
   }
-  if (payload?.hookEventName !== 'PreToolUse') return {};
+  if (!acp && payload?.hookEventName !== 'PreToolUse') return {};
   const { name, args = {} } = payload.toolCall || {};
   const cwd =
-    typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+    !acp && typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
   const command = name === 'run_command';
   const shell = command && typeof args?.CommandLine === 'string' ? args.CommandLine : undefined;
   if (command && shell === undefined)
@@ -401,17 +404,24 @@ async function decideAgy(payload, env = process.env) {
   const workdir = command && typeof args?.Cwd === 'string' ? path.resolve(cwd, args.Cwd) : cwd;
   if (shell) await redline.init();
   const reason = redline.reason({
-    client: 'agy', name, cwd, root: shell ? gitRoot(cwd) : null, shell: shell || undefined,
+    client: 'agy', name, cwd, root: shell ? gitRoot(acp ? workdir : cwd) : null,
+    acp, shell: shell || undefined,
     input: command ? { workdir } : args || {}, env,
     onAdvisory: code => process.stderr.write(`SUPERAGENT advisory：${code}\n`),
   });
   if (reason) return { decision: 'deny', reason };
   // agy 的 PreToolUse 必须返回 decision，空对象会被视为拒绝。
   if (!firewallInstalled(env)) return { decision: 'allow' };
+  if (acp && shell !== undefined && !shell.startsWith(REDACT_PREFIX))
+    return {
+      decision: 'deny',
+      reason: redline.message('执行终端命令', 'ACP 无法改写命令以遮蔽输出', `在命令开头加上 ${REDACT_PREFIX} 后重试`),
+    };
   if (shell && !shell.startsWith(REDACT_PREFIX))
     return { decision: 'allow', overwrite: { CommandLine: `${REDACT_PREFIX} ${shell}` } };
   const alternative = '改用终端命令，输出会经过秘密遮蔽';
-  if ((name === 'grep_search' || !AGY_BUILTINS.has(name)) && derivedBy(payload, 'agy', env))
+  const builtin = AGY_BUILTINS.has(name) || (acp && redline.AGY_ACP_PATH_FIELDS.has(name));
+  if ((name === 'grep_search' || !builtin) && derivedBy(acp ? { ...payload, cwd } : payload, 'agy', env))
     return { decision: 'deny', reason: redline.message('执行工具', '无法预扫或遮蔽工具输出', alternative) };
   if (name === 'read_file' || name === 'view_file') {
     const why = agyReadReason(args?.[redline.AGY_PATH_FIELDS.get(name)], cwd, env);
@@ -423,9 +433,10 @@ async function decideAgy(payload, env = process.env) {
 if (require.main === module)
   (async () => {
     const client = process.argv[2];
+    let payload;
     try {
       if (!['claude', 'codex', 'agy'].includes(client)) throw new Error('usage: guard.cjs claude|codex|agy');
-      const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+      payload = JSON.parse(fs.readFileSync(0, 'utf8'));
       if (client === 'agy') {
         process.stdout.write(JSON.stringify(await decideAgy(payload)) + '\n');
         return;
@@ -467,8 +478,10 @@ if (require.main === module)
       if (output) process.stdout.write(JSON.stringify(output) + '\n');
     } catch {
       const systemMessage = 'SUPERAGENT advisory：护栏内部异常，本次已放行。';
-      if (client === 'agy') process.stderr.write(systemMessage + '\n');
-      else process.stdout.write(JSON.stringify({ systemMessage }) + '\n');
+      if (client === 'agy') {
+        process.stderr.write(systemMessage + '\n');
+        if (isAcpToolUse(payload)) process.stdout.write(JSON.stringify({ decision: 'allow' }) + '\n');
+      } else process.stdout.write(JSON.stringify({ systemMessage }) + '\n');
     }
   })();
 module.exports = { decide, derivedBy, sessionRole, isChild };

@@ -1,0 +1,26 @@
+{
+  "toolCall": {
+    "name": "edit_file",
+    "args": {
+      "AllowMultiple": false,
+      "Description": "Change note.txt content from probe to probe2 for hook probe",
+      "EndLine": 1,
+      "Instruction": "Replace probe with probe2 in note.txt",
+      "ReplacementContent": "probe2",
+      "StartLine": 1,
+      "TargetContent": "probe",
+      "TargetFile": "/fixture/workspace-0/note.txt"
+    }
+  },
+  "stepIdx": 4,
+  "conversationId": "acp-fixture",
+  "workspacePaths": [
+    "/fixture/workspace-0",
+    "/fixture/workspace-1",
+    "/fixture/workspace-2",
+    "/fixture/workspace-3",
+    "/fixture/workspace-4"
+  ],
+  "transcriptPath": "/fixture/transcriptPath",
+  "artifactDirectoryPath": "/fixture/artifactDirectoryPath"
+}

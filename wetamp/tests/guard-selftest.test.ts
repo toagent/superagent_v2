@@ -5,7 +5,7 @@ import { guardSelftest } from '../src/guard-selftest';
 import { agyGuardCommand } from '../src/install-hooks';
 import { tmp } from './helpers';
 
-function check(broken?: { client: 'codex' | 'agy'; source?: string }) {
+function check(broken?: { client: 'codex' | 'agy' | 'agy-acp'; source?: string }) {
   const home = tmp();
   const wetamp = join(tmp(), "安装'目录"),
     script = join(wetamp, 'hooks/guard.cjs');
@@ -21,13 +21,14 @@ function check(broken?: { client: 'codex' | 'agy'; source?: string }) {
     ['claude', '.claude/settings.json'],
     ['codex', '.codex/hooks.json'],
     ['agy', '.gemini/config/hooks.json'],
+    ['agy-acp', 'Library/Application Support/orca/antigravity-chat/config/hooks.json'],
   ] as const) {
     mkdirSync(dirname(join(home, file)), { recursive: true });
     const command = agyGuardCommand(
       broken?.client === client ? wetamp : join(import.meta.dir, '..')
-    ).replace(/ agy$/, ` ${client}`);
+    ).replace(/ agy$/, ` ${client === 'agy-acp' ? 'agy' : client}`);
     const group = { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command }] }] };
-    const doc = client === 'agy' ? { superagent: group } : { hooks: group };
+    const doc = client.startsWith('agy') ? { superagent: group } : { hooks: group };
     writeFileSync(join(home, file), JSON.stringify(doc));
   }
   const before = readdirSync(home, { recursive: true });
@@ -57,5 +58,12 @@ test('已配置的 agy 脚本错误放行时仅 agy 失败', () => {
   const results = check({ client: 'agy', source });
   expect(results.filter(result => !result.ok)).toEqual([
     { client: 'agy', ok: false, reason: '强制推送未被拒绝' },
+  ]);
+});
+
+test('Orca ACP 安装位置的护栏失效时 agy 健康检查失败', () => {
+  const results = check({ client: 'agy-acp', source: 'console.log("{}");' });
+  expect(results.filter(result => !result.ok)).toEqual([
+    { client: 'agy', ok: false, reason: 'Orca ACP：无害命令未正常放行' },
   ]);
 });

@@ -148,6 +148,7 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
         CLAUDE_CONFIG_DIR: join(root, '.claude'),
         CODEX_HOME: join(root, '.codex'),
         OPENCODE_CONFIG_DIR: join(root, '.config/opencode'),
+        ORCA_USER_DATA_PATH: join(root, 'orca'),
         XDG_CONFIG_HOME: join(root, '.config'),
         XDG_STATE_HOME: join(root, '.local/state'),
       },
@@ -161,9 +162,13 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
   expect(skipped.exitCode).toBe(0);
   expect(skipped.stdout.toString()).toContain('agy: 未找到 agy 或 ~/.gemini，跳过');
   expect(existsSync(join(root, '.gemini'))).toBe(false);
+  expect(existsSync(join(root, 'orca'))).toBe(false);
   writeFileSync(join(bin, 'agy'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const codex = join(root, '.codex/hooks.json');
   const agy = join(root, '.gemini/config/hooks.json');
+  const chat = join(root, 'orca/antigravity-chat/config/hooks.json');
+  const otherGroup = { 'orca-status': { enabled: true } };
+  mkdirSync(join(chat, '..'), { recursive: true });
   mkdirSync(join(codex, '..'), { recursive: true });
   writeFileSync(codex, '{}\n');
   const snapshot = () =>
@@ -179,10 +184,20 @@ test('installer migrates OpenCode and wrapper only in isolated HOME; dry-run and
   }
   expect(install(['--only', 'agy', '--dry-run']).stdout.toString()).toContain(agy);
   expect(existsSync(agy)).toBe(false);
+  expect(existsSync(chat)).toBe(false);
   expect(install(['--only', 'agy']).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(agy, 'utf8')).superagent).toHaveProperty('PreToolUse');
+  const managed = {
+    superagent: JSON.parse(readFileSync(agy, 'utf8')).superagent,
+  };
+  expect(JSON.parse(readFileSync(chat, 'utf8'))).toEqual(managed);
+  const installedChat = JSON.stringify({ ...otherGroup, ...managed });
+  writeFileSync(chat, installedChat);
+  expect(install(['--only', 'agy']).exitCode).toBe(0);
+  expect(readFileSync(chat, 'utf8')).toBe(installedChat);
   expect(install(['--only', 'agy', '--purge-v1']).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(agy, 'utf8'))).toEqual({});
+  expect(JSON.parse(readFileSync(chat, 'utf8'))).toEqual(otherGroup);
   expect(snapshot()).toEqual(otherClients);
   const installed = install([]);
   expect(installed.stderr.toString()).toBe('');

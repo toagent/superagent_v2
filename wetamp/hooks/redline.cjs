@@ -45,6 +45,10 @@ const AGY_PATH_FIELDS = new Map([
   ['find_by_name', 'SearchDirectory'],
   ['grep_search', 'SearchPath'],
 ]);
+const AGY_ACP_PATH_FIELDS = new Map([
+  ['create_file', 'TargetFile'],
+  ['edit_file', 'TargetFile'],
+]);
 const expand = (word, env) =>
   word.replace(/^~(?=\/|$)/, homeOf(env)).replace(/\$\{HOME\}|\$HOME\b/g, homeOf(env));
 
@@ -222,6 +226,7 @@ function reason({
   cwd,
   root,
   shell,
+  acp = false,
   env = process.env,
   onAdvisory = () => {},
   onCategory = () => {},
@@ -260,8 +265,9 @@ function reason({
     // Shell strings are interpreted by the parser; quoted prose is not executed.
     if (shell === undefined) {
       const field = client === 'agy' ? AGY_PATH_FIELDS.get(name) : undefined;
+      const acpField = acp ? AGY_ACP_PATH_FIELDS.get(name) : undefined;
       const paths = client === 'agy'
-        ? field ? strings(input[field]).filter(value => value.trim()) : []
+        ? [field, acpField].filter(Boolean).flatMap(key => strings(input[key])).filter(value => value.trim())
         : microEdit.isEdit(client, name)
         ? client === 'codex'
           ? microEdit.patchEdits(input).map(edit => edit.file)
@@ -361,6 +367,7 @@ function reason({
 const init = () => require('./shell-ast.cjs').init();
 module.exports = {
   AGY_PATH_FIELDS,
+  AGY_ACP_PATH_FIELDS,
   init,
   reason,
   expand,

@@ -1,9 +1,10 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { buildSecrets } from '../src/secrets/build';
 import { gitRepo, privatePathCases, tmp } from './helpers';
 import { testTimeout } from '@archon/paths/test-utils';
 await (
@@ -70,11 +71,13 @@ function run(
   payload: object,
   env: Record<string, string>,
   hooks = HOOKS,
-  exitCode = 0
+  exitCode = 0,
+  cwd?: string
 ): Out {
   const p = Bun.spawnSync(['node', join(hooks, file), client], {
     stdin: Buffer.from(JSON.stringify(payload)),
     env: { ...baseEnv, ...env },
+    cwd,
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -158,6 +161,62 @@ function agyFixture() {
       ),
   };
 }
+
+test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重试', async () => {
+  const cwd = tmp();
+  const jail = join(cwd, '.wetamp/jail');
+  const env = { HOME: cwd, SUPERAGENT_HOME: cwd, ARCHON_HOME: cwd, SA_SECRET_SCAN_MODULE: '' };
+  const fixtures = join(import.meta.dir, 'fixtures/agy/acp');
+  const samples = Object.fromEntries(
+    readdirSync(fixtures).map(file => [
+      file,
+      JSON.parse(readFileSync(join(fixtures, file), 'utf8')) as {
+        toolCall?: { args: Record<string, unknown> };
+      },
+    ])
+  );
+  const call = (file: string, args?: Record<string, unknown>) => {
+    const payload = structuredClone(samples[`acp-${file}.json`]);
+    if (payload.toolCall && args) Object.assign(payload.toolCall.args, args);
+    return run('guard.cjs', 'agy', payload, env, HOOKS, 0, cwd);
+  };
+  const command = 'pretooluse-2-run_command';
+  const view = 'pretooluse-1-view_file';
+  const allow = { decision: 'allow' };
+  const deny = { decision: 'deny', reason: expect.any(String) };
+  const secret = join(cwd, '.ssh/id_rsa');
+  writeFileSync(join(cwd, 'ordinary.txt'), 'ok');
+  expect(call(view, { AbsolutePath: 'ordinary.txt' })).toEqual(allow);
+  expect(call(view, { AbsolutePath: secret })).toEqual(deny);
+  expect(
+    call('pretooluse-3-create_file', { TargetFile: 'ordinary.txt', CodeContent: '_private' })
+  ).toEqual(allow);
+  expect(call('pretooluse-3-create_file', { TargetFile: secret })).toEqual(deny);
+  for (const Path of [undefined, '', 'ordinary.txt'])
+    expect(call('pretooluse-4-edit_file', { Path, TargetFile: secret })).toEqual(deny);
+  expect(call(command, { Cwd: cwd, CommandLine: 'git push --force origin main' })).toEqual(deny);
+  expect(call(command, { Cwd: '.ssh', CommandLine: 'cat ./id_rsa' })).toEqual(deny);
+  expect(call('pretooluse-5-run_command', { Cwd: cwd, CommandLine: 'echo ok' })).toEqual(allow);
+  await buildSecrets(jail);
+  for (const file of ['sa-redact.sh', 'gitleaks.toml'])
+    cpSync(join(HOOKS, '..', 'secrets', file), join(jail, file));
+  expect(call(view, { AbsolutePath: 'ordinary.txt' })).toEqual(allow);
+  const prefix = '. ~/.wetamp/jail/sa-redact.sh;';
+  expect(call(command, { Cwd: cwd, CommandLine: 'echo ok' })).toEqual({
+    decision: 'deny',
+    reason: expect.stringContaining(prefix),
+  });
+  expect(call(command, { Cwd: cwd, CommandLine: `${prefix} echo ok` })).toEqual(allow);
+  expect(call('preinvocation')).toEqual({});
+});
+
+test('Orca ACP 只作为控制台识别', () => {
+  const live = createRequire(import.meta.url)('../hooks/live.cjs') as {
+    cliOf: (argv: string[], controller: boolean) => unknown;
+  };
+  expect(live.cliOf(['/x/agy_acp_server.par'], true)).toEqual({ kind: 'agy', headless: false });
+  expect(live.cliOf(['/x/agy_acp_server.par'], false)).toBeNull();
+});
 
 test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
   const { call } = agyFixture();
