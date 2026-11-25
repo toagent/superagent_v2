@@ -18,7 +18,7 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
   const p = raw as Record<string, unknown>;
   const event = p.hook_event_name;
   if (event !== 'UserPromptSubmit' && event !== 'SessionStart') return;
-  if (!['claude', 'codex'].includes(client)) return advisory(event);
+  if (!['claude', 'codex', 'agy'].includes(client)) return advisory(event);
   if (
     ['general', 'strategist', 'reviewer', 'worker'].includes(env.SUPERAGENT_ROLE ?? '') ||
     env.AI_DISPATCH_ROLE === 'general' ||
@@ -57,7 +57,7 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
     if (event === 'UserPromptSubmit') {
       if (typeof p.prompt !== 'string' || !p.prompt.trim()) return advisory(event);
       if (!isTaskNotification({ source: client, text: p.prompt })) {
-        const message = client === 'codex' ? p.turn_id : randomUUID();
+        const message = client === 'claude' ? randomUUID() : p.turn_id;
         if (typeof message !== 'string' || !message.trim()) return advisory(event);
         const input = {
           source: client,
@@ -71,6 +71,7 @@ export function nativeIntake(raw: unknown, client: string, env = process.env): u
         inputKey = JSON.stringify([client, p.session_id, message]);
       }
     }
+    if (client === 'agy') return;
     const context = store.context(repo, 4096);
     return {
       hookSpecificOutput: {

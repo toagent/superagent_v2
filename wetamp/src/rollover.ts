@@ -275,12 +275,9 @@ export class Rollover {
     });
     const skipped: Record<string, string> = r.skipped ?? {};
     if (!r.steps.transfer) {
-      if (r.from.client === 'agy' || to.client === 'agy') r.scratch = { action: 'skipped', reason: 'Neon 会话未分配 scratch' };
-      else {
-        const path = r.from.session_id ? this.d.scratch.directory(r.from.client, r.from.session_id) : this.d.scratch.ROOT;
-        try { r.scratch = r.from.session_id && to.pid_start ? this.d.scratch.transfer(r.from.client, r.from.session_id, to) : { path, action: 'skipped', reason: 'scratch identity unavailable' }; }
-        catch (error) { r.scratch = { path, action: 'skipped', reason: error instanceof Error ? error.message : String(error) }; }
-      }
+      const path = r.from.session_id ? this.d.scratch.directory(r.from.client, r.from.session_id) : this.d.scratch.ROOT;
+      try { r.scratch = r.from.session_id && to.pid_start ? this.d.scratch.transfer(r.from.client, r.from.session_id, to) : { path, action: 'skipped', reason: 'scratch identity unavailable' }; }
+      catch (error) { r.scratch = { path, action: 'skipped', reason: error instanceof Error ? error.message : String(error) }; }
       for (const id of r.runs) {
         const run = this.d.coord.resolveRun(id);
         if (!run) {
@@ -397,10 +394,7 @@ export class Rollover {
         };
       })
     );
-    const prior = chain.at(-1)?.from,
-      scratch = chain.at(-1)?.scratch;
-    if (prior?.client === 'agy' || chain.at(-1)?.to?.client === 'agy')
-      return `${rendered}\n\n上一会话 scratch 已跳过：${scratch?.reason ?? 'Neon 会话未分配 scratch'}。`;
+    const prior = chain.at(-1)?.from;
     const path = prior?.session_id ? this.d.scratch.directory(prior.client, prior.session_id) : null;
     return path && this.d.exists(path) ? `${rendered}\n\n上一会话 scratch：${path}/\n请取用所需文件或转存到稳定目录。` : rendered;
   }

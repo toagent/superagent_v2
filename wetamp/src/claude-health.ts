@@ -24,8 +24,9 @@ export type ClaudeOutcome = Partial<Omit<Cause, 'source'>> & {
   source: Cause['source'];
 };
 type Probe = () => { ok: boolean; class?: string; model?: string; evidence?: string };
-const path = (suffix = ''): string =>
-  join(process.env.SUPERAGENT_HOME ?? '', `claude-health.json${suffix}`);
+type HealthProvider = 'claude' | 'agy';
+const path = (provider: HealthProvider, suffix = ''): string =>
+  join(process.env.SUPERAGENT_HOME ?? '', `${provider}-health.json${suffix}`);
 const date = (v: unknown): v is string => typeof v === 'string' && !isNaN(Date.parse(v));
 const valid = (h: ClaudeHealth): boolean =>
   Number.isInteger(h.probe_failures) &&
@@ -37,39 +38,48 @@ const valid = (h: ClaudeHealth): boolean =>
       date(h.next_probe_at) &&
       !!h.cause?.class &&
       Number.isInteger(h.cause.retries)));
-export function readClaudeHealth(now: number): ClaudeHealth {
+function readHealth(provider: HealthProvider, now: number): ClaudeHealth {
   try {
-    if (!process.env.SUPERAGENT_HOME || !existsSync(path()))
+    if (!process.env.SUPERAGENT_HOME || !existsSync(path(provider)))
       return { state: 'up', probe_failures: 0 };
-    const health = JSON.parse(readFileSync(path(), 'utf8')) as ClaudeHealth;
+    const health = JSON.parse(readFileSync(path(provider), 'utf8')) as ClaudeHealth;
     if (!valid(health) || !Number.isFinite(now)) throw new Error('invalid state');
     return health;
   } catch {
     return { state: 'unknown', probe_failures: 0 };
   }
 }
-function acquire(suffix: string, wait: number): Extract<Lock, { ok: true }> | Error {
+export const readClaudeHealth = (now: number): ClaudeHealth => readHealth('claude', now);
+export const readAgyHealth = (now = Date.now()): ClaudeHealth => readHealth('agy', now);
+export const isAgyAvailable = (h: ClaudeHealth, now = Date.now()): boolean =>
+  h.state !== 'down' || Date.parse(h.next_probe_at ?? '') <= now;
+
+function acquire(
+  provider: HealthProvider,
+  suffix: string,
+  wait: number
+): Extract<Lock, { ok: true }> | Error {
   if (!process.env.SUPERAGENT_HOME) return new Error('SUPERAGENT_HOME unset');
   try {
-    let lease = lock(path(suffix));
+    let lease = lock(path(provider, suffix));
     if (!lease.ok && wait) {
       Bun.sleepSync(wait);
-      lease = lock(path(suffix));
+      lease = lock(path(provider, suffix));
     }
     return lease.ok ? lease : new Error('health lock timeout');
   } catch (error) {
     return error as Error;
   }
 }
-function persist(health: ClaudeHealth, observed: number) {
-  const lease = acquire('.lock', 2000);
+function persist(provider: HealthProvider, health: ClaudeHealth, observed: number) {
+  const lease = acquire(provider, '.lock', 2000);
   if (lease instanceof Error) return { health, persisted: false, error: lease.message };
   try {
-    const current = readClaudeHealth(observed);
+    const current = readHealth(provider, observed);
     if (Date.parse(current.observed_at ?? '') > observed)
       return { health: current, persisted: true };
-    writeFileSync(path('.tmp'), JSON.stringify(health) + '\n');
-    renameSync(path('.tmp'), path());
+    writeFileSync(path(provider, '.tmp'), JSON.stringify(health) + '\n');
+    renameSync(path(provider, '.tmp'), path(provider));
     return { health, persisted: true };
   } catch (error) {
     return { health, persisted: false, error: (error as Error).message };
@@ -98,15 +108,25 @@ function health(h: ClaudeHealth, o: ClaudeOutcome, n: number, p = h.probe_failur
     ...(!o.ok ? { next_probe_at: new Date(Date.parse(o.resetAt ?? '') || n).toISOString() } : {}),
   };
 }
-export function recordClaudeOutcome(o: ClaudeOutcome, now = Date.now()) {
-  const h = readClaudeHealth(now),
+function recordOutcome(provider: HealthProvider, o: ClaudeOutcome, trip: boolean, now: number) {
+  const h = readHealth(provider, now),
     retries = o.retries ?? 0;
-  if (o.provider !== 'claude') return { health: h, persisted: true };
-  const trip = claudeOutcomeTrips(o);
+  if (o.provider !== provider) return { health: h, persisted: true };
   if (!o.ok && !trip) return { health: h, persisted: true }; // SDK ceilings below TRIP_RETRIES stay node-local.
   const next = Math.max(now + PROBE_BACKOFF_MS[0], Date.parse(o.resetAt ?? '') || 0);
-  return persist(health(h, { ...o, retries, resetAt: new Date(next).toISOString() }, now), now);
+  return persist(
+    provider,
+    health(h, { ...o, retries, resetAt: new Date(next).toISOString() }, now),
+    now
+  );
 }
+export const recordClaudeOutcome = (o: ClaudeOutcome, now = Date.now()) =>
+  recordOutcome('claude', o, claudeOutcomeTrips(o), now);
+export const recordAgyOutcome = (o: ClaudeOutcome, now = Date.now()) =>
+  recordOutcome('agy', o, agyOutcomeTrips(o), now);
+// Neon emits one error step per retry and a separate terminal error for the final failure.
+export const agyOutcomeTrips = (o: ClaudeOutcome): boolean =>
+  !o.ok && o.class === 'transient' && (o.retries ?? 0) + 1 >= TRIP_RETRIES;
 export const claudeOutcomeTrips = (o: ClaudeOutcome): boolean =>
   o.class === 'quota_exhausted' ||
   (!o.ok &&
@@ -152,7 +172,7 @@ export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
   const h = readClaudeHealth(now);
   if (h.state === 'up' || (h.state === 'down' && Date.parse(h.next_probe_at ?? '') > now))
     return { health: h, persisted: true };
-  const lease = acquire('.probe.lock', 0);
+  const lease = acquire('claude', '.probe.lock', 0);
   if (lease instanceof Error) return { health: h, persisted: false, error: lease.message };
   try {
     const result = (probe ?? probeClaude)(),
@@ -170,7 +190,7 @@ export function refreshClaudeHealth(now = Date.now(), probe?: Probe) {
     const failures = Math.min(h.probe_failures + 1, PROBE_BACKOFF_MS.length);
     outcome.class ??= 'probe_failed';
     outcome.resetAt = new Date(now + PROBE_BACKOFF_MS[failures - 1]).toISOString();
-    return persist(health(h, outcome, now, failures), now);
+    return persist('claude', health(h, outcome, now, failures), now);
   } catch {
     return { health: h, persisted: true };
   } finally {

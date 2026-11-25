@@ -45,11 +45,12 @@ function cliOf(argv, controller = false) {
 }
 // Nearest agent CLI ancestor of this hook process. One `ps -p` per level: a full `ps -ax`
 // costs ~100ms on macOS, a level ~3ms, and hooks sit 1–3 levels below the agent.
-function owner(interactive = false, inspect = inspectPid, parent = process.ppid) {
+function owner(interactive = false, inspect = inspectPid, parent = process.ppid, requiredClient) {
   for (let pid = parent, n = 0; pid > 1 && n < 16; n++) {
     const m = inspect(pid);
     if (!m) return null;
     const cli = cliOf(m[3].trim().split(/\s+/), true);
+    if (requiredClient && agentOf(m[3]) && (cli?.kind !== requiredClient || cli.headless)) return null;
     if (interactive ? cli && !cli.headless : agentOf(m[3]))
       return { pid, tty: m[2] === '??' ? null : m[2] };
     pid = Number(m[1]);

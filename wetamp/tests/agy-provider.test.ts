@@ -13,10 +13,11 @@ import { getRegistration } from '@archon/providers';
 import { executePolicy } from '@archon/workflows/policy-dispatch';
 import { providerChunkSchema } from '../../packages/provider-contract/src';
 import { createAgyProvider } from '../src/agy-provider';
+import { readAgyHealth, readClaudeHealth } from '../src/claude-health';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import { executionTable } from '../src/execution';
 import { agyGuardCommand, agyGuardPath } from '../src/install-hooks';
-import { installPolicyExecutor } from '../src/policy-executor';
+import { installPolicyExecutor, wrapPolicyProvider } from '../src/policy-executor';
 import { readPolicyAttempts } from '../templates/.archon/scripts/policy-attempts';
 import { readAuthorEvidence } from '../templates/.archon/scripts/sa-check';
 import { loadPlan } from '../src/plan';
@@ -64,12 +65,18 @@ test('工具拒绝后进程退出 0 且报告 SUCCESS，结算成功并保留失
   expect(chunks.map(chunk => chunk.type)).toEqual([
     'tool_call',
     'tool_call_update',
+    'warning',
     'result',
     'settled',
   ]);
   expect(chunks[1]).toMatchObject({ status: 'failed', toolCallId: '2' });
-  expect(chunks[2]).toMatchObject({ type: 'result', text: 'OK' });
-  expect(chunks[2]).not.toHaveProperty('isError');
+  expect(chunks[2]).toEqual({
+    type: 'warning',
+    code: 'superagent.agy_tool_failure',
+    message: JSON.stringify({ toolCallIds: ['2'] }),
+  });
+  expect(chunks[3]).toMatchObject({ type: 'result', text: 'OK' });
+  expect(chunks[3]).not.toHaveProperty('isError');
 });
 
 async function collect(stream: ReturnType<ReturnType<typeof createAgyProvider>['sendQuery']>) {
@@ -208,6 +215,21 @@ test('没有输出、空回执、非成功状态、坏行、非零退出或工�
     });
     expect(chunks.at(-1)).toEqual({ type: 'settled' });
   }
+  for (const output of ['', active]) {
+    writeFileSync(f.output, output);
+    const chunks = await collect(
+      provider.sendQuery('检查', f.cwd, undefined, {
+        model,
+        env: { ...f.env, FIXTURE_TERMINATE: '1' },
+      })
+    );
+    expect(chunks.at(-2)).toMatchObject({
+      failure: {
+        class: output ? 'unknown' : 'transient',
+        evidence: expect.stringContaining(output ? '已有工具活动' : 'SIGTERM'),
+      },
+    });
+  }
   const missing = createAgyProvider({ executable: join(f.home, 'missing') });
   expect(
     (await collect(missing.sendQuery('检查', f.cwd, undefined, { model, env: f.env }))).at(-2)
@@ -229,7 +251,7 @@ test('503 实录报告状态和 error_id，并经真实策略切换到 Codex', a
     sendQuery: provider.sendQuery, options: candidate => ({ model: candidate.model, env }),
     sendQueryFor: () => async function* () { yield { type: 'result', text: 'Codex 接手' }; yield { type: 'settled' }; },
     async onSettled(_attempt, failure) {
-      if (failure) expect(failure).toMatchObject({ class: 'transient', evidence: expect.stringMatching(/ERROR.*c2bb91fe-4aee-4b6e-a17b-12c6ef224f95-9/) });
+      if (failure) expect(failure).toMatchObject({ class: 'transient', retries: 9, evidence: expect.stringMatching(/ERROR.*c2bb91fe-4aee-4b6e-a17b-12c6ef224f95-9/) });
       return undefined;
     },
   }, '检查', f.cwd));
@@ -394,7 +416,9 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
     'repo',
   ]);
   const previousHome = process.env.ARCHON_HOME;
+  const previousSuperagentHome = process.env.SUPERAGENT_HOME;
   process.env.ARCHON_HOME = f.home;
+  process.env.SUPERAGENT_HOME = f.home;
   try {
     installPolicyExecutor();
     const provider = getRegistration('agy').factory();
@@ -451,9 +475,69 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
       ['gemini-4-neon-%68igh', 'pinned'],
       ['gemini-4-neon-xhigh', 'provider'],
     ]);
+
+    plan.mode = 'auto';
+    plan.console = 'gemini';
+    writeFileSync(join(f.home, 'plan.json'), JSON.stringify(plan));
+    writeFileSync(join(f.home, 'execution.json'), JSON.stringify(executionTable(plan, tiers)));
+    const fallback = wrapPolicyProvider(
+      createAgyProvider({ executable: f.executable }),
+      'agy',
+      candidate => {
+        expect(candidate.provider).toBe('codex');
+        return async function* (_prompt, _cwd, resume) {
+          expect(resume).toBeUndefined();
+          yield { type: 'result', text: 'Codex 接手' };
+          yield { type: 'settled' };
+        };
+      }
+    );
+    const dispatch = (outage: boolean, requiresExactSession = false) =>
+      collect(
+        fallback.sendQuery('检查', f.cwd, requiresExactSession ? 'original' : undefined, {
+          model,
+          nodeConfig: { nodeId: `repair-${plan.packages[0].id}`, requiresExactSession },
+          env: {
+            ...f.env,
+            SA_POLICY_PATH: policy,
+            ...(outage
+              ? { FIXTURE_STREAM: join(fixtures, 'outage.ndjson'), FIXTURE_EXIT: '3' }
+              : {}),
+          },
+        })
+      );
+    expect(() => dispatch(false, true)).toThrow('requires an exact provider session');
+    expect(readPolicyAttempts(artifacts)).toEqual(attempts);
+    expect((await dispatch(true)).at(-2)).toMatchObject({ text: 'Codex 接手' });
+    expect(
+      readPolicyAttempts(artifacts)
+        .slice(attempts.length)
+        .map(a => a.provider)
+    ).toEqual(['agy', 'codex']);
+
+    const down = readAgyHealth();
+    expect(down).toMatchObject({ state: 'down', cause: { class: 'transient', retries: 9 } });
+    expect(readClaudeHealth(Date.now()).state).toBe('up');
+    db.run("UPDATE remote_agent_workflow_runs SET id='next-run'");
+    const nextArtifacts = join(f.home, 'artifacts/runs/next-run');
+    mkdirSync(nextArtifacts, { recursive: true });
+    expect((await dispatch(false)).at(-2)).toMatchObject({ text: 'Codex 接手' });
+    expect(readPolicyAttempts(nextArtifacts).map(a => a.provider)).toEqual(['codex']);
+    writeFileSync(
+      join(f.home, 'agy-health.json'),
+      JSON.stringify({
+        ...down,
+        next_probe_at: new Date(Date.now() - 1).toISOString(),
+      })
+    );
+    expect((await dispatch(false)).at(-2)).toMatchObject({ structuredOutput: { ok: true } });
+    expect(readAgyHealth().state).toBe('up');
+    expect(readPolicyAttempts(nextArtifacts).map(a => a.provider)).toEqual(['codex', 'agy']);
   } finally {
     if (previousHome === undefined) delete process.env.ARCHON_HOME;
     else process.env.ARCHON_HOME = previousHome;
+    if (previousSuperagentHome === undefined) delete process.env.SUPERAGENT_HOME;
+    else process.env.SUPERAGENT_HOME = previousSuperagentHome;
   }
 });
 

@@ -14,7 +14,7 @@ function agyTranscript(file) {
   if (path.basename(conversations) !== 'conversations' || !id || id === '.' || id === '..') return null;
   return path.join(path.dirname(conversations), 'brain', id, '.system_generated/logs/transcript_full.jsonl');
 }
-function latestAgyPrompt(file) {
+function latestAgyInput(file) {
   let fd;
   try {
     fd = fs.openSync(agyTranscript(file), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
@@ -31,7 +31,8 @@ function latestAgyPrompt(file) {
         if (left < 0 && start) break;
         try {
           const event = JSON.parse(bytes.toString('utf8', left + 1, right));
-          if (event?.type === 'USER_INPUT') return typeof event.content === 'string' ? event.content : null;
+          if (event?.type === 'USER_INPUT')
+            return { content: typeof event.content === 'string' ? event.content : null, step_index: event.step_index };
         } catch {}
       }
       tail = bytes.subarray(0, right);
@@ -303,4 +304,4 @@ if (require.main === module) {
   } catch {}
   // Never emit a denial or a nonzero status, even if state/transcript I/O fails.
 }
-module.exports = { agyTranscript, recentUsage, latestAgyPrompt, advise, main, roleLimit, contextLimits, rolloverNotice, agyAdvisory, LIMIT };
+module.exports = { agyTranscript, recentUsage, latestAgyInput, advise, main, roleLimit, contextLimits, rolloverNotice, agyAdvisory, LIMIT };

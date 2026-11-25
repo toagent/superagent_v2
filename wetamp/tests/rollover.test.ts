@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Coordination, repoScope, runScope, type Identity, type RunRef } from '../src/coord';
@@ -27,7 +28,17 @@ function agyFixture(acp = false) {
 test.each([false, true])('agy rollover retains identity and reads the source transcript (ACP: %s)', async acp => {
   const s = agyFixture(acp);
   s.c.claim(repoScope(s.repo), agy);
-  s.r.d.scratch.directory = () => { throw new Error('scratch does not support agy'); };
+  const { sessionScratch } = createRequire(import.meta.url)('../hooks/scratch.cjs') as {
+    sessionScratch: (env: NodeJS.ProcessEnv) => typeof s.r.d.scratch;
+  };
+  s.r.d.scratch = sessionScratch({ SUPERAGENT_HOME: s.sa });
+  const scratch = s.r.d.scratch.directory(agy.client, agy.session_id!);
+  mkdirSync(scratch, { recursive: true });
+  const ownerFile = join(scratch, '.owner.json');
+  writeFileSync(ownerFile, JSON.stringify({ ...agy, session: agy.session_id }));
+  writeFileSync(join(scratch, 'keep'), 'session data');
+  const exists = s.r.d.exists;
+  s.r.d.exists = path => path === scratch ? existsSync(path) : exists(path);
   const calls: string[][] = [];
   s.r.d.execOrca = async (_bin, args) => {
     calls.push(args);
@@ -45,10 +56,12 @@ test.each([false, true])('agy rollover retains identity and reads the source tra
   expect(s.launchCalls).toHaveLength(1);
   s.setWho({ ...b, client: 'agy' });
   for (let i = 0; i < 2; i++)
-    expect(s.r.accept(token)).toMatchObject({ state: 'accepted', scratch: { action: 'skipped' } });
+    expect(s.r.accept(token)).toMatchObject({ state: 'accepted', scratch: { action: 'transferred', path: scratch } });
+  expect(JSON.parse(readFileSync(ownerFile, 'utf8'))).toMatchObject({ pid: b.pid, pid_start: b.pid_start, transferred_from: { pid: a.pid, pid_start: a.pid_start } });
+  expect(readFileSync(join(scratch, 'keep'), 'utf8')).toBe('session data');
   expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
   const out = await s.r.context(token);
-  for (const value of [acp ? 'Orca 用户原话' : '终端用户原话', acp ? '最后的 Orca 汇报' : '最后的终端汇报', 'scratch 已跳过'])
+  for (const value of [acp ? 'Orca 用户原话' : '终端用户原话', acp ? '最后的 Orca 汇报' : '最后的终端汇报', `上一会话 scratch：${scratch}/`])
     expect(out).toContain(value);
   for (const value of ['旧汇报', '内部推理', '接手元帅会话']) expect(out).not.toContain(value);
   expect(calls).toEqual(acp ? [['agent', 'read', 'orca_session_id:orca-source', '--limit', '100', '--json']] : []);

@@ -17,7 +17,15 @@ import {
 } from '@archon/providers';
 import { registerBuiltinProviders } from '@archon/providers/in-process';
 import { isGeminiModel, routeState, usesNeonCoder, type Alias, type Tiers } from './config';
-import { claudeOutcomeTrips, recordClaudeOutcome, type ClaudeOutcome } from './claude-health';
+import {
+  agyOutcomeTrips,
+  claudeOutcomeTrips,
+  isAgyAvailable,
+  readAgyHealth,
+  recordAgyOutcome,
+  recordClaudeOutcome,
+  type ClaudeOutcome,
+} from './claude-health';
 import {
   executionContract,
   executionForNode,
@@ -201,6 +209,8 @@ function runtimeExecution(
       gemini
     ).candidates;
   let claudeAvailable = plan.mode === 'single:claude' || state.claude.state === 'up';
+  const tracksAgy = candidates.some(candidate => candidate.provider === 'agy');
+  let agyAvailable = !tracksAgy || isAgyAvailable(readAgyHealth());
   const nativeProvider = gemini ? (candidates[0]?.provider ?? 'codex') : provider;
   const nativeSend: typeof sendQueryFor = candidate =>
     gemini
@@ -226,13 +236,21 @@ function runtimeExecution(
     sendQuery: gemini && candidates[0] ? nativeSend(candidates[0]) : sendQuery,
     sendQueryFor: nativeSend,
     gemini: review,
-    ...(state.claude.state !== 'up' || candidates.some(candidate => candidate.provider === 'claude')
-      ? { available: (candidate: Alias) => candidate.provider !== 'claude' || claudeAvailable }
+    ...(tracksAgy ||
+    state.claude.state !== 'up' ||
+    candidates.some(candidate => candidate.provider === 'claude')
+      ? {
+          available: (candidate: Alias) =>
+            candidate.provider === 'agy'
+              ? agyAvailable
+              : candidate.provider !== 'claude' || claudeAvailable,
+        }
       : {}),
     onSettled: (attempt, failure) => {
-      if (attempt.provider !== 'claude') return Promise.resolve(undefined);
+      const provider = attempt.provider;
+      if (provider !== 'claude' && provider !== 'agy') return Promise.resolve(undefined);
       const outcome: ClaudeOutcome = {
-        provider: 'claude',
+        provider,
         ok: attempt.status === 'completed',
         source: 'dispatch',
         class: failure?.class,
@@ -242,9 +260,11 @@ function runtimeExecution(
         run: run.id,
         node,
       };
-      if (outcome.ok) claudeAvailable = true;
+      if (provider === 'agy') {
+        if (agyOutcomeTrips(outcome)) agyAvailable = false;
+      } else if (outcome.ok) claudeAvailable = true;
       else if (claudeOutcomeTrips(outcome)) claudeAvailable = false;
-      const saved = recordClaudeOutcome(outcome);
+      const saved = provider === 'agy' ? recordAgyOutcome(outcome) : recordClaudeOutcome(outcome);
       if (!saved.persisted) {
         const error = 'error' in saved && typeof saved.error === 'string' ? saved.error : 'unknown';
         return Promise.resolve({
@@ -320,6 +340,8 @@ export function wrapPolicyProvider(
     const path = options?.env?.SA_POLICY_PATH;
     if (!path || !options.nodeConfig?.nodeId || options.purpose === 'title-generation')
       return send(prompt, cwd, resume, options);
+    if (provider === 'agy' && options.nodeConfig.requiresExactSession)
+      throw new Error('policy: agy cannot run a node that requires an exact provider session');
     const runtime = runtimeExecution(path, cwd, options, send, provider, sendQueryFor);
     if (runtime.gemini) {
       if (resume !== undefined) throw new Error('policy: Gemini review cannot resume a session');

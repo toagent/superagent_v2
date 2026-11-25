@@ -405,7 +405,7 @@ function agyEdit(payload) {
   const edits = name === 'multi_replace_file_content' ? input.ReplacementChunks.map(edit) : [edit(input)];
   return { ...payload, tool_name: 'MultiEdit', tool_input: { file_path, edits } };
 }
-async function decideAgy(payload, env = process.env) {
+async function decideAgy(payload, env, latestInput) {
   const acp = isAcpToolUse(payload);
   // ACP PreInvocation has no toolCall and does not supply lastUserInput for secret scanning.
   if (payload?.hookEventName === 'PreInvocation') {
@@ -439,7 +439,7 @@ async function decideAgy(payload, env = process.env) {
   // agy 的 PreToolUse 必须返回 decision，空对象会被视为拒绝。
   if (!firewallInstalled(env)) return { decision: 'allow' };
   if (acp) {
-    const prompt = require('./context-advisory.cjs').latestAgyPrompt(payload.transcriptPath);
+    const prompt = latestInput()?.content;
     if (!safePrompt(prompt, env))
       return { decision: 'deny', reason: '检测到本回合输入含凭据；请立即轮换该凭据，并在新回合用 $NAME 引用。' };
   }
@@ -476,10 +476,22 @@ function agyRemediatesWait(shell) {
     return false;
   }
 }
+const agyInputKey = step => Number.isSafeInteger(step) && step >= 0 ? String(step) : null;
+function agyCapture(payload, prompt, turn_id, env) {
+  if (!turn_id || typeof prompt !== 'string' || !prompt.trim()) return;
+  if (firewallInstalled(env) && !safePrompt(prompt, env)) return;
+  spawnSync(bunExecutable(), [path.join(__dirname, '../src/intake-hook.ts'), 'agy'], {
+    input: JSON.stringify({
+      hook_event_name: 'UserPromptSubmit', cwd: payload.cwd, session_id: payload.session_id,
+      turn_id, prompt,
+    }),
+    env,
+    stdio: ['pipe', 'ignore', 'ignore'],
+    timeout: 10000,
+  });
+}
 function agyNotifications(payload, who, env) {
   const context = require('./context-advisory.cjs');
-  const handoff = context.rolloverNotice(payload, 'agy', env);
-  if (handoff) return agyNotice(handoff);
   const coord = require('./coord.cjs');
   const { tool_name: name, tool_input: input } = payload;
   const shell = name === 'run_command' ? input.CommandLine : undefined;
@@ -506,6 +518,12 @@ function agyNotifications(payload, who, env) {
     const advisory = context.agyAdvisory(payload, env);
     if (advisory) notices.push(advisory);
   } catch {}
+  try {
+    const scratch = require('./scratch.cjs').sessionScratch(env);
+    const message = `scratch: ${scratch.directory('agy', payload.session_id)}/`;
+    if (withState(stateFile(payload, env), state =>
+      markNotice(state, message) && scratch.start(payload, 'agy', env))) notices.push(message);
+  } catch {}
   if (notices.length) return agyNotice(notices.join('\n'));
   if (shell === undefined && !AGY_WRITES.has(name) && !AGY_EDITS.has(name)) return null;
   const cwd = shell === undefined ? payload.cwd : agyWorkdir(payload.cwd, input);
@@ -523,11 +541,12 @@ if (require.main === module)
       if (!['claude', 'codex', 'agy'].includes(client)) throw new Error('usage: guard.cjs claude|codex|agy');
       payload = JSON.parse(fs.readFileSync(0, 'utf8'));
       if (client === 'agy') {
+        const env = process.env, acpTool = isAcpToolUse(payload);
         const neon = {
           session_id: payload?.conversationId,
           transcript_path: payload?.transcriptPath,
-          hook_event_name: payload?.hookEventName ?? (isAcpToolUse(payload) ? 'PreToolUse' : 'PreInvocation'),
-          cwd: agyCwd(payload, isAcpToolUse(payload)),
+          hook_event_name: payload?.hookEventName ?? (acpTool ? 'PreToolUse' : 'PreInvocation'),
+          cwd: agyCwd(payload, acpTool),
           model: payload?.modelName,
           tool_name: payload?.toolCall?.name,
           tool_input: payload?.toolCall?.args || {},
@@ -543,10 +562,38 @@ if (require.main === module)
             if (heartbeat?.reconnected) renewClaim(neon, client, process.env);
           }
         } catch {}
-        let result = await decideAgy(payload);
+        const context = require('./context-advisory.cjs');
+        let input;
+        const latestInput = () => input ??= context.latestAgyInput(neon.transcript_path) ?? {};
+        let result = await decideAgy(payload, env, latestInput);
+        const handoff = commander && context.rolloverNotice(neon, client, env);
+        if (commander && !handoff) {
+          const terminalInvocation = payload.hookEventName === 'PreInvocation';
+          const acpInvocation = !acpTool && payload.hookEventName === undefined && Number.isSafeInteger(payload.invocationNum);
+          if (terminalInvocation || acpInvocation || heartbeat?.reconnected) {
+            try { require('./scratch.cjs').sessionScratch(env).start(neon, client, env); } catch {}
+          }
+          try {
+            // ACP can run PreInvocation before its current USER_INPUT is appended.
+            if (fs.existsSync(path.join(saHome(env), 'intake'))) {
+              if (acpTool) {
+                const { content, step_index } = latestInput();
+                agyCapture(neon, content, agyInputKey(step_index), env);
+              } else if (terminalInvocation && result.terminationBehavior !== 'terminate') {
+                const prompt = payload.lastUserInput;
+                if (typeof prompt === 'string' && prompt.trim()) {
+                  const { content, step_index } = latestInput();
+                  // PreInvocation also runs between tool calls. Prefer the user step over the invocation step.
+                  const turn = content === prompt ? agyInputKey(step_index) : null;
+                  agyCapture(neon, prompt, turn ?? crypto.randomUUID(), env);
+                }
+              }
+            }
+          } catch {}
+        }
         if (commander && result.decision === 'allow') {
           try {
-            result = agyNotifications(neon, heartbeat?.record, process.env) ?? result;
+            result = (handoff ? agyNotice(handoff) : agyNotifications(neon, heartbeat?.record, env)) ?? result;
           } catch {} // Advisory failures preserve the original agy decision and overwrite.
         }
         process.stdout.write(JSON.stringify(result) + '\n');
