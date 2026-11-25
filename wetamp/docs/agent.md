@@ -152,6 +152,12 @@ hook 进程非零退出时，本次工具调用失败。护栏脚本无法加载
 `superagent inbox --wait --timeout 3000`。Neon 的回合结束事件无法强制继续，缺失等待进程会在下一次工具调用时提醒。
 Orca 对话的 hook 在首次工具调用时检查最新用户输入。输入已发送，发现凭据后会拦截本回合工具调用并提示轮换。
 
+## 引擎稳定性探测
+
+`superagent engine probe G1|G2` 保留晋升探测。用 `superagent engine probe --console gemini --scenario repair` 选择控制台和场景。控制台支持 `claude`（默认）、`codex`、`gemini`。场景支持 `simple`、`repair`、`review`、`scope`、`outage`，其中 `scope` 以等待范围审批为成功，`outage` 仅支持 Gemini，验证本机 503 后切换到 Codex。
+
+`superagent engine probe --matrix [--parallel N]` 默认串行对照 Claude 和 Gemini，最后单独运行 `outage`。每个场景独立计时，G1 最多 15 分钟，G2 最多 30 分钟。JSON 写入 stdout，可读对照写入 stderr。每次探测的临时仓库和证据保存在 `$SUPERAGENT_HOME/probes/`。
+
 ## 评审
 
 只有实际 diff 命中 `tiers.json` 的 `policy.risk_paths`，或用户本轮明确要求时才触发独立
