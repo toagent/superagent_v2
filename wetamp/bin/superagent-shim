@@ -31,6 +31,11 @@ run_cli() {
   exec bun "$snapshot/wetamp/src/cli.ts" "$@"
 }
 
+usable_snapshot() {
+  local snapshot=$1
+  [[ -d "$snapshot" && -x "$snapshot/wetamp/bin/archon" && -f "$snapshot/wetamp/src/cli.ts" ]]
+}
+
 terminal_runs() {
   local id status
   for id in "$@"; do
@@ -49,7 +54,7 @@ if [[ "$verb" == supervise-tick ]]; then
     IFS=',' read -r -a run_ids <<< "$ids"
     args=(supervise-tick --no-global)
     for run in "${run_ids[@]}"; do args+=(--runs "$run"); done
-    if [[ ! -d "$snapshot" ]]; then
+    if ! usable_snapshot "$snapshot"; then
       printf 'engine snapshot unavailable; run superagent engine adopt %s <sha>\n' "${run_ids[0]}" >&2
       tick_status=1
       continue
@@ -122,7 +127,7 @@ case "$verb" in
         }
       ' "$sa_home/runs/$run.json" "$engine_home/receipts" "$engine_home")
       if [[ -n "$snapshot" ]]; then
-        if [[ ! -d "$snapshot" ]]; then
+        if ! usable_snapshot "$snapshot"; then
           historical=0
           case "$verb" in
             wait)

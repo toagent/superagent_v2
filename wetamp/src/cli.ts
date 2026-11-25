@@ -128,6 +128,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -137,7 +138,7 @@ import {
   type Stats,
   writeFileSync,
 } from 'node:fs';
-import { homedir, hostname } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs as parse } from 'node:util';
 import {
@@ -241,6 +242,7 @@ import {
   currentEngineSnapshot,
   ENGINE_ACTION_USAGE,
   engineCommand,
+  engineSnapshotUsable,
   fixedEngineSnapshot,
   runEngineSnapshot,
   runningEngineSnapshot,
@@ -2497,6 +2499,30 @@ export function reconcileIntents(): Action[] {
   return out;
 }
 
+export function summarizeDoctorFailure(out: string, err = ''): string {
+  const text = out.trim() || err.trim();
+  if (!text) return '';
+  const lines = text.split('\n').map(line => line.trimEnd());
+  const failed = lines.filter(line => line.trimStart().startsWith('✗'));
+  if (!failed.length) return tail(text);
+  const summary = lines.filter(line => /\bcheck\(s\)\s+failed\b/i.test(line)).at(-1);
+  return (summary && !failed.includes(summary) ? [...failed, summary] : failed).join('\n');
+}
+
+function runDoctor(): ReturnType<typeof archon> {
+  if ((process.env.GITHUB_TOKEN || process.env.GH_TOKEN) && !process.env.GH_CONFIG_DIR) {
+    const ghConfigDir = mkdtempSync(join(tmpdir(), 'sa-gh-'));
+    try {
+      return archon(['doctor'], undefined, undefined, QUERY_TIMEOUT_MS, {
+        GH_CONFIG_DIR: ghConfigDir,
+      });
+    } finally {
+      rmSync(ghConfigDir, { recursive: true, force: true });
+    }
+  }
+  return archon(['doctor']);
+}
+
 function health(cwd?: string, verbose = false, daysRaw?: string): number {
   const days = Number(daysRaw ?? 7);
   if (!Number.isFinite(days) || days <= 0) throw new Error('--days must be positive');
@@ -2527,7 +2553,7 @@ function health(cwd?: string, verbose = false, daysRaw?: string): number {
     join(WETAMP, 'capabilities.json'),
     process.env.HOME ?? homedir()
   );
-  const doctor = archon(['doctor']);
+  const doctor = runDoctor();
   const clean = Bun.spawnSync([join(WETAMP, 'scripts', 'check-upstream-clean.sh')], {
     stdout: 'pipe',
     stderr: 'pipe',
@@ -2557,7 +2583,7 @@ function health(cwd?: string, verbose = false, daysRaw?: string): number {
   print({
     ok,
     mode,
-    doctor: doctor.code === 0 ? 'ok' : tail(doctor.out),
+    doctor: doctor.code === 0 ? 'ok' : summarizeDoctorFailure(doctor.out, doctor.err),
     aliases,
     alias_drift: drift,
     capability_drift: capabilities,
@@ -4074,7 +4100,7 @@ export function superviseTick(mode: TickMode = {}):
       statuses = optional(runStatuses) ?? null,
       inputs = records.map(ledger => {
         const fixed = fixedEngineSnapshot(ledger),
-          snapshot = fixed && existsSync(fixed) ? fixed : undefined,
+          snapshot = engineSnapshotUsable(fixed) ? fixed : undefined,
           stat = statSync(ledgerPath(ledger.run_id)),
           status = statuses?.get(ledger.archon_run_id);
         return [ledger, stat, snapshot, status] satisfies TickInput;

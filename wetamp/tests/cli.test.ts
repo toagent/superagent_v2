@@ -3518,6 +3518,21 @@ describe('supervise-tick (archon + supervisor stubs)', () => {
     });
     expect(s.calls().some(call => call.startsWith('workflow get'))).toBe(false);
   });
+  test('damaged engine snapshot missing bin/archon is excluded from dispatch and missing repo still queries', () => {
+    const s = stub([run('failed')]);
+    activateEngineFixture(s);
+    const broken = join(s.root, 'broken-snapshot');
+    mkdirSync(join(broken, 'wetamp', 'src'), { recursive: true });
+    writeFileSync(join(broken, 'wetamp', 'src', 'cli.ts'), '// missing wetamp/bin/archon\n');
+    s.ledger.engine_snapshot = broken;
+    s.ledger.repo = join(s.root, 'deleted-repo');
+    writeFileSync(ledgerPath(s.ledger.run_id), JSON.stringify(s.ledger));
+    expect(cliMod.superviseTick({ schedule: true })).toMatchObject({
+      groups: [],
+      unavailable: { count: 1, runs: ['sa1'] },
+    });
+    expect(archonMod.getRun(s.ledger.archon_run_id, s.ledger.repo).status).toBe('failed');
+  });
   test('scheduler grouping keeps actionable changes and classifies unavailable snapshots', () => {
     const s = stub([run('completed')]),
       stat = { mtimeMs: 1, size: 2 },

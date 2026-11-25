@@ -1238,6 +1238,9 @@ export function buildWorkflow(
       const fixHandle = conditionalOutput<CoderOutput>(`fix-${t}`);
       if (r > 1) {
         const handoff = `handoff-${t}`;
+        // r=2 且存在 checkpointDrift 时，gate-m1-r1 带有 when（可能因 carried-gate 命中而跳过），
+        // 且已通过 diff-m1-r1 依赖 attempt；不再把无 when 的 attempt 混入直接依赖，以免违反 DAG 校验。
+        const gateDeps = r === 2 && checkpointDrift ? [prev] : [prev, attempt];
         if (!fake) {
           nodes.push({
             id: handoff,
@@ -1270,7 +1273,7 @@ export function buildWorkflow(
                     ),
                   }),
             },
-            depends_on: [prev, attempt],
+            depends_on: gateDeps,
             when: `$gate-${before}.output.verdict == 'fix'`,
           });
         }
@@ -1298,7 +1301,7 @@ export function buildWorkflow(
                   hints: join(gen, 'hints'),
                 },
               }),
-          depends_on: fake ? [prev, attempt] : [prev, attempt, handoff],
+          depends_on: fake ? gateDeps : [...gateDeps, handoff],
           when: `$gate-${before}.output.verdict == 'fix'`,
           output_format: coderOutputFormat,
         });

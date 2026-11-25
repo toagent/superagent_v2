@@ -1138,6 +1138,43 @@ describe('buildWorkflow', () => {
     expect(nodes.find(n => n.id === 'integrate-m1')?.depends_on).toContain(carried.id);
     expect(nodes.find(n => n.id === 'sync-m2')?.depends_on).toEqual(['integrate-m1']);
   });
+  test('carried checkpoint workflow passes strict DAG validation for handoff-m1-r2 and fix-m1-r2', () => {
+    const single = structuredClone(fixture);
+    single.packages = [single.packages[0]!];
+    const checkpoint = {
+      gate: {
+        decision: { kind: 'advance' as const, reason: null, evidence: [], debt: [] },
+        reviewed_head: 'a'.repeat(40),
+        reviewed_diff_hash: 'd'.repeat(16),
+        ledger_file: '/OLD/gate-m1-r1.ledger.json',
+      },
+      check: { contract_hash: 'c'.repeat(64) },
+    };
+    const workflow = buildWorkflow(
+      single,
+      milestones(single),
+      'land-apply-repro',
+      '/GEN',
+      false,
+      NOW,
+      loadTiers(),
+      {
+        from: 'old-run',
+        packages: [single.packages[0]!.id],
+        baselines: { checkpoints: { m1: checkpoint } },
+      }
+    );
+    expect(() => assertGeneratedWorkflow(workflow as Record<string, unknown>, false)).not.toThrow();
+    const nodes = nodesOf(workflow);
+    expect(nodes.find(n => n.id === 'handoff-m1-r2')).toMatchObject({
+      depends_on: ['gate-m1-r1'],
+      when: "$gate-m1-r1.output.verdict == 'fix'",
+    });
+    expect(nodes.find(n => n.id === 'fix-m1-r2')).toMatchObject({
+      depends_on: ['gate-m1-r1', 'handoff-m1-r2'],
+      when: "$gate-m1-r1.output.verdict == 'fix'",
+    });
+  });
   test('engine-stale adoption rejects checkpoint when reviewed_head or contract hash drifts', () => {
     const checkpoint = {
       gate: {

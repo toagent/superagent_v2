@@ -1,5 +1,12 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join } from 'node:path';
 import { assertEngineAccess, runningEngineSnapshot } from '../src/engine';
 import { tmp } from './helpers';
@@ -20,6 +27,9 @@ function fakeEngine(
 ): string {
   const engine = join(root, name);
   mkdirSync(join(engine, 'wetamp', 'src'), { recursive: true });
+  mkdirSync(join(engine, 'wetamp', 'bin'), { recursive: true });
+  writeFileSync(join(engine, 'wetamp', 'bin', 'archon'), '#!/bin/sh\n');
+  chmodSync(join(engine, 'wetamp', 'bin', 'archon'), 0o755);
   writeFileSync(
     join(engine, 'wetamp', 'src', 'cli.ts'),
     `import { appendFileSync } from 'node:fs';
@@ -310,4 +320,29 @@ test('candidate and mismatched served snapshot writes are refused', () => {
   expect(() => assertEngineAccess(['decide', 'archived', 'approve'])).toThrow(
     'engine adopt archived'
   );
+});
+
+test('shim treats snapshot missing wetamp/bin/archon as unavailable and routes status to current', () => {
+  const root = tmp(),
+    home = join(root, 'home'),
+    marker = join(root, 'calls.jsonl');
+  mkdirSync(join(home, 'engine'), { recursive: true });
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  const current = fakeEngine(root, 'current', marker);
+  const broken = join(root, 'broken');
+  mkdirSync(join(broken, 'wetamp', 'src'), { recursive: true });
+  writeFileSync(join(broken, 'wetamp', 'src', 'cli.ts'), 'process.exit(99);\n');
+  symlinkSync(current, join(home, 'engine', 'current'));
+  writeFileSync(join(home, 'runs', 'z1.json'), JSON.stringify({ engine_snapshot: broken }));
+  const res = Bun.spawnSync([SHIM, 'status', 'z1'], {
+    env: { ...process.env, SUPERAGENT_HOME: home, SA_SERVED_RUN: '', SA_HISTORICAL_RUN: '' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(res.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(marker, 'utf8').trim())).toEqual({
+    engine: 'current',
+    args: ['status', 'z1'],
+    historical: 'z1',
+  });
 });

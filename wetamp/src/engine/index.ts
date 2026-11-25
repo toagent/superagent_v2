@@ -171,6 +171,11 @@ export function bootstrapEngineSnapshot(): string | undefined {
 export const fixedEngineSnapshot = (ledger: { engine_snapshot?: string }): string | undefined =>
   ledger.engine_snapshot ?? bootstrapEngineSnapshot();
 
+export const engineSnapshotUsable = (snapshot: string | undefined): snapshot is string =>
+  !!snapshot &&
+  existsSync(join(snapshot, 'wetamp', 'bin', 'archon')) &&
+  existsSync(join(snapshot, 'wetamp', 'src', 'cli.ts'));
+
 const canonicalSnapshot = (path: string): string => {
   try {
     return realpathSync(path);

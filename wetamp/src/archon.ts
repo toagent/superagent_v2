@@ -76,7 +76,8 @@ export function archon(
   args: string[],
   cwd?: string,
   intent?: LaunchIntent,
-  timeoutMs = QUERY_TIMEOUT_MS
+  timeoutMs = QUERY_TIMEOUT_MS,
+  extraEnv?: Record<string, string | undefined>
 ): Exec {
   // 只有 run/resume/approve --detach 拉起 worker；status/get/doctor 等查询保持调用方环境
   const launches = ['run', 'resume', 'approve'].includes(args[1]) && args.includes('--detach');
@@ -100,6 +101,7 @@ export function archon(
     stderr: 'pipe',
     env: {
       ...(launches ? workerEnv() : process.env),
+      ...extraEnv,
       ...(archonMutation(args) ? coord().admissionEnv(true) : {}),
     },
     timeout: timeoutMs,
@@ -276,7 +278,10 @@ export const archonRunIds = (l: Pick<Ledger, 'archon_run_id' | 'adoptions'>): st
 
 /** Archon 要求 cwd 在 git 仓库内；传 run 的目标 repo，避免把别的仓库登记成 codebase。 */
 export function getRun(id: string, cwd?: string): RunView {
-  return runOf(id, archonJson(['workflow', 'get', id, '--verbose'], cwd));
+  return runOf(
+    id,
+    archonJson(['workflow', 'get', id, '--verbose'], cwd && existsSync(cwd) ? cwd : undefined)
+  );
 }
 
 /** Native attention is a notification, not a verbose RunView: classification still needs one get.
