@@ -250,6 +250,7 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 - `superagent debt list [--repo <path>] [--open] [--json]` 列出稳定债 ID；`superagent debt close <id>... --reason <text>` 显式关闭。计划包可用 `closes_debt: [<id>]` 在成功集成后关闭；
 - `superagent quota` 查看当前配额投影；
 - `superagent rollover start --reason "<reason>"` 创建会话换手令牌。
+- Orca 中的 Neon 元帅（终端 agy 和 Orca 对话版）由元帅或用户手动执行 `superagent rollover start --user "<原话>"` 换会话。Orca 使用默认模型启动接手会话，Neon 暂无 70% 自动提醒和会话 scratch。已有监督登记时须先解除登记。
 
 完整参数看 `superagent --help`；运维命令看 `superagent --help --all`。
 

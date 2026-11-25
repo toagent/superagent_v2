@@ -1,6 +1,14 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
-import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -208,6 +216,52 @@ test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重�
   });
   expect(call(command, { Cwd: cwd, CommandLine: `${prefix} echo ok` })).toEqual(allow);
   expect(call('preinvocation')).toEqual({});
+});
+
+// prettier-ignore
+test('agy hooks record terminal and ACP identities without recording generals as commanders', () => {
+  for (const [name, file, model] of [
+    ['agy', 'terminal-pretooluse.json', 'gemini-4-neon-%78high'],
+    ['agy_acp_server.par', 'acp/acp-preinvocation.json', null],
+  ] as const) {
+    const home = tmp(), wrapper = join(home, name);
+    const payload = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures/agy', file), 'utf8'));
+    writeFileSync(wrapper, `
+      const {spawnSync} = require('node:child_process');
+      const guard = process.argv[2];
+      const run = spawnSync(process.execPath, [guard, 'agy'], {
+        input: require('node:fs').readFileSync(0), encoding: 'utf8'
+      });
+      const live = require('node:path').join(require('node:path').dirname(guard), 'live.cjs');
+      const probe = spawnSync(process.execPath, ['-e',
+        'console.log(JSON.stringify(require(process.argv[1]).launcher(process.env.SUPERAGENT_HOME) ?? null))', live
+      ], { encoding: 'utf8' });
+      console.log(JSON.stringify({ pid: process.pid, status: run.status, out: JSON.parse(run.stdout), who: JSON.parse(probe.stdout) }));
+    `);
+    for (const role of ['commander', 'general']) {
+      const sa = join(home, role);
+      const p = Bun.spawnSync(['node', wrapper, join(HOOKS, 'guard.cjs'), ...(role === 'general' ? ['--print'] : [])], {
+        stdin: Buffer.from(JSON.stringify(payload)), cwd: home,
+        env: { ...baseEnv, HOME: home, SUPERAGENT_HOME: sa, SA_SECRET_SCAN_MODULE: '',
+          ORCA_AGENT_SESSION_ID: 'orca-source', SUPERAGENT_ROLE: role },
+      });
+      expect(p.exitCode).toBe(0);
+      const { pid, status, out, who } = JSON.parse(p.stdout.toString());
+      expect(status).toBe(0);
+      expect(out).toEqual(model ? { decision: 'allow' } : {});
+      const live = join(sa, 'live');
+      if (role === 'general') {
+        expect(existsSync(live)).toBe(false);
+        continue;
+      }
+      const [beat] = readdirSync(live);
+      expect(who).toMatchObject({ client: 'agy', pid, session_id: payload.conversationId });
+      expect(JSON.parse(readFileSync(join(live, beat), 'utf8'))).toMatchObject({
+        client: 'agy', role, pid, pid_start: expect.any(String), session_id: payload.conversationId,
+        transcript_path: payload.transcriptPath, model, orca_session_id: 'orca-source',
+      });
+    }
+  }
 });
 
 test('Orca ACP 只作为控制台识别', () => {

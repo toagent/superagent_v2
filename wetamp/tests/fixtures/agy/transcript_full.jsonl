@@ -1,0 +1,5 @@
+{"type":"USER_INPUT","content":"接手元帅会话（2026-11-25 09:00:00，原因：换手）。第 1 步：cd /fixture && superagent rollover accept aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，按输出接手。第 2 步：superagent rollover context aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，读完用户原话与压缩摘要。"}
+{"type":"USER_INPUT","created_at":"2026-11-25T01:00:00Z","content":"终端用户原话"}
+{"type":"PLANNER_RESPONSE","content":"旧汇报"}
+{"type":"PLANNER_RESPONSE","content":"最后的终端汇报"}
+{"type":"PLANNER_RESPONSE","thinking":"内部推理","tool_calls":[{}]}

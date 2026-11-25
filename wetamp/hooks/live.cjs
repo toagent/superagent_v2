@@ -25,6 +25,7 @@ function agentOf(command) {
   const argv = command.trim().split(/\s+/);
   const a = ['node', 'bun'].includes(programOf(argv[0])) ? argv.slice(1) : argv;
   const name = a.length ? programOf(a[0]) : '';
+  if (name === 'agy' || name === 'agy_acp_server.par') return 'agy';
   return AGENTS.includes(name) ? name : null;
 }
 // Shared with the board and launcher recording; headless/service processes are not terminals.
@@ -39,7 +40,7 @@ function cliOf(argv, controller = false) {
   if (k === 'opencode' && sub !== 'serve') return { kind: k, headless: sub === 'run' };
   if (k === 'agy_acp_server.par' && controller) return { kind: 'agy', headless: false };
   if (k === 'agy' && controller)
-    return { kind: k, headless: a.some(t => t === '-p' || t === '--print') };
+    return { kind: k, headless: a.some(t => t === '-p' || t === '--print' || t.startsWith('--print=')) };
   return null;
 }
 // Nearest agent CLI ancestor of this hook process. One `ps -p` per level: a full `ps -ax`
@@ -89,6 +90,8 @@ function launcher(home, env = process.env) {
             home
           )
         : [];
+    if (cli.kind === 'agy' && env.ORCA_AGENT_SESSION_ID)
+      beats = beats.filter(b => b.orca_session_id === env.ORCA_AGENT_SESSION_ID);
     // Shared app-server processes retain old sessions; prefer current activity over stale history.
     const fresh = beats.filter(b => Date.now() - Date.parse(b.at) < identity.FRESH_MS);
     if (fresh.length) beats = fresh;
@@ -105,7 +108,7 @@ function launcher(home, env = process.env) {
         ?.slice(1) || str(beats[0]?.cwd);
     if (!cwd) return undefined;
     const session = new Set(beats.map(b => str(b.session_id)).filter(Boolean));
-    const environmentSession = [env.CODEX_SESSION_ID, env.CODEX_THREAD_ID]
+    const environmentSession = cli.kind === 'agy' ? undefined : [env.CODEX_SESSION_ID, env.CODEX_THREAD_ID]
       .map(str)
       .find(id => session.has(id));
     return {
@@ -178,6 +181,10 @@ function beat(client, input, roleOf = () => null, env = process.env) {
       orca_pane: str(env.ORCA_PANE_KEY),
       cwd: str(input.cwd),
       transcript_path: str(input.transcript_path),
+      ...(client === 'agy' ? {
+        model: str(input.model) ?? str(prior?.model),
+        orca_session_id: str(env.ORCA_AGENT_SESSION_ID) ?? str(prior?.orca_session_id),
+      } : {}),
       event,
       tool: event.endsWith('ToolUse') ? str(input.tool_name) : null,
       turn_at: turn ? new Date(now).toISOString() : str(prior?.turn_at),

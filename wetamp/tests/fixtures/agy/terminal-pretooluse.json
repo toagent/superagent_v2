@@ -1,0 +1,10 @@
+{
+  "hookEventName": "PreToolUse",
+  "conversationId": "terminal-fixture",
+  "transcriptPath": "/fixture/brain/terminal-fixture/.system_generated/logs/transcript_full.jsonl",
+  "cwd": "/fixture",
+  "workspacePaths": ["/fixture"],
+  "modelName": "gemini-4-neon-%78high",
+  "stepIdx": 3,
+  "toolCall": { "name": "run_command", "args": { "CommandLine": "echo ok", "Cwd": "/fixture" } }
+}

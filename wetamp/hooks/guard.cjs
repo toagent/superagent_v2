@@ -438,6 +438,17 @@ if (require.main === module)
       if (!['claude', 'codex', 'agy'].includes(client)) throw new Error('usage: guard.cjs claude|codex|agy');
       payload = JSON.parse(fs.readFileSync(0, 'utf8'));
       if (client === 'agy') {
+        try {
+          if (payload?.conversationId && sessionRole(payload, client) === 'commander') {
+            require('./live.cjs').beat(client, {
+              session_id: payload.conversationId,
+              transcript_path: payload.transcriptPath,
+              hook_event_name: payload.hookEventName ?? (isAcpToolUse(payload) ? 'PreToolUse' : 'PreInvocation'),
+              cwd: payload.cwd ?? process.cwd(),
+              model: payload.modelName,
+            }, () => 'commander');
+          }
+        } catch {}
         process.stdout.write(JSON.stringify(await decideAgy(payload)) + '\n');
         return;
       }

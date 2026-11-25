@@ -2,7 +2,7 @@ import { formatEngineTime } from './config';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 
-type Client = 'claude' | 'codex';
+type Client = 'claude' | 'codex' | 'agy';
 type Json = Record<string, unknown>;
 interface Entry {
   at: unknown;
@@ -20,6 +20,7 @@ export interface HandoffSession {
   client: Client;
   transcript: string;
   label: string;
+  readEntries?: () => Promise<unknown[]>;
 }
 
 const object = (value: unknown): Json =>
@@ -121,8 +122,18 @@ function consumeCodex(row: Json, line: number, facts: Facts): void {
 }
 
 async function readFacts(session: HandoffSession): Promise<Facts> {
-  const facts: Facts = { users: [], notificationIds: new Set() },
-    input = createReadStream(session.transcript),
+  const facts: Facts = { users: [], notificationIds: new Set() };
+  if (session.readEntries) {
+    const entries = await session.readEntries();
+    for (const [index, value] of entries.entries()) {
+      const row = object(value);
+      if (row.kind === 'message') consumeAgy(row.role, row.text, row.timestamp, index + 1, facts);
+    }
+    return facts;
+  }
+  if (session.client === 'agy' && session.transcript.endsWith('.db'))
+    throw new Error('agy ACP 交接记录缺少 Orca 会话 ID');
+  const input = createReadStream(session.transcript),
     lines = createInterface({ input, crlfDelay: Infinity });
   let line = 0;
   for await (const raw of lines) {
@@ -135,12 +146,40 @@ async function readFacts(session: HandoffSession): Promise<Facts> {
       throw new Error(`第 ${String(line)} 行 JSON 损坏：${String(error)}`);
     }
     if (session.client === 'claude') consumeClaude(row, line, facts);
-    else consumeCodex(row, line, facts);
+    else if (session.client === 'codex') consumeCodex(row, line, facts);
+    else if (row.type === 'USER_INPUT' || row.type === 'PLANNER_RESPONSE')
+      consumeAgy(
+        row.type === 'USER_INPUT' ? 'user' : 'assistant',
+        row.content,
+        row.created_at,
+        line,
+        facts
+      );
   }
   facts.users = facts.users.filter(
     entry => typeof entry.asideId !== 'string' || !facts.notificationIds.has(entry.asideId)
   );
   return facts;
+}
+
+function consumeAgy(
+  role: unknown,
+  content: unknown,
+  at: unknown,
+  line: number,
+  facts: Facts
+): void {
+  if (typeof content !== 'string' || !content.trim()) return;
+  const entry = { at, text: content, line };
+  if (role === 'assistant') facts.report = entry;
+  // Agy records the launch prompt as a user message in both transcript forms.
+  if (
+    role === 'user' &&
+    !/^\s*接手元帅会话（[\s\S]* && superagent rollover accept ([0-9a-f]{32})，按输出接手。第 2 步：superagent rollover context \1，/.test(
+      content
+    )
+  )
+    facts.users.push(entry);
 }
 
 async function renderSession(session: HandoffSession): Promise<string> {

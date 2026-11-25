@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "result": {
+    "entries": [
+      { "kind": "message", "role": "user", "text": "Orca 用户原话" },
+      { "kind": "message", "role": "assistant", "text": "旧汇报" },
+      { "kind": "tool", "name": "read_file", "state": "completed" },
+      { "kind": "message", "role": "assistant", "text": "最后的 Orca 汇报" }
+    ]
+  }
+}

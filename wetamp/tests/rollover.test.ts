@@ -9,6 +9,72 @@ import { gitRepo, tmp } from './helpers';
 // prettier-ignore
 const a: Identity = { client: 'codex', session_id: 'old', host: hostname(), pid: 10, pid_start: 'a' };
 const b: Identity = { ...a, session_id: 'new', pid: 11, pid_start: 'b' };
+const agy = { ...a, client: 'agy' as const };
+
+// prettier-ignore
+function agyFixture(acp = false) {
+  const s = fixture(), fixtures = join(import.meta.dir, 'fixtures/agy');
+  s.setWho(agy);
+  const file = acp ? join(s.root, 'old.db') : join(fixtures, 'transcript_full.jsonl');
+  writeFileSync(join(s.sa, 'live/a.json'), JSON.stringify({
+    ...agy, transcript_path: file,
+    ...(acp ? { orca_session_id: 'orca-source' } : { model: 'gemini-4-neon-%68igh' }),
+  }));
+  return { ...s, fixtures, file };
+}
+
+// prettier-ignore
+test.each([false, true])('agy rollover retains identity and reads the source transcript (ACP: %s)', async acp => {
+  const s = agyFixture(acp);
+  s.c.claim(repoScope(s.repo), agy);
+  s.r.d.scratch.directory = () => { throw new Error('scratch does not support agy'); };
+  const calls: string[][] = [];
+  s.r.d.execOrca = async (_bin, args) => {
+    calls.push(args);
+    const sample = JSON.parse(readFileSync(join(s.fixtures, 'orca-agent-read.json'), 'utf8'));
+    sample.result.entries.unshift({ kind: 'message', role: 'user', text: s.launchCalls[0][s.launchCalls[0].indexOf('--prompt') + 1] });
+    return JSON.stringify(sample);
+  };
+  const token = String((await s.r.start(undefined, '请换会话')).token);
+  const record = JSON.parse(readFileSync(join(s.sa, 'coord/rollovers', token + '.json'), 'utf8'));
+  expect(record.from.client).toBe('agy');
+  expect(record.launch.model).toBe(acp ? '' : 'gemini-4-neon-%68igh');
+  expect(s.launchCalls[0].slice(0, 4)).toEqual(['agent', 'launch', '--agent', 'antigravity']);
+  expect(s.launchCalls[0]).not.toContain('--model');
+  expect((await s.r.start()).token).toBe(token);
+  expect(s.launchCalls).toHaveLength(1);
+  s.setWho({ ...b, client: 'agy' });
+  for (let i = 0; i < 2; i++)
+    expect(s.r.accept(token)).toMatchObject({ state: 'accepted', scratch: { action: 'skipped' } });
+  expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('new');
+  const out = await s.r.context(token);
+  for (const value of [acp ? 'Orca 用户原话' : '终端用户原话', acp ? '最后的 Orca 汇报' : '最后的终端汇报', 'scratch 已跳过'])
+    expect(out).toContain(value);
+  for (const value of ['旧汇报', '内部推理', '接手元帅会话']) expect(out).not.toContain(value);
+  expect(calls).toEqual(acp ? [['agent', 'read', 'orca_session_id:orca-source', '--limit', '100', '--json']] : []);
+});
+
+// prettier-ignore
+test('agy supervision rejects before handoff and before accept can lock or transfer', async () => {
+  const s = agyFixture();
+  s.c.claim(repoScope(s.repo), agy);
+  const workers = join(s.root, 'supervisor/workers'), worker = join(workers, 'w.json');
+  mkdirSync(workers, { recursive: true });
+  s.r.d.env.AGENT_SUPERVISOR_STATE = join(workers, '..');
+  const register = () => writeFileSync(worker, JSON.stringify({ id: 'w', cwd: s.repo, session_id: 'old' }));
+  register();
+  await expect(s.r.start(undefined, '请换会话')).rejects.toThrow('监督');
+  expect(s.taskCalls).toHaveLength(0);
+  expect(existsSync(s.r.root)).toBe(false);
+  rmSync(worker);
+  const token = String((await s.r.start(undefined, '请换会话')).token);
+  register();
+  s.setWho({ ...b, client: 'agy' });
+  expect(() => s.r.accept(token)).toThrow('监督');
+  expect(s.c.owner(repoScope(s.repo)).owner?.session_id).toBe('old');
+  s.setWho(agy);
+  expect(s.r.cancel(token)).toMatchObject({ state: 'cancelled' });
+});
 
 // prettier-ignore
 function fixture(section = true, status: (run: RunRef) => string = () => 'running') {

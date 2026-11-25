@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { formatEngineTime, writeAtomic } from './config';
 // prettier-ignore
 import { Coordination, caller, repoScope, runScope, same, type Identity, type RunRef } from './coord';
-import { launchAgent, orcaBin, type AgentLaunch } from './orca';
+import { launchAgent, orcaBin, readAgentEntries, type AgentLaunch, type OrcaDeps } from './orca';
 import { readJobs, type Job } from './jobs';
 import { Intake, intakeRoot } from './intake';
 import { renderHandoffContext } from './rollover-context';
@@ -24,6 +24,7 @@ export interface RolloverRecord {
   skipped?: Record<string, string>;
   scratch?: Record<string, string>;
   user?: string;
+  orca_session_id?: string;
   repo_transfer?: 'transferred' | 'unchanged' | `skipped:${string}`;
 }
 
@@ -34,6 +35,7 @@ interface Deps {
   write: (path: string, text: string) => void; files: (path: string) => string[];
   tasks: (cwd: string, args: string[]) => string; repo: (cwd: string) => string;
   launch: (bin: string, args: string[]) => Promise<AgentLaunch>;
+  execOrca?: OrcaDeps['exec'];
   supervise: (args: string[]) => string;
   scratch: { ROOT: string; directory: (client: string, session: string) => string; transfer: (client: string, session: string, to: Pick<Identity, 'pid' | 'pid_start'>) => Record<string, string> };
   now: () => Date; token: () => string; sleep: (ms: number) => Promise<void>; jobs: () => Job[]; responsibilities: (session: string) => Responsibility[];
@@ -84,11 +86,19 @@ export class Rollover {
     if (!this.d.exists(path)) throw new Error('rollover: unknown token');
     return JSON.parse(this.d.read(path)) as RolloverRecord;
   }
-  private transcript(who: Identity): { path: string; model: string } {
+  private transcript(who: Identity): { path: string; model: string; orcaSession?: string } {
     const live = join(this.d.coord.d.sa, 'live');
     const beat = this.jsonFiles(live, true).find(v => same(v as unknown as Identity, who));
     const path = typeof beat?.transcript_path === 'string' ? beat.transcript_path : '';
+    if (who.client === 'agy' && path.endsWith('.db')) {
+      const orcaSession = beat?.orca_session_id;
+      if (typeof orcaSession !== 'string' || !orcaSession.trim())
+        throw new Error('rollover: agy ACP 心跳缺少 Orca 会话 ID');
+      return { path: resolve(path), model: '', orcaSession };
+    }
     if (!path || !this.d.exists(path)) throw new Error('rollover: 找不到当前会话 transcript');
+    if (who.client === 'agy')
+      return { path: resolve(path), model: typeof beat?.model === 'string' ? beat.model : '' };
     let attached = '', assistant = '', context = '';
     for (const line of this.d.read(path).split('\n')) {
       if (!line.trim()) continue;
@@ -175,11 +185,19 @@ export class Rollover {
         : []
     );
   }
+  private checkAgySupervision(from: Identity, target = from.client): void {
+    if ((from.client === 'agy' || target === 'agy') && this.workers(from.session_id ?? '').length)
+      throw new Error('rollover: Neon 会话换手暂不支持已有监督登记，请先解除监督登记');
+  }
   // prettier-ignore
   private async dispatch(r: RolloverRecord, retry = false, reason?: string): Promise<RolloverRecord> {
     const bin = orcaBin(this.d.env, this.d.exists), operation = r.launch.operation_id;
     if (!bin || (retry && !operation)) throw new Error('rollover: Orca launch state invalid');
-    if (!retry) { r.launch.args = ['agent', 'launch', '--agent', r.launch.agent, '--worktree', `path:${r.cwd}`, '--model', r.launch.model, '--prompt', this.prompt(r, reason), '--focus', '--json']; this.save(r); }
+    if (!retry) {
+      const modelArgs = r.from.client === 'agy' ? [] : ['--model', r.launch.model];
+      r.launch.args = ['agent', 'launch', '--agent', r.launch.agent, '--worktree', `path:${r.cwd}`, ...modelArgs, '--prompt', this.prompt(r, reason), '--focus', '--json'];
+      this.save(r);
+    }
     if (!r.launch.args) throw new Error('rollover: 缺少首次 launch 参数，无法安全重试；请 rollover cancel');
     const lastArg = r.launch.args.at(-1); if (!lastArg) throw new Error('rollover: 首次 launch 参数为空，无法安全重试；请 rollover cancel'); const args = retry ? [...r.launch.args.slice(0, -1), '--retry-launch', operation ?? '', lastArg] : r.launch.args;
     const result = await this.d.launch(bin, args);
@@ -213,9 +231,10 @@ export class Rollover {
       if (pending.launch.outcome === null) throw new Error(`rollover: launch 未完成且无 operation id；请先 rollover cancel ${pending.token}`);
       return this.result(pending);
     }
+    this.checkAgySupervision(from);
     const transcript = this.transcript(from),
-      usage = context.recentUsage(transcript.path, from.client),
-      line = context.contextLimits('commander', from.client, usage?.window ?? null, this.d.env).rollover,
+      usage = from.client === 'agy' ? null : context.recentUsage(transcript.path, from.client),
+      line = from.client === 'agy' ? null : context.contextLimits('commander', from.client, usage?.window ?? null, this.d.env).rollover,
       explicit = user?.trim();
     if (!explicit && (usage === null || line === null || usage.tokens < line))
       throw new Error(`rollover: 当前用量 ${usage ? String(usage.tokens) : 'unknown'}，换会话线 ${line === null ? 'unknown' : String(line)}；仅用户明确要求时可用 --user "<用户原话>" 放行`);
@@ -225,10 +244,11 @@ export class Rollover {
     const r: RolloverRecord = {
       token: this.d.token(), state: 'pending', from, to: null, repo: this.d.repo(this.d.cwd), cwd: this.d.cwd,
       task_session: task.session, transcript: transcript.path,
+      ...(transcript.orcaSession ? { orca_session_id: transcript.orcaSession } : {}),
       parent: this.records().find(x => x.state === 'accepted' && x.to?.session_id === from.session_id)?.token ?? null,
       prior_status: task.status, runs: runs.map(x => x.run_id),
       user: explicit,
-      launch: { agent: from.client, model: transcript.model, operation_id: null, outcome: null },
+      launch: { agent: from.client === 'agy' ? 'antigravity' : from.client, model: transcript.model, operation_id: null, outcome: null },
       steps: {}, created_at: now, accepted_at: null, cancelled_at: null,
     };
     this.save(r);
@@ -248,15 +268,19 @@ export class Rollover {
       r = this.load(token);
       if (!['pending', 'accepted'].includes(r.state) || (r.to && !same(r.to, to))) throw new Error(`rollover: ${r.state === 'pending' ? '已被其他会话接手' : `记录已${r.state}`}`);
       if (same(r.from, to) || !r.from.host || !to.host || r.from.host !== to.host) throw new Error('rollover: 必须由同 host 的新会话接手');
+      if (!r.steps.transfer) this.checkAgySupervision(r.from, to.client);
       r.to = to;
       r.steps.lock_to = 'done';
       this.save(r);
     });
     const skipped: Record<string, string> = r.skipped ?? {};
     if (!r.steps.transfer) {
-      const path = r.from.session_id ? this.d.scratch.directory(r.from.client, r.from.session_id) : this.d.scratch.ROOT;
-      try { r.scratch = r.from.session_id && to.pid_start ? this.d.scratch.transfer(r.from.client, r.from.session_id, to) : { path, action: 'skipped', reason: 'scratch identity unavailable' }; }
-      catch (error) { r.scratch = { path, action: 'skipped', reason: error instanceof Error ? error.message : String(error) }; }
+      if (r.from.client === 'agy' || to.client === 'agy') r.scratch = { action: 'skipped', reason: 'Neon 会话未分配 scratch' };
+      else {
+        const path = r.from.session_id ? this.d.scratch.directory(r.from.client, r.from.session_id) : this.d.scratch.ROOT;
+        try { r.scratch = r.from.session_id && to.pid_start ? this.d.scratch.transfer(r.from.client, r.from.session_id, to) : { path, action: 'skipped', reason: 'scratch identity unavailable' }; }
+        catch (error) { r.scratch = { path, action: 'skipped', reason: error instanceof Error ? error.message : String(error) }; }
+      }
       for (const id of r.runs) {
         const run = this.d.coord.resolveRun(id);
         if (!run) {
@@ -301,7 +325,8 @@ export class Rollover {
       this.save(r);
     }
     if (!r.steps.supervisor) {
-      for (const worker of this.workers(r.from.session_id ?? ''))
+      const workers = r.from.client === 'agy' || to.client === 'agy' ? [] : this.workers(r.from.session_id ?? '');
+      for (const worker of workers)
         this.d.supervise([
           'register', '--id', worker.id, '--provider', to.client, '--cwd', worker.cwd,
           '--session', to.session_id, '--pid', String(to.pid),
@@ -357,17 +382,26 @@ export class Rollover {
     chain.reverse();
     const rendered = await renderHandoffContext(
       chain.map((record, index) => {
-        if (record.from.client !== 'claude' && record.from.client !== 'codex')
+        if (record.from.client !== 'claude' && record.from.client !== 'codex' && record.from.client !== 'agy')
           throw new Error(`rollover: 不支持 context client ${record.from.client}`);
+        const orcaSession = record.orca_session_id;
         return {
           client: record.from.client,
           transcript: record.transcript,
           label: `第 ${String(index + 1)} 代 ${record.from.client}:${record.from.session_id ?? 'unknown'}`,
+          readEntries: orcaSession ? () => {
+            const bin = orcaBin(this.d.env, this.d.exists);
+            if (!bin) throw new Error('rollover: 找不到 Orca CLI');
+            return readAgentEntries(bin, orcaSession, this.d.execOrca);
+          } : undefined,
         };
       })
     );
     const prior = chain.at(-1)?.from,
-      path = prior?.session_id ? this.d.scratch.directory(prior.client, prior.session_id) : null;
+      scratch = chain.at(-1)?.scratch;
+    if (prior?.client === 'agy' || chain.at(-1)?.to?.client === 'agy')
+      return `${rendered}\n\n上一会话 scratch 已跳过：${scratch?.reason ?? 'Neon 会话未分配 scratch'}。`;
+    const path = prior?.session_id ? this.d.scratch.directory(prior.client, prior.session_id) : null;
     return path && this.d.exists(path) ? `${rendered}\n\n上一会话 scratch：${path}/\n请取用所需文件或转存到稳定目录。` : rendered;
   }
 }

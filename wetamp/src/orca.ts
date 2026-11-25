@@ -166,6 +166,31 @@ const orcaCall =
     return JSON.parse(await bounded(child, () => d.exec(bin, args, child))) as unknown;
   };
 
+export async function readAgentEntries(
+  bin: string,
+  session: string,
+  exec: OrcaDeps['exec'] = defaults.exec
+): Promise<unknown[]> {
+  const call = orcaCall({ ...defaults, exec }, bin, AbortSignal.timeout(defaults.timeoutMs));
+  const value = await call([
+    'agent',
+    'read',
+    `orca_session_id:${session}`,
+    '--limit',
+    '100',
+    '--json',
+  ]);
+  if (
+    !record(value) ||
+    value.ok !== true ||
+    !record(value.result) ||
+    !Array.isArray(value.result.entries)
+  )
+    throw new Error('Orca agent read: 缺少有效的 entries');
+  const entries: unknown[] = value.result.entries;
+  return entries;
+}
+
 const publicationFiles = new Bun.Glob(
   join(getRunArtifactsDirForRoot(join('*', '*'), '*'), 'publish-*.json')
 );
