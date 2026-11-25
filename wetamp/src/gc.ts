@@ -9,7 +9,7 @@ import {
   statSync,
 } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { isPathInside } from '@archon/paths';
 // prettier-ignore
 import { archonJson, getRun, lock, QUERY_TIMEOUT_MS, reportRunRevisions, runProjections, runStatuses, type RunView } from './archon';
@@ -24,7 +24,7 @@ import {
   type Ledger,
 } from './cli';
 import type { Plan } from './plan';
-import { makeWritable } from './engine';
+import { makeWritable, runningEngineSnapshot } from './engine';
 import { inspectProcess } from './launcher';
 import { createRequire } from 'node:module';
 export interface ScratchAction {
@@ -82,7 +82,16 @@ export function scratchClean(session?: string, dryRun = false): ScratchAction[] 
 
 export interface GcAction {
   run_id: string;
-  object: 'run' | 'worktree' | 'branch' | 'gen' | 'engine' | 'live';
+  object:
+    | 'run'
+    | 'worktree'
+    | 'branch'
+    | 'gen'
+    | 'engine'
+    | 'live'
+    | 'supervise_lock'
+    | 'engine_verify'
+    | 'plan';
   action: 'removed' | 'skipped' | 'would_remove';
   reason: string;
   path?: string;
@@ -422,6 +431,256 @@ function collectProbe(path: string, id: string, dryRun: boolean, repo?: string, 
 }
 
 const GEN_RETENTION_MS = 30 * 24 * 60 * 60_000;
+export const SUPERVISE_LOCK_RETENTION_MS = 24 * 60 * 60_000;
+export const ENGINE_VERIFY_RETENTION_MS = 24 * 60 * 60_000;
+export const PLAN_RETENTION_MS = GEN_RETENTION_MS;
+
+const latestMtimeMs = (path: string, st: { mtimeMs: number; isDirectory(): boolean }): number => {
+  let latest = st.mtimeMs;
+  if (!st.isDirectory()) return latest;
+  for (const child of readdirSync(path)) {
+    try {
+      latest = Math.max(latest, lstatSync(join(path, child)).mtimeMs);
+    } catch {
+      /* ignore */
+    }
+  }
+  return latest;
+};
+const overlapsRef = (path: string, refs: string[]): boolean =>
+  refs.some(ref => isPathInside(path, ref, { includeRoot: true }) || isPathInside(ref, path));
+
+export function collectSuperviseLocks(dryRun: boolean, now = Date.now()): GcAction[] {
+  const out: GcAction[] = [],
+    root = resolve(home().sa);
+  try {
+    if (!existsSync(root)) return out;
+    if (lstatSync(root).isSymbolicLink()) throw new Error('superagent home symlink retained');
+    const saRoot = realpathSync(root);
+    const sanitize = (name: string): string => name.replaceAll(/[^0-9A-Za-z.-]/g, '_');
+    const keep = new Set<string>([sanitize(basename(runningEngineSnapshot()))]);
+    const engineDir = join(saRoot, 'engine');
+    if (existsSync(engineDir) && !lstatSync(engineDir).isSymbolicLink()) {
+      const engineRoot = realpathSync(engineDir);
+      try {
+        keep.add(sanitize(basename(realpathSync(join(engineRoot, 'current')))));
+      } catch {
+        /* ignore */
+      }
+      for (const e of readdirSync(engineRoot, { withFileTypes: true }))
+        if (e.isDirectory()) keep.add(sanitize(e.name));
+      const c = consoleEngineSnapshot(engineRoot, engineDir);
+      if (c.path) keep.add(sanitize(basename(c.path)));
+    }
+    for (const entry of readdirSync(saRoot, { withFileTypes: true })) {
+      if (entry.name === 'supervise.lock') continue;
+      const match = /^supervise\.(.+)\.lock$/.exec(entry.name);
+      if (!match) continue;
+      const path = resolve(saRoot, entry.name);
+      let action: GcAction['action'] = 'skipped',
+        reason = '';
+      try {
+        if (!isPathInside(saRoot, path)) throw new Error('supervise lock outside root');
+        const before = lstatSync(path);
+        if (before.isSymbolicLink()) reason = 'supervise lock symlink retained';
+        else if (!before.isFile()) continue;
+        else if (keep.has(match[1])) reason = 'active engine snapshot lock retained';
+        else if (now - before.mtimeMs <= SUPERVISE_LOCK_RETENTION_MS)
+          reason = 'supervise lock younger than 24 hours';
+        else {
+          const raw = readFileSync(path, 'utf8').trim();
+          if (raw) {
+            const holder = JSON.parse(raw) as { pid?: unknown; host?: unknown };
+            if (typeof holder.host === 'string' && holder.host !== hostname())
+              reason = 'supervise lock owned by another host';
+            else if (
+              typeof holder.pid === 'number' &&
+              inspectProcess(holder.pid).state !== 'offline'
+            )
+              reason = 'supervise lock process still active';
+          }
+          if (!reason && !dryRun) {
+            const held = lock(path);
+            if (!held.ok) reason = 'supervise lock held';
+            else
+              try {
+                const cur = lstatSync(path);
+                if (!cur.isFile() || cur.ino !== before.ino)
+                  reason = 'supervise lock changed concurrently';
+                else rmSync(path, { force: true });
+              } finally {
+                held.release();
+              }
+          }
+          if (!reason) {
+            action = dryRun ? 'would_remove' : 'removed';
+            reason = 'stale supervise lock older than 24 hours';
+          }
+        }
+      } catch (e) {
+        reason = String(e);
+      }
+      out.push({ run_id: entry.name, object: 'supervise_lock', action, reason, path });
+    }
+  } catch (e) {
+    out.push({
+      run_id: '*',
+      object: 'supervise_lock',
+      action: 'skipped',
+      reason: String(e),
+      path: root,
+    });
+  }
+  return out;
+}
+
+function isActiveVerifyRecord(rec: Record<string, unknown>): boolean {
+  if (rec.status !== 'running') return false;
+  if (rec.host !== hostname() || typeof rec.pid !== 'number' || typeof rec.pid_start !== 'string')
+    return true;
+  const proc = inspectProcess(rec.pid);
+  if (proc.state === 'unknown' || (proc.state === 'online' && proc.start === rec.pid_start))
+    return true;
+  if (typeof rec.pgid === 'number') {
+    if (inspectProcess(rec.pgid).state !== 'offline') return true;
+    try {
+      process.kill(-rec.pgid, 0);
+      return true;
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'ESRCH')) return true;
+    }
+  }
+  return false;
+}
+
+export function collectEngineVerify(dryRun: boolean, now = Date.now()): GcAction[] {
+  const configuredRoot = resolve(home().sa, 'engine'),
+    verifyDir = join(configuredRoot, 'verify');
+  if (!existsSync(configuredRoot) || !existsSync(verifyDir)) return [];
+  const skipped = (reason: string, path = verifyDir): GcAction[] => [
+    { run_id: '*', object: 'engine_verify', action: 'skipped', reason, path },
+  ];
+  const scan = (): GcAction[] => {
+    const out: GcAction[] = [];
+    if (lstatSync(configuredRoot).isSymbolicLink() || lstatSync(verifyDir).isSymbolicLink())
+      return skipped('engine verify root symlink retained');
+    const engineRoot = realpathSync(configuredRoot),
+      verifyRoot = realpathSync(verifyDir);
+    if (!isPathInside(engineRoot, verifyRoot))
+      return skipped('engine verify outside engine root', verifyRoot);
+    const activeShas = new Set<string>(),
+      activeCheckouts: string[] = [],
+      promos = join(engineRoot, 'promotions');
+    if (existsSync(promos) && !lstatSync(promos).isSymbolicLink()) {
+      for (const file of readdirSync(promos).filter(f => f.endsWith('.verify.json'))) {
+        try {
+          const rec = JSON.parse(readFileSync(join(promos, file), 'utf8')) as Record<
+            string,
+            unknown
+          >;
+          if (!isActiveVerifyRecord(rec)) continue;
+          if (typeof rec.sha === 'string') activeShas.add(rec.sha);
+          if (typeof rec.checkout === 'string')
+            activeCheckouts.push(
+              resolve(rec.checkout),
+              ...(existsSync(rec.checkout) ? [realpathSync(rec.checkout)] : [])
+            );
+        } catch {
+          activeShas.add(file.slice(0, -'.verify.json'.length));
+        }
+      }
+    }
+    for (const entry of readdirSync(verifyRoot, { withFileTypes: true })) {
+      const path = resolve(verifyRoot, entry.name);
+      let action: GcAction['action'] = 'skipped',
+        reason = '';
+      try {
+        if (!isPathInside(verifyRoot, path)) throw new Error('engine verify path outside root');
+        const st = lstatSync(path);
+        if (st.isSymbolicLink()) reason = 'engine verify symlink retained';
+        else if (activeShas.has(entry.name) || overlapsRef(path, activeCheckouts))
+          reason = 'active engine verify retained';
+        else if (now - latestMtimeMs(path, st) <= ENGINE_VERIFY_RETENTION_MS)
+          reason = 'engine verify younger than 24 hours';
+        else {
+          if (!dryRun) {
+            if (st.isDirectory()) makeWritable(path);
+            rmSync(path, { recursive: true, force: true });
+          }
+          action = dryRun ? 'would_remove' : 'removed';
+          reason = 'stale engine verify older than 24 hours';
+        }
+      } catch (e) {
+        reason = String(e);
+      }
+      out.push({ run_id: entry.name, object: 'engine_verify', action, reason, path });
+    }
+    return out;
+  };
+  if (dryRun) {
+    try {
+      return scan();
+    } catch (e) {
+      return skipped(String(e));
+    }
+  }
+  let held;
+  try {
+    held = lock(join(configuredRoot, 'engine.lock'));
+  } catch (e) {
+    return skipped(`engine.lock unavailable: ${String(e)}`, configuredRoot);
+  }
+  if (!held.ok) return skipped('engine.lock held', configuredRoot);
+  try {
+    return scan();
+  } catch (e) {
+    return skipped(String(e));
+  } finally {
+    held.release();
+  }
+}
+
+export function collectPlans(dryRun: boolean, now = Date.now()): GcAction[] {
+  const out: GcAction[] = [],
+    root = resolve(home().sa, 'plans');
+  try {
+    if (!existsSync(root)) return out;
+    if (lstatSync(root).isSymbolicLink()) throw new Error('plans root symlink retained');
+    const plansRoot = realpathSync(root);
+    const refs = ledgerIds().flatMap(id => {
+      const ledger = loadLedger(id);
+      if (!ledger.plan) return [];
+      const paths = isAbsolute(ledger.plan)
+        ? [resolve(ledger.plan)]
+        : [resolve(ledger.repo, ledger.plan), resolve(home().sa, ledger.plan)];
+      return paths.flatMap(p => [p, ...(existsSync(p) ? [realpathSync(p)] : [])]);
+    });
+    for (const entry of readdirSync(plansRoot, { withFileTypes: true })) {
+      const path = resolve(plansRoot, entry.name);
+      let action: GcAction['action'] = 'skipped',
+        reason = '';
+      try {
+        if (!isPathInside(plansRoot, path)) throw new Error('plan path outside root');
+        const st = lstatSync(path);
+        if (st.isSymbolicLink()) reason = 'plan symlink retained';
+        else if (overlapsRef(path, refs)) reason = 'ledger reference retained';
+        else if (now - latestMtimeMs(path, st) <= PLAN_RETENTION_MS)
+          reason = 'plan younger than 30 days';
+        else {
+          if (!dryRun) rmSync(path, { recursive: true, force: true });
+          action = dryRun ? 'would_remove' : 'removed';
+          reason = 'unreferenced plan older than 30 days';
+        }
+      } catch (e) {
+        reason = String(e);
+      }
+      out.push({ run_id: entry.name, object: 'plan', action, reason, path });
+    }
+  } catch (e) {
+    out.push({ run_id: '*', object: 'plan', action: 'skipped', reason: String(e), path: root });
+  }
+  return out;
+}
 function collectGen(dryRun: boolean): GcAction[] {
   const out: GcAction[] = [],
     root = resolve(home().sa, 'gen');
@@ -805,5 +1064,5 @@ export function gc(
     out.push({ run_id: '*', object: 'worktree', action: 'skipped', reason: String(e) });
   }
   // prettier-ignore
-  return [...out, ...collectLive(dryRun), ...collectGen(dryRun), ...collectEngineSnapshots(dryRun)];
+  return [...out, ...collectLive(dryRun), ...collectGen(dryRun), ...collectEngineSnapshots(dryRun), ...collectSuperviseLocks(dryRun), ...collectEngineVerify(dryRun), ...collectPlans(dryRun)];
 }

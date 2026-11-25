@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 printf '%s\n' "$@" > "$HOME/args"
+if [ ! -t 0 ]; then cat > "$HOME/stdin"; fi
 pwd -P > "$HOME/cwd"
 printf '%s' "$FIXTURE_RUN" > "$HOME/env"
 if [ "${FIXTURE_HANG:-}" = 1 ]; then

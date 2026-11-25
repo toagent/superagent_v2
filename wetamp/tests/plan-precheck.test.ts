@@ -71,14 +71,26 @@ test('missing acceptance test paths block unless the new test is in scope', () =
   expect(planPrecheck(subject, root).blocking).toEqual([]);
 });
 
-test('direct unit test consumers require scope or an explicit read hint', () => {
+test('direct unit test consumers report info instead of blocking until covered or hinted', () => {
   const root = fixture(),
     subject = plan(root, ['wetamp/src/foo.ts'], []);
-  expect(planPrecheck(subject, root, 'unrelated override').blocking.join('\n')).toContain(
-    'wetamp/tests/foo.test.ts'
-  );
+  const unhinted = planPrecheck(subject, root);
+  expect(unhinted.blocking).toEqual([]);
+  expect(unhinted.info.join('\n')).toContain('wetamp/tests/foo.test.ts');
   subject.packages[0].scope.read_hint = ['wetamp/tests/foo.test.ts'];
-  expect(planPrecheck(subject, root).blocking).toEqual([]);
+  const hinted = planPrecheck(subject, root);
+  expect(hinted.blocking).toEqual([]);
+  expect(hinted.info.join('\n')).not.toContain('wetamp/tests/foo.test.ts');
+});
+
+test('size:L packages emit an informational split hint without blocking', () => {
+  const root = fixture(),
+    subject = plan(root, [], []);
+  expect(planPrecheck(subject, root).info.join('\n')).not.toContain('size:L');
+  subject.packages[0].size = 'L';
+  const result = planPrecheck(subject, root);
+  expect(result.blocking).toEqual([]);
+  expect(result.info.join('\n')).toMatch(/\[core\] size:L.*S\/M/);
 });
 
 test('hub modules with more than fifteen unit test consumers only add info', () => {

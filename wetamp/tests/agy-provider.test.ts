@@ -96,8 +96,8 @@ test('回放事件，校验工作目录、环境、原始模型标识和结构�
   );
   expect(provider.getType()).toBe('agy');
   expect(readFileSync(join(f.home, 'args'), 'utf8').trimEnd().split('\n')).toEqual([
-    '--print',
-    '检查',
+    '--input-format',
+    'stream-json',
     '--output-format',
     'stream-json',
     '--model',
@@ -106,6 +106,10 @@ test('回放事件，校验工作目录、环境、原始模型标识和结构�
     JSON.stringify(schema),
     '--dangerously-skip-permissions',
   ]);
+  expect(JSON.parse(readFileSync(join(f.home, 'stdin'), 'utf8'))).toEqual({
+    event: 'user',
+    message: { role: 'user', content: '检查' },
+  });
   expect(readFileSync(join(f.home, 'cwd'), 'utf8').trim()).toBe(f.cwd);
   expect(readFileSync(join(f.home, 'env'), 'utf8')).toBe('node-env');
   expect(chunks).toEqual([
@@ -471,7 +475,11 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
       })
     );
     expect((await invoke('repair')).at(-2)).toMatchObject({ structuredOutput: { ok: true } });
-    expect(readFileSync(join(f.home, 'args'), 'utf8')).toContain(`${pack}.no-skills.md\n`);
+    expect(readFileSync(join(f.home, 'args'), 'utf8')).not.toContain(pack);
+    expect(JSON.parse(readFileSync(join(f.home, 'stdin'), 'utf8'))).toEqual({
+      event: 'user',
+      message: { role: 'user', content: `${pack}.no-skills.md` },
+    });
     const attempts = readPolicyAttempts(artifacts);
     expect(attempts.map(a => [a.node, a.provider, a.status])).toEqual([
       [`code-${plan.packages[0].id}`, 'agy', 'failed'],
@@ -599,4 +607,166 @@ test('取消终止进程组内的子进程，预取消不启动', async () => {
     controller.abort();
     await stream.return(undefined);
   }
+});
+
+test('工具后账号耗尽触发跨节点熔断但不静默重放，无副作用直拒切 Codex，脏树禁重放与缺失诊断', async () => {
+  const f = fixture(),
+    tiers = loadTiers(),
+    repo = gitRepo(f.home);
+  const plan = loadPlan(
+    fixturePlan(f.home, repo, p => {
+      p.mode = 'auto';
+      p.console = 'gemini';
+    }),
+    [f.home]
+  );
+  const policy = join(f.home, 'policy.json');
+  writeFileSync(policy, JSON.stringify(snapshotPolicy(tiers)));
+  writeFileSync(join(f.home, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(f.home, 'execution.json'), JSON.stringify(executionTable(plan, tiers)));
+  const artifacts = join(f.home, 'artifacts/runs/run-exhausted');
+  mkdirSync(join(artifacts, 'contexts'), { recursive: true });
+  const pack = join(artifacts, 'contexts', `code-${plan.packages[0].id}.md`);
+  writeFileSync(pack, 'with skills');
+  using db = new Database(join(f.home, 'archon.db'));
+  db.exec(`CREATE TABLE remote_agent_workflow_runs (id, working_path, status, output_root, metadata, codebase_id, adopted_from_run_id);
+    CREATE TABLE remote_agent_workflow_events (workflow_run_id, event_type, step_name, data, event_order);`);
+  db.run('INSERT INTO remote_agent_workflow_runs VALUES (?, ?, ?, ?, ?, ?, NULL)', [
+    'run-exhausted',
+    repo,
+    'running',
+    f.home,
+    JSON.stringify({ execution_owner: { pid: process.pid } }),
+    'repo',
+  ]);
+  const prevArchon = process.env.ARCHON_HOME,
+    prevSa = process.env.SUPERAGENT_HOME;
+  process.env.ARCHON_HOME = f.home;
+  process.env.SUPERAGENT_HOME = f.home;
+  try {
+    let codexCalls = 0;
+    const wrapped = wrapPolicyProvider(
+      createAgyProvider({ executable: f.executable }),
+      'agy',
+      () =>
+        async function* () {
+          codexCalls++;
+          yield { type: 'result', text: 'Codex 接手' };
+          yield { type: 'settled' };
+        }
+    );
+    const runNode = (stream: string, exit = '0') => {
+      writeFileSync(f.output, stream);
+      return collect(
+        wrapped.sendQuery(pack, repo, undefined, {
+          model,
+          nodeConfig: { nodeId: `code-${plan.packages[0].id}` },
+          env: { ...f.env, SA_POLICY_PATH: policy, FIXTURE_EXIT: exit },
+        })
+      );
+    };
+    const toolStep =
+      '{"event":"step_update","step_update":{"step_index":1,"step_type":"tool","state":"DONE"}}';
+    const exhausted =
+      '{"event":"result","result":{"status":"ERROR","error":"No available Gemini accounts: no available accounts"}}';
+    const chunks = await runNode(`${toolStep}\n${exhausted}`);
+    expect(
+      chunks.some(c => c.type === 'warning' && c.code === 'superagent.agy_no_skills_missing')
+    ).toBeTrue();
+    expect(chunks.at(-2)).toMatchObject({
+      isError: true,
+      failure: {
+        class: 'unknown',
+        evidence: expect.stringContaining('No available Gemini accounts'),
+      },
+    });
+    expect(codexCalls).toBe(0);
+    expect(readAgyHealth().state).toBe('down');
+    expect(readPolicyAttempts(artifacts).map(a => a.provider)).toEqual(['agy']);
+    // 下一 run 立即跳过 Neon 走 Codex
+    db.run("UPDATE remote_agent_workflow_runs SET id='run-next'");
+    mkdirSync(join(f.home, 'artifacts/runs/run-next'), { recursive: true });
+    expect((await runNode(exhausted)).at(-2)).toMatchObject({ text: 'Codex 接手' });
+    expect(codexCalls).toBe(1);
+    // 重置健康后：无工具活动网关直拒自动切 Codex 并熔断
+    writeFileSync(
+      join(f.home, 'agy-health.json'),
+      JSON.stringify({ state: 'up', probe_failures: 0 })
+    );
+    const refused =
+      '{"event":"result","result":{"status":"ERROR","error":"dial tcp 127.0.0.1:1: connect: connection refused"}}';
+    expect((await runNode(refused)).at(-2)).toMatchObject({ text: 'Codex 接手' });
+    expect(readAgyHealth().state).toBe('down');
+    // 工作树变脏时即使返回 transient 也禁止静默重放
+    writeFileSync(
+      join(f.home, 'agy-health.json'),
+      JSON.stringify({ state: 'up', probe_failures: 0 })
+    );
+    const dirtyWrapper = wrapPolicyProvider(
+      {
+        ...createAgyProvider({ executable: f.executable }),
+        async *sendQuery(_p, dir) {
+          writeFileSync(join(dir, 'dirty.txt'), 'wip');
+          yield {
+            type: 'result',
+            isError: true,
+            failure: { class: 'quota_exhausted', evidence: 'No available Gemini accounts' },
+          };
+          yield { type: 'settled' };
+        },
+      },
+      'agy',
+      () =>
+        async function* () {
+          codexCalls++;
+          yield { type: 'result', text: 'bad' };
+          yield { type: 'settled' };
+        }
+    );
+    const dirtyChunks = await collect(
+      dirtyWrapper.sendQuery(pack, repo, undefined, {
+        model,
+        nodeConfig: { nodeId: `code-${plan.packages[0].id}` },
+        env: { ...f.env, SA_POLICY_PATH: policy },
+      })
+    );
+    expect(dirtyChunks.at(-2)).toMatchObject({
+      failure: { class: 'unknown', evidence: expect.stringContaining('工作树已变更') },
+    });
+    expect(codexCalls).toBe(2);
+    expect(readAgyHealth().state).toBe('down');
+  } finally {
+    if (prevArchon === undefined) delete process.env.ARCHON_HOME;
+    else process.env.ARCHON_HOME = prevArchon;
+    if (prevSa === undefined) delete process.env.SUPERAGENT_HOME;
+    else process.env.SUPERAGENT_HOME = prevSa;
+  }
+});
+
+test('异常退出保留 retries 且 SUCCESS 异常退出收窄为 unknown', async () => {
+  const f = fixture(),
+    provider = createAgyProvider({ executable: f.executable });
+  const errSteps = [1, 2, 3]
+    .map(i =>
+      JSON.stringify({
+        event: 'step_update',
+        step_update: { step_index: i, state: 'DONE', step_type: 'error_message' },
+      })
+    )
+    .join('\n');
+  writeFileSync(f.output, errSteps);
+  const crashed = await collect(
+    provider.sendQuery('检查', f.cwd, undefined, { model, env: { ...f.env, FIXTURE_EXIT: '3' } })
+  );
+  expect(crashed.at(-2)).toMatchObject({ failure: { class: 'transient', retries: 3 } });
+  writeFileSync(
+    f.output,
+    JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: 'OK' } })
+  );
+  const afterSuccess = await collect(
+    provider.sendQuery('检查', f.cwd, undefined, { model, env: { ...f.env, FIXTURE_EXIT: '7' } })
+  );
+  expect(afterSuccess.at(-2)).toMatchObject({
+    failure: { class: 'unknown', evidence: expect.stringContaining('7') },
+  });
 });

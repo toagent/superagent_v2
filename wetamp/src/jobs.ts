@@ -22,7 +22,12 @@ import {
   routeNotice,
   routeState,
 } from './config';
-import { claudeAdmission, recordClaudeOutcome, refreshClaudeHealth } from './claude-health';
+import {
+  claudeAdmission,
+  recordAgyOutcome,
+  recordClaudeOutcome,
+  refreshClaudeHealth,
+} from './claude-health';
 import {
   describeExecution,
   executionRoute,
@@ -390,14 +395,26 @@ async function exec(
         const launch = agyLaunch(job.cwd, env, { executable: cmd[0] });
         const attempt = { unserved: false };
         if (launch.executable) {
-          const prompt = f.automatic ? await input?.text() : cmd[2];
+          const inlinePrompt = !f.automatic && ['--print', '-p'].includes(cmd[1]) ? cmd[2] : undefined;
+          const cardText = !f.automatic && input ? await input.text() : undefined;
+          const prompt = f.automatic
+            ? await input?.text()
+            : inlinePrompt && cardText
+              ? `${inlinePrompt}\n\n${cardText}`
+              : (inlinePrompt ?? cardText);
           if (!prompt) throw new Error('job: Neon 缺少任务输入');
           const cardBytes = job.card ? readFileSync(job.card) : undefined;
-          const submitted = f.automatic ? prompt.slice(inputPrefix.length) : prompt;
+          const submitted = f.automatic
+            ? prompt.slice(inputPrefix.length)
+            : !inlinePrompt && cardText
+              ? cardBytes?.toString('utf8') ?? ''
+              : prompt;
           const cardHash = cardBytes?.equals(Buffer.from(submitted))
             ? createHash('sha256').update(cardBytes).digest('hex') : undefined;
+          if (job.card && cardBytes && !cardHash)
+            console.error(`job: prompt-file 与 --card 内容不一致，跳过写入 Neon 原生证明（card: ${job.card}）`);
           const nativeInit: { event: 'init'; conversation_id: string; init: { model: string } }[] = [];
-          for await (const chunk of runAgy(launch.executable, agyArgs(prompt, job.execution.model),
+          for await (const chunk of runAgy(launch.executable, agyArgs(job.execution.model), prompt,
             job.cwd, launch.env, { abortSignal: stop.signal }, {
               spawned: running, unserved: () => { attempt.unserved = true; },
               init: (session, model) => nativeInit.push({ event: 'init', conversation_id: session, init: { model } }),
@@ -407,6 +424,12 @@ async function exec(
             if (chunk.resolvedModel) job.model = job.execution.model = chunk.resolvedModel.id;
             receipt.tokens = chunk.tokens;
             code = chunk.isError ? 1 : 0;
+            const recorded = recordAgyOutcome({
+              provider: 'agy', ok: !code, source: 'job', class: chunk.failure?.class,
+              retries: chunk.failure?.retries, model: job.model ?? undefined, run: job.id,
+              evidence: chunk.failure?.evidence,
+            });
+            if (!recorded.persisted) console.error(`job: Neon outcome was not persisted: ${String(recorded.error)}`);
             const model = chunk.resolvedModel?.id, session = chunk.sessionId;
             if (!code && cardHash && model?.trim() && session?.trim() &&
               nativeInit.length === 1 && nativeInit[0].conversation_id === session &&
@@ -596,14 +619,16 @@ export async function jobCli(
     throw new Error('job: unsupported role provider; expected codex, claude or agy');
   let agyModel: string | null = null;
   if (jobRole && explicitProvider === 'agy') {
-    const flags = cmd.slice(3);
+    const hasPrint = ['--print', '-p'].includes(cmd[1]);
+    const flags = cmd.slice(hasPrint ? 3 : 1);
     if (flags.at(-1) === '--dangerously-skip-permissions') flags.pop();
+    if (flags[0] === '--input-format' && flags[1] === 'stream-json') flags.splice(0, 2);
     if (flags[0] === '--output-format' && flags[1] === 'stream-json') flags.splice(0, 2);
     const [flag, value] = flags;
     const hasModel = (flags.length === 1 && /^--model=\S+$/.test(flag)) ||
       (flags.length === 2 && ['--model', '-m'].includes(flag) && /^\S+$/.test(value));
-    if (!['--print', '-p'].includes(cmd[1]) || !cmd[2]?.trim() || (flags.length && !hasModel))
-      throw new Error('job: role agy requires --print <prompt> [--output-format stream-json] [--model <model>]');
+    if ((hasPrint ? !cmd[2]?.trim() : !card) || (flags.length && !hasModel))
+      throw new Error('job: role agy requires (--print <prompt> | --card <path>) [--output-format stream-json] [--model <model>]');
     agyModel = modelOf(flags);
   }
   if (a.flags['request-ref'] !== undefined && !a.flags['request-ref'].trim()) throw new Error('job: empty request-ref');

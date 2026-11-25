@@ -211,17 +211,48 @@ function runtimeExecution(
   const tracksAgy = candidates.some(candidate => candidate.provider === 'agy');
   let agyAvailable = !tracksAgy || isAgyAvailable(readAgyHealth());
   const nativeProvider = gemini ? (candidates[0]?.provider ?? 'codex') : provider;
-  const agyContext =
-    (send: IAgentProvider['sendQuery']): IAgentProvider['sendQuery'] =>
-    (prompt, ...args) => {
+  const gitStatus = (dir: string): string | undefined => {
+    const check = Bun.spawnSync(['git', '-C', dir, 'status', '--porcelain'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    return check.exitCode === 0 ? check.stdout.toString() : undefined;
+  };
+  const agyContext = (send: IAgentProvider['sendQuery']): IAgentProvider['sendQuery'] =>
+    async function* (prompt, dir, resume, opts) {
       const pack = join(artifacts, 'contexts', `${contract}.md`);
       const variant = `${pack}.no-skills.md`;
-      return send(
-        !agyCapabilities.skills && existsSync(variant)
-          ? prompt.replace(pack, () => variant)
-          : prompt,
-        ...args
-      );
+      let next = prompt;
+      if (!agyCapabilities.skills && prompt.includes(pack)) {
+        if (existsSync(variant)) next = prompt.replace(pack, () => variant);
+        else
+          yield {
+            type: 'warning',
+            code: 'superagent.agy_no_skills_missing',
+            message: JSON.stringify({ run: run.id, node, expected: variant, fallback: pack }),
+          };
+      }
+      const before = gitStatus(dir);
+      for await (const chunk of send(next, dir, resume, opts)) {
+        if (
+          chunk.type === 'result' &&
+          chunk.failure &&
+          chunk.failure.class !== 'unknown' &&
+          before !== undefined &&
+          gitStatus(dir) !== before
+        ) {
+          yield {
+            ...chunk,
+            failure: {
+              ...chunk.failure,
+              class: 'unknown',
+              evidence: `${chunk.failure.evidence}（工作树已变更，禁止静默重放）`,
+            },
+          };
+          continue;
+        }
+        yield chunk;
+      }
     };
   const nativeSend: typeof sendQueryFor = candidate => {
     if (gemini) return validatedReview((...args) => sendQueryFor(candidate)(...args));
@@ -273,13 +304,15 @@ function runtimeExecution(
         class: failure?.class,
         retries: failure?.retries,
         resetAt: failure?.resetAt,
+        evidence: failure?.evidence,
         model: attempt.model,
         run: run.id,
         node,
       };
       const saved = provider === 'agy' ? recordAgyOutcome(outcome) : recordClaudeOutcome(outcome);
-      if (provider === 'agy') agyAvailable = isAgyAvailable(saved.health);
-      else if (outcome.ok) claudeAvailable = true;
+      if (provider === 'agy') {
+        if (outcome.ok || failure?.class !== 'unknown') agyAvailable = isAgyAvailable(saved.health);
+      } else if (outcome.ok) claudeAvailable = true;
       else if (claudeOutcomeTrips(outcome)) claudeAvailable = false;
       if (!saved.persisted) {
         const error = 'error' in saved && typeof saved.error === 'string' ? saved.error : 'unknown';

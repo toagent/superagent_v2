@@ -977,6 +977,7 @@ else if (process.argv[1].endsWith('/claude')) {
     writeFileSync(join(root, 'agy'), `#!/usr/bin/env bun
 const args = process.argv.slice(2);
 await Bun.write('args.json', JSON.stringify(args));
+await Bun.write('stdin.txt', await Bun.stdin.text());
 const path = ${JSON.stringify(join(WETAMP, 'tests/fixtures/agy'))};
 const fixture = process.env.FIXTURE_AGY_RESULT;
 if (fixture !== 'missing') console.log((await Bun.file(path + '/' + (fixture || 'success') + '.ndjson').text())
@@ -994,21 +995,32 @@ if (fixture) process.exit(3);
     expect(exit, stderr).toBe(0);
     const model = loadTiers().routing.gemini!.code![0];
     expect(JSON.parse(readFileSync(join(root, 'args.json'), 'utf8'))).toEqual([
-      '--print', expect.stringContaining('fixture prompt'), '--output-format', 'stream-json',
+      '--input-format', 'stream-json', '--output-format', 'stream-json',
       '--model', model, '--dangerously-skip-permissions',
     ]);
+    expect(JSON.parse(readFileSync(join(root, 'stdin.txt'), 'utf8')).message.content).toContain('fixture prompt');
     expect(only()).toMatchObject({ kind: 'agy', model, execution: { provider: 'agy' },
       session_id: 'fixture-session', agy_input_sha256: new Bun.CryptoHasher('sha256').update('fixture prompt').digest('hex'),
       receipt: { tokens: { input: 18531, output: 589 } } });
     const mismatched = join(root, 'other-card.md');
     writeFileSync(mismatched, 'different card');
     const mismatch = run([...promptArgs('mismatched-card', 'general', prompt), '--card', mismatched], '', root, env);
-    expect(await mismatch.exited).toBe(0);
+    const [mismatchErr, mismatchExit] = await Promise.all([new Response(mismatch.stderr as ReadableStream).text(), mismatch.exited]);
+    expect(mismatchExit).toBe(0);
+    expect(mismatchErr).toContain('prompt-file 与 --card 内容不一致');
     expect(readJobs().jobs.find(j => j.title === 'mismatched-card')?.agy_input_sha256).toBeUndefined();
     const explicit = run(['job', 'exec', '--title', 'explicit-neon', '--role', 'general', '--',
       join(root, 'agy'), '--print', 'fixture prompt', '--output-format', 'stream-json',
       '--model', model, '--dangerously-skip-permissions'], '', root, env);
     expect(await explicit.exited).toBe(0);
+    const explicitCard = run(['job', 'exec', '--title', 'explicit-neon-card', '--role', 'general',
+      '--card', prompt, '--', join(root, 'agy'), '--model', model], '', root, env);
+    expect(await explicitCard.exited).toBe(0);
+    expect(JSON.stringify(JSON.parse(readFileSync(join(root, 'args.json'), 'utf8')))).not.toContain('fixture prompt');
+    expect(JSON.parse(readFileSync(join(root, 'stdin.txt'), 'utf8')).message.content).toContain('fixture prompt');
+    expect(readJobs().jobs.find(j => j.title === 'explicit-neon-card')?.agy_input_sha256).toBe(
+      new Bun.CryptoHasher('sha256').update('fixture prompt').digest('hex')
+    );
     for (const [fixture, provider, exit] of [['outage', 'codex', 0], ['missing', 'agy', 1]] as const) {
       const p = run(promptArgs(fixture, 'general', prompt), '', root, { ...env, FIXTURE_AGY_RESULT: fixture });
       expect(await p.exited, await new Response(p.stderr as ReadableStream).text()).toBe(exit);
