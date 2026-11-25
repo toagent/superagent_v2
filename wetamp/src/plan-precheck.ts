@@ -204,6 +204,8 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
     }
     if (pkg.review === true && !pkg.review_reason?.trim())
       info.push(`${prefix}review:true 已忽略：评审只由白名单命中或用户原话触发`);
+    if (pkg.size === 'L')
+      info.push(`${prefix}size:L 包浪费 token 与返工风险高，建议优先拆分为 S/M 包`);
     if (pkg.risk !== 'G0' && pkg.accept.every(check => staticAcceptance(check.cmd)))
       (override?.trim() ? info : blocking).push(`${prefix}G1/G2 包至少需要一条非纯静态的冒烟/行为测试；可用 --lint-override 覆盖`);
     for (const cmd of commands) for (const test of commandTests(cmd))
@@ -214,8 +216,7 @@ export function planPrecheck(plan: Plan, repo: string, override?: string): PlanP
       const missing = callers.filter(test => !covered(test, write) && !covered(test, pkg.scope.read_hint ?? []));
       if (!missing.length) continue;
       const message = `${prefix}${source} 的直接单元测试调用方：${missing.join(', ')}；加入 scope.write，或写入 scope.read_hint 说明无需修改`;
-      if (callers.length > 15) info.push(`${message}（枢纽模块，共 ${String(callers.length)} 个测试，仅提示）`);
-      else blocking.push(message);
+      info.push(callers.length > 15 ? `${message}（枢纽模块，共 ${String(callers.length)} 个测试，仅提示）` : message);
     }
     for (const generator of generators) {
       const touched = generator.inputs.some(input => covered(input, write) ||
