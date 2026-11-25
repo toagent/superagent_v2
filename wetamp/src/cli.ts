@@ -33,7 +33,7 @@ import { installMode } from './install-mode';
 import { guardSelftest } from './guard-selftest';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { managedSecrets, scanText } from './secrets/scan';
+import { fieldsContainSecret } from './secrets/scan';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
 import { canonicalRepo, closeDebts, debtMetrics, debtSnapshot } from './debt';
 import {
@@ -204,6 +204,7 @@ import {
   loadPlan,
   milestones,
   scratch,
+  validatePlan,
   type Plan,
 } from './plan';
 import { checkSyntaxErrors, planPrecheck } from './plan-precheck';
@@ -402,19 +403,21 @@ export const EXIT_ADMISSION = 75;
 export const EXIT_USAGE = 64;
 class SecretInputError extends Error {}
 const assertSecretFree = (input: unknown): void => {
-  const secrets = managedSecrets();
-  const scanned = new Set<string>();
+  const fields = new Set<string>();
   const visit = (value: unknown): void => {
     if (typeof value === 'string') {
-      if (!value || scanned.has(value)) return;
-      if (scanText(value, { secrets, keyValues: false }) !== value)
-        throw new SecretInputError('secret_in_input');
-      scanned.add(value);
+      if (value) fields.add(value);
+    } else if (Array.isArray(value)) {
+      for (const child of value) visit(child);
     } else if (value && typeof value === 'object') {
-      for (const child of Object.values(value)) visit(child);
+      for (const [key, child] of Object.entries(value)) {
+        visit(key);
+        visit(child);
+      }
     }
   };
   visit(input);
+  if (fieldsContainSecret(fields)) throw new SecretInputError('secret_in_input');
 };
 
 type IntegratedDelivery = Omit<DeliveryReceipt, 'status'> & { status: 'integrated' };
@@ -1924,7 +1927,16 @@ function planDelivery(plan: Plan): DeliveryTarget {
 }
 
 function checkedPlan(planPath: string, override?: string) {
-  const rules = applyPlanRules(loadPlan(planPath), override);
+  const input: unknown = JSON.parse(readFileSync(planPath, 'utf8'));
+  let plan: Plan;
+  try {
+    plan = validatePlan(input);
+  } catch (error) {
+    // Unknown keys can carry credentials too. Screen the original input before reporting errors.
+    assertSecretFree(input);
+    throw error;
+  }
+  const rules = applyPlanRules(plan, override);
   assertSecretFree(rules.plan);
   const plan_lint = lintPlan(rules.plan, override),
     precheck = planPrecheck(rules.plan, rules.plan.repo, override);

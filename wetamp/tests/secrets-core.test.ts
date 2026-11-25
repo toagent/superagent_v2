@@ -69,6 +69,10 @@ test('Claude prompt and tool output use the built Basic authorization rule', asy
   const prompt = (text: string) => guard.decide({ hook_event_name: 'UserPromptSubmit', prompt: text }, 'claude', env);
   const credential = header('fixture-user:fixture-password');
   expect(prompt(credential)).toMatchObject({ decision: 'block' });
+  for (const prefix of ['', 'Authorization=', 'note: ', '"']) {
+    expect(prompt(prefix + credential.slice('Authorization: '.length))).toMatchObject({ decision: 'block' });
+    expect(prompt(prefix + header('ordinary base64 text').slice('Authorization: '.length))).toBeNull();
+  }
   expect(prompt(header('ordinary base64 text'))).toBeNull();
   expect(prompt(`${credential}=`)).toBeNull();
   const result = guard.decide({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: credential }, 'claude', env);
@@ -99,6 +103,13 @@ test('built cjs stays consistent and the stream redacts bytewise chunks or fails
   expect(await run(`before ${value} after\n`, { PROBE_TOKEN: value })).toBe(
     'before [REDACTED:environment] after\n'
   );
+  const paths =
+    '["wetamp/tests/secret-hooks.test.ts","[REDACTED:gitleaks]","wetamp/docs/agent.md"]\n';
+  expect(await run(paths, {})).toBe(paths);
+  const plainPaths = paths.replace('[REDACTED:gitleaks]', 'wetamp/tests/fixtures/agy');
+  expect(await run(plainPaths, {})).toBe(plainPaths);
+  const vendor = `ghp_${randomBytes(18).toString('hex')}`;
+  expect(await run(plainPaths + vendor + '\n', {})).toBe(plainPaths + '[REDACTED:gitleaks]\n');
   expect(await run('plain output', { SA_GITLEAKS_CONFIG: join(out, 'missing.toml') })).toBe(
     '[REDACTED:scan_failed]'
   );
