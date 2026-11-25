@@ -59,6 +59,22 @@ test('prompt filtering skips heuristic keys but keeps vendor and managed detecti
   );
 });
 
+// prettier-ignore
+test('Claude prompt and tool output use the built Basic authorization rule', async () => {
+  const out = tmp();
+  await buildSecrets(out);
+  const guard = createRequire(import.meta.url)('../hooks/guard.cjs');
+  const env = { HOME: tmp(), SUPERAGENT_ROLE: 'general', SA_SECRET_SCAN_MODULE: join(out, 'secret-scan.cjs') };
+  const header = (decoded: string) => `Authorization: Basic ${Buffer.from(decoded).toString('base64')}`;
+  const prompt = (text: string) => guard.decide({ hook_event_name: 'UserPromptSubmit', prompt: text }, 'claude', env);
+  const credential = header('fixture-user:fixture-password');
+  expect(prompt(credential)).toMatchObject({ decision: 'block' });
+  expect(prompt(header('ordinary base64 text'))).toBeNull();
+  expect(prompt(`${credential}=`)).toBeNull();
+  const result = guard.decide({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: credential }, 'claude', env);
+  expect(result?.hookSpecificOutput?.updatedToolOutput).toBe('Authorization: Basic [REDACTED:basic-auth]');
+});
+
 test('built cjs stays consistent and the stream redacts bytewise chunks or fails closed', async () => {
   const out = tmp(),
     value = probe();
