@@ -13,7 +13,7 @@ export function refreshBudgetQuota(): void {
 // prettier-ignore
 export interface RelayQuotaPool { today?: { cost?: number }; level?: string; accounts_available?: number; accounts_total?: number; five_hour?: { remaining_pct?: number }; seven_day?: { remaining_pct?: number } }
 // prettier-ignore
-export interface RelayQuotaCache { at: number; claude_daily_usd?: number; claude?: RelayQuotaPool; codex?: RelayQuotaPool }
+export interface RelayQuotaCache { at: number; claude_daily_usd?: number; claude?: RelayQuotaPool; codex?: RelayQuotaPool; gemini?: RelayQuotaPool }
 const unknown = (why: string) => ({ quota: `中转余量：未知（${why}）` });
 const numeric = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 // prettier-ignore
@@ -37,20 +37,23 @@ export function relayQuota(dir?: string, stage: 'start' | 'end' = 'start',
       if (p.status !== 0) result = unknown(p.status === 28 || p.signal === 'SIGTERM' ? 'timeout' : 'network');
       else if (code !== '200') result = unknown(/^\d{3}$/.test(code) ? code : 'network');
       else {
-        const data = JSON.parse(body.slice(0, -4)) as { platforms?: Record<string, RelayQuotaPool> }; const pools = [data.platforms?.anthropic, data.platforms?.openai];
+        const data = JSON.parse(body.slice(0, -4)) as { platforms?: Record<string, RelayQuotaPool> }; const pools = [data.platforms?.anthropic, data.platforms?.openai, data.platforms?.gemini];
         const [claude, codex] = pools.map(p => p?.today?.cost);
         const limits = loadTiers().routing.budget;
-        try { if (process.env.SUPERAGENT_HOME) writeAtomic(join(process.env.SUPERAGENT_HOME, 'relay-quota.json'), JSON.stringify({ at: Date.now(), ...(numeric(claude) ? { claude_daily_usd: claude } : {}), claude: pools[0], codex: pools[1] } satisfies RelayQuotaCache)); } catch { /* Cache write failures remain advisory. */ }
+        try { if (process.env.SUPERAGENT_HOME) writeAtomic(join(process.env.SUPERAGENT_HOME, 'relay-quota.json'), JSON.stringify({ at: Date.now(), ...(numeric(claude) ? { claude_daily_usd: claude } : {}), claude: pools[0], codex: pools[1], gemini: pools[2] } satisfies RelayQuotaCache)); } catch { /* Cache write failures remain advisory. */ }
+        const active = pools.filter(p => p && p.accounts_total !== 0);
         const alerts = [
           numeric(claude) && (claude >= limits.claude_daily_usd ? '⛔ 今日应停用 Claude' : claude >= limits.claude_medium_usd ? 'Claude 中等' : ''),
           numeric(codex) && codex >= limits.codex_warning_usd && `⚠️ Codex 超 $${String(limits.codex_warning_usd)}`,
-          pools.some(p => p?.level === 'exhausted') ? '⛔ 余量耗尽' : pools.some(p => p?.level === 'low') && '⚠️ 中转余量偏低'].filter(Boolean).join(' · ');
+          active.some(p => p?.level === 'exhausted') ? '⛔ 余量耗尽' : active.some(p => p?.level === 'low') && '⚠️ 中转余量偏低'].filter(Boolean).join(' · ');
+        const labels = ['Claude', 'Codex', 'Gemini'] as const;
         const parts = pools.map((p, i) => p && [
-          `${i ? 'Codex' : 'Claude'}${numeric(p.today?.cost) ? ` 今日 $${p.today.cost.toFixed(2)}` : ''}`,
-          ...[['5h', p.five_hour?.remaining_pct], ['7d', p.seven_day?.remaining_pct]].map(([w, n]) => numeric(n) ? `${String(w)} 余 ${String(n)}%` : ''),
-          numeric(p.accounts_available) && numeric(p.accounts_total) ? `（${String(p.accounts_available)}/${String(p.accounts_total)} 可用）` : ''].filter(Boolean)).filter(p => !!p);
+          `${labels[i]}${numeric(p.today?.cost) ? ` $${p.today.cost.toFixed(2)}` : ''}`,
+          numeric(p.five_hour?.remaining_pct) ? `5h:${String(p.five_hour.remaining_pct)}%` : '',
+          numeric(p.seven_day?.remaining_pct) ? `7d:${String(p.seven_day.remaining_pct)}%` : '',
+          numeric(p.accounts_available) && numeric(p.accounts_total) ? `(${String(p.accounts_available)}/${String(p.accounts_total)})` : ''].filter(Boolean)).filter(p => !!p);
         if (parts.length) for (let keep = 4; keep >= 1; keep--) {
-          result = { quota: [alerts, parts.map(p => p.slice(0, keep).join(' · ')).join(' | ')].filter(Boolean).join(' · ') };
+          result = { quota: [alerts, parts.map(p => p.slice(0, keep).join(' ')).join(' | ')].filter(Boolean).join(' · ') };
           if (result.quota.length <= 120) break;
         }
       }

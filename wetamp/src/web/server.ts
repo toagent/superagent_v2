@@ -206,6 +206,7 @@ function quotaOverview() {
       stale: Date.now() - q.at > 30 * 60e3,
       claude: { ...pool(q.claude), today_usd: number(q.claude?.today?.cost ?? q.claude_daily_usd), daily_usd: limits.claude_daily_usd, medium_usd: limits.claude_medium_usd },
       codex: { ...pool(q.codex), warning_usd: limits.codex_warning_usd },
+      ...(q.gemini ? { gemini: pool(q.gemini) } : {}),
     };
   } catch { return null; }
 }
