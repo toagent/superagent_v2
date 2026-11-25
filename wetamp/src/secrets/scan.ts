@@ -17,8 +17,7 @@ const KEY_VALUES: RegExp[] = [
 export const redactKeyValues = (text: string): string =>
   KEY_VALUES.reduce((value, rule) => value.replace(rule, '$1$2***'), text);
 
-const BASIC_AUTH =
-  /(?<![\w-])(?:proxy-)?authorization["']?[ \t]*:[ \t]*["']?basic[ \t]+([A-Za-z0-9+/]{4,4096}={0,2})(?![\w+/=-])/gi;
+const BASIC_AUTH = /(?:^|[\s"':=])basic[ \t]+([A-Za-z0-9+/]{4,4096}={0,2})(?![\w+/=-])/gi;
 
 function redactBasicAuth(text: string): string {
   return text.replace(BASIC_AUTH, (header: string, encoded: string) => {
@@ -61,6 +60,7 @@ export function exactPatterns(secrets = managedSecrets()): ManagedSecret[] {
 }
 interface Finding {
   RuleID?: string;
+  Match?: string;
   Secret?: string;
   StartLine?: number;
   EndLine?: number;
@@ -83,20 +83,88 @@ export const redactGitleaksFindings = (text: string, findings: Finding[]): strin
     else for (let i = start; i <= end; i++) lines[i] = '[REDACTED:gitleaks]'; }
   return lines.join('\n');
 };
-// prettier-ignore
-function gitleaks(text: string, config: string, heuristics = true): string {
-  if (!text) return text;
-  const result = spawnSync('gitleaks', ['stdin', '--config', config, '--ignore-gitleaks-allow', '--no-banner', '--report-format', 'json', '--report-path', '-'], { input: text, encoding: 'utf8' });
-  if (result.status === 0) return text;
-  if (result.status !== 1) throw new Error('scan_failed');
-  try { const findings = JSON.parse(result.stdout || '[]') as Finding[]; if (!findings.length) throw new Error('empty report'); const kept = heuristics ? findings : findings.filter(finding => !HEURISTIC_RULES.has(finding.RuleID ?? '')); return kept.length ? redactGitleaksFindings(text, kept) : text; } catch { throw new Error('scan_failed'); }
+// Gitleaks can interpret a comma between two paths as a generic key assignment.
+const PATH_PAIR =
+  /^[\w.-]+\.(?:[cm]?[jt]sx?|py|go|rs|java|sh|json|toml|ya?ml|md|txt)["']?,[ \t]*["'`]?((?:[\w.-]+\/)+[\w.-]+\/?)['"`]?[ \t;]*$/i;
+
+function isPathPair({ Match, Secret }: Finding): boolean {
+  const path = PATH_PAIR.exec(Match ?? '')?.[1];
+  if (!path || path !== Secret) return false;
+  // Check individual segments so the combined character diversity of ordinary paths is allowed.
+  return path
+    .replace(/\/$/, '')
+    .split('/')
+    .every(segment => {
+      const counts = new Map<string, number>();
+      for (const char of segment) counts.set(char, (counts.get(char) ?? 0) + 1);
+      let entropy = 0;
+      for (const count of counts.values()) {
+        const probability = count / segment.length;
+        entropy -= probability * Math.log2(probability);
+      }
+      return entropy <= 3.25;
+    });
 }
+
 // prettier-ignore
-export function scanText(text: string, options: ScanOptions = {}): string {
+function gitleaks(text: string, options: ScanOptions): Finding[] {
+  if (!text || options.gitleaks === false) return [];
+  const config = options.config ?? process.env.SA_GITLEAKS_CONFIG ?? defaultConfig();
+  const result = spawnSync('gitleaks', ['stdin', '--config', config, '--ignore-gitleaks-allow', '--no-banner', '--report-format', 'json', '--report-path', '-'], { input: text, encoding: 'utf8' });
+  if (result.status === 0) return [];
+  if (result.status !== 1) throw new Error('scan_failed');
+  try {
+    const findings = JSON.parse(result.stdout) as Finding[];
+    if (!Array.isArray(findings) || !findings.length) throw new Error('invalid report');
+    return findings.filter(finding => {
+      if (options.heuristics === false && HEURISTIC_RULES.has(finding.RuleID ?? '')) return false;
+      return finding.RuleID !== 'generic-api-key' || !isPathPair(finding);
+    });
+  } catch {
+    throw new Error('scan_failed');
+  }
+}
+
+function scanLocally(text: string, patterns: ManagedSecret[], keyValues = true): string {
   let result = redactBasicAuth(text);
-  for (const { name, value } of exactPatterns(options.secrets)) result = result.replaceAll(value, `[REDACTED:${name}]`);
-  if (options.keyValues !== false) result = redactKeyValues(result);
-  return options.gitleaks === false ? result : gitleaks(result, options.config ?? process.env.SA_GITLEAKS_CONFIG ?? defaultConfig(), options.heuristics);
+  for (const { name, value } of patterns) result = result.replaceAll(value, `[REDACTED:${name}]`);
+  return keyValues ? redactKeyValues(result) : result;
+}
+
+export function scanText(text: string, options: ScanOptions = {}): string {
+  const result = scanLocally(text, exactPatterns(options.secrets), options.keyValues);
+  const findings = gitleaks(result, options);
+  return findings.length ? redactGitleaksFindings(result, findings) : result;
+}
+
+// Six intervening lines and >200 punctuation bytes isolate the bundled curl and Kubernetes
+// multiline rules. Close any unfinished PEM match inside the fence before the next field.
+// Blank lines give gitleaks safe read boundaries between fields.
+const FIELD_FENCE = ['', '!', '!', '!', '!', '!', '!'.repeat(256) + 'KEY-----', ''];
+const FENCE_OWNERS = FIELD_FENCE.map(() => -1);
+
+export function fieldsContainSecret(fields: Iterable<string>): boolean {
+  const patterns = exactPatterns();
+  const lines: string[] = [];
+  const owners: number[] = [];
+  for (const field of fields) {
+    if (scanLocally(field, patterns, false) !== field) return true;
+    if (lines.length) {
+      lines.push(...FIELD_FENCE);
+      owners.push(...FENCE_OWNERS);
+    }
+    const owner = lines.length;
+    for (const line of field.split('\n')) {
+      lines.push(line);
+      owners.push(owner);
+    }
+  }
+  return gitleaks(lines.join('\n'), {}).some(({ StartLine, EndLine }) => {
+    if (!StartLine || !EndLine || StartLine > EndLine || EndLine > owners.length)
+      throw new Error('scan_failed');
+    const owner = owners[StartLine - 1];
+    return owner >= 0 && owner === owners[EndLine - 1];
+  });
 }
 // The config ships beside its code: install.sh copies it next to the built cjs in the jail, and the
 // engine checkout carries it at wetamp/secrets/. Never depend on the jail install from engine code,

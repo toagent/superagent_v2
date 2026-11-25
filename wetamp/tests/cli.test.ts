@@ -458,6 +458,34 @@ test('sa base_ref follows the ledger chain into fresh run review wiring and reje
 });
 
 describe('quick', () => {
+  // prettier-ignore
+  test('plan admission scans independent fields and keys in one gitleaks call', () => {
+    const root = tmp(), repo = gitRepo(root), scanner = join(root, 'gitleaks');
+    const path = process.env.PATH!;
+    const real = Bun.which('gitleaks')!;
+    writeFileSync(scanner, '#!/bin/sh\nprintf x >> "$0.count"\nexec "$SA_TEST_GITLEAKS" "$@"\n', { mode: 0o755 });
+    process.env.PATH = `${root}:${path}`;
+    process.env.SA_TEST_GITLEAKS = real;
+    process.env.SUPERAGENT_WRITE_ROOTS = root;
+    const token = `ghp_${crypto.randomUUID().replaceAll('-', '')}A1b2`;
+    const args = ['quick', '--repo', repo, '--goal', 'scan fields', '--accept', 'true'];
+    const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' '), end = begin.replace('BEGIN', 'END');
+    const body = 'a'.repeat(80);
+    const scope = ['pwd:', 'n7Qz4WPXc8eD63Tr', begin, body, end, ...Array.from({ length: 15 }, (_, i) => `src/path-${i}.ts`)];
+    try {
+      const file = quickPlan(parseArgs([...args, ...scope.map(value => `--scope=${value}`)]));
+      expect(readFileSync(`${scanner}.count`, 'utf8').length).toBe(1);
+      const plan = JSON.parse(readFileSync(file, 'utf8'));
+      for (const pkg of [{ goal: token }, { [token]: '' }, { notes: `${begin}\n${body}\n${end}` }]) {
+        writeFileSync(file, JSON.stringify({ ...plan, packages: [{ ...plan.packages[0], ...pkg }] }));
+        expect(() => main(['plan', 'check', file])).toThrow('secret_in_input');
+      }
+    } finally {
+      process.env.PATH = path;
+      delete process.env.SA_TEST_GITLEAKS;
+    }
+  });
+
   test('delivery defaults: validated quick plan resolves git defaults without an implicit deadline', () => {
     const root = tmp(),
       repo = gitRepo(root);
