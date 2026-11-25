@@ -79,7 +79,8 @@ test('generated run aliases pass Archon strict validation across consoles and mo
   const validation = spyOn(archon, 'archon').mockReturnValue({ code: 0, out: '', err: '' });
   try {
     const modes = ['auto', 'strict', 'single:gemini', 'single:chatgpt', 'single:claude'] as const;
-    const fallback = resolveRoute(loadTiers(), 'codex', 'single:chatgpt').candidates[0];
+    const tiers = loadTiers();
+    const fallback = resolveRoute(tiers, 'codex', 'single:chatgpt').candidates[0];
     for (const console of CONSOLES) {
       for (const mode of modes) {
         const run = `alias-${console}-${mode.replace(':', '-')}`;
@@ -91,7 +92,7 @@ test('generated run aliases pass Archon strict validation across consoles and mo
         if (usesNeonCoder(console, mode)) {
           expect(aliases['@sa-agy-coder']).toEqual({
             provider: 'agy',
-            model: 'gemini-4-neon-%78high',
+            model: tiers.routing.gemini!.code![0],
           });
           expect(aliases['@sa-coder']).toMatchObject({ provider: 'codex', model: fallback.model });
           for (const [name, alias] of Object.entries(aliases))
@@ -295,7 +296,7 @@ const fixture = JSON.parse(
 const NOW = Date.parse('2026-10-09T00:00:00Z');
 test('Gemini routes Neon coding before Codex fallback and reviews independently', () => {
   const tiers = loadTiers();
-  const neon = ['gemini-4-neon-%78high', 'gemini-4-neon-%68igh'];
+  const neon = tiers.routing.gemini!.code!;
   const coders = ['gpt-6.2-sol', 'gpt-5.6-sol', 'gpt-6.1-sol', 'gpt-6-astra'];
   const models = (...args: Parameters<typeof resolveRoute>) =>
     resolveRoute(...args).candidates.map(candidate => candidate.model);
@@ -303,17 +304,26 @@ test('Gemini routes Neon coding before Codex fallback and reviews independently'
     budget: { degraded: true, notice: '' },
     claude: { state: 'up' as const, probe_failures: 0 },
   };
-  expect(models(tiers, 'gemini', 'auto', 'command', 'G1', 1, [], degraded)).toEqual(neon);
-  expect(models(tiers, 'gemini', 'auto', 'code', 'G1', 1, [], degraded)).toEqual([
-    ...neon,
-    ...coders,
-  ]);
   expect(models(tiers, 'gemini', 'strict', 'repair')).toEqual([...neon, ...coders]);
   expect(models(tiers, 'gemini', 'single:gemini')).toEqual(neon);
   expect(models(tiers, 'gemini', 'auto', 'review', 'G0', 1, [...neon, coders[1]])).toEqual([
     'claude-opus-5-5',
     'gpt-6-astra',
   ]);
+  const unavailable = {
+    budget: { degraded: false, notice: '' },
+    claude: { state: 'down' as const, probe_failures: 0 },
+  };
+  for (const state of [degraded, unavailable]) {
+    expect(models(tiers, 'gemini', 'auto', 'command', 'G1', 1, [], state)).toEqual(neon);
+    expect(models(tiers, 'gemini', 'auto', 'code', 'G1', 1, [], state)).toEqual([
+      ...neon,
+      ...coders,
+    ]);
+    expect(models(tiers, 'gemini', 'auto', 'review', 'G0', 1, [...neon, coders[1]], state)).toEqual(
+      ['gpt-6-astra']
+    );
+  }
   for (const [client, commanders, reviewers] of [
     [
       'claude',
