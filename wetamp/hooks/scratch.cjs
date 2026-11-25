@@ -34,7 +34,7 @@ function createScratch(ROOT, legacy = false) {
   const CANONICAL = canonicalRoot(ROOT);
   // Keep session locks outside the removable directory, including across /tmp aliases.
   const sessionLock = dir => path.join(ROOT, `.${path.basename(dir)}`);
-  const clients = ['claude', 'codex'];
+  const clients = legacy ? ['claude', 'codex'] : ['claude', 'codex', 'agy'];
   function validate(dir) {
     if (
       fs.lstatSync(ROOT).isSymbolicLink() ||
@@ -80,7 +80,7 @@ function createScratch(ROOT, legacy = false) {
     if (legacy) throw new Error('legacy scratch is read-only for allocation');
     if (typeof payload.session_id !== 'string' || !payload.session_id) return null;
     const dir = directory(client, payload.session_id);
-    const who = live.owner(),
+    const who = client === 'agy' ? live.owner(true, undefined, undefined, client) : live.owner(),
       probe = who && identity.inspect(who.pid);
     if (!who || probe.state !== 'online')
       throw new Error('scratch client process identity unavailable');
@@ -260,7 +260,7 @@ function sessionScratch(env = process.env) {
   const current = createScratch(scratchRoot(env));
   const legacy = () => createScratch(module.exports.LEGACY_ROOT, true);
   const ownerRoot = (client, session) => {
-    if (fs.existsSync(current.directory(client, session))) return current;
+    if (client === 'agy' || fs.existsSync(current.directory(client, session))) return current;
     const old = legacy();
     return fs.existsSync(old.directory(client, session)) ? old : current;
   };
