@@ -11,5 +11,6 @@ if [ "${FIXTURE_HANG:-}" = 1 ]; then
 else
   cat "$FIXTURE_STREAM"
   if [ -n "${FIXTURE_STDERR:-}" ]; then cat "$FIXTURE_STDERR" >&2; fi
+  if [ "${FIXTURE_TERMINATE:-}" = 1 ]; then kill -TERM "$$"; fi
   exit "$FIXTURE_EXIT"
 fi

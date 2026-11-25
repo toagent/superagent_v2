@@ -185,7 +185,9 @@ import {
 } from './config';
 import {
   claudeAdmission,
+  isAgyAvailable,
   localHealthTime,
+  readAgyHealth,
   readClaudeHealth,
   refreshClaudeHealth,
 } from './claude-health';
@@ -2510,6 +2512,7 @@ function health(cwd?: string, verbose = false, daysRaw?: string): number {
       : {}),
     ...(verbose ? { upstream_files: upstreamFiles } : {}),
     codex_worker: worker ?? 'ok',
+    neon_health: readAgyHealth(),
     secrets: { ...secrets, transcripts },
     guard_selftest,
     tick,
@@ -5401,16 +5404,26 @@ export function main(argv: string[]): number {
       const tiers = loadTiers(),
         mode = a.flags.mode ?? 'auto',
         health = refreshClaudeHealth().health,
-        state = routeState(tiers, mode, Date.now(), health);
+        state = routeState(tiers, mode, Date.now(), health),
+        neon_health = readAgyHealth();
       // prettier-ignore
       const models = Object.fromEntries(CONSOLES.filter(c => tiers.routing.commander.by_console[c]).map(c => [c,
         Object.fromEntries(TIERS.map(r => [r, resolveRoute(tiers, c, mode, ROUTE_ROLE[r], 'G1', 1, [], state).candidates.map(a => a.model)]))]));
-      if (a.flags.json) print({ ...models, budget: state.budget, route_state: state });
-      else
+      if (a.flags.json)
+        print({ ...models, budget: state.budget, route_state: { ...state, agy: neon_health } });
+      else {
         for (const [c, roles] of Object.entries(models))
           for (const [r, candidates] of Object.entries(roles))
             console.log(`${c} ${r}: ${candidates.join(', ')}`);
-      if (!a.flags.json && routeNotice(state)) console.log(routeNotice(state));
+        if (routeNotice(state)) console.log(routeNotice(state));
+        if (neon_health.state === 'down')
+          console.log(
+            isAgyAvailable(neon_health)
+              ? 'Neon 冷却结束，下次派发尝试恢复'
+              : `Neon 冷却至 ${localHealthTime(neon_health.next_probe_at)}，跳过 Neon 候选`
+          );
+        else console.log(neon_health.state === 'up' ? 'Neon 可派发' : 'Neon 健康状态未知');
+      }
       return 0;
     }
     case 'owner':

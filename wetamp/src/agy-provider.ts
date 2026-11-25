@@ -111,9 +111,14 @@ function hasManagedHook(path: string, env: NodeJS.ProcessEnv, home: string): boo
 
 function failure(
   classification: NonNullable<ResultChunk['failure']>['class'],
-  evidence: string
+  evidence: string,
+  retries?: number
 ): ResultChunk {
-  return { type: 'result', isError: true, failure: { class: classification, evidence } };
+  return {
+    type: 'result',
+    isError: true,
+    failure: { class: classification, evidence, ...(retries === undefined ? {} : { retries }) },
+  };
 }
 
 function usage(value: unknown): ResultChunk['tokens'] {
@@ -135,7 +140,8 @@ function usage(value: unknown): ResultChunk['tokens'] {
 function agyResult(
   body: Record<string, unknown>,
   model: string | undefined,
-  sawTool: boolean
+  sawTool: boolean,
+  errorSteps: number
 ): ResultChunk {
   const text = string(body.response);
   const structuredOutput = body.structured_output;
@@ -161,11 +167,21 @@ function agyResult(
       });
     return {
       ...result,
-      ...failure(unserved ? 'transient' : 'unknown', `agy 结果状态 ${status ?? '未知'}`),
+      ...failure(
+        unserved ? 'transient' : 'unknown',
+        `agy 结果状态 ${status ?? '未知'}`,
+        unserved && status === 'ERROR' && errorSteps > 0 ? errorSteps : undefined
+      ),
     };
   }
   if (!text?.trim() && structuredOutput == null)
-    return { ...result, ...failure('transient', 'agy 未产生输出') };
+    return {
+      ...result,
+      ...failure(
+        sawTool ? 'unknown' : 'transient',
+        `agy 未产生输出${sawTool ? '（已有工具活动）' : ''}`
+      ),
+    };
   return { ...result, text, structuredOutput };
 }
 
@@ -211,6 +227,8 @@ async function* runAgy(
   else signal?.addEventListener('abort', stop, { once: true });
   const text = new Map<number, string>();
   const tools = new Map<number, 'active' | 'done'>();
+  const failedTools = new Set<string>();
+  const errorSteps = new Set<number>();
   let sawTool = false;
   let model: string | undefined;
   let terminal: Record<string, unknown> | undefined;
@@ -247,6 +265,7 @@ async function* runAgy(
       sawTool ||= body.step_type === 'tool';
       const index = count(body.step_index);
       if (index === undefined) continue;
+      if (body.step_type === 'error_message' && body.state === 'DONE') errorSteps.add(index);
       if (body.step_type === 'agent_response') {
         const block = (text.get(index) ?? '') + (string(body.text_delta) ?? '');
         if (body.state === 'ACTIVE') text.set(index, block);
@@ -274,6 +293,7 @@ async function* runAgy(
       if (active) continue;
       // agy 把 hook 拒绝也报告为普通 TOOL_ERROR，且可能以 SUCCESS 退出。
       const failed = body.state !== 'DONE' || info?.error != null;
+      if (failed) failedTools.add(toolCallId);
       if (tools.get(index) !== 'active') continue;
       tools.set(index, 'done');
       const value = info?.output ?? object(info?.error)?.message;
@@ -289,20 +309,19 @@ async function* runAgy(
     const code = await child.exited;
     finished = true;
     signal?.throwIfAborted();
-    result = terminal
-      ? agyResult(terminal, model, sawTool)
-      : failure('transient', 'agy 未收到结果');
     const abnormalExit = code !== 0 || child.signalCode;
+    const incomplete = (evidence: string): ResultChunk =>
+      failure(sawTool ? 'unknown' : 'transient', `${evidence}${sawTool ? '，已有工具活动' : ''}`);
+    result = terminal
+      ? agyResult(terminal, model, sawTool, errorSteps.size)
+      : incomplete('agy 未收到结果');
     // 缺少结构化用量的旧回执沿用退出码规则，已观察到工具步骤则保留终态分类。
     if (
       abnormalExit &&
       (!terminal || terminal.status === 'SUCCESS' || (!sawTool && terminal.usage === undefined))
     )
-      Object.assign(
-        result,
-        failure('transient', `agy 进程异常退出（${String(child.signalCode ?? code)}）`)
-      );
-    else if (invalid) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
+      Object.assign(result, incomplete(`agy 进程异常退出（${String(child.signalCode ?? code)}）`));
+    else if (invalid && terminal) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
   } finally {
@@ -320,7 +339,15 @@ async function* runAgy(
   for (const [index, state] of tools)
     if (state === 'active')
       yield { type: 'tool_call_update', toolCallId: String(index), status: 'cancelled' };
-  if (!result.isError) restoreNulls(result.structuredOutput, object(options?.outputFormat?.schema));
+  if (!result.isError) {
+    restoreNulls(result.structuredOutput, object(options?.outputFormat?.schema));
+    if (failedTools.size)
+      yield {
+        type: 'warning',
+        code: 'superagent.agy_tool_failure',
+        message: JSON.stringify({ toolCallIds: [...failedTools] }),
+      };
+  }
   yield result.isError ? { ...result, text: undefined, structuredOutput: undefined } : result;
   yield { type: 'settled' };
 }
