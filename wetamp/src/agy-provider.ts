@@ -132,7 +132,11 @@ function usage(value: unknown): ResultChunk['tokens'] {
   };
 }
 
-function agyResult(body: Record<string, unknown>, model?: string): ResultChunk {
+function agyResult(
+  body: Record<string, unknown>,
+  model: string | undefined,
+  sawTool: boolean
+): ResultChunk {
   const text = string(body.response);
   const structuredOutput = body.structured_output;
   const result: ResultChunk = {
@@ -146,7 +150,19 @@ function agyResult(body: Record<string, unknown>, model?: string): ResultChunk {
     const status = ['ERROR', 'CANCELED', 'INTERRUPTED', 'INVALID', 'WAITING', 'RUNNING'].find(
       status => status === body.status
     );
-    return { ...result, ...failure('unknown', `agy 结果状态 ${status ?? '未知'}`) };
+    const reported = object(body.usage);
+    const unserved =
+      status &&
+      !sawTool &&
+      reported &&
+      ['input', 'output', 'thinking', 'cache_read', 'total'].every(field => {
+        const tokens = reported[`${field}_tokens`];
+        return tokens === undefined || tokens === 0;
+      });
+    return {
+      ...result,
+      ...failure(unserved ? 'transient' : 'unknown', `agy 结果状态 ${status ?? '未知'}`),
+    };
   }
   if (!text?.trim() && structuredOutput == null)
     return { ...result, ...failure('transient', 'agy 未产生输出') };
@@ -165,13 +181,25 @@ async function* runAgy(
   const redact = (text: string) => redactCredentialValues(text, secrets);
   let child;
   try {
-    child = Bun.spawn([executable, ...args], { cwd, env, detached: true, stderr: 'ignore' });
+    child = Bun.spawn([executable, ...args], { cwd, env, detached: true, stderr: 'pipe' });
   } catch {
     yield failure('misconfigured', '无法启动 agy');
     yield { type: 'settled' };
     return;
   }
   const lines = createInterface({ input: Readable.from(child.stdout), crlfDelay: Infinity });
+  const diagnostics = createInterface({ input: Readable.from(child.stderr), crlfDelay: Infinity });
+  let errorId: string | undefined;
+  const readDiagnostics = (async () => {
+    for await (const line of diagnostics) {
+      if (!line.startsWith('AGY_ERROR: ')) continue;
+      try {
+        errorId = string(object(JSON.parse(line.slice('AGY_ERROR: '.length)))?.error_id) ?? errorId;
+      } catch {
+        // stderr 只补充诊断，分类由 stdout 事件和退出状态决定。
+      }
+    }
+  })().catch(() => undefined);
   let finished = false;
   let stopping: Promise<void> | undefined;
   const stop = () => {
@@ -183,6 +211,7 @@ async function* runAgy(
   else signal?.addEventListener('abort', stop, { once: true });
   const text = new Map<number, string>();
   const tools = new Map<number, 'active' | 'done'>();
+  let sawTool = false;
   let model: string | undefined;
   let terminal: Record<string, unknown> | undefined;
   let invalid = false;
@@ -215,6 +244,7 @@ async function* runAgy(
       if (event?.event === 'init') model = string(body.model);
       if (event?.event === 'result') terminal = body;
       if (event?.event !== 'step_update') continue;
+      sawTool ||= body.step_type === 'tool';
       const index = count(body.step_index);
       if (index === undefined) continue;
       if (body.step_type === 'agent_response') {
@@ -259,8 +289,15 @@ async function* runAgy(
     const code = await child.exited;
     finished = true;
     signal?.throwIfAborted();
-    result = terminal ? agyResult(terminal, model) : failure('transient', 'agy 未收到结果');
-    if (code !== 0 || child.signalCode)
+    result = terminal
+      ? agyResult(terminal, model, sawTool)
+      : failure('transient', 'agy 未收到结果');
+    const abnormalExit = code !== 0 || child.signalCode;
+    // 缺少结构化用量的旧回执沿用退出码规则，已观察到工具步骤则保留终态分类。
+    if (
+      abnormalExit &&
+      (!terminal || terminal.status === 'SUCCESS' || (!sawTool && terminal.usage === undefined))
+    )
       Object.assign(
         result,
         failure('transient', `agy 进程异常退出（${String(child.signalCode ?? code)}）`)
@@ -268,15 +305,18 @@ async function* runAgy(
     else if (invalid) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
-    const detail = string(terminal?.error)?.trim();
-    if (result.failure && detail) result.failure.evidence += `：${detail.slice(0, 1000)}`;
   } finally {
     signal?.removeEventListener('abort', stop);
     lines.close();
     if (!finished) stop();
     await stopping;
     await child.exited;
+    await readDiagnostics;
   }
+  const detail = string(terminal?.error)?.trim();
+  if (result.failure && errorId)
+    result.failure.evidence += `（error_id: ${redact(errorId).slice(0, 128)}）`;
+  if (result.failure && detail) result.failure.evidence += `：${detail.slice(0, 1000)}`;
   for (const [index, state] of tools)
     if (state === 'active')
       yield { type: 'tool_call_update', toolCallId: String(index), status: 'cancelled' };

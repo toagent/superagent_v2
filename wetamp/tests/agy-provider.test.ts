@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getRegistration } from '@archon/providers';
+import { executePolicy } from '@archon/workflows/policy-dispatch';
 import { providerChunkSchema } from '../../packages/provider-contract/src';
 import { createAgyProvider } from '../src/agy-provider';
 import { loadTiers, snapshotPolicy } from '../src/config';
@@ -214,6 +215,44 @@ test('没有输出、空回执、非成功状态、坏行、非零退出或工�
     type: 'result',
     failure: { class: 'misconfigured', evidence: '找不到 agy 可执行文件' },
   });
+});
+
+// prettier-ignore
+test('503 实录报告状态和 error_id，并经真实策略切换到 Codex', async () => {
+  const f = fixture(), provider = createAgyProvider({ executable: f.executable });
+  const env = { ...f.env, FIXTURE_STREAM: join(fixtures, 'outage.ndjson'), FIXTURE_STDERR: join(fixtures, 'outage.stderr'), FIXTURE_EXIT: '3' };
+  const candidates = [{ provider: 'agy', model }, { provider: 'codex', model: 'fixture-codex' }] as const;
+  const artifacts = tmp();
+  const chunks = await collect(executePolicy({
+    node: 'code-core', candidates: [...candidates], artifacts, budget: { weighted_tokens: 0, unlimited_tokens: true },
+    usage: () => ({ launches: 0, weighted_tokens: 0, reserve: 0 }), provider: 'agy',
+    sendQuery: provider.sendQuery, options: candidate => ({ model: candidate.model, env }),
+    sendQueryFor: () => async function* () { yield { type: 'result', text: 'Codex 接手' }; yield { type: 'settled' }; },
+    async onSettled(_attempt, failure) {
+      if (failure) expect(failure).toMatchObject({ class: 'transient', evidence: expect.stringMatching(/ERROR.*c2bb91fe-4aee-4b6e-a17b-12c6ef224f95-9/) });
+      return undefined;
+    },
+  }, '检查', f.cwd));
+  expect(chunks.at(-2)).toMatchObject({ text: 'Codex 接手' });
+  expect(readPolicyAttempts(artifacts).map(a => [a.provider, a.failure])).toEqual([['agy', 'transient'], ['codex', undefined]]);
+});
+
+// prettier-ignore
+test('非成功终态按用量和原始工具步骤分类', async () => {
+  const f = fixture(), provider = createAgyProvider({ executable: f.executable });
+  for (const [usage, tool, exit, expected] of [
+    [{ thinking_tokens: 1 }, false, '3', 'unknown'],
+    [{ cache_read_tokens: 1 }, false, '0', 'unknown'],
+    [{ input_tokens: null }, false, '3', 'unknown'],
+    [{}, true, '3', 'unknown'],
+    [{}, false, '0', 'transient'],
+  ] as const) {
+    const terminal = JSON.stringify({ event: 'result', result: { status: 'ERROR', usage } });
+    const step = '{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE"}}';
+    writeFileSync(f.output, tool ? `${step}\n${terminal}` : terminal);
+    const chunks = await collect(provider.sendQuery('检查', f.cwd, undefined, { model, env: { ...f.env, FIXTURE_EXIT: exit } }));
+    expect(chunks.at(-2)).toMatchObject({ failure: { class: expected } });
+  }
 });
 
 test('CLI 回显的受保护值在文本和结构化回执中脱敏', async () => {
