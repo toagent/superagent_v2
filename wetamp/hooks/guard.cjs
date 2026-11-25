@@ -383,6 +383,8 @@ function agyReadReason(file, cwd, env) {
   return '无法完成文件秘密扫描';
 }
 const isAcpToolUse = payload => payload?.hookEventName === undefined && Boolean(payload?.toolCall);
+const agyCwd = (payload, acp) =>
+  !acp && typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
 async function decideAgy(payload, env = process.env) {
   const acp = isAcpToolUse(payload);
   // ACP PreInvocation has no toolCall and does not supply lastUserInput for secret scanning.
@@ -395,8 +397,7 @@ async function decideAgy(payload, env = process.env) {
   }
   if (!acp && payload?.hookEventName !== 'PreToolUse') return {};
   const { name, args = {} } = payload.toolCall || {};
-  const cwd =
-    !acp && typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+  const cwd = agyCwd(payload, acp);
   const command = name === 'run_command';
   const shell = command && typeof args?.CommandLine === 'string' ? args.CommandLine : undefined;
   if (command && shell === undefined)
@@ -449,7 +450,22 @@ if (require.main === module)
             }, () => 'commander');
           }
         } catch {}
-        process.stdout.write(JSON.stringify(await decideAgy(payload)) + '\n');
+        let result = await decideAgy(payload);
+        if (result.decision === 'allow') {
+          try {
+            const id = payload.conversationId,
+              cwd = agyCwd(payload, isAcpToolUse(payload));
+            if (typeof id === 'string' && id.trim() &&
+                sessionRole({ ...payload, cwd }, client) === 'commander') {
+              const reason = require('./context-advisory.cjs').agyRollover(
+                { session_id: id, transcript_path: payload.transcriptPath },
+                process.env
+              );
+              if (reason) result = { decision: 'deny', reason };
+            }
+          } catch {} // Advisory failures preserve the original agy decision and overwrite.
+        }
+        process.stdout.write(JSON.stringify(result) + '\n');
         return;
       }
       let inbox = [];

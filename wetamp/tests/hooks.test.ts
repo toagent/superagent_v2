@@ -264,6 +264,70 @@ test('agy hooks record terminal and ACP identities without recording generals as
   }
 });
 
+test('Neon 换会话提醒按会话节流并保留原护栏判定', () => {
+  const home = tmp();
+  const env = {
+    HOME: home,
+    SUPERAGENT_HOME: home,
+    SA_SECRET_SCAN_MODULE: '',
+    ORCA_AGENT_SESSION_ID: 'orca',
+  };
+  const allow = { decision: 'allow' };
+  const rollover = {
+    decision: 'deny',
+    reason: expect.stringContaining('superagent rollover start'),
+  };
+  const pushDenied = { decision: 'deny', reason: expect.stringContaining('push') };
+  const call = (acp: boolean, id: string, tokens: number, command = 'echo ok', role = '') => {
+    const log = join(home, 'brain', id, '.system_generated/logs/transcript_full.jsonl');
+    mkdirSync(join(log, '..'), { recursive: true });
+    const usage = { type: 'PLANNER_RESPONSE', input_tokens: tokens - 100, cache_read_tokens: 100 };
+    writeFileSync(log, JSON.stringify(usage));
+    const payload = {
+      ...(acp ? {} : { hookEventName: 'PreToolUse', cwd: home }),
+      conversationId: id,
+      transcriptPath: acp ? join(home, 'conversations', id + '.db') : log,
+      toolCall: { name: 'run_command', args: { CommandLine: command, Cwd: home } },
+    };
+    const roleEnv = { ...env, SUPERAGENT_ROLE: role };
+    return run('guard.cjs', 'agy', payload, roleEnv, HOOKS, 0, home);
+  };
+  for (const acp of [false, true]) {
+    const id = acp ? 'acp' : 'terminal';
+    expect(call(acp, id, 524288)).toEqual(allow);
+    expect(call(acp, id, 786432, 'echo ok', 'general')).toEqual(allow);
+    expect(call(acp, id, 786432, 'git push --force')).toMatchObject(pushDenied);
+    expect(call(acp, id, 786432)).toEqual(rollover);
+    expect(call(acp, id, 786432)).toEqual(allow);
+    expect(call(acp, id, 780000)).toEqual(allow);
+    expect(call(acp, id, 891289)).toEqual(rollover);
+    expect(call(acp, id, 524288)).toEqual(allow);
+    expect(call(acp, id, 786432)).toEqual(rollover);
+  }
+  const state = join(
+    home,
+    'hooks/context-advisory',
+    createHash('sha256').update('acp').digest('hex') + '.json'
+  );
+  writeFileSync(state, '{');
+  expect(call(true, 'acp', 900000)).toEqual(allow);
+  const records = join(home, 'coord/rollovers');
+  mkdirSync(records, { recursive: true });
+  const accepted = {
+    state: 'accepted',
+    from: { client: 'agy', session_id: 'acp' },
+    to: { client: 'agy', session_id: 'new' },
+    accepted_at: '2026-11-25T02:00:00Z',
+    token: 'a'.repeat(32),
+  };
+  writeFileSync(join(records, 'accepted.json'), JSON.stringify(accepted));
+  expect(call(true, 'acp', 524288)).toEqual({
+    decision: 'deny',
+    reason: expect.stringContaining('立即停止写入'),
+  });
+  expect(call(true, 'acp', 900000, 'git push --force')).toMatchObject(pushDenied);
+});
+
 test('Orca ACP 只作为控制台识别', () => {
   const live = createRequire(import.meta.url)('../hooks/live.cjs') as {
     cliOf: (argv: string[], controller: boolean) => unknown;

@@ -55,6 +55,28 @@ test.each([false, true])('agy rollover retains identity and reads the source tra
 });
 
 // prettier-ignore
+test('Neon rollover start accepts measured usage above 70% without --user', async () => {
+  for (const acp of [false, true]) {
+    const s = agyFixture(acp);
+    const file = acp ? join(s.root, 'conversations/old.db') : join(s.root, 'terminal.jsonl');
+    const log = acp ? join(s.root, 'brain/old/.system_generated/logs/transcript_full.jsonl') : file;
+    mkdirSync(join(log, '..'), { recursive: true });
+    writeFileSync(join(s.sa, 'live/a.json'), JSON.stringify({
+      ...agy, transcript_path: file, orca_session_id: 'orca-source',
+    }));
+    const write = (input_tokens: number) => writeFileSync(log, JSON.stringify({
+      type: 'PLANNER_RESPONSE', input_tokens, cache_read_tokens: 300000,
+    }));
+    write(380000);
+    await expect(s.r.start()).rejects.toThrow('仅用户明确要求');
+    expect(s.taskCalls).toHaveLength(0);
+    write(450000);
+    expect(await s.r.start()).toMatchObject({ state: 'pending' });
+    expect(s.launchCalls).toHaveLength(1);
+  }
+});
+
+// prettier-ignore
 test('agy supervision rejects before handoff and before accept can lock or transfer', async () => {
   const s = agyFixture();
   s.c.claim(repoScope(s.repo), agy);

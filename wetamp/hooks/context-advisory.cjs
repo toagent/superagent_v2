@@ -5,9 +5,21 @@ const fs = require('node:fs'),
   path = require('node:path'),
   crypto = require('node:crypto');
 const LIMIT = 256 * 1024;
+// Neon agy statusLine reports context_window.context_window_size:
+// https://antigravity.google/docs/cli/statusline
+const AGY_WINDOW = 1048576;
 function recentUsage(file, client = 'claude') {
   let fd;
   try {
+    if (client === 'agy' && path.extname(file) === '.db') {
+      const conversations = path.dirname(file),
+        id = path.basename(file, '.db');
+      if (path.basename(conversations) !== 'conversations' || !id || id === '.' || id === '..')
+        return null;
+      file = path.join(
+        path.dirname(conversations), 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl'
+      );
+    }
     fd = fs.openSync(file, 'r');
     const size = fs.fstatSync(fd).size,
       start = Math.max(0, size - LIMIT);
@@ -21,6 +33,14 @@ function recentUsage(file, client = 'claude') {
         event = JSON.parse(lines[i]);
       } catch {
         continue;
+      }
+      if (client === 'agy') {
+        if (event?.type !== 'PLANNER_RESPONSE') continue;
+        const { input_tokens, cache_read_tokens } = event;
+        const tokens = input_tokens + cache_read_tokens;
+        return [input_tokens, cache_read_tokens, tokens].every(n => Number.isSafeInteger(n) && n >= 0)
+          ? { tokens, window: AGY_WINDOW }
+          : null;
       }
       if (client === 'codex') {
         const info = event.payload?.type === 'token_count' ? event.payload.info : null,
@@ -73,12 +93,14 @@ function contextLimits(role, client, reportedWindow, env = process.env, policy) 
       rollover: Number.isSafeInteger(oldRollover) && oldRollover > 0 ? oldRollover : null,
       window: null,
     };
-  let window = reportedWindow;
+  let window = client === 'agy' ? AGY_WINDOW : reportedWindow;
   if (client === 'claude') window = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 200000);
   if (!Number.isSafeInteger(window) || window <= 0)
     return { ...fallback, advisoryStep: 40000, rolloverStep: 100000 };
   let compact = window * 0.7;
-  if (client === 'claude') {
+  if (client === 'agy') {
+    compact = window;
+  } else if (client === 'claude') {
     const percent = Number(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE || 95);
     compact = window * (Number.isFinite(percent) && percent > 0 ? percent / 100 : 0.95);
   } else
@@ -173,6 +195,35 @@ function rolloverNotice(input, client, env = process.env) {
   } catch {}
   return null;
 }
+function advisoryFile(input, env) {
+  const home = env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent'),
+    key = crypto
+      .createHash('sha256')
+      .update(String(input.session_id || input.transcript_path))
+      .digest('hex');
+  return path.join(home, 'hooks', 'context-advisory', `${key}.json`);
+}
+function agyRollover(input, env) {
+  const notice = rolloverNotice(input, 'agy', env);
+  if (notice) return notice;
+  const usage = recentUsage(input.transcript_path, 'agy');
+  if (!usage) return null;
+  const { rollover, rolloverStep, window } = contextLimits('commander', 'agy', usage.window, env);
+  if (rollover === null) return null;
+  return require('./hook-state.cjs').withState(advisoryFile(input, env), state => {
+    if (usage.tokens <= rollover) {
+      delete state.rollover_at;
+      return null;
+    }
+    // Keep the last reminder while usage fluctuates above the line.
+    if (Number.isSafeInteger(state.rollover_at) && usage.tokens < state.rollover_at + rolloverStep)
+      return null;
+    // agy has no non-interrupting advisory channel. PreToolUse can only deliver a denial reason.
+    const result = advise(input, usage.tokens, state, false, Infinity, rollover, env, 0, rolloverStep, window);
+    state.rollover_at = result.state.rollover_at;
+    return result.messages[0] ?? null;
+  });
+}
 function main(input, client = 'claude') {
   let inbox = [];
   try {
@@ -189,13 +240,7 @@ function main(input, client = 'claude') {
   if (['UserPromptSubmit', 'PreToolUse'].includes(input?.hook_event_name))
     try {
       const usage = recentUsage(input.transcript_path, client),
-        home =
-          process.env.SUPERAGENT_HOME || path.join(require('node:os').homedir(), '.superagent'),
-        key = crypto
-          .createHash('sha256')
-          .update(String(input.session_id || input.transcript_path))
-          .digest('hex'),
-        file = path.join(home, 'hooks', 'context-advisory', `${key}.json`),
+        file = advisoryFile(input, process.env),
         role = require('./guard.cjs').sessionRole(input, client);
       if (usage !== null)
         advisory = require('./hook-state.cjs').withState(file, state =>
@@ -236,4 +281,4 @@ if (require.main === module) {
   } catch {}
   // Never emit a denial or a nonzero status, even if state/transcript I/O fails.
 }
-module.exports = { recentUsage, advise, main, roleLimit, contextLimits, rolloverNotice, LIMIT };
+module.exports = { recentUsage, advise, main, roleLimit, contextLimits, rolloverNotice, agyRollover, LIMIT };

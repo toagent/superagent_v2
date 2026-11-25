@@ -65,6 +65,36 @@ test('finds the latest Codex token count before trailing rollout events', () => 
   expect(advisory.recentUsage(file, 'codex')).toEqual({ tokens: 200, window: 380000 });
 });
 
+test('reads the latest Neon usage from terminal and ACP transcripts', () => {
+  const root = tmp(),
+    acp = join(root, 'brain/old/.system_generated/logs'),
+    db = join(root, 'conversations/old.db');
+  mkdirSync(acp, { recursive: true });
+  mkdirSync(join(db, '..'), { recursive: true });
+  writeFileSync(db, 'placeholder');
+  const planner = (input_tokens: number, cache_read_tokens: number) => ({
+    type: 'PLANNER_RESPONSE',
+    input_tokens,
+    cache_read_tokens,
+    output_tokens: 100,
+  });
+  for (const [file, input] of [
+    [join(root, 'terminal.jsonl'), join(root, 'terminal.jsonl')],
+    [join(acp, 'transcript_full.jsonl'), db],
+  ]) {
+    const other = { type: 'USER_INPUT', input_tokens: 900000, content: '占位' };
+    writeFileSync(
+      file,
+      [planner(20, 0), planner(10, 30), other].map(row => JSON.stringify(row)).join('\n')
+    );
+    expect(advisory.recentUsage(input, 'agy')).toEqual({ tokens: 40, window: 1048576 });
+    writeFileSync(file, JSON.stringify(planner(0, 0)));
+    expect(advisory.recentUsage(input, 'agy')).toEqual({ tokens: 0, window: 1048576 });
+    writeFileSync(file, JSON.stringify(other));
+    expect(advisory.recentUsage(input, 'agy')).toBeNull();
+  }
+});
+
 test('derives client limits and falls back to absolute thresholds without a window', () => {
   const root = tmp();
   mkdirSync(root, { recursive: true });

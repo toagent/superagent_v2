@@ -233,8 +233,8 @@ export class Rollover {
     }
     this.checkAgySupervision(from);
     const transcript = this.transcript(from),
-      usage = from.client === 'agy' ? null : context.recentUsage(transcript.path, from.client),
-      line = from.client === 'agy' ? null : context.contextLimits('commander', from.client, usage?.window ?? null, this.d.env).rollover,
+      usage = context.recentUsage(transcript.path, from.client),
+      line = context.contextLimits('commander', from.client, usage?.window ?? null, this.d.env).rollover,
       explicit = user?.trim();
     if (!explicit && (usage === null || line === null || usage.tokens < line))
       throw new Error(`rollover: 当前用量 ${usage ? String(usage.tokens) : 'unknown'}，换会话线 ${line === null ? 'unknown' : String(line)}；仅用户明确要求时可用 --user "<用户原话>" 放行`);
