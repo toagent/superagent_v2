@@ -83,7 +83,7 @@ test('activity discovery reuses ps and remote results within their TTLs', async 
   const root = tmp(),
     home = join(root, 'home'),
     bin = join(root, 'twin'),
-    seen: string[] = [];
+    seen: string[][] = [];
   const saved = { home: process.env.SUPERAGENT_HOME, twin: process.env.TWIN_AGENT_QUEUE_CLIENT };
   mkdirSync(home, { recursive: true });
   writeFileSync(bin, '#!/bin/sh\necho "[]"\n');
@@ -93,12 +93,22 @@ test('activity discovery reuses ps and remote results within their TTLs', async 
     process.env.SUPERAGENT_HOME = home;
     process.env.TWIN_AGENT_QUEUE_CLIENT = bin;
     Bun.spawn = ((cmd, options) => {
-      if (Array.isArray(cmd) && (cmd[0] === 'ps' || cmd[0] === bin)) seen.push(cmd[0]);
+      if (Array.isArray(cmd) && (cmd[0] === 'ps' || cmd[0] === bin)) seen.push([...cmd]);
       return spawn(cmd, options);
     }) as typeof Bun.spawn;
     await loadActivity(Date.now());
+    const firstCount = seen.length;
+    expect(seen.filter(c => c[0] === 'ps' && c[1] === '-axo')).toHaveLength(1);
+    expect(seen.filter(c => c[0] === bin)).toHaveLength(1);
+    expect(
+      seen.every(
+        c =>
+          c[0] === bin ||
+          (c[0] === 'ps' && (c[1] === '-axo' || (c[1] === '-p' && c.includes('pid=,comm='))))
+      )
+    ).toBe(true);
     await loadActivity(Date.now());
-    expect(seen).toEqual(['ps', bin]);
+    expect(seen).toHaveLength(firstCount);
   } finally {
     Bun.spawn = spawn;
     for (const [key, value] of Object.entries(saved)) {
