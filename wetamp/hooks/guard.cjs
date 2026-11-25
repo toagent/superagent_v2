@@ -389,6 +389,8 @@ function agyReadReason(file, cwd, env) {
 const isAcpToolUse = payload => payload?.hookEventName === undefined && Boolean(payload?.toolCall);
 const agyCwd = (payload, acp) =>
   !acp && typeof payload?.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+const agyWorkdir = (cwd, input) =>
+  typeof input?.Cwd === 'string' ? path.resolve(cwd, redline.agyPath(input.Cwd)) : cwd;
 const AGY_WRITES = new Set(['write_file', 'write_to_file', 'create_file']);
 const AGY_EDITS = new Set(['edit_file', 'replace_file_content', 'multi_replace_file_content']);
 function agyEdit(payload) {
@@ -420,7 +422,12 @@ async function decideAgy(payload, env = process.env) {
   const shell = command && typeof args?.CommandLine === 'string' ? args.CommandLine : undefined;
   if (command && shell === undefined)
     return { decision: 'deny', reason: redline.message('执行终端命令', '无法识别终端命令参数', '使用字符串类型的 CommandLine 后重试') };
-  const workdir = command && typeof args?.Cwd === 'string' ? path.resolve(cwd, args.Cwd) : cwd;
+  let workdir = cwd;
+  try {
+    if (command) workdir = agyWorkdir(cwd, args);
+  } catch {
+    return { decision: 'deny', reason: redline.message('执行终端命令', '无法识别工作目录 URI', '使用有效的文件系统路径') };
+  }
   if (shell) await redline.init();
   const reason = redline.reason({
     client: 'agy', name, cwd, root: shell ? gitRoot(acp ? workdir : cwd) : null,
@@ -457,17 +464,33 @@ const agyNotice = text => ({
   decision: 'deny',
   reason: `SUPERAGENT 通知（非错误）：\n${text}\n处理后或与本步无关时原样重试本次调用`,
 });
+function agyRemediatesWait(shell) {
+  if (typeof shell !== 'string' || !shell) return false;
+  try {
+    return parse(shell).argvs.some(([command, subcommand, ...args]) =>
+      path.basename(command) === 'superagent' &&
+      ((subcommand === 'wait' && args[0] && !args[0].startsWith('-')) ||
+        (subcommand === 'inbox' && args.includes('--wait')))
+    );
+  } catch {
+    return false;
+  }
+}
 function agyNotifications(payload, who, env) {
   const context = require('./context-advisory.cjs');
   const handoff = context.rolloverNotice(payload, 'agy', env);
   if (handoff) return agyNotice(handoff);
   const coord = require('./coord.cjs');
-  const waiter = stopGate.waiterGate(payload, 'agy', { rootPid: who?.pid ?? undefined });
+  const { tool_name: name, tool_input: input } = payload;
+  const shell = name === 'run_command' ? input.CommandLine : undefined;
+  const waiter = stopGate.waiterGate(payload, 'agy', {
+    rootPid: who?.pid ?? undefined,
+    remediatesWait: agyRemediatesWait(shell),
+  });
   const inbox = (waiter?.responsibilities ?? []).map(item => ({ type: 'responsibility', item }));
   try {
     if (who) inbox.push(...coord.unread(saHome(env), who, [], env.ARCHON_HOME));
   } catch {}
-  const { tool_name: name, tool_input: input } = payload;
   const dispatchNotice = dispatch.contextReason('agy', name, input, dispatch.contextPolicy(policy.dispatch_context));
   const pending = [...(waiter?.notices ?? []), dispatchNotice].filter(Boolean);
   let notices = [];
@@ -484,10 +507,8 @@ function agyNotifications(payload, who, env) {
     if (advisory) notices.push(advisory);
   } catch {}
   if (notices.length) return agyNotice(notices.join('\n'));
-  const shell = name === 'run_command' ? input.CommandLine : undefined;
   if (shell === undefined && !AGY_WRITES.has(name) && !AGY_EDITS.has(name)) return null;
-  const cwd = shell !== undefined && typeof input.Cwd === 'string'
-    ? path.resolve(payload.cwd, input.Cwd) : payload.cwd;
+  const cwd = shell === undefined ? payload.cwd : agyWorkdir(payload.cwd, input);
   const write = commanderWrite({ ...payload, cwd }, 'agy', env, shell);
   if (write?.notified || (write && withState(stateFile(payload, env), state =>
     markNotice(state, write.systemMessage)))) return agyNotice(write.systemMessage);

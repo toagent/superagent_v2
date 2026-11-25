@@ -50,7 +50,7 @@ const AGY_ACP_PATH_FIELDS = new Map([
   ['create_file', 'TargetFile'],
   ['edit_file', 'TargetFile'],
 ]);
-const agyPath = value => typeof value === 'string' && /^file:\/\//i.test(value)
+const agyPath = value => typeof value === 'string' && /^file:/i.test(value)
   ? fileURLToPath(value)
   : value;
 const expand = (word, env) =>

@@ -197,6 +197,18 @@ test('Orca ACP 回放执行隐私与终端护栏，命令可带遮蔽前缀重�
   writeFileSync(join(cwd, 'ordinary.txt'), 'ok');
   expect(call(view, { AbsolutePath: 'ordinary.txt' })).toEqual(allow);
   expect(call(view, { AbsolutePath: secret })).toEqual(deny);
+  for (const AbsolutePath of [`file:${secret}`, pathToFileURL(secret).href])
+    expect(call(view, { AbsolutePath })).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringContaining('ssh 私钥'),
+    });
+  expect(call(view, { AbsolutePath: 'file:/invalid%ZZ' })).toMatchObject({
+    decision: 'deny',
+    reason: expect.stringContaining('无法识别文件 URI'),
+  });
+  expect(call(view, { AbsolutePath: pathToFileURL(join(cwd, 'ordinary.txt')).href })).toEqual(
+    allow
+  );
   expect(
     call('pretooluse-3-create_file', { TargetFile: 'ordinary.txt', CodeContent: '_private' })
   ).toEqual(allow);
@@ -348,8 +360,12 @@ test('Neon 通知交接与缺失等待，同一内容只提示一次', () => {
     DATABASE_URL: '',
     SA_SECRET_SCAN_MODULE: '',
   };
-  const payload = { conversationId: session, toolCall: { name: 'finish' } };
-  const call = () => run('guard.cjs', 'agy', payload, env, HOOKS, 0, home);
+  const call = (CommandLine?: string) => {
+    const toolCall = CommandLine
+      ? { name: 'run_command', args: { CommandLine } }
+      : { name: 'finish' };
+    return run('guard.cjs', 'agy', { conversationId: session, toolCall }, env, HOOKS, 0, home);
+  };
   expect(call()).toEqual({ decision: 'allow' });
   const heartbeat = join(home, 'live', readdirSync(join(home, 'live'))[0]);
   const owner = JSON.parse(readFileSync(heartbeat, 'utf8'));
@@ -378,7 +394,9 @@ test('Neon 通知交接与缺失等待，同一内容只提示一次', () => {
     "CREATE TABLE remote_agent_workflow_runs (id TEXT, status TEXT); INSERT INTO remote_agent_workflow_runs VALUES ('archon-wait', 'running')"
   );
   db.close();
-  expect(call()?.reason).toContain('superagent wait run-wait --timeout 3000');
+  const wait = 'superagent wait run-wait --timeout 3000';
+  expect(call(wait)).toEqual({ decision: 'allow' });
+  expect(call(`echo '${wait}'`)?.reason).toContain(wait);
   expect(call()).toEqual({ decision: 'allow' });
 
   mkdirSync(join(home, 'ntfy'));
@@ -396,7 +414,16 @@ test('Neon 通知交接与缺失等待，同一内容只提示一次', () => {
       },
     })
   );
-  expect(call()?.reason).toContain('superagent inbox --wait --timeout 3000');
+  const inboxWait = 'superagent inbox --wait --timeout 3000';
+  const duty = { id: 'fixture-duty', kind: 'ask', waiting_for: '待处理', next: '继续' };
+  const marshals = [{ owner, waiting: [duty] }];
+  writeFileSync(join(home, 'heartbeat.json'), JSON.stringify({ marshals }));
+  expect(call(inboxWait)).toEqual({
+    decision: 'deny',
+    reason: expect.stringContaining('需要处理 1 项：fixture-duty'),
+  });
+  expect(call(inboxWait)).toEqual({ decision: 'allow' });
+  expect(call()?.reason).toContain(inboxWait);
   expect(call()).toEqual({ decision: 'allow' });
 }, 30_000);
 
@@ -487,8 +514,14 @@ test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
       reason: expect.stringMatching(/^已拦截：.+。原因：.+。可以：.+。$/),
     });
   }
-  expect(call('run_command', { CommandLine: 'cat .ssh/id_ed25519', Cwd: home })).toMatchObject({
+  for (const Cwd of [home, `file:${home}`])
+    expect(call('run_command', { CommandLine: 'cat .ssh/id_ed25519', Cwd })).toMatchObject({
+      decision: 'deny',
+      reason: expect.stringContaining('ssh 私钥'),
+    });
+  expect(call('run_command', { CommandLine: 'echo ok', Cwd: 'file:/invalid%ZZ' })).toMatchObject({
     decision: 'deny',
+    reason: expect.stringContaining('无法识别工作目录 URI'),
   });
   expect(call('run_command', { CommandLine: 'rm -rf .', Cwd: '' })).toMatchObject({
     decision: 'deny',

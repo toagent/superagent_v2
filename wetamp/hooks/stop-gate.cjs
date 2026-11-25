@@ -48,6 +48,7 @@ function waiterGate(payload, client, deps = {}) {
       return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
     };
     if (duty) return output(duty);
+    if (neon && deps.remediatesWait) return output();
     const runs = waiting ? (waiting.runs ?? []) : deps.runs
       ? deps.runs(payload.session_id)
       : JSON.parse(
