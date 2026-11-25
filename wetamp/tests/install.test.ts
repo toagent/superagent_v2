@@ -270,8 +270,10 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
   const V1 = (h: string, f: string): string =>
     `node '${join(h, 'work/github/superagent/hooks', f)}'`;
   const V2 = (f: string): string => `node '${join(WETAMP, 'hooks', f)}'`;
-  function sandbox(): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
-    const home = tmp();
+  function sandbox(
+    home = tmp(),
+    scratch = tmpdir()
+  ): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
     stableInstall(home);
     mkdirSync(join(home, '.gemini'));
     rmSync(join(home, 'stable-engine/wetamp/hooks/git-guardrail.cjs'));
@@ -288,6 +290,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
         env: {
           ...process.env,
           ...hookFixtureEnv(home),
+          TMPDIR: scratch,
           SUPERAGENT_HOME: join(home, '.superagent'),
           CLAUDE_CONFIG_DIR: '',
           CODEX_HOME: '',
@@ -304,6 +307,25 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     };
     return { home, sh };
   }
+
+  test('--hooks installs into a fixture HOME under the account TMPDIR', () => {
+    const account = Bun.spawnSync(['node', '-p', 'require("node:os").userInfo().homedir']);
+    expect(account.exitCode).toBe(0);
+    const scratch = trackTempRoot(
+      mkdtempSync(join(account.stdout.toString().trimEnd(), 'sa-test-install-'))
+    );
+    const { home, sh } = sandbox(join(scratch, 'home'), scratch);
+    const chat = join(
+      hookFixtureEnv(home).ORCA_USER_DATA_PATH,
+      'antigravity-chat/config/hooks.json'
+    );
+    mkdirSync(dirname(chat), { recursive: true });
+    const result = sh('--hooks');
+    expect(result.code, result.out).toBe(0);
+    expect(existsSync(join(home, '.config/opencode/plugins/git-guardrail.js'))).toBe(true);
+    expect(existsSync(chat)).toBe(true);
+    expect(sh('--hooks').out).toContain('already trusted');
+  });
   const cmds = (file: string): string[][] =>
     Object.entries(
       (

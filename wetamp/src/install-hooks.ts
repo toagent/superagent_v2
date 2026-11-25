@@ -59,7 +59,7 @@ function realUserHome(): string {
   return (accountHome = path);
 }
 
-// A config may not exist yet. Resolve its existing ancestors before checking containment.
+// A config may not exist yet. Resolve its existing ancestors before comparing paths.
 function canonicalPath(path: string): string {
   const absolute = resolve(path);
   try {
@@ -80,8 +80,25 @@ function rejectTemporaryGuard(guard: string, ...files: string[]): void {
   const source = canonicalPath(guard);
   if (!roots.some(root => isPathInside(root, guard) || isPathInside(canonicalPath(root), source)))
     return;
+  const home = canonicalPath(homedir());
+  const configured = [
+    ...Object.values(paths(realHome)),
+    ...openCodePaths(realHome),
+    agyChatHooksFile(realHome),
+  ].filter((file): file is string => file !== undefined);
+  const protectedPaths = new Set(
+    [
+      ...Object.values(paths(realHome, {})),
+      ...openCodePaths(realHome, {}),
+      agyChatHooksFile(realHome, {}),
+      // Overrides within an alternate HOME belong to that installation.
+      ...configured.filter(
+        file => home === canonicalPath(realHome) || !isPathInside(home, canonicalPath(file))
+      ),
+    ].flatMap(file => (file === undefined ? [] : [resolve(file), canonicalPath(file)]))
+  );
   for (const file of files)
-    if (isPathInside(realHome, file) || isPathInside(canonicalPath(realHome), canonicalPath(file)))
+    if (protectedPaths.has(resolve(file)) || protectedPaths.has(canonicalPath(file)))
       throw new Error(`拒绝将临时护栏 ${guard} 安装到用户配置 ${file}`);
 }
 const quote = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
@@ -366,23 +383,25 @@ export function installedOpenCodeGuard(): string {
   }
 }
 
+const openCodePaths = (home: string, env = process.env): [string, string] => [
+  join(
+    envOr(
+      'OPENCODE_CONFIG_DIR',
+      join(envOr('XDG_CONFIG_HOME', join(home, '.config'), env), 'opencode'),
+      env
+    ),
+    'plugins/git-guardrail.js'
+  ),
+  join(home, '.wetamp/bin/git-guardrail.sh'),
+];
+
 function openCodeTargets(guard: string): [file: string, text: string, source: string][] {
-  const home = homedir();
+  const [plugin, wrapper] = openCodePaths(homedir());
   const wrapperGuard = join(dirname(guard), 'git-guardrail.cjs');
   return [
+    [plugin, openCodeGuard(guard), guard],
     [
-      join(
-        envOr(
-          'OPENCODE_CONFIG_DIR',
-          join(envOr('XDG_CONFIG_HOME', join(home, '.config')), 'opencode')
-        ),
-        'plugins/git-guardrail.js'
-      ),
-      openCodeGuard(guard),
-      guard,
-    ],
-    [
-      join(home, '.wetamp/bin/git-guardrail.sh'),
+      wrapper,
       `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(wrapperGuard)} "$@"\n`,
       wrapperGuard,
     ],
