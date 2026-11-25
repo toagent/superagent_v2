@@ -23,18 +23,20 @@ export function confined(l: Ledger, p: string): string | null {
 
 export type Role = 'coder' | 'reviewer' | 'human' | 'script';
 
-/** Shared by BT9 display and EV1 generation: role belongs to the node definition. */
+/** Board and reporting roles come from the generated node definition. */
 export const nodeRole = (n: { model?: unknown; wait?: unknown }): Role =>
-  n.model === '@sa-coder'
+  n.model === '@sa-coder' || n.model === '@sa-agy-coder'
     ? 'coder'
-    : n.model === '@sa-reviewer' || n.model === '@sa-reviewer-alt'
+    : n.model === '@sa-reviewer' ||
+        n.model === '@sa-reviewer-alt' ||
+        n.model === '@sa-gemini-review'
       ? 'reviewer'
       : n.wait
         ? 'human'
         : 'script';
 
 /**
- * 生成的工作流里每个节点的角色（按节点定义：@sa-coder/@sa-reviewer 别名、wait 事件门，其余为脚本）；节点总数也取自这里，
+ * 从生成的工作流读取各节点的角色和节点总数，
  * 因为 run 的 nodes 只列已调度的节点。gen 目录缺失或解析失败返回 undefined：表格退回 run 的节点数、角色显示 `?`。
  */
 export function workflowRoles(l: Ledger): Map<string, Role> | undefined {

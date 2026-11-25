@@ -13,7 +13,14 @@ import { launcher, type Launcher } from './launcher';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
-import { formatEngineTime, home, loadTiers, routeNotice, routeState } from './config';
+import {
+  consoleForClient,
+  formatEngineTime,
+  home,
+  loadTiers,
+  routeNotice,
+  routeState,
+} from './config';
 import { claudeAdmission, recordClaudeOutcome, refreshClaudeHealth } from './claude-health';
 import {
   describeExecution,
@@ -532,19 +539,22 @@ export async function jobCli(
     if (!admission.ok) throw new Error(`${admission.reason}: ${admission.detail}${
       !automatic && kindOf(cmd[0]) === 'claude' ? '; remove -- <cmd> and use --prompt-file for automatic routing' : ''}`);
     const state = routeState(tiers, a.flags.mode, Date.now(), health);
-    const c = launcher(home().sa)?.client === 'codex' ? 'codex' : 'claude';
+    const client = launcher(home().sa)?.client;
+    const c = client === 'codex' ? 'codex' : consoleForClient(automatic ? client ?? '' : '');
     const risk = a.flags.risk ?? 'G1';
     if (risk !== 'G0' && risk !== 'G1' && risk !== 'G2') throw new Error('job: invalid risk');
     if (jobRole === 'strategist' && (risk === 'G2' || a.flags.mode === 'strict') && !authors.length)
       throw new Error('job: independent review requires --author-model');
     const descriptor = describeExecution(tiers, ROUTE_ROLE[jobRole], risk, Number(a.flags.round ?? 1));
     const candidates = executionRoute(tiers, c, a.flags.mode, descriptor, authors, state).candidates;
-    const provider = automatic ? candidates[0].provider : kindOf(cmd[0]) as 'codex' | 'claude';
+    const skipNeon = automatic && c === 'gemini' && candidates[0].provider === 'agy';
+    const routed = (skipNeon ? candidates.find(a => a.provider !== 'agy') : undefined) ?? candidates[0];
+    const provider = automatic ? routed.provider : kindOf(cmd[0]) as 'codex' | 'claude';
     if (provider === 'agy') throw new Error('job: single:gemini requires superagent run <plan>');
     if (!automatic && provider === 'claude' && health.state !== 'up')
       throw new Error(`claude_unavailable: ${routeNotice(state)}; remove -- <cmd> and use --prompt-file for automatic routing`);
     const model = automatic ? null : modelOf(cmd.slice(1));
-    const candidate = automatic ? candidates[0] : candidates.find(a => a.provider === provider && (model === null || a.model === model));
+    const candidate = automatic ? routed : candidates.find(a => a.provider === provider && (model === null || a.model === model));
     if (!candidate)
       throw new Error(`job ${jobRole}: model unavailable; candidates: ${candidates.map(a => a.model).join(', ')}`);
     const policy = executionLaunch(descriptor, candidate);
@@ -553,7 +563,7 @@ export async function jobCli(
       : cmd, provider, candidate.model); // Validate before registering or creating a worktree.
     execution = { role: descriptor.role, risk: descriptor.risk, round: descriptor.round,
       model: candidate.model, provider, policy };
-    if (automatic) console.error(`job: selected ${provider}/${candidate.model}; first routed candidate${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
+    if (automatic) console.error(`job: selected ${provider}/${candidate.model}; ${skipNeon ? 'job exec 不执行 agy，已跳过 Neon' : 'first routed candidate'}${routeNotice(state) ? `; ${routeNotice(state)}` : ''}`);
   }
 
   return exec(cmd, { title, card, input, output, log, role: roleOf(jobRole), execution, automatic, worktree: a.flags.worktree, base: a.flags.base, request_ref: a.flags['request-ref'], review_reason: reviewReason, review_round: authors.length ? reviewRound : undefined }, probe);

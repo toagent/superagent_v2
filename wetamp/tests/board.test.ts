@@ -271,6 +271,17 @@ describe('data rows', () => {
     });
   });
 
+  test('generated Gemini aliases resolve to the board roles', () => {
+    const l = ledger('gemini', { status: 'running' });
+    const dir = join(l.gen_dir, '.archon', 'workflows', l.workflow);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${l.workflow}.yaml`),
+      'nodes: [{id: code, model: "@sa-agy-coder"}, {id: review, model: "@sa-gemini-review"}, {id: script, model: ""}]'
+    );
+    expect([...(workflowRoles(l)?.values() ?? [])]).toEqual(['coder', 'reviewer', 'script']);
+  });
+
   test('abandoned paused runs are terminal while an ordinary held gate stays unverified', () => {
     const run: RunView = { id: 'a-abandoned', status: 'paused' };
     const l = ledger('abandoned', run, {

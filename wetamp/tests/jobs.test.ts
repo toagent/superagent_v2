@@ -937,6 +937,32 @@ else if (process.argv[1].endsWith('/claude')) {
     expect(unavailableExit).not.toBe(0); const unavailableError = await new Response(unavailable.stderr as ReadableStream).text(); expect(unavailableError).toContain('claude_unavailable'); expect(unavailableError).toContain('--prompt-file'); expect(readJobs().jobs).toHaveLength(jobsBefore);
     expect(downgradedExit).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('claude_unavailable');
   });
+  // prettier-ignore
+  test('automatic jobs route by launcher and skip Neon on the Gemini console', async () => {
+    const root = tmp(), preload = join(root, 'launcher.cjs'), prompt = join(root, 'prompt.md');
+    writeFileSync(preload, `require(${JSON.stringify(join(WETAMP, 'hooks/live.cjs'))}).launcher = () => ({ client: process.env.FIXTURE_CLIENT, pid: process.pid, tty: null, cwd: process.cwd() });\n`);
+    writeFileSync(prompt, 'fixture prompt');
+    for (const name of ['codex', 'claude']) {
+      const bin = join(root, name);
+      writeFileSync(bin, '#!/bin/sh\ncase "$1" in plugin) echo "[]";; *) cat >/dev/null; echo \'{"type":"result","is_error":false,"result":"ok"}\';; esac\n', { mode: 0o755 });
+    }
+    const cases = [
+      ['claude', 'strategist', 'gpt-5.6-sol', false],
+      ['codex', 'strategist', 'gpt-5.6-sol', false],
+      ['agy', 'strategist', 'claude-opus-5-5', false],
+      ['agy', 'general', loadTiers().routing.coder.models[0], true],
+    ] as const;
+    const selected = [];
+    for (const [client, role] of cases) {
+      const title = `${client}-${role}`, p = run(promptArgs(title, role, prompt, '--risk', 'G0'), '', root, {
+        BUN_OPTIONS: `--preload=${preload}`, PATH: `${root}:${process.env.PATH!}`, FIXTURE_CLIENT: client,
+      });
+      const [stderr, exit] = await Promise.all([new Response(p.stderr as ReadableStream).text(), p.exited]);
+      expect(exit, stderr).toBe(0);
+      selected.push([readJobs().jobs.find(j => j.title === title)?.model, stderr.includes('job exec 不执行 agy，已跳过 Neon')]);
+    }
+    expect(selected).toEqual(cases.map(([, , model, skipped]) => [model, skipped]));
+  });
   test('automatic roles route to Codex while down and keep prompt bytes out of argv', async () => {
     const root = tmp(),
       codex = join(root, 'codex'),

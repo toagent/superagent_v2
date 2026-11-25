@@ -117,6 +117,8 @@ plan 的 `console` 以显式值为准。缺省时 `agy` → `gemini`，其他发
 Claude 和 Codex 控制台沿用预算降级规则。Gemini 控制台的 Neon 将军复用下文的
 Antigravity CLI 前提检查。启用 Neon 将军时，`gemini_review` 必须关闭。
 
+`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台，军师走 Gemini 评审池，将军跳过 Neon 并选首个可执行候选。
+
 ## 单次使用 Gemini Neon
 
 ```bash
