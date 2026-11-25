@@ -17,7 +17,12 @@ import { main, maintenanceTick } from '../src/cli';
 import { analyze, collect, evolve, type Sample } from '../src/nightly-evolve';
 import { buildReport } from '../src/report';
 import type { Ledger } from '../src/ledger';
-import { capNightlyOperations, nightlyReflection } from '../src/memory-reflect';
+import {
+  capNightlyOperations,
+  decodeNightlyOutput,
+  nightlyPrompt,
+  nightlyReflection,
+} from '../src/memory-reflect';
 import { maintainLessons, memoryState, memoryWrite, type Lesson } from '../src/memory';
 
 const homes: string[] = [];
@@ -463,4 +468,81 @@ test('memory import rejects overflow before changing the store', () => {
   writeFileSync(file, JSON.stringify(rows));
   expect(main(['memory', 'import', file])).toBe(1);
   expect(readFileSync(log, 'utf8')).toBe(original);
+});
+
+test('failure_reasons excludes review_not_required and nightly schema/prompt restricts ops to ADD', () => {
+  const rows = [
+    {
+      ...sample('a', 'r', 0),
+      reasons: ['review_not_required', 'acceptance_failed', 'unclassified'],
+    },
+    { ...sample('b', 'r', 0), reasons: ['review_not_required'] },
+    { ...sample('c', 'r', 0), reasons: [] },
+  ];
+  expect(analyze(rows, at(18)).failure_reasons).toEqual({
+    denominator: 3,
+    reasons: {
+      acceptance_failed: { count: 1, share: 1 / 3 },
+      unclassified: { count: 2, share: 2 / 3 },
+    },
+  });
+  expect(
+    decodeNightlyOutput({ operations: [{ op: 'UPVOTE', id: 'l-1', lesson: null }], reason: null })
+      .success
+  ).toBe(false);
+  expect(
+    decodeNightlyOutput({
+      operations: [{ op: 'EDIT', id: 'l-1', lesson: add('r', 'x').lesson }],
+      reason: null,
+    }).success
+  ).toBe(false);
+  expect(
+    decodeNightlyOutput({
+      operations: [{ op: 'ADD', id: null, lesson: add('r', 'x').lesson }],
+      reason: null,
+    }).success
+  ).toBe(true);
+  expect(nightlyPrompt('{}')).toContain('仅允许 op="ADD"');
+  expect(nightlyPrompt('{}')).not.toContain('重复条目用 EDIT 或 UPVOTE');
+});
+
+test('local model enters 7-day cooldown after 3 zero-yield days and resumes on probe or force', () => {
+  const sa = home(),
+    dir = join(sa, 'evolution');
+  mkdirSync(dir, { recursive: true });
+  const rows = (day: number) => [
+    ...Array.from({ length: 5 }, (_, i) => ({ ...sample('bad' + i, sa, 0), at: at(day, 1) })),
+    ...Array.from({ length: 30 }, (_, i) => ({ ...sample('good' + i, 'good', 1), at: at(day, 1) })),
+  ];
+  for (const [day, status] of [
+    ['2026-11-15', 'all_filtered'],
+    ['2026-11-16', 'failed'],
+    ['2026-11-17', 'failed'],
+  ])
+    writeFileSync(
+      join(dir, `${day}.json`),
+      JSON.stringify({ models: { local: { status, produced: 0 } } })
+    );
+  const called: string[] = [];
+  const reflect = (_: string, source: string) => {
+    called.push(source);
+    return { output: { operations: [], reason: 'ok' } };
+  };
+  const skipped = evolve(sa, at(18), () => rows(18), false, reflect);
+  expect(called).toEqual(['remote']);
+  expect(JSON.parse(readFileSync(skipped, 'utf8')).models.local).toMatchObject({
+    called: false,
+    status: 'skipped',
+  });
+  expect(JSON.parse(readFileSync(skipped, 'utf8')).models.local.reason).toContain('冷却跳过');
+  evolve(sa, at(23), () => rows(23), false, reflect);
+  expect(called).toEqual(['remote', 'remote']);
+  evolve(sa, at(24), () => rows(24), false, reflect);
+  expect(called).toEqual(['remote', 'remote', 'remote', 'local']);
+  writeFileSync(
+    join(dir, '2026-11-24.json'),
+    JSON.stringify({ models: { local: { status: 'failed', produced: 0 } } })
+  );
+  evolve(sa, at(25), () => rows(25), true, reflect);
+  expect(called).toEqual(['remote', 'remote', 'remote', 'local', 'remote', 'local']);
 });
