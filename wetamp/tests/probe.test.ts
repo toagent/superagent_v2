@@ -1,7 +1,14 @@
 import { expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { judgeProbe, runProbe, type ProbeJudgement } from '../src/probe';
+import {
+  judgeProbe,
+  runProbe,
+  runScenarioProbe,
+  runProbeMatrix,
+  scenarioFor,
+  type ProbeJudgement,
+} from '../src/probe';
 import { tmp } from './helpers';
 
 // prettier-ignore
@@ -12,6 +19,12 @@ test('judgeProbe accepts exact real-run evidence and rejects every missing ident
   expect(judgeProbe(valid)).toEqual({ ok: true });
   for (const [patch, reason] of [[{ launch_exit: 1 }, 'launch_failed'], [{ launch_run_id: undefined }, 'launch_run_id_missing'], [{ wait_run_id: 'other' }, 'wait_run_id_mismatch'], [{ delivery_state: 'integrated' }, 'not_published'], [{ engine_commit: 'old' }, 'engine_commit_mismatch'], [{ engine_snapshot: '/engine/old' }, 'engine_snapshot_mismatch'], [{ timed_out: true }, 'timeout']] as const)
     expect(judgeProbe({ ...valid, ...patch })).toEqual({ ok: false, reason });
+  const held = { ...valid, wait_exit: 3, state: 'held:scope', delivery_state: 'not_reached' };
+  expect(judgeProbe(held, true)).toEqual({ ok: true });
+  expect(judgeProbe(held).ok).toBe(false);
+  expect(judgeProbe({ ...held, delivery_state: 'published' }, true).ok).toBe(false);
+  expect(judgeProbe({ ...held, delivery_state: undefined }, true).ok).toBe(false);
+  expect(judgeProbe({ ...held, state: 'held:gate' }, true).ok).toBe(false);
 });
 
 const fakeProbe = (missingRunId = false): ReturnType<typeof runProbe> => {
@@ -45,7 +58,10 @@ else printf '%s\n' '{"run_id":"run-1","state":"completed","delivery_state":"publ
 };
 
 test('probe parses quick and wait JSON only from stdout', () => {
-  expect(fakeProbe()).toMatchObject({ ok: true, run_id: 'run-1' });
+  const evidence = fakeProbe();
+  expect(evidence).toMatchObject({ ok: true, run_id: 'run-1' });
+  expect(evidence).not.toHaveProperty('console');
+  expect(JSON.parse(readFileSync(evidence.evidence_path, 'utf8'))).not.toHaveProperty('attempts');
 });
 
 test('probe failure preserves redacted stdout and stderr tails', () => {
@@ -58,4 +74,166 @@ test('probe failure preserves redacted stdout and stderr tails', () => {
   );
   expect(saved.judgement.diagnostic).toContain('"token":***');
   expect(saved.judgement.diagnostic).not.toContain('raw-secret');
+});
+
+test('repair acceptance rejects the first candidate even with both markers and accepts the repair', () => {
+  const root = tmp();
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(
+      ['git', '-c', 'user.name=probe', '-c', 'user.email=probe@local', ...args],
+      { cwd: root }
+    );
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString().trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(root, 'README.md'), '# probe\n');
+  git('add', 'README.md');
+  git('commit', '-qm', 'base');
+  const accept = scenarioFor('G1', 'repair', join(root, 'first-head')).accept;
+  const check = (engine: boolean) =>
+    Bun.spawnSync(['sh', '-c', accept], {
+      cwd: root,
+      env: { ...process.env, SA_ACCEPTANCE: engine ? '1' : '' },
+    });
+  expect(check(true).exitCode).toBe(0);
+  writeFileSync(join(root, 'README.md'), '# probe\nprobe-first\nprobe-repaired\n');
+  git('commit', '-qam', 'first candidate');
+  expect(check(false).exitCode).toBe(0);
+  for (let i = 0; i < 2; i++) {
+    const first = check(true);
+    expect(first.exitCode).toBe(1);
+    expect(first.stderr.toString()).toContain('probe-repaired');
+  }
+  git('commit', '--allow-empty', '-qm', 'repair');
+  expect(check(true).exitCode).toBe(0);
+  expect(scenarioFor('G2', 'simple').accept).toBe('grep -q probe-g1 README.md');
+  expect(scenarioFor('G1', 'review').accept).toContain('src/auth/probe.ts');
+  expect(scenarioFor('G1', 'scope').scope).toBe('README.md');
+});
+
+test('outage serves loopback 503 and saves provider failover evidence, then closes the port', async () => {
+  const root = tmp(),
+    shim = join(root, 'shim'),
+    snapshot = resolve(import.meta.dir, '../..');
+  const commit = Bun.spawnSync(['git', '-C', snapshot, 'rev-parse', 'HEAD'])
+    .stdout.toString()
+    .trim();
+  const ledger = {
+    run_id: 'run-1',
+    engine_commit: commit,
+    engine_snapshot: snapshot,
+    console: 'gemini',
+    archon_run_id: 'archon-1',
+  };
+  const attempts = [
+    { id: '1', node: 'code-quick', provider: 'agy', model: 'neon', status: 'failed' },
+    {
+      id: '2',
+      node: 'code-quick',
+      provider: 'codex',
+      model: 'alias',
+      resolved: 'actual',
+      status: 'completed',
+      reassignment: {
+        node: 'code-quick',
+        from: 'agy',
+        to: 'codex',
+        reason: 'vendor_failure',
+        failure: 'transient',
+      },
+    },
+  ];
+  writeFileSync(
+    shim,
+    `#!${process.execPath}
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const sa = process.env.SUPERAGENT_HOME;
+const art = join(sa, 'archon', 'artifacts/runs/archon-1');
+if (process.argv[2] === 'quick') {
+  if (process.argv[process.argv.indexOf('--console') + 1] !== 'gemini') process.exit(5);
+  const url = process.env.AGY_LLM_GATEWAY_URL;
+  const response = await fetch(url);
+  if (response.status !== 503 || (await response.json()).error.status !== 'UNAVAILABLE') process.exit(6);
+  mkdirSync(join(sa, 'runs'), { recursive: true });
+  mkdirSync(art, { recursive: true });
+  writeFileSync(join(sa, 'gateway'), url);
+  writeFileSync(join(sa, 'runs/run-1.json'), JSON.stringify(${JSON.stringify(ledger)}));
+  writeFileSync(join(art, 'policy-attempts.json'), JSON.stringify(${JSON.stringify(attempts)}));
+  console.log(JSON.stringify({run_id:'run-1'}));
+} else console.log(JSON.stringify({run_id:'run-1',state:'completed',delivery_state:'published',evidence:art}));
+`,
+    { mode: 0o755 }
+  );
+  process.env.SUPERAGENT_HOME = join(root, 'sa');
+  process.env.ARCHON_HOME = join(root, 'sa', 'archon');
+  const evidence = await runScenarioProbe('G1', 'gemini', 'outage', shim);
+  expect(evidence).toMatchObject({
+    ok: true,
+    console: 'gemini',
+    scenario: 'outage',
+    rounds: 1,
+    state: 'completed',
+    delivery_state: 'published',
+    duration_ms: expect.any(Number),
+    attempts: [
+      { provider: 'agy', model: 'neon' },
+      { provider: 'codex', model: 'actual' },
+    ],
+  });
+  expect(JSON.parse(readFileSync(evidence.evidence_path, 'utf8'))).toMatchObject(evidence);
+  await expect(fetch(readFileSync(join(root, 'sa/gateway'), 'utf8'))).rejects.toThrow();
+});
+
+test('matrix compares shared outcomes and requires the Gemini-only outage to pass', async () => {
+  const calls: string[] = [];
+  let failRepair = true,
+    failOutage = true;
+  const run = () =>
+    runProbeMatrix('G1', 1, async (level, console, scenario) => {
+      calls.push(`${console}/${scenario}`);
+      const ok =
+        !(failOutage && scenario === 'outage') &&
+        !(failRepair && console === 'gemini' && scenario === 'repair');
+      return {
+        ok,
+        level,
+        console,
+        scenario,
+        duration_ms: 0,
+        evidence_path: 'fixture',
+        attempts: [],
+        rounds: 0,
+        state: ok ? 'completed' : 'failed',
+        delivery_state: null,
+      };
+    });
+  const matrix = await run();
+  expect(calls).toEqual([
+    'claude/simple',
+    'claude/repair',
+    'claude/review',
+    'claude/scope',
+    'gemini/simple',
+    'gemini/repair',
+    'gemini/review',
+    'gemini/scope',
+    'gemini/outage',
+  ]);
+  expect(matrix).toMatchObject({
+    ok: false,
+    consistent: false,
+    comparisons: [
+      { scenario: 'simple', consistent: true },
+      { scenario: 'repair', consistent: false },
+      { scenario: 'review', consistent: true },
+      { scenario: 'scope', consistent: true },
+      { scenario: 'outage', consistent: null },
+    ],
+  });
+  failRepair = false;
+  expect(await run()).toMatchObject({ ok: false, consistent: true });
+  failOutage = false;
+  expect(await run()).toMatchObject({ ok: true, consistent: true });
 });

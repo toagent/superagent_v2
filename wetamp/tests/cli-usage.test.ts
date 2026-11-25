@@ -1,5 +1,36 @@
 import { expect, test } from 'bun:test';
-import { allUsage, CLI_COMMAND_USAGE, CLI_GLOBAL_OPTIONS, OPTIONS, USAGE } from '../src/cli';
+import {
+  allUsage,
+  CLI_COMMAND_USAGE,
+  CLI_GLOBAL_OPTIONS,
+  OPTIONS,
+  parseArgs,
+  probeOptions,
+  USAGE,
+} from '../src/cli';
+
+test('engine probe parses legacy, console, scenario and matrix options', () => {
+  const probe = (...args: string[]) => probeOptions(parseArgs(['engine', 'probe', ...args]));
+  expect(probe('G2')).toBeUndefined();
+  expect(probe('G2', '--console', 'codex')).toMatchObject({ level: 'G2', console: 'codex' });
+  expect(probe('--scenario', 'repair')).toMatchObject({
+    level: 'G1',
+    console: 'claude',
+    scenario: 'repair',
+  });
+  expect(probe('--matrix', '--parallel', '2')).toMatchObject({ matrix: true, parallel: 2 });
+  for (const args of [
+    ['--scenario', ''],
+    ['--scenario', 'outage'],
+    ['--console', 'other'],
+    ['--matrix', '--console', 'codex'],
+    ['--parallel', '1'],
+    ['--matrix', '--parallel', '0'],
+    ['G3', '--matrix'],
+    ['G1', 'extra', '--matrix'],
+  ])
+    expect(() => probe(...args)).toThrow();
+});
 
 test('CLI usage and parser options cover each other', () => {
   const parserOptions = Object.keys(OPTIONS);

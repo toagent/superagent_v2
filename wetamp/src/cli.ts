@@ -30,6 +30,13 @@ import { runAttention } from '../../packages/workflows/src/schemas/workflow-run'
 import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
+import {
+  PROBE_SCENARIOS,
+  runProbeMatrix,
+  runScenarioProbe,
+  type ProbeLevel,
+  type ProbeScenario,
+} from './probe';
 import { guardSelftest } from './guard-selftest';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -363,6 +370,9 @@ export const OPTIONS = {
   runs: { type: 'string', multiple: true },
   'no-global': { type: 'boolean' },
   'bootstrap-evidence': { type: 'string' },
+  scenario: { type: 'string' },
+  matrix: { type: 'boolean' },
+  parallel: { type: 'string' },
   source: { type: 'string' },
   spec: { type: 'string' },
   body: { type: 'string' },
@@ -390,6 +400,40 @@ export function parseArgs(argv: string[]): Args {
   const { values, positionals } = parse({ args: argv, options: OPTIONS, allowPositionals: true });
   if (positionals[0] === 'quick') quickSize(values.size);
   return { _: positionals, flags: values };
+}
+
+export function probeOptions(a: Args):
+  | {
+      level: ProbeLevel;
+      console: (typeof CONSOLES)[number];
+      scenario: ProbeScenario;
+      matrix?: boolean;
+      parallel: number;
+    }
+  | undefined {
+  const { console: client, scenario: name, matrix, parallel } = a.flags;
+  if (
+    a._[0] !== 'engine' ||
+    a._[1] !== 'probe' ||
+    (client === undefined && name === undefined && !matrix && parallel === undefined)
+  )
+    return undefined;
+  const level = a._[2] ?? 'G1';
+  if (a._.length > 3 || (level !== 'G1' && level !== 'G2'))
+    throw new Error('usage: superagent engine probe [G1|G2]');
+  const console = CONSOLES.find(c => c === (client ?? 'claude'));
+  if (!console) throw new Error('engine probe --console must be claude|codex|gemini');
+  const scenario: ProbeScenario | undefined =
+    name === undefined ? 'default' : PROBE_SCENARIOS.find(s => s === name);
+  if (!scenario) throw new Error(`engine probe --scenario must be ${PROBE_SCENARIOS.join('|')}`);
+  if (matrix && (client !== undefined || name !== undefined))
+    throw new Error('engine probe --matrix selects its consoles and scenarios');
+  if (scenario === 'outage' && console !== 'gemini')
+    throw new Error('engine probe --scenario outage requires --console gemini');
+  const jobs = Number(parallel ?? 1);
+  if (parallel !== undefined && (!matrix || !Number.isSafeInteger(jobs) || jobs < 1))
+    throw new Error('engine probe --parallel requires --matrix and a positive integer');
+  return { level, console, scenario, matrix, parallel: jobs };
 }
 
 export const print = (o: unknown): void => {
@@ -4980,7 +5024,7 @@ export const CLI_COMMAND_USAGE: readonly CommandUsage[] = [
   { command: 'supervise-tick', audience: 'operator', flags: ['schedule', 'runs', 'no-global'] },
   { command: 'maintenance-tick', audience: 'operator', flags: [] },
   { command: 'nightly-evolve', audience: 'operator', flags: [] },
-  { command: 'engine', audience: 'operator', positionals: ENGINE_ACTION_USAGE, flags: ['bootstrap-evidence', 'base'] },
+  { command: 'engine', audience: 'operator', positionals: ENGINE_ACTION_USAGE, flags: ['bootstrap-evidence', 'base', 'console', 'scenario', 'matrix', 'parallel'] },
   { command: 'heartbeat', audience: 'operator', flags: ['watch', 'cwd', 'all'] },
   { command: 'board', audience: 'operator', positionals: '[run]', flags: ['once', 'interval', 'limit'] },
   { command: 'job clean', audience: 'operator', positionals: '<id>', flags: [] },
@@ -5752,6 +5796,8 @@ export function main(argv: string[]): number {
       print(maintenanceTick(undefined, undefined, true));
       return 0;
     case 'engine': {
+      if (probeOptions(a))
+        throw new Error('engine probe with options requires the CLI entry point');
       const result = engineCommand([
         ...a._.slice(1),
         ...(a.flags['bootstrap-evidence']
@@ -6319,6 +6365,23 @@ async function runCli(): Promise<void> {
       const result = await (await import('./gemini-plan')).draftPlan(argv[2], argv[3]);
       print(result);
       return await exitCli(result.ok ? 0 : 1);
+    }
+    if (verb === 'engine') {
+      const parsed = parseArgs(argv);
+      const probe = parsed.flags.help ? undefined : probeOptions(parsed);
+      if (probe) {
+        assertEngineAccess(argv);
+        const result = probe.matrix
+          ? await runProbeMatrix(probe.level, probe.parallel)
+          : await runScenarioProbe(probe.level, probe.console, probe.scenario);
+        print(result);
+        if ('comparisons' in result)
+          for (const { scenario, claude, gemini, consistent } of result.comparisons)
+            console.error(
+              `${scenario}  Claude ${claude ? (claude.ok ? '通过' : '失败') : '不适用'}  Gemini ${gemini.ok ? '通过' : '失败'}  ${consistent === null ? '仅 Gemini' : consistent ? '一致' : '不一致'}`
+            );
+        return await exitCli(result.ok ? 0 : 1);
+      }
     }
     if (verb === 'job' || verb === 'jobs') return await exitCli(await jobCli(argv));
     if (verb === 'work') return await exitCli(await (await import('./work')).workCli(argv));
