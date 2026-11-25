@@ -78,7 +78,11 @@ export interface ScanOptions {
 // prettier-ignore
 export const redactGitleaksFindings = (text: string, findings: Finding[]): string => {
   const lines = text.split('\n');
+  const handled = new Set<string>();
   for (const finding of findings) { const start = Math.max(0, (finding.StartLine ?? 1) - 1), end = Math.min(lines.length - 1, (finding.EndLine ?? finding.StartLine ?? 1) - 1), secret = finding.Secret ?? '';
+    const key = JSON.stringify([start, end, secret]);
+    if (handled.has(key)) continue;
+    handled.add(key);
     if (secret && lines.slice(start, end + 1).some(line => line.includes(secret))) for (let i = start; i <= end; i++) lines[i] = lines[i].replaceAll(secret, '[REDACTED:gitleaks]');
     else for (let i = start; i <= end; i++) lines[i] = '[REDACTED:gitleaks]'; }
   return lines.join('\n');
