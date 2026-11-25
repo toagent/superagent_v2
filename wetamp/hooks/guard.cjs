@@ -10,7 +10,7 @@ const { tiers, policy } = require('../tiers.json');
 const { parse } = require('./shell.cjs');
 const microEdit = require('./micro-edit.cjs');
 const stopGate = require('./stop-gate.cjs');
-const { withState, once, bunExecutable } = require('./hook-state.cjs');
+const { withState, once, markNotice, bunExecutable } = require('./hook-state.cjs');
 const dispatch = require('./dispatch-context.cjs');
 const redline = require('./redline.cjs');
 const { resolvePath, within, saHome } = redline;
@@ -122,6 +122,17 @@ const stateFile = (payload, env) => {
       )
     : null;
 };
+function renewClaim(payload, client, env) {
+  const home = saHome(env);
+  if (typeof payload.session_id !== 'string' || !payload.session_id.trim() ||
+      !['coord/claims', 'runs'].some(dir => fs.existsSync(path.join(home, dir)))) return true;
+  return spawnSync(bunExecutable(), [path.join(__dirname, '../src/coord/resume.ts'), client], {
+    input: payload.session_id,
+    env: { ...env, SUPERAGENT_HOME: home, ARCHON_HOME: env.ARCHON_HOME || path.join(home, 'archon') },
+    stdio: ['pipe', 'ignore', 'ignore'],
+    timeout: 3000,
+  }).status === 0;
+}
 // G-1: commander edits accumulate per session (never reset) against policy.micro_edit.
 function commanderWrite(payload, client, env, text) {
   if (env.SUPERAGENT_ALLOW_COMMANDER_WRITE === '1') return null;
@@ -162,7 +173,9 @@ function commanderWrite(payload, client, env, text) {
       }
       return null;
     }
-    edit = microEdit.plan(client, payload, root, resolvePath, repo);
+    edit = client === 'agy'
+      ? microEdit.plan('claude', agyEdit(payload), root, resolvePath, repo)
+      : microEdit.plan(client, payload, root, resolvePath, repo);
   } catch (error) {
     return {
       systemMessage: `SUPERAGENT advisory G-1: 无法计量本次写入（${error.message}），已放行；超过微改请走 superagent run。`,
@@ -173,7 +186,7 @@ function commanderWrite(payload, client, env, text) {
     ['files', 'risk', 'newCode'].map(key => [key, edit[key].map(file => path.resolve(root, file))])
   );
   const file = stateFile(payload, env);
-  const check = state =>
+  const account = state =>
     once(
       state,
       'micro',
@@ -211,7 +224,15 @@ function commanderWrite(payload, client, env, text) {
   if (!file)
     return { systemMessage: 'SUPERAGENT advisory G-1: 缺少会话身份，无法累计本次写入，已放行。' };
   try {
-    return withState(file, check);
+    return withState(file, state => {
+      if (client !== 'agy') return account(state);
+      // Commit the count only on allow. A notification can cause a retry with a new tool ID.
+      const draft = { ...state, events: structuredClone(state.events) };
+      const result = account(draft);
+      if (result && markNotice(state, result.systemMessage)) return { ...result, notified: true };
+      Object.assign(state, draft);
+      return null;
+    });
   } catch (error) {
     return {
       systemMessage: `SUPERAGENT advisory G-1: 无法计量本次写入（${error.message}），已放行；请检查计量状态。`,
@@ -252,26 +273,8 @@ function decide(payload, client, env = process.env) {
     if (event === 'SessionStart') {
       const result = require('./scratch.cjs').sessionScratch(env).start(payload, client, env);
       require('./heartbeat-panel.cjs').ensurePanel(payload, env);
-      const home = saHome(env);
-      if (
-        payload.source === 'resume' &&
-        typeof payload.session_id === 'string' &&
-        payload.session_id.trim() &&
-        ['coord/claims', 'runs'].some(dir => fs.existsSync(path.join(home, dir)))
-      ) {
-        const renewed = spawnSync(
-          bunExecutable(),
-          [path.join(__dirname, '../src/coord/resume.ts'), client],
-          {
-            input: payload.session_id,
-            env: { ...env, SUPERAGENT_HOME: home, ARCHON_HOME: env.ARCHON_HOME || path.join(home, 'archon') },
-            stdio: ['pipe', 'ignore', 'ignore'],
-            timeout: 3000,
-          }
-        );
-        if (renewed.status !== 0)
-          return { ...result, systemMessage: 'SUPERAGENT advisory：归属续约失败，会话可继续启动。' };
-      }
+      if (payload.source === 'resume' && !renewClaim(payload, client, env))
+        return { ...result, systemMessage: 'SUPERAGENT advisory：归属续约失败，会话可继续启动。' };
       return result;
     }
     if (event === 'Stop') require('./heartbeat-panel.cjs').ensurePanel(payload, env);
@@ -359,7 +362,8 @@ const AGY_READ_LIMIT = 1024 * 1024;
 function agyReadReason(file, cwd, env) {
   try {
     if (typeof file === 'string' && file.trim()) {
-      const target = fs.realpathSync(path.resolve(cwd, redline.expand(file, env)));
+      const decoded = redline.agyPath(file);
+      const target = fs.realpathSync(path.resolve(cwd, decoded === file ? redline.expand(file, env) : decoded));
       const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW);
       try {
         const stat = fs.fstatSync(fd);
@@ -384,7 +388,21 @@ function agyReadReason(file, cwd, env) {
 }
 const isAcpToolUse = payload => payload?.hookEventName === undefined && Boolean(payload?.toolCall);
 const agyCwd = (payload, acp) =>
-  !acp && typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+  !acp && typeof payload?.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+const AGY_WRITES = new Set(['write_file', 'write_to_file', 'create_file']);
+const AGY_EDITS = new Set(['edit_file', 'replace_file_content', 'multi_replace_file_content']);
+function agyEdit(payload) {
+  const { tool_name: name, tool_input: input } = payload;
+  const file_path = redline.agyPath(input.TargetFile || input.Path);
+  const edit = change => ({
+    old_string: change.TargetContent, new_string: change.ReplacementContent,
+    replace_all: change.AllowMultiple,
+  });
+  if (AGY_WRITES.has(name))
+    return { ...payload, tool_name: 'Write', tool_input: { file_path, content: input.CodeContent ?? input.Content } };
+  const edits = name === 'multi_replace_file_content' ? input.ReplacementChunks.map(edit) : [edit(input)];
+  return { ...payload, tool_name: 'MultiEdit', tool_input: { file_path, edits } };
+}
 async function decideAgy(payload, env = process.env) {
   const acp = isAcpToolUse(payload);
   // ACP PreInvocation has no toolCall and does not supply lastUserInput for secret scanning.
@@ -406,13 +424,18 @@ async function decideAgy(payload, env = process.env) {
   if (shell) await redline.init();
   const reason = redline.reason({
     client: 'agy', name, cwd, root: shell ? gitRoot(acp ? workdir : cwd) : null,
-    acp, shell: shell || undefined,
+    shell: shell || undefined,
     input: command ? { workdir } : args || {}, env,
     onAdvisory: code => process.stderr.write(`SUPERAGENT advisory：${code}\n`),
   });
   if (reason) return { decision: 'deny', reason };
   // agy 的 PreToolUse 必须返回 decision，空对象会被视为拒绝。
   if (!firewallInstalled(env)) return { decision: 'allow' };
+  if (acp) {
+    const prompt = require('./context-advisory.cjs').latestAgyPrompt(payload.transcriptPath);
+    if (!safePrompt(prompt, env))
+      return { decision: 'deny', reason: '检测到本回合输入含凭据；请立即轮换该凭据，并在新回合用 $NAME 引用。' };
+  }
   if (acp && shell !== undefined && !shell.startsWith(REDACT_PREFIX))
     return {
       decision: 'deny',
@@ -430,6 +453,46 @@ async function decideAgy(payload, env = process.env) {
   }
   return { decision: 'allow' };
 }
+const agyNotice = text => ({
+  decision: 'deny',
+  reason: `SUPERAGENT 通知（非错误）：\n${text}\n处理后或与本步无关时原样重试本次调用`,
+});
+function agyNotifications(payload, who, env) {
+  const context = require('./context-advisory.cjs');
+  const handoff = context.rolloverNotice(payload, 'agy', env);
+  if (handoff) return agyNotice(handoff);
+  const coord = require('./coord.cjs');
+  const waiter = stopGate.waiterGate(payload, 'agy', { rootPid: who?.pid ?? undefined });
+  const inbox = (waiter?.responsibilities ?? []).map(item => ({ type: 'responsibility', item }));
+  try {
+    if (who) inbox.push(...coord.unread(saHome(env), who, [], env.ARCHON_HOME));
+  } catch {}
+  const { tool_name: name, tool_input: input } = payload;
+  const dispatchNotice = dispatch.contextReason('agy', name, input, dispatch.contextPolicy(policy.dispatch_context));
+  const pending = [...(waiter?.notices ?? []), dispatchNotice].filter(Boolean);
+  let notices = [];
+  if (pending.length || inbox.length) {
+    try {
+      notices = withState(stateFile(payload, env), state => [
+        coord.notifications(inbox.filter(item => markNotice(state, coord.notifications([item])))),
+        ...pending.filter(message => markNotice(state, message)),
+      ].filter(Boolean));
+    } catch {}
+  }
+  try {
+    const advisory = context.agyAdvisory(payload, env);
+    if (advisory) notices.push(advisory);
+  } catch {}
+  if (notices.length) return agyNotice(notices.join('\n'));
+  const shell = name === 'run_command' ? input.CommandLine : undefined;
+  if (shell === undefined && !AGY_WRITES.has(name) && !AGY_EDITS.has(name)) return null;
+  const cwd = shell !== undefined && typeof input.Cwd === 'string'
+    ? path.resolve(payload.cwd, input.Cwd) : payload.cwd;
+  const write = commanderWrite({ ...payload, cwd }, 'agy', env, shell);
+  if (write?.notified || (write && withState(stateFile(payload, env), state =>
+    markNotice(state, write.systemMessage)))) return agyNotice(write.systemMessage);
+  return null;
+}
 
 if (require.main === module)
   (async () => {
@@ -439,30 +502,30 @@ if (require.main === module)
       if (!['claude', 'codex', 'agy'].includes(client)) throw new Error('usage: guard.cjs claude|codex|agy');
       payload = JSON.parse(fs.readFileSync(0, 'utf8'));
       if (client === 'agy') {
+        const neon = {
+          session_id: payload?.conversationId,
+          transcript_path: payload?.transcriptPath,
+          hook_event_name: payload?.hookEventName ?? (isAcpToolUse(payload) ? 'PreToolUse' : 'PreInvocation'),
+          cwd: agyCwd(payload, isAcpToolUse(payload)),
+          model: payload?.modelName,
+          tool_name: payload?.toolCall?.name,
+          tool_input: payload?.toolCall?.args || {},
+          tool_use_id: payload?.toolCall?.id,
+        };
+        let commander = false, heartbeat;
         try {
-          if (payload?.conversationId && sessionRole(payload, client) === 'commander') {
-            require('./live.cjs').beat(client, {
-              session_id: payload.conversationId,
-              transcript_path: payload.transcriptPath,
-              hook_event_name: payload.hookEventName ?? (isAcpToolUse(payload) ? 'PreToolUse' : 'PreInvocation'),
-              cwd: payload.cwd ?? process.cwd(),
-              model: payload.modelName,
-            }, () => 'commander');
+          commander = typeof neon.session_id === 'string' && Boolean(neon.session_id.trim()) &&
+            sessionRole({ ...payload, cwd: neon.cwd }, client) === 'commander';
+          if (commander) {
+            heartbeat = require('./live.cjs').beat(client, neon, () => 'commander');
+            if (heartbeat?.first) require('./heartbeat-panel.cjs').ensurePanel(neon);
+            if (heartbeat?.reconnected) renewClaim(neon, client, process.env);
           }
         } catch {}
         let result = await decideAgy(payload);
-        if (result.decision === 'allow') {
+        if (commander && result.decision === 'allow') {
           try {
-            const id = payload.conversationId,
-              cwd = agyCwd(payload, isAcpToolUse(payload));
-            if (typeof id === 'string' && id.trim() &&
-                sessionRole({ ...payload, cwd }, client) === 'commander') {
-              const reason = require('./context-advisory.cjs').agyRollover(
-                { session_id: id, transcript_path: payload.transcriptPath },
-                process.env
-              );
-              if (reason) result = { decision: 'deny', reason };
-            }
+            result = agyNotifications(neon, heartbeat?.record, process.env) ?? result;
           } catch {} // Advisory failures preserve the original agy decision and overwrite.
         }
         process.stdout.write(JSON.stringify(result) + '\n');
@@ -507,7 +570,8 @@ if (require.main === module)
       const systemMessage = 'SUPERAGENT advisory：护栏内部异常，本次已放行。';
       if (client === 'agy') {
         process.stderr.write(systemMessage + '\n');
-        if (isAcpToolUse(payload)) process.stdout.write(JSON.stringify({ decision: 'allow' }) + '\n');
+        if (isAcpToolUse(payload) || payload?.hookEventName === 'PreToolUse')
+          process.stdout.write(JSON.stringify({ decision: 'allow' }) + '\n');
       } else process.stdout.write(JSON.stringify({ systemMessage }) + '\n');
     }
   })();

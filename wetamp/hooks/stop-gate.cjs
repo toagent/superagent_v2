@@ -1,8 +1,10 @@
 'use strict';
 const path = require('node:path'),
-  os = require('node:os');
+  os = require('node:os'),
+  fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { policy } = require('../tiers.json');
+const { bunExecutable, withState } = require('./hook-state.cjs');
 const childEnv = () => {
   const superagent = process.env.SUPERAGENT_HOME || path.join(os.homedir(), '.superagent');
   return {
@@ -14,19 +16,39 @@ const childEnv = () => {
 const advisory = error => ({
   systemMessage: `SUPERAGENT advisory：无法确认等待进程（${error.message}），本次已放行。`,
 });
+function neonWaiting(payload) {
+  const env = childEnv();
+  if (!['runs', 'ntfy/state.json', 'heartbeat.json'].some(file =>
+    fs.existsSync(path.join(env.SUPERAGENT_HOME, file))
+  )) return {};
+  return JSON.parse(spawnSync(bunExecutable(), [path.join(__dirname, '../src/resume-card.ts'), 'waiting'], {
+    input: JSON.stringify({ session_id: payload.session_id }), encoding: 'utf8', env, timeout: 10000,
+  }).stdout);
+}
 function waiterGate(payload, client, deps = {}) {
-  if (payload.hook_event_name !== 'Stop' || client !== 'claude' || deps.derived) return null;
+  const neon = client === 'agy';
+  if (payload.hook_event_name !== (neon ? 'PreToolUse' : 'Stop') ||
+      (!neon && client !== 'claude') || deps.derived) return null;
+  const instruction = neon ? '请前台运行' : '请在后台运行', timeout = neon ? 3000 : 7000;
   try {
     if (!payload.session_id) throw new Error('缺少 session_id');
+    const waiting = neon ? neonWaiting(payload) : null;
     // prettier-ignore
-    const responsibilities = deps.responsibilities
+    const responsibilities = waiting ? (waiting.responsibilities ?? []) : deps.responsibilities
       ? deps.responsibilities(payload.session_id)
       : JSON.parse(spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'responsibilities'], { input: JSON.stringify(payload), encoding: 'utf8', env: childEnv(), timeout: 10000 }).stdout);
-    if (responsibilities.length) {
-      const reason = `SUPERAGENT：需要处理 ${responsibilities.length} 项：\n${responsibilities.map(item => `${item.id} ${item.waiting_for} → ${item.next}`).join('\n')}`;
+    const duty = !neon && responsibilities.length
+      ? `SUPERAGENT：需要处理 ${responsibilities.length} 项：\n${responsibilities.map(item => `${item.id} ${item.waiting_for} → ${item.next}`).join('\n')}`
+      : null;
+    const output = (...reasons) => {
+      const notices = reasons.filter(Boolean);
+      if (neon) return { responsibilities, notices };
+      const [reason] = notices;
+      if (!reason) return null;
       return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
-    }
-    const runs = deps.runs
+    };
+    if (duty) return output(duty);
+    const runs = waiting ? (waiting.runs ?? []) : deps.runs
       ? deps.runs(payload.session_id)
       : JSON.parse(
           spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'waiting-runs'], {
@@ -37,7 +59,7 @@ function waiterGate(payload, client, deps = {}) {
           }).stdout
         );
     const active = runs.filter(run => run.status === 'running' || run.status === 'pending');
-    const asks = deps.asks
+    const asks = waiting ? (waiting.asks ?? []) : deps.asks
       ? deps.asks(payload.session_id)
       : JSON.parse(
           spawnSync('bun', [path.join(__dirname, '../src/resume-card.ts'), 'waiting-asks'], {
@@ -47,7 +69,7 @@ function waiterGate(payload, client, deps = {}) {
             timeout: 10000,
           }).stdout
         );
-    if (!active.length && !asks.length) return null;
+    if (!active.length && !asks.length) return output(duty);
     const listing = deps.processes
       ? deps.processes()
       : spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 3000 })
@@ -82,15 +104,16 @@ function waiterGate(payload, client, deps = {}) {
           return wait < 0 ? [] : args.slice(wait + 1, option < 0 ? undefined : option);
         })
       );
-    if (asks.length && !runWait && !inboxWait) {
-      const ask = asks[0],
-        reason = `SUPERAGENT：问询 ${ask.id.slice(0, 8)}（${ask.title}）尚未答复，请在后台运行：superagent inbox --wait --timeout 7000`;
-      return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
-    }
+    const ask = asks.length && !runWait && !inboxWait ? asks[0] : null;
+    const askNotice = ask
+      ? `SUPERAGENT：问询 ${ask.id.slice(0, 8)}（${ask.title}）尚未答复，${instruction}：superagent inbox --wait --timeout ${timeout}`
+      : null;
+    if (askNotice && !neon) return output(askNotice);
     const missing = active.filter(run => !waited.has(String(run.run_id)));
-    if (!missing.length) return null;
-    const reason = `SUPERAGENT：请在后台运行以下缺失的等待进程：\n${missing.map(run => `superagent wait ${run.run_id} --timeout 7000`).join('\n')}`;
-    return payload.stop_hook_active ? { systemMessage: reason } : { decision: 'block', reason };
+    const runNotice = missing.length
+      ? `SUPERAGENT：${instruction}以下缺失的等待进程：\n${missing.map(run => `superagent wait ${run.run_id} --timeout ${timeout}`).join('\n')}`
+      : null;
+    return output(askNotice, runNotice);
   } catch (error) {
     return advisory(error instanceof Error ? error : new Error(String(error)));
   }
@@ -109,4 +132,4 @@ function gate(payload, client, deps) {
   };
 }
 // Compatibility export shares the hook transaction owner; no second state store.
-module.exports = { gate, waiterGate, withState: require('./hook-state.cjs').withState };
+module.exports = { gate, waiterGate, withState };

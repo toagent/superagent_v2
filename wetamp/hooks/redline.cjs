@@ -4,6 +4,7 @@ const fs = require('node:fs'),
   os = require('node:os'),
   path = require('node:path');
 const microEdit = require('./micro-edit.cjs');
+const { fileURLToPath } = require('node:url');
 
 // child is parent itself or below it.
 const within = (child, parent) => {
@@ -49,6 +50,9 @@ const AGY_ACP_PATH_FIELDS = new Map([
   ['create_file', 'TargetFile'],
   ['edit_file', 'TargetFile'],
 ]);
+const agyPath = value => typeof value === 'string' && /^file:\/\//i.test(value)
+  ? fileURLToPath(value)
+  : value;
 const expand = (word, env) =>
   word.replace(/^~(?=\/|$)/, homeOf(env)).replace(/\$\{HOME\}|\$HOME\b/g, homeOf(env));
 
@@ -120,8 +124,8 @@ function secretKind(abs, env) {
   if (BROWSER.some(under)) return '浏览器资料';
   return null;
 }
-function pathKind(file, base, env) {
-  const abs = path.resolve(base, expand(file, env));
+function pathKind(file, base, env, literal = false) {
+  const abs = path.resolve(base, literal ? file : expand(file, env));
   return (
     secretKind(abs, env) ?? secretKind(resolvePath(abs), { ...env, HOME: resolvePath(homeOf(env)) })
   );
@@ -226,7 +230,6 @@ function reason({
   cwd,
   root,
   shell,
-  acp = false,
   env = process.env,
   onAdvisory = () => {},
   onCategory = () => {},
@@ -264,8 +267,8 @@ function reason({
   try {
     // Shell strings are interpreted by the parser; quoted prose is not executed.
     if (shell === undefined) {
-      const field = client === 'agy' ? AGY_PATH_FIELDS.get(name) : undefined;
-      const acpField = acp ? AGY_ACP_PATH_FIELDS.get(name) : undefined;
+      const field = client === 'agy' ? (name === 'create_file' ? 'Path' : AGY_PATH_FIELDS.get(name)) : undefined;
+      const acpField = client === 'agy' ? AGY_ACP_PATH_FIELDS.get(name) : undefined;
       const paths = client === 'agy'
         ? [field, acpField].filter(Boolean).flatMap(key => strings(input[key])).filter(value => value.trim())
         : microEdit.isEdit(client, name)
@@ -277,7 +280,15 @@ function reason({
           : null;
       if (paths)
         for (const file of paths.filter(value => typeof value === 'string' && value)) {
-          const kind = pathKind(file, cwd, env);
+          let target = file;
+          if (client === 'agy') {
+            try {
+              target = agyPath(file);
+            } catch {
+              return message('读写文件', '无法识别文件 URI', '使用有效的文件系统路径');
+            }
+          }
+          const kind = pathKind(target, cwd, env, target !== file);
           if (kind) {
             onCategory('privacy');
             return message(
@@ -368,6 +379,7 @@ const init = () => require('./shell-ast.cjs').init();
 module.exports = {
   AGY_PATH_FIELDS,
   AGY_ACP_PATH_FIELDS,
+  agyPath,
   init,
   reason,
   expand,

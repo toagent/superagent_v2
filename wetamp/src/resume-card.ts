@@ -291,6 +291,17 @@ export async function resumeCard(
 if (import.meta.main) {
   const payload = JSON.parse(await Bun.stdin.text()) as Payload,
     mode = process.argv[2];
+  if (mode === 'waiting') {
+    const session = payload.session_id ?? '';
+    process.stdout.write(
+      `${JSON.stringify({
+        responsibilities: responsibilityList(session),
+        runs: waitingRuns(session),
+        asks: waitingAsks(session),
+      })}\n`
+    );
+    process.exit(0);
+  }
   if (mode === 'waiting-runs') {
     process.stdout.write(`${JSON.stringify(waitingRuns(payload.session_id ?? ''))}\n`);
     process.exit(0);

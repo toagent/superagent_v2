@@ -69,4 +69,11 @@ function once(state, namespace, payload, fn, replay = true) {
   state.events[key] = result;
   return result;
 }
-module.exports = { withLock, withState, atomicWrite, once, bunExecutable };
+function markNotice(state, text) {
+  const hash = crypto.createHash('sha256').update(text).digest('hex');
+  state.agy_notices ??= {};
+  if (Object.hasOwn(state.agy_notices, hash)) return false;
+  state.agy_notices[hash] = true;
+  return true;
+}
+module.exports = { withLock, withState, atomicWrite, once, markNotice, bunExecutable };

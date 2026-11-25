@@ -146,6 +146,12 @@ superagent plan draft task.md plan.json > plan.receipt.json && superagent plan c
 hook 进程非零退出时，本次工具调用失败。护栏脚本无法加载会导致全部工具调用失败，可用 `superagent health` 检查。
 在引擎安装检出根目录运行 `bun wetamp/src/install-hooks.ts --only agy --purge-v1` 可备份并撤下 agy 的受管 hook。
 
+终端与 Orca 对话中的 Neon 元帅在工具调用时收到 `SUPERAGENT 通知（非错误）`。
+收到交接、上下文、微改或缺失等待提醒后，按提示处理，再原样重试工具。交接完成的旧会话会持续拒绝工具调用。
+派单或发出问询后，在前台运行 `superagent wait <run> --timeout 3000` 或
+`superagent inbox --wait --timeout 3000`。Neon 的回合结束事件无法强制继续，缺失等待进程会在下一次工具调用时提醒。
+Orca 对话的 hook 在首次工具调用时检查最新用户输入。输入已发送，发现凭据后会拦截本回合工具调用并提示轮换。
+
 ## 评审
 
 只有实际 diff 命中 `tiers.json` 的 `policy.risk_paths`，或用户本轮明确要求时才触发独立
