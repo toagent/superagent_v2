@@ -403,11 +403,18 @@ test('Neon 换会话提醒按会话节流并保留原护栏判定', () => {
 test('Neon 通知交接与缺失等待，同一内容只提示一次', () => {
   const home = tmp(),
     archon = join(home, 'archon'),
+    bin = tmp(),
     session = 'neon-wait';
+  writeFileSync(
+    join(bin, 'ps'),
+    `#!/bin/sh\nif [ "$1" = "-axo" ] && [ "$2" = "pid=,ppid=,command=" ]; then printf '1 0 /sbin/init\\n'; exit 0; fi\ncommand -p ps "$@"\n`,
+    { mode: 0o755 }
+  );
   const env = {
     HOME: home,
     SUPERAGENT_HOME: home,
     ARCHON_HOME: archon,
+    PATH: `${bin}:${baseEnv.PATH ?? ''}`,
     DATABASE_URL: '',
     SA_SECRET_SCAN_MODULE: '',
   };
