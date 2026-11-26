@@ -100,6 +100,13 @@ packages/workflows/src/store-conformance.ts
 packages/isolation/src/post-create-config.ts
 packages/core/src/workflows/worktree-setup.ts
 
+# Selective upstream port: 72817c50dc51bb91773f71e5448bb7d387bfc8dd
+# Kept only the SQLite startup read-only fast path and bounded busy retry for
+# schema initialization/upgrade. Omitted upstream schema_fingerprint column and
+# provider/migration refactors.
+packages/core/src/db/adapters/sqlite.ts
+packages/core/src/db/adapters/sqlite.test.ts
+
 # 有意保留的 fork 改动
 .prettierignore
 .superagent/rules.json
