@@ -109,16 +109,16 @@ Orca 对话版 Neon 与终端 `agy` 共用 superagent 护栏和 `gemini` 控制�
 生成的 run 快照保存该值，恢复时沿用。
 用 `superagent models --mode auto` 查看候选顺序。
 
-| 控制台   | 元帅                                             | 默认将军                                             | 正式评审                                                        |
-| -------- | ------------------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------- |
-| `claude` | Claude 池                                        | ChatGPT 池                                           | 优先 Claude，ChatGPT 可接替                                     |
-| `codex`  | ChatGPT 池                                       | ChatGPT 池                                           | ChatGPT 池，排除作者模型                                        |
-| `gemini` | `gemini-4-neon-%78high` → `gemini-4-neon-%68igh` | 同序 Neon，符合派发策略的供应商故障可切至 ChatGPT 池 | `claude-opus-5-5` → `gpt-5.6-sol` → `gpt-6-astra`，排除作者模型 |
+| 控制台   | 元帅                                             | 默认将军   | 正式评审                                                        |
+| -------- | ------------------------------------------------ | ---------- | --------------------------------------------------------------- |
+| `claude` | Claude 池                                        | ChatGPT 池 | 优先 Claude，ChatGPT 可接替                                     |
+| `codex`  | ChatGPT 池                                       | ChatGPT 池 | ChatGPT 池，排除作者模型                                        |
+| `gemini` | `gemini-4-neon-%78high` → `gemini-4-neon-%68igh` | ChatGPT 池 | `claude-opus-5-5` → `gpt-5.6-sol` → `gpt-6-astra`，排除作者模型 |
 
-Claude 和 Codex 控制台沿用预算降级规则。Gemini 控制台的 Neon 将军复用下文的
-Antigravity CLI 前提检查。启用 Neon 将军时，`gemini_review` 必须关闭。
+Claude 和 Codex 控制台沿用预算降级规则。Neon 将军仅在显式设置 `single:gemini` 时启用，
+并须关闭 `gemini_review`。
 
-`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台。军师走 Gemini 评审池。将军首选 Neon。Neon 无法启动或可确认未受理作业时，切到可用的 Codex 候选。
+`agy` 发起的 `job exec` 自动选模使用 Gemini 控制台。军师走 Gemini 评审池。将军默认走 Codex 池，可用 `--mode single:gemini` 显式选择 Neon。
 
 ## 单次使用 Gemini Neon
 
@@ -170,9 +170,9 @@ Orca 对话版 Neon 的默认目录为 `~/Library/Application Support/orca/antig
 
 ## 引擎稳定性探测
 
-`superagent engine probe G1|G2` 保留晋升探测。用 `superagent engine probe --console gemini --scenario repair` 选择控制台和场景。控制台支持 `claude`（默认）、`codex`、`gemini`。场景支持 `simple`、`repair`、`review`、`scope`、`outage`，其中 `scope` 以等待范围审批为成功，`outage` 仅支持 Gemini，验证本机 503 后切换到 Codex。
+`superagent engine probe G1|G2` 保留晋升探测。用 `superagent engine probe --console gemini --scenario repair` 选择控制台和场景。控制台支持 `claude`（默认）、`codex`、`gemini`。场景支持 `simple`、`repair`、`review`、`scope`，其中 `scope` 以等待范围审批为成功。
 
-`superagent engine probe --matrix [--parallel N]` 默认串行对照 Claude 和 Gemini，最后单独运行 `outage`。每个场景独立计时，G1 最多 15 分钟，G2 最多 30 分钟。JSON 写入 stdout，可读对照写入 stderr。每次探测的临时仓库和证据保存在 `$SUPERAGENT_HOME/probes/`。
+`superagent engine probe --matrix [--parallel N]` 默认串行对照 Claude 和 Gemini。每个场景独立计时，G1 最多 15 分钟，G2 最多 30 分钟。JSON 写入 stdout，可读对照写入 stderr。每次探测的临时仓库和证据保存在 `$SUPERAGENT_HOME/probes/`。
 
 ## 评审
 

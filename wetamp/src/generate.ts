@@ -1875,7 +1875,7 @@ export function generate(
   writeFileSync(join(dir, '.gitignore'), 'hints/\nattempts/\n.archon.*\n');
   const config = join(dir, 'run-config.yaml');
   const aliases = runAliases(plan.console ?? 'claude', tiers, plan.mode, state);
-  const neonCoder = usesNeonCoder(plan.console, plan.mode)
+  const neonCoder = usesNeonCoder(plan.mode)
     ? resolveRoute(tiers, plan.console ?? 'claude', plan.mode, 'code', 'G1', 1, [], state)
         .candidates[0]
     : undefined;

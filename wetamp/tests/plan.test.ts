@@ -57,14 +57,19 @@ describe('loadPlan', () => {
   test('accepts Gemini console and rejects an unknown console', () => {
     const gemini = setup(p => {
       p.console = 'gemini';
+      p.gemini_review = true;
     });
-    expect(loadPlan(gemini.path, [gemini.root]).console).toBe('gemini');
+    expect(loadPlan(gemini.path, [gemini.root])).toMatchObject({
+      console: 'gemini',
+      gemini_review: true,
+    });
     const unknown = setup(p => {
       p.console = 'unknown';
     });
     expect(() => loadPlan(unknown.path, [unknown.root])).toThrow('/console');
     const selfReview = setup(p => {
       p.console = 'gemini';
+      p.mode = 'single:gemini';
       p.gemini_review = true;
     });
     expect(() => loadPlan(selfReview.path, [selfReview.root])).toThrow('/gemini_review');

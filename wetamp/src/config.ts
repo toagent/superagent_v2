@@ -25,8 +25,7 @@ type ConsolePools = Record<Exclude<Console, 'gemini'>, string[]> & { gemini?: st
 export const consoleForClient = (client: string): Console =>
   client === 'agy' ? 'gemini' : 'claude';
 
-export const usesNeonCoder = (console?: Console, mode = 'auto'): boolean =>
-  mode === 'single:gemini' || (console === 'gemini' && (mode === 'auto' || mode === 'strict'));
+export const usesNeonCoder = (mode?: string): mode is 'single:gemini' => mode === 'single:gemini';
 
 export interface Alias {
   provider: DispatchProvider;
@@ -270,9 +269,9 @@ export function loadTiers(path = join(WETAMP, 'tiers.json')): Tiers {
     if (!Array.isArray(models) || !models.length || models.some(m => typeof m !== 'string' || providerOf(m) !== provider))
       throw new Error(`tiers.routing.commander.by_console.${c}: expected models for ${c}`);
     if (c === 'gemini') {
-      if (!t.routing.gemini?.code?.length || !Array.isArray(reviewers) || !reviewers.length ||
+      if (!Array.isArray(reviewers) || !reviewers.length ||
           reviewers.some(m => typeof m !== 'string' || providerOf(m) === 'agy'))
-        throw new Error('tiers.routing: Gemini console requires Neon coding and non-Neon review candidates');
+        throw new Error('tiers.routing: Gemini console requires non-Neon review candidates');
     }
   }
   if (t.routing.gemini !== undefined)
@@ -337,22 +336,22 @@ export function resolveRoute(
   const claudeDegraded = (mode === 'auto' && state.budget.degraded) ||
     (['auto', 'strict'].includes(mode) && state.claude.state !== 'up');
   if (console !== 'gemini' && claudeDegraded) mode = 'single:chatgpt';
-  const neonCoder = usesNeonCoder(console, mode);
+  const neonCoder = usesNeonCoder(mode);
   if (mode === 'single:chatgpt') console = 'codex';
   const vendor = mode === 'single:claude' ? 'claude'
     : mode === 'single:chatgpt' || (role === 'review' && claudeDegraded) ? 'codex' : null;
-  const coderProvider = mode === 'single:claude' ? 'claude' : 'codex';
+  const coderProvider = neonCoder ? 'agy' : mode === 'single:claude' ? 'claude' : 'codex';
   const coding = role === 'code' || role === 'repair';
   // single:chatgpt keeps reviews on Codex; only single:claude opens the configured review pool.
   const reviewIgnoresVendor = role === 'review' && mode === 'single:claude';
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
       ? ((console === 'gemini' ? undefined : t.routing.reviewer.by_risk?.[risk]) ?? t.routing.reviewer.by_console[console])
-      : [...(neonCoder ? t.routing.gemini?.code ?? [] : []), ...(mode === 'single:gemini' ? [] : t.routing.coder.models)];
+      : neonCoder ? (t.routing.gemini?.code ?? []) : t.routing.coder.models;
   const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: providerOf(model), effort }))
-    .filter(a => !coding || a.provider === coderProvider || (neonCoder && a.provider === 'agy'))
+    .filter(a => !coding || a.provider === coderProvider)
     .filter(
       a => (role === 'command' || !vendor || reviewIgnoresVendor || a.provider === vendor) && (role !== 'review' || !authors.includes(a.model))
     );
@@ -414,8 +413,8 @@ const obj = (v: unknown): Obj =>
 export function runAliases(c: Console, t = loadTiers(), mode = 'auto', state = HEALTHY_ROUTE) {
   const route = (role: Parameters<typeof resolveRoute>[3], authors: string[] = []) =>
     resolveRoute(t, c, mode, role, 'G1', 1, authors, state).candidates;
-  // Neon uses @sa-agy-coder. Pin its fallback to the Codex pool in every Neon mode.
-  const coder = usesNeonCoder(c, mode)
+  // Explicit Neon nodes use @sa-agy-coder; keep @sa-coder pinned for the run config.
+  const coder = usesNeonCoder(mode)
     ? resolveRoute(t, c, 'single:chatgpt').candidates[0]
     : route('code')[0];
   const reviewers = route('review', [coder.model]);

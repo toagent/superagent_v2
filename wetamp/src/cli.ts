@@ -405,8 +405,6 @@ export function probeOptions(a: Args):
   if (!scenario) throw new Error(`engine probe --scenario must be ${PROBE_SCENARIOS.join('|')}`);
   if (matrix && (client !== undefined || name !== undefined))
     throw new Error('engine probe --matrix selects its consoles and scenarios');
-  if (scenario === 'outage' && console !== 'gemini')
-    throw new Error('engine probe --scenario outage requires --console gemini');
   const jobs = Number(parallel ?? 1);
   if (parallel !== undefined && (!matrix || !Number.isSafeInteger(jobs) || jobs < 1))
     throw new Error('engine probe --parallel requires --matrix and a positive integer');
@@ -4888,7 +4886,7 @@ async function runCli(): Promise<void> {
         if ('comparisons' in result)
           for (const { scenario, claude, gemini, consistent } of result.comparisons)
             console.error(
-              `${scenario}  Claude ${claude ? (claude.ok ? '通过' : '失败') : '不适用'}  Gemini ${gemini.ok ? '通过' : '失败'}  ${consistent === null ? '仅 Gemini' : consistent ? '一致' : '不一致'}`
+              `${scenario}  Claude ${claude.ok ? '通过' : '失败'}  Gemini ${gemini.ok ? '通过' : '失败'}  ${consistent ? '一致' : '不一致'}`
             );
         return await exitCli(result.ok ? 0 : 1);
       }

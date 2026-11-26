@@ -21,7 +21,7 @@ test('engine probe parses legacy, console, scenario and matrix options', () => {
   expect(probe('--matrix', '--parallel', '2')).toMatchObject({ matrix: true, parallel: 2 });
   for (const args of [
     ['--scenario', ''],
-    ['--scenario', 'outage'],
+    ['--scenario', 'outage', '--console', 'gemini'],
     ['--console', 'other'],
     ['--matrix', '--console', 'codex'],
     ['--parallel', '1'],

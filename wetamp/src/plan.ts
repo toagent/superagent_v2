@@ -13,11 +13,9 @@ export type Pkg = Plan['packages'][number];
 export type Requirement = NonNullable<Pkg['requirements']>[number];
 export type Check = Pkg['accept'][number];
 
-export function assertReviewRouting(plan: Pick<Plan, 'console' | 'mode' | 'gemini_review'>): void {
-  if (plan.gemini_review && usesNeonCoder(plan.console, plan.mode)) {
-    const route = plan.mode === 'single:gemini' ? plan.mode : 'Neon coding';
-    throw new Error(`plan invalid: /gemini_review cannot be enabled with ${route}`);
-  }
+export function assertReviewRouting(plan: Pick<Plan, 'mode' | 'gemini_review'>): void {
+  if (plan.gemini_review && usesNeonCoder(plan.mode))
+    throw new Error(`plan invalid: /gemini_review cannot be enabled with ${plan.mode}`);
 }
 /** Resolved capability defaults; the wire schema keeps every override optional. */
 export type Caps = Required<NonNullable<Plan['caps']>>;

@@ -14,7 +14,7 @@ import { WETAMP, type Console } from './config';
 import { redact } from './redact';
 
 export type ProbeLevel = 'G1' | 'G2';
-export const PROBE_SCENARIOS = ['simple', 'repair', 'review', 'scope', 'outage'] as const;
+export const PROBE_SCENARIOS = ['simple', 'repair', 'review', 'scope'] as const;
 export type ProbeScenario = (typeof PROBE_SCENARIOS)[number] | 'default';
 
 type Attempts = ReturnType<typeof readPolicyAttempts>;
@@ -156,35 +156,13 @@ export function scenarioFor(
 
 function scenarioFailure(
   scenario: ProbeScenario,
-  console: Console,
   coding: Attempts,
   attempts: Attempts,
-  gatewayRequests: number,
   repairRejected: boolean
 ): string | undefined {
   const agy = (a: Attempts[number]) => a.provider === 'agy' || a.provider === 'gemini';
   const completed = coding.filter(a => a.status === 'completed');
   if (!completed.some(a => a.node === 'code-quick')) return 'coding_evidence_missing';
-  if (scenario === 'outage') {
-    const failed = coding.findIndex(a => agy(a) && a.status === 'failed');
-    if (
-      !gatewayRequests ||
-      failed < 0 ||
-      !coding
-        .slice(failed + 1)
-        .some(
-          a =>
-            a.node === 'code-quick' &&
-            a.provider === 'codex' &&
-            a.status === 'completed' &&
-            a.reassignment?.from === 'agy' &&
-            a.reassignment.reason === 'vendor_failure'
-        )
-    )
-      return 'outage_failover_missing';
-  } else if (console === 'gemini' && completed.some(a => !agy(a))) {
-    return 'neon_coding_missing';
-  }
   if (scenario === 'repair' && (!repairRejected || !completed.some(a => a.node === 'repair-quick')))
     return 'repair_evidence_missing';
   const family = (a: Attempts[number]) => (agy(a) ? 'gemini' : a.provider);
@@ -205,7 +183,7 @@ function scenarioFailure(
 function* probe(
   level: ProbeLevel,
   shimOverride?: string,
-  suite?: { console: Console; scenario: ProbeScenario; gateway?: URL; requests?: () => number }
+  suite?: { console: Console; scenario: ProbeScenario }
 ): Generator<Command, ProbeEvidence | ScenarioEvidence, CommandResult> {
   const started = Date.now(),
     limit = level === 'G1' ? 15 * 60_000 : 30 * 60_000,
@@ -249,7 +227,6 @@ function* probe(
     ARCHON_HOME: canonicalArchon,
     SUPERAGENT_WRITE_ROOTS: root,
     ...(suite ? { DATABASE_URL: '' } : {}),
-    ...(suite?.gateway ? { AGY_LLM_GATEWAY_URL: suite.gateway.href } : {}),
   };
   const judgement: ProbeJudgement = {
     launch_exit: -1,
@@ -362,14 +339,7 @@ function* probe(
     suite && base.ok
       ? judgement.diagnostic
         ? 'evidence_unreadable'
-        : scenarioFailure(
-            suite.scenario,
-            suite.console,
-            coding,
-            attempts,
-            suite.requests?.() ?? 0,
-            repairRejected
-          )
+        : scenarioFailure(suite.scenario, coding, attempts, repairRejected)
       : base.reason;
   const decision = { ok: base.ok && !reason && !judgement.diagnostic, reason };
   if (!decision.ok && latest)
@@ -441,87 +411,52 @@ export async function runScenarioProbe(
   scenario: ProbeScenario,
   shimOverride?: string
 ): Promise<ScenarioEvidence> {
-  if (scenario === 'outage' && console !== 'gemini')
-    throw new Error('probe: outage requires gemini');
-  let requests = 0;
-  const gateway =
-    scenario === 'outage'
-      ? Bun.serve({
-          hostname: '127.0.0.1',
-          port: 0,
-          fetch() {
-            requests++;
-            return Response.json(
-              {
-                error: {
-                  code: 503,
-                  message: 'upstream timeout - LLM provider did not respond',
-                  status: 'UNAVAILABLE',
-                },
-              },
-              { status: 503 }
-            );
-          },
-        })
-      : undefined;
-  try {
-    const sequence = probe(level, shimOverride, {
-      console,
-      scenario,
-      gateway: gateway?.url,
-      requests: () => requests,
-    });
-    let step = sequence.next();
-    while (!step.done) {
-      const { args, ...options } = step.value;
-      let result: CommandResult;
-      try {
-        const child = Bun.spawn(args, { ...options, ...spawnOptions });
-        const [exitCode, stdout, stderr] = await Promise.all([
-          child.exited,
-          new Response(child.stdout).text(),
-          new Response(child.stderr).text(),
-        ]);
-        result = { exitCode, stdout, stderr };
-      } catch (error) {
-        if (args[1] !== 'abandon') throw error;
-        step = sequence.throw(error);
-        continue;
-      }
-      step = sequence.next(result);
+  const sequence = probe(level, shimOverride, { console, scenario });
+  let step = sequence.next();
+  while (!step.done) {
+    const { args, ...options } = step.value;
+    let result: CommandResult;
+    try {
+      const child = Bun.spawn(args, { ...options, ...spawnOptions });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      result = { exitCode, stdout, stderr };
+    } catch (error) {
+      if (args[1] !== 'abandon') throw error;
+      step = sequence.throw(error);
+      continue;
     }
-    if (!('console' in step.value)) throw new Error('probe: scenario evidence missing');
-    return step.value;
-  } finally {
-    await gateway?.stop(true);
+    step = sequence.next(result);
   }
+  if (!('console' in step.value)) throw new Error('probe: scenario evidence missing');
+  return step.value;
 }
 
 export async function runProbeMatrix(level: ProbeLevel, parallel: number, run = runScenarioProbe) {
-  const shared = PROBE_SCENARIOS.filter(s => s !== 'outage');
   const cells = (['claude', 'gemini'] as const).flatMap(console =>
-    shared.map(scenario => ({ console, scenario }))
+    PROBE_SCENARIOS.map(scenario => ({ console, scenario }))
   );
   const results: ScenarioEvidence[] = [];
-  // Isolate the outage from other cells that share provider health and cooldown state.
   for (let i = 0; i < cells.length; i += parallel)
     results.push(
       ...(await Promise.all(
         cells.slice(i, i + parallel).map(c => run(level, c.console, c.scenario))
       ))
     );
-  results.push(await run(level, 'gemini', 'outage'));
   const comparisons = PROBE_SCENARIOS.map(scenario => {
-    const claude = results.find(r => r.scenario === scenario && r.console === 'claude') ?? null;
+    const claude = results.find(r => r.scenario === scenario && r.console === 'claude');
     const gemini = results.find(r => r.scenario === scenario && r.console === 'gemini');
     if (!gemini) throw new Error(`probe: matrix result missing for Gemini/${scenario}`);
-    if (!claude) return { scenario, claude, gemini, consistent: null };
+    if (!claude) throw new Error(`probe: matrix result missing for Claude/${scenario}`);
     const consistent =
       claude.ok === gemini.ok &&
       claude.state === gemini.state &&
       claude.delivery_state === gemini.delivery_state;
     return { scenario, claude, gemini, consistent };
   });
-  const consistent = comparisons.every(c => c.consistent === null || c.consistent);
+  const consistent = comparisons.every(c => c.consistent);
   return { ok: consistent && results.every(r => r.ok), consistent, comparisons };
 }

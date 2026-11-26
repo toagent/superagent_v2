@@ -96,7 +96,7 @@ function runtimeExecution(
   const node = options.nodeConfig?.nodeId;
   if (!node) throw new Error('policy: node id missing');
   const gemini = provider === 'gemini';
-  const neon = usesNeonCoder(plan.console, plan.mode);
+  const neon = usesNeonCoder(plan.mode);
   let contract = executionContract(node);
   const tiers: Tiers = { tiers: {}, policy, routing: policy.routing };
   const table = readExecutionTable(join(dir, 'execution.json'), plan, tiers);
@@ -336,7 +336,6 @@ function runtimeExecution(
         ...(candidate.provider === 'agy'
           ? { env: { ...options.env, SUPERAGENT_ROLE: 'general' } }
           : {}),
-        ...(provider === 'agy' && candidate.provider === 'codex' ? { assistantConfig } : {}),
         ...(gemini
           ? { purpose: 'title-generation' as const, nativeTools: undefined, assistantConfig }
           : {}),

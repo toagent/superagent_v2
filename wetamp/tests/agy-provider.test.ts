@@ -13,7 +13,7 @@ import { getRegistration } from '@archon/providers';
 import { executePolicy } from '@archon/workflows/policy-dispatch';
 import { providerChunkSchema } from '../../packages/provider-contract/src';
 import { createAgyProvider } from '../src/agy-provider';
-import { readAgyHealth, readClaudeHealth, TRIP_RETRIES } from '../src/claude-health';
+import { readAgyHealth, readClaudeHealth } from '../src/claude-health';
 import { loadTiers, snapshotPolicy } from '../src/config';
 import { executionTable } from '../src/execution';
 import { agyGuardCommand, agyGuardPath } from '../src/install-hooks';
@@ -501,70 +501,6 @@ test('真实 policy wrapper 从冻结路由派发 agy，失败后用新会话修
       ['gemini-4-neon-%68igh', 'pinned'],
       ['gemini-4-neon-xhigh', 'provider'],
     ]);
-
-    plan.mode = 'auto';
-    plan.console = 'gemini';
-    writeFileSync(join(f.home, 'plan.json'), JSON.stringify(plan));
-    writeFileSync(join(f.home, 'execution.json'), JSON.stringify(executionTable(plan, tiers)));
-    const fallback = wrapPolicyProvider(
-      createAgyProvider({ executable: f.executable }),
-      'agy',
-      candidate => {
-        expect(candidate.provider).toBe('codex');
-        return async function* (prompt, _cwd, resume) {
-          expect(prompt).toBe(pack);
-          expect(resume).toBeUndefined();
-          yield { type: 'result', text: 'Codex 接手' };
-          yield { type: 'settled' };
-        };
-      }
-    );
-    const refusal = join(f.home, 'refusal');
-    writeFileSync(refusal, 'Connection refused\n');
-    const empty = join(f.home, 'empty');
-    writeFileSync(empty, '');
-    const dispatch = (outage: boolean) =>
-      collect(
-        fallback.sendQuery(pack, f.cwd, undefined, {
-          model,
-          nodeConfig: { nodeId: `repair-${plan.packages[0].id}` },
-          env: {
-            ...f.env,
-            SA_POLICY_PATH: policy,
-            ...(outage
-              ? { FIXTURE_STREAM: empty, FIXTURE_STDERR: refusal, FIXTURE_EXIT: '3' }
-              : {}),
-          },
-        })
-      );
-    let failed = 0;
-    for (let i = 0; failed < TRIP_RETRIES && i < TRIP_RETRIES; i++) {
-      expect((await dispatch(true)).at(-2)).toMatchObject({ text: 'Codex 接手' });
-      failed = readPolicyAttempts(artifacts)
-        .slice(attempts.length)
-        .filter(a => a.provider === 'agy' && a.failure === 'transient').length;
-      expect(readAgyHealth().state).toBe(failed < TRIP_RETRIES ? 'up' : 'down');
-    }
-    expect(failed).toBe(TRIP_RETRIES);
-
-    const down = readAgyHealth();
-    expect(down).toMatchObject({ state: 'down', unserved_failures: TRIP_RETRIES });
-    expect(readClaudeHealth(Date.now()).state).toBe('up');
-    db.run("UPDATE remote_agent_workflow_runs SET id='next-run'");
-    const nextArtifacts = join(f.home, 'artifacts/runs/next-run');
-    mkdirSync(nextArtifacts, { recursive: true });
-    expect((await dispatch(false)).at(-2)).toMatchObject({ text: 'Codex 接手' });
-    expect(readPolicyAttempts(nextArtifacts).map(a => a.provider)).toEqual(['codex']);
-    writeFileSync(
-      join(f.home, 'agy-health.json'),
-      JSON.stringify({
-        ...down,
-        next_probe_at: new Date(Date.now() - 1).toISOString(),
-      })
-    );
-    expect((await dispatch(false)).at(-2)).toMatchObject({ structuredOutput: { ok: true } });
-    expect(readAgyHealth().state).toBe('up');
-    expect(readPolicyAttempts(nextArtifacts).map(a => a.provider)).toEqual(['codex', 'agy']);
   } finally {
     if (previousHome === undefined) delete process.env.ARCHON_HOME;
     else process.env.ARCHON_HOME = previousHome;
@@ -609,13 +545,13 @@ test('取消终止进程组内的子进程，预取消不启动', async () => {
   }
 });
 
-test('工具后账号耗尽触发跨节点熔断但不静默重放，无副作用直拒切 Codex，脏树禁重放与缺失诊断', async () => {
+test('显式 Neon 账号耗尽后熔断，冷却后恢复，工作树变更时禁止重放', async () => {
   const f = fixture(),
     tiers = loadTiers(),
     repo = gitRepo(f.home);
   const plan = loadPlan(
     fixturePlan(f.home, repo, p => {
-      p.mode = 'auto';
+      p.mode = 'single:gemini';
       p.console = 'gemini';
     }),
     [f.home]
@@ -683,19 +619,29 @@ test('工具后账号耗尽触发跨节点熔断但不静默重放，无副作�
     expect(codexCalls).toBe(0);
     expect(readAgyHealth().state).toBe('down');
     expect(readPolicyAttempts(artifacts).map(a => a.provider)).toEqual(['agy']);
-    // 下一 run 立即跳过 Neon 走 Codex
+    expect(readClaudeHealth(Date.now()).state).toBe('up');
+    const down = readAgyHealth();
     db.run("UPDATE remote_agent_workflow_runs SET id='run-next'");
-    mkdirSync(join(f.home, 'artifacts/runs/run-next'), { recursive: true });
-    expect((await runNode(exhausted)).at(-2)).toMatchObject({ text: 'Codex 接手' });
-    expect(codexCalls).toBe(1);
-    // 重置健康后：无工具活动网关直拒自动切 Codex 并熔断
+    const nextArtifacts = join(f.home, 'artifacts/runs/run-next');
+    mkdirSync(nextArtifacts, { recursive: true });
+    expect((await runNode(exhausted)).at(-2)).toMatchObject({
+      failure: {
+        class: 'misconfigured',
+        evidence: expect.stringContaining('no eligible agy model'),
+      },
+    });
+    expect(readPolicyAttempts(nextArtifacts)).toEqual([]);
     writeFileSync(
       join(f.home, 'agy-health.json'),
-      JSON.stringify({ state: 'up', probe_failures: 0 })
+      JSON.stringify({ ...down, next_probe_at: new Date(Date.now() - 1).toISOString() })
     );
+    const success = readFileSync(join(fixtures, 'success.ndjson'), 'utf8');
+    expect((await runNode(success)).at(-2)).toMatchObject({ structuredOutput: { ok: true } });
+    expect(readAgyHealth().state).toBe('up');
+    expect(readPolicyAttempts(nextArtifacts).map(a => a.provider)).toEqual(['agy']);
     const refused =
       '{"event":"result","result":{"status":"ERROR","error":"dial tcp 127.0.0.1:1: connect: connection refused"}}';
-    expect((await runNode(refused)).at(-2)).toMatchObject({ text: 'Codex 接手' });
+    expect((await runNode(refused)).at(-2)).toMatchObject({ failure: { class: 'transient' } });
     expect(readAgyHealth().state).toBe('down');
     // 工作树变脏时即使返回 transient 也禁止静默重放
     writeFileSync(
@@ -733,7 +679,7 @@ test('工具后账号耗尽触发跨节点熔断但不静默重放，无副作�
     expect(dirtyChunks.at(-2)).toMatchObject({
       failure: { class: 'unknown', evidence: expect.stringContaining('工作树已变更') },
     });
-    expect(codexCalls).toBe(2);
+    expect(codexCalls).toBe(0);
     expect(readAgyHealth().state).toBe('down');
   } finally {
     if (prevArchon === undefined) delete process.env.ARCHON_HOME;

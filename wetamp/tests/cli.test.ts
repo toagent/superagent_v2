@@ -2572,9 +2572,10 @@ describe('run (archon stub)', () => {
       expect(cliMod.planOf(ledger).console).toBe(expected);
       if (expected === 'gemini') {
         const call = s.calls().find(c => c.startsWith('workflow run'))!;
-        expect(pinned(call)['@sa-agy-coder']).toEqual({
-          provider: 'agy',
-          model: 'gemini-4-neon-%78high',
+        expect(pinned(call)['@sa-agy-coder']).toBeUndefined();
+        expect(pinned(call)['@sa-coder']).toMatchObject({
+          provider: 'codex',
+          model: loadTiers().routing.coder.models[0],
         });
       }
     }

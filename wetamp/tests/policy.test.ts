@@ -53,8 +53,8 @@ test('single:gemini lists only the ordered agy candidates and leaves review inde
     model: resolveRoute(tiers, 'codex', 'single:chatgpt').candidates[0].model,
   });
   expect(resolveRoute(tiers, 'gemini', 'auto').candidates[0]).toMatchObject({
-    provider: 'agy',
-    model: tiers.routing.gemini!.code![0],
+    provider: 'codex',
+    model: tiers.routing.coder.models[0],
   });
   delete tiers.routing.gemini;
   expect(() => resolveRoute(tiers, 'codex', 'single:gemini', 'repair')).toThrow(

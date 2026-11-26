@@ -154,7 +154,7 @@
     },
     "general": {
       "name": "将军",
-      "purpose": "编码：Gemini 发起时优先 Neon，ChatGPT 后备；其他控制台默认 ChatGPT，Claude 由 single:claude 启用。",
+      "purpose": "编码：全部控制台默认 ChatGPT，Neon 由 single:gemini 启用，Claude 由 single:claude 启用。",
       "pools": {
         "chatgpt": ["gpt-6.2-sol", "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
         "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]

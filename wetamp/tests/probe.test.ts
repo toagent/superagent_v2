@@ -152,90 +152,13 @@ esac
   }
 });
 
-test('outage serves loopback 503 and saves provider failover evidence, then closes the port', async () => {
-  const root = tmp(),
-    shim = join(root, 'shim'),
-    snapshot = resolve(import.meta.dir, '../..');
-  const commit = Bun.spawnSync(['git', '-C', snapshot, 'rev-parse', 'HEAD'])
-    .stdout.toString()
-    .trim();
-  const ledger = {
-    run_id: 'run-1',
-    engine_commit: commit,
-    engine_snapshot: snapshot,
-    console: 'gemini',
-    archon_run_id: 'archon-1',
-  };
-  const attempts = [
-    { id: '1', node: 'code-quick', provider: 'agy', model: 'neon', status: 'failed' },
-    {
-      id: '2',
-      node: 'code-quick',
-      provider: 'codex',
-      model: 'alias',
-      resolved: 'actual',
-      status: 'completed',
-      reassignment: {
-        node: 'code-quick',
-        from: 'agy',
-        to: 'codex',
-        reason: 'vendor_failure',
-        failure: 'transient',
-      },
-    },
-  ];
-  writeFileSync(
-    shim,
-    `#!${process.execPath}
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-const sa = process.env.SUPERAGENT_HOME;
-const art = join(sa, 'archon', 'artifacts/runs/archon-1');
-if (process.argv[2] === 'quick') {
-  if (process.argv[process.argv.indexOf('--console') + 1] !== 'gemini') process.exit(5);
-  const url = process.env.AGY_LLM_GATEWAY_URL;
-  const response = await fetch(url);
-  if (response.status !== 503 || (await response.json()).error.status !== 'UNAVAILABLE') process.exit(6);
-  mkdirSync(join(sa, 'runs'), { recursive: true });
-  mkdirSync(art, { recursive: true });
-  writeFileSync(join(sa, 'gateway'), url);
-  writeFileSync(join(sa, 'runs/run-1.json'), JSON.stringify(${JSON.stringify(ledger)}));
-  writeFileSync(join(art, 'policy-attempts.json'), JSON.stringify(${JSON.stringify(attempts)}));
-  console.log(JSON.stringify({run_id:'run-1'}));
-} else console.log(JSON.stringify({run_id:'run-1',state:'completed',delivery_state:'published',evidence:art}));
-`,
-    { mode: 0o755 }
-  );
-  process.env.SUPERAGENT_HOME = join(root, 'sa');
-  process.env.ARCHON_HOME = join(root, 'sa', 'archon');
-  const evidence = await runScenarioProbe('G1', 'gemini', 'outage', shim);
-  expect(evidence).toMatchObject({
-    ok: true,
-    console: 'gemini',
-    scenario: 'outage',
-    rounds: 1,
-    state: 'completed',
-    delivery_state: 'published',
-    duration_ms: expect.any(Number),
-    attempts: [
-      { provider: 'agy', model: 'neon' },
-      { provider: 'codex', model: 'actual' },
-    ],
-  });
-  expect(JSON.parse(readFileSync(evidence.evidence_path, 'utf8'))).toMatchObject(evidence);
-  await expect(fetch(readFileSync(join(root, 'sa/gateway'), 'utf8'))).rejects.toThrow();
-});
-
-test('matrix compares shared outcomes and requires the Gemini-only outage to pass', async () => {
+test('matrix compares all shared outcomes', async () => {
   const calls: string[] = [];
-  let failRepair = true,
-    failOutage = true;
+  let failRepair = true;
   const run = () =>
     runProbeMatrix('G1', 1, async (level, console, scenario) => {
       calls.push(`${console}/${scenario}`);
-      const ok =
-        !(failOutage && scenario === 'outage') &&
-        !(failRepair && console === 'gemini' && scenario === 'repair');
+      const ok = !(failRepair && console === 'gemini' && scenario === 'repair');
       return {
         ok,
         level,
@@ -259,7 +182,6 @@ test('matrix compares shared outcomes and requires the Gemini-only outage to pas
     'gemini/repair',
     'gemini/review',
     'gemini/scope',
-    'gemini/outage',
   ]);
   expect(matrix).toMatchObject({
     ok: false,
@@ -269,11 +191,8 @@ test('matrix compares shared outcomes and requires the Gemini-only outage to pas
       { scenario: 'repair', consistent: false },
       { scenario: 'review', consistent: true },
       { scenario: 'scope', consistent: true },
-      { scenario: 'outage', consistent: null },
     ],
   });
   failRepair = false;
-  expect(await run()).toMatchObject({ ok: false, consistent: true });
-  failOutage = false;
   expect(await run()).toMatchObject({ ok: true, consistent: true });
 });

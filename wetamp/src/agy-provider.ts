@@ -216,7 +216,6 @@ export async function* runAgy(
   options: Parameters<IAgentProvider['sendQuery']>[3],
   job?: {
     spawned: (pid: number) => void;
-    unserved: () => void;
     init?: (id: string, model: string) => void;
   }
 ): AsyncGenerator<MessageChunk> {
@@ -395,21 +394,6 @@ export async function* runAgy(
     } else if (invalid && terminal) Object.assign(result, failure('unknown', 'agy 输出无效事件'));
     else if (!result.isError && [...tools.values()].includes('active'))
       Object.assign(result, failure('unknown', 'agy 工具步骤失败或未完成'));
-    const unservedGateway =
-      !terminal &&
-      Boolean(abnormalExit) &&
-      (diag.gatewayRefused ||
-        diag.status === 'UNAVAILABLE' ||
-        diag.status === 'RESOURCE_EXHAUSTED');
-    if (
-      !sawTool &&
-      !invalid &&
-      (unservedGateway ||
-        (terminal?.status === 'ERROR' &&
-          (result.failure?.class === 'transient' || result.failure?.class === 'quota_exhausted') &&
-          (result.tokens === undefined || result.tokens.total === 0)))
-    )
-      job?.unserved();
   } finally {
     signal?.removeEventListener('abort', stop);
     lines.close();

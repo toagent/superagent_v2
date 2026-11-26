@@ -935,7 +935,7 @@ else if (process.argv[1].endsWith('/claude')) {
     expect(downgradedExit).not.toBe(0); expect(await new Response(downgraded.stderr as ReadableStream).text()).toContain('claude_unavailable');
   });
   // prettier-ignore
-  test('automatic jobs route by launcher and fall back when Neon is unavailable', async () => {
+  test('automatic agy generals start on Codex even without a Neon gateway', async () => {
     const root = tmp(), preload = join(root, 'launcher.cjs'), prompt = join(root, 'prompt.md');
     writeFileSync(preload, `require(${JSON.stringify(join(WETAMP, 'hooks/live.cjs'))}).launcher = () => ({ client: process.env.FIXTURE_CLIENT, pid: process.pid, tty: null, cwd: process.cwd() });\n`);
     writeFileSync(prompt, 'fixture prompt');
@@ -947,7 +947,7 @@ else if (process.argv[1].endsWith('/claude')) {
       ['claude', 'strategist', 'gpt-5.6-sol', false],
       ['codex', 'strategist', 'gpt-5.6-sol', false],
       ['agy', 'strategist', 'claude-opus-5-5', false],
-      ['agy', 'general', loadTiers().routing.coder.models[0], true],
+      ['agy', 'general', loadTiers().routing.coder.models[0], false],
     ] as const;
     const selected = [];
     for (const [client, role] of cases) {
@@ -990,7 +990,7 @@ if (fixture) process.exit(3);
       ...hookFixtureEnv(root), XDG_STATE_HOME: root, AGY_LLM_GATEWAY_URL: 'https://example.invalid',
       AGY_LLM_GATEWAY_API_KEY: 'fixture-gateway-key',
     };
-    const p = run([...promptArgs('neon', 'general', prompt), '--card', prompt], '', root, env);
+    const p = run([...promptArgs('neon', 'general', prompt, '--mode', 'single:gemini'), '--card', prompt], '', root, env);
     const [stderr, exit] = await Promise.all([new Response(p.stderr as ReadableStream).text(), p.exited]);
     expect(exit, stderr).toBe(0);
     const model = loadTiers().routing.gemini!.code![0];
@@ -1004,16 +1004,16 @@ if (fixture) process.exit(3);
       receipt: { tokens: { input: 18531, output: 589 } } });
     const mismatched = join(root, 'other-card.md');
     writeFileSync(mismatched, 'different card');
-    const mismatch = run([...promptArgs('mismatched-card', 'general', prompt), '--card', mismatched], '', root, env);
+    const mismatch = run([...promptArgs('mismatched-card', 'general', prompt, '--mode', 'single:gemini'), '--card', mismatched], '', root, env);
     const [mismatchErr, mismatchExit] = await Promise.all([new Response(mismatch.stderr as ReadableStream).text(), mismatch.exited]);
     expect(mismatchExit).toBe(0);
     expect(mismatchErr).toContain('prompt-file 与 --card 内容不一致');
     expect(readJobs().jobs.find(j => j.title === 'mismatched-card')?.agy_input_sha256).toBeUndefined();
-    const explicit = run(['job', 'exec', '--title', 'explicit-neon', '--role', 'general', '--',
+    const explicit = run(['job', 'exec', '--title', 'explicit-neon', '--role', 'general', '--mode', 'single:gemini', '--',
       join(root, 'agy'), '--print', 'fixture prompt', '--output-format', 'stream-json',
       '--model', model, '--dangerously-skip-permissions'], '', root, env);
     expect(await explicit.exited).toBe(0);
-    const explicitCard = run(['job', 'exec', '--title', 'explicit-neon-card', '--role', 'general',
+    const explicitCard = run(['job', 'exec', '--title', 'explicit-neon-card', '--role', 'general', '--mode', 'single:gemini',
       '--card', prompt, '--', join(root, 'agy'), '--model', model], '', root, env);
     expect(await explicitCard.exited).toBe(0);
     expect(JSON.stringify(JSON.parse(readFileSync(join(root, 'args.json'), 'utf8')))).not.toContain('fixture prompt');
@@ -1021,10 +1021,10 @@ if (fixture) process.exit(3);
     expect(readJobs().jobs.find(j => j.title === 'explicit-neon-card')?.agy_input_sha256).toBe(
       new Bun.CryptoHasher('sha256').update('fixture prompt').digest('hex')
     );
-    for (const [fixture, provider, exit] of [['outage', 'codex', 0], ['missing', 'agy', 1]] as const) {
-      const p = run(promptArgs(fixture, 'general', prompt), '', root, { ...env, FIXTURE_AGY_RESULT: fixture });
-      expect(await p.exited, await new Response(p.stderr as ReadableStream).text()).toBe(exit);
-      expect(readJobs().jobs.find(j => j.title === fixture)?.execution?.provider).toBe(provider);
+    for (const fixture of ['outage', 'missing']) {
+      const p = run(promptArgs(fixture, 'general', prompt, '--mode', 'single:gemini'), '', root, { ...env, FIXTURE_AGY_RESULT: fixture });
+      expect(await p.exited, await new Response(p.stderr as ReadableStream).text()).toBe(1);
+      expect(readJobs().jobs.find(j => j.title === fixture)?.execution?.provider).toBe('agy');
     }
   });
   test('automatic roles route to Codex while down and keep prompt bytes out of argv', async () => {
