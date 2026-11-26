@@ -165,6 +165,125 @@ describe('SqliteAdapter failure logging', () => {
 });
 
 describe('SqliteAdapter upgrade path', () => {
+  async function currentStartupFixture(): Promise<{ path: string; raw: Database }> {
+    const path = await upgradeFixturePath();
+    await new SqliteAdapter(path).close();
+    return { path, raw: new Database(path) };
+  }
+
+  // Use the real SQLite busy handler with a short wait so failures stay cheap.
+  function shortStartupBusyTimeout() {
+    const run = Database.prototype.run;
+    return spyOn(Database.prototype, 'run').mockImplementation(function (
+      this: Database,
+      sql,
+      ...params
+    ) {
+      return run.call(
+        this,
+        sql === 'PRAGMA busy_timeout = 5000' ? 'PRAGMA busy_timeout = 1' : sql,
+        ...params
+      );
+    });
+  }
+
+  test('opens a current WAL database without schema writes while another connection holds the writer lock', async () => {
+    const { path, raw: holder } = await currentStartupFixture();
+    const run = shortStartupBusyTimeout();
+    try {
+      holder.run('BEGIN IMMEDIATE');
+      run.mockClear();
+      const db = new SqliteAdapter(path);
+      try {
+        expect(await readSchemaVersion(db)).toMatchObject({ appVersion: APP_VERSION });
+        expect(holder.inTransaction).toBe(true);
+        expect(run.mock.calls.map(([sql]) => sql)).toEqual([
+          'PRAGMA busy_timeout = 5000',
+          'PRAGMA foreign_keys = ON',
+        ]);
+      } finally {
+        await db.close();
+      }
+    } finally {
+      run.mockRestore();
+      holder.close();
+    }
+  });
+
+  test('repairs each missing table or index even with the current version recorded', async () => {
+    const { path, raw } = await currentStartupFixture();
+    const catalog = raw.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?');
+    try {
+      for (const [type, name] of [
+        ['table', 'remote_agent_user_ai_prefs'],
+        ['index', 'idx_sessions_active'],
+        ['index', 'idx_conversations_hidden'],
+      ]) {
+        raw.run(`DROP ${type} ${name}`);
+        const db = new SqliteAdapter(path);
+        await db.close();
+        expect(catalog.get(type, name)).toEqual({ name });
+      }
+    } finally {
+      catalog.finalize();
+      raw.close();
+    }
+  });
+
+  test('retries a busy upgrade and records the new version after the lock clears', async () => {
+    const { path, raw: holder } = await currentStartupFixture();
+    const run = shortStartupBusyTimeout();
+    const sleep = spyOn(Bun, 'sleepSync').mockImplementation(() => holder.run('ROLLBACK'));
+    try {
+      holder.run("UPDATE remote_agent_schema_version SET app_version = ''");
+      holder.run('DROP INDEX idx_sessions_active');
+      holder.run('BEGIN IMMEDIATE');
+      const db = new SqliteAdapter(path);
+      try {
+        expect(sleep).toHaveBeenCalledTimes(1);
+        expect(await readSchemaVersion(db)).toMatchObject({ appVersion: APP_VERSION });
+        expect(
+          (await db.query("SELECT name FROM sqlite_master WHERE name = 'idx_sessions_active'"))
+            .rowCount
+        ).toBe(1);
+      } finally {
+        await db.close();
+      }
+    } finally {
+      sleep.mockRestore();
+      run.mockRestore();
+      holder.close();
+    }
+  });
+
+  test('fails after bounded busy retries and can reopen after the writer releases', async () => {
+    const { path, raw: holder } = await currentStartupFixture();
+    const run = shortStartupBusyTimeout();
+    const sleep = spyOn(Bun, 'sleepSync').mockImplementation(() => {});
+    try {
+      holder.run('DELETE FROM remote_agent_schema_version');
+      holder.run('BEGIN IMMEDIATE');
+      expect(() => new SqliteAdapter(path)).toThrow(
+        expect.objectContaining({ code: 'SQLITE_BUSY' })
+      );
+      expect(sleep).toHaveBeenCalledTimes(7);
+      holder.run('ROLLBACK');
+      const db = new SqliteAdapter(path);
+      try {
+        expect(await readSchemaVersion(db)).toMatchObject({
+          createdAppVersion: null,
+          appVersion: APP_VERSION,
+        });
+      } finally {
+        await db.close();
+      }
+    } finally {
+      sleep.mockRestore();
+      run.mockRestore();
+      holder.close();
+    }
+  });
+
   // Regression: the event_order index and trigger were briefly created inside
   // createSchema(). Both reference a column absent from any database predating
   // it, and CREATE INDEX on a missing column aborts the entire createSchema()

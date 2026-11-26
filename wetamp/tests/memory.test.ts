@@ -1778,6 +1778,39 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       expect([category, signature]).toEqual(['transient', reason]);
     }
   });
+  test('green terminal failures retain publish reasons from historical and current receipts', () => {
+    raw.nodes = [{ nodeId: 'publish-m1', state: 'failed' }];
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+    const file = join(artifactsOf(raw), 'publish-m1.json');
+    for (const [status, reason] of [
+      ['dirty', 'target_dirty'],
+      ['switched', 'target_switched'],
+      ['rejected', 'target_switched'],
+    ]) {
+      writeFileSync(file, JSON.stringify({ status, reason }));
+      const folded = foldEpisode(ledger, plan, raw, [], {}, NOW);
+      expect(folded).toMatchObject({ reasons: [reason], category: 'plan', signature: reason });
+    }
+    for (const receipt of [
+      { status: 'dirty' },
+      { status: 'dirty', reason: ' ' },
+      { status: 'published', reason: 'target_dirty' },
+      { status: 'ok', reason: 'target_switched' },
+    ]) {
+      writeFileSync(file, JSON.stringify(receipt));
+      expect(foldEpisode(ledger, plan, raw, [], {}, NOW).signature).toBe('evidence_conflict');
+    }
+  });
+  test('persisted abandonment explains an otherwise unclassified green failure', () => {
+    raw.nodes = [{ nodeId: 'publish-m1', state: 'failed' }];
+    writeFileSync(join(artifactsOf(raw), 'verify-core.json'), JSON.stringify({ ok: true }));
+    const fold = () => foldEpisode(ledger, plan, raw, [], {}, NOW);
+    ledger.intervention_events = [{ at: '', action: 'abandon', source: 'cli', ok: true }];
+    expect(fold()).toMatchObject({ category: 'engine', signature: 'evidence_conflict' });
+    ledger.rejected = raw.id;
+    const { reasons, category, signature } = fold();
+    expect([reasons, category, signature]).toEqual([['abandoned'], 'transient', 'abandoned']);
+  });
   test('real strategist job roles and cards replace other tag; done overrun is plan', () => {
     mkdirSync(join(sa, 'jobs'));
     for (const j of realData.jobs)

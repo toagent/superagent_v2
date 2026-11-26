@@ -28,8 +28,42 @@ function isSqliteBusy(error: unknown): error is SQLiteError {
   return error instanceof SQLiteError && (error.errno & 0xff) === 5;
 }
 
+/**
+ * Startup DDL/WAL paths retry both SQLITE_BUSY (5) and SQLITE_LOCKED (6) with
+ * bounded backoff so concurrent openers survive transient lock contention.
+ */
+function isSqliteStartupBusy(error: unknown): error is SQLiteError {
+  return isSqliteBusy(error) || (error instanceof SQLiteError && (error.errno & 0xff) === 6);
+}
+
 const BUSY_RETRY_MAX_DELAY_MS = 2000;
 const BUSY_WARN_INTERVAL_MS = 30_000;
+const STARTUP_BUSY_MAX_ATTEMPTS = 8;
+const STARTUP_BUSY_INITIAL_DELAY_MS = 20;
+
+function retryStartupWhileBusy(attempt: () => void): void {
+  const startedAt = Date.now();
+  let delayMs = STARTUP_BUSY_INITIAL_DELAY_MS;
+  let nextWarnAtMs = 0;
+  for (let count = 1; ; count++) {
+    try {
+      attempt();
+      return;
+    } catch (error) {
+      if (!isSqliteStartupBusy(error) || count >= STARTUP_BUSY_MAX_ATTEMPTS) throw error;
+      const waitedMs = Date.now() - startedAt;
+      if (waitedMs >= nextWarnAtMs) {
+        getLog().warn(
+          { operation: 'schema_init', code: error.code, waitedMs, attempt: count },
+          'db.sqlite_busy_waiting'
+        );
+        nextWarnAtMs = waitedMs + BUSY_WARN_INTERVAL_MS;
+      }
+      Bun.sleepSync(delayMs);
+      delayMs = Math.min(delayMs * 2, BUSY_RETRY_MAX_DELAY_MS);
+    }
+  }
+}
 
 /**
  * Run `attempt` until it stops failing with SQLITE_BUSY. Each attempt already waits
@@ -79,6 +113,89 @@ function resourceSlotHoldersTable(name: string): string {
       );`;
 }
 
+const ADD_COLUMN = {
+  usersRole: "ALTER TABLE remote_agent_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'",
+  codebasesDefaultBranch: 'ALTER TABLE remote_agent_codebases ADD COLUMN default_branch TEXT',
+  codebasesKind: "ALTER TABLE remote_agent_codebases ADD COLUMN kind TEXT NOT NULL DEFAULT 'repo'",
+  conversationsTitle: 'ALTER TABLE remote_agent_conversations ADD COLUMN title TEXT',
+  conversationsDeletedAt: 'ALTER TABLE remote_agent_conversations ADD COLUMN deleted_at TEXT',
+  conversationsHidden: 'ALTER TABLE remote_agent_conversations ADD COLUMN hidden INTEGER DEFAULT 0',
+  conversationsUserId:
+    'ALTER TABLE remote_agent_conversations ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL',
+  workflowRunsParentConversationId:
+    'ALTER TABLE remote_agent_workflow_runs ADD COLUMN parent_conversation_id TEXT',
+  workflowRunsOrigin: 'ALTER TABLE remote_agent_workflow_runs ADD COLUMN origin TEXT',
+  workflowRunsWorkingPath: 'ALTER TABLE remote_agent_workflow_runs ADD COLUMN working_path TEXT',
+  workflowRunsUserId:
+    'ALTER TABLE remote_agent_workflow_runs ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL',
+  workflowRunsParentRunId:
+    'ALTER TABLE remote_agent_workflow_runs ADD COLUMN parent_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL',
+  workflowRunsAdoptedFromRunId:
+    'ALTER TABLE remote_agent_workflow_runs ADD COLUMN adopted_from_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL',
+  workflowRunsOutputRoot: 'ALTER TABLE remote_agent_workflow_runs ADD COLUMN output_root TEXT',
+  workflowRunsCheckoutBaseline:
+    'ALTER TABLE remote_agent_workflow_runs ADD COLUMN checkout_baseline TEXT',
+  workflowRunsOutcome:
+    "ALTER TABLE remote_agent_workflow_runs ADD COLUMN outcome TEXT CHECK (outcome IN ('succeeded', 'failed'))",
+  sessionsEndedReason: 'ALTER TABLE remote_agent_sessions ADD COLUMN ended_reason TEXT',
+  messagesUserId:
+    'ALTER TABLE remote_agent_messages ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL',
+  isolationEnvironmentsCreatedByUserId:
+    'ALTER TABLE remote_agent_isolation_environments ADD COLUMN created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL',
+  userAiPrefsDefaultModel: 'ALTER TABLE remote_agent_user_ai_prefs ADD COLUMN default_model TEXT',
+  workflowEventsEventOrder:
+    'ALTER TABLE remote_agent_workflow_events ADD COLUMN event_order INTEGER',
+};
+
+const MIGRATION_OBJECT = {
+  conversationsUserId:
+    'CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON remote_agent_conversations(user_id) WHERE user_id IS NOT NULL',
+  conversationsHidden:
+    'CREATE INDEX IF NOT EXISTS idx_conversations_hidden ON remote_agent_conversations(hidden)',
+  conversationsCodebase:
+    'CREATE INDEX IF NOT EXISTS idx_conversations_codebase ON remote_agent_conversations(codebase_id) WHERE deleted_at IS NULL',
+  workflowRunsUserId:
+    'CREATE INDEX IF NOT EXISTS idx_workflow_runs_user_id ON remote_agent_workflow_runs(user_id) WHERE user_id IS NOT NULL',
+  workflowRunsParentRun:
+    'CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_run ON remote_agent_workflow_runs(parent_run_id) WHERE parent_run_id IS NOT NULL',
+  workflowRunsAdoptedFrom:
+    'CREATE INDEX IF NOT EXISTS idx_workflow_runs_adopted_from ON remote_agent_workflow_runs(adopted_from_run_id) WHERE adopted_from_run_id IS NOT NULL',
+  workflowRunsParentConv:
+    'CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_conv ON remote_agent_workflow_runs(parent_conversation_id)',
+  workflowEventsRunOrder: `CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_run_order
+           ON remote_agent_workflow_events(workflow_run_id, event_order)
+           WHERE event_order IS NOT NULL`,
+  workflowEventsAssignOrder: `CREATE TRIGGER IF NOT EXISTS remote_agent_workflow_events_assign_order
+           AFTER INSERT ON remote_agent_workflow_events
+           WHEN NEW.event_order IS NULL
+           BEGIN
+             UPDATE remote_agent_workflow_events
+             SET event_order = (
+               SELECT COALESCE(MAX(event_order), 0) + 1
+               FROM remote_agent_workflow_events
+             )
+             WHERE rowid = NEW.rowid;
+           END`,
+};
+
+// The probes and migrations share their DDL, including columns with no index.
+const REQUIRED_MIGRATION_COLUMNS = JSON.stringify(
+  Object.values(ADD_COLUMN).map(sql => {
+    const [, , table, , , column] = sql.split(/\s+/);
+    return [table, column];
+  })
+);
+
+const LEGACY_PROVIDER_PREDICATE = "provider IN ('claude', 'codex', 'copilot')";
+
+function isCurrentCodebaseIndex(sql: string | null | undefined): boolean {
+  return sql?.includes('deleted_at IS NULL') ?? false;
+}
+
+function hasAttemptHolders(sql: string | null | undefined): boolean {
+  return sql?.includes("'attempt'") ?? false;
+}
+
 export class SqliteAdapter implements IDatabase {
   private db: Database;
   readonly dialect = 'sqlite' as const;
@@ -103,18 +220,15 @@ export class SqliteAdapter implements IDatabase {
 
     this.db = new Database(dbPath);
 
-    // Set this before WAL initialization: opening two CLI processes can make
-    // `journal_mode = WAL` itself contend on the database header.
-    this.db.run('PRAGMA busy_timeout = 5000');
-
-    // Enable WAL mode for better concurrent performance
-    this.db.run('PRAGMA journal_mode = WAL');
-
-    // Enable foreign keys
-    this.db.run('PRAGMA foreign_keys = ON');
-
-    // Initialize schema if needed
-    this.initSchema();
+    try {
+      // WAL initialization itself can contend on the database header.
+      this.db.run('PRAGMA busy_timeout = 5000');
+      this.db.run('PRAGMA foreign_keys = ON');
+      this.initSchema();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   /**
@@ -330,18 +444,61 @@ export class SqliteAdapter implements IDatabase {
     return { sql: convertedSql, params: reordered };
   }
 
-  /**
-   * Initialize database schema.
-   * Always runs createSchema() since all statements use IF NOT EXISTS,
-   * ensuring new tables from migrations are created in existing databases.
-   */
   private initSchema(): void {
-    // Probe BEFORE createSchema(): once CREATE TABLE IF NOT EXISTS has run there is
-    // no way left to tell a fresh database from one that predates version tracking.
-    const preExisting = this.hasAnyArchonTable();
-    this.createSchema();
-    const allApplied = this.migrateColumns();
-    this.recordSchemaVersion(preExisting, allApplied);
+    retryStartupWhileBusy(() => {
+      // Catalog, version and repair checks must see the same committed state.
+      if (this.db.transaction(() => this.isSchemaCurrent()).deferred()) return;
+
+      // Switching journal mode can write to the database header. Do it only
+      // during convergence, and outside the writer transaction.
+      this.db.run('PRAGMA journal_mode = WAL');
+      this.db
+        .transaction(() => {
+          // Another opener may have completed the upgrade while we waited for the lock.
+          if (this.isSchemaCurrent()) return;
+          const preExisting = this.hasAnyArchonTable();
+          this.createSchema();
+          const allApplied = this.migrateColumns();
+          this.recordSchemaVersion(preExisting, allApplied);
+        })
+        .immediate();
+    });
+  }
+
+  /** Read-only check, called within a transaction. */
+  private isSchemaCurrent(): boolean {
+    const objects = new Map(
+      this.prepareAll<{ type: string; name: string; sql: string | null }>(
+        "SELECT type, name, sql FROM sqlite_master WHERE type IN ('table', 'index', 'trigger')"
+      ).map(({ type, name, sql }) => [`${type}:${name}`, sql])
+    );
+    if (!SqliteAdapter.requiredSchemaObjects.every(key => objects.has(key))) return false;
+
+    const version = this.prepareGet<{ app_version: string }>(
+      'SELECT app_version FROM remote_agent_schema_version WHERE id = 1'
+    );
+    if (version?.app_version !== APP_VERSION) return false;
+
+    if (!isCurrentCodebaseIndex(objects.get('index:idx_conversations_codebase'))) return false;
+    if (!hasAttemptHolders(objects.get('table:remote_agent_resource_slot_holders'))) return false;
+
+    const missingColumn = this.prepareGet(
+      `SELECT 1 FROM json_each(?) AS required
+       WHERE NOT EXISTS (
+         SELECT 1 FROM pragma_table_info(json_extract(required.value, '$[0]')) AS col
+         WHERE col.name = json_extract(required.value, '$[1]')
+       ) LIMIT 1`,
+      [REQUIRED_MIGRATION_COLUMNS]
+    );
+    return missingColumn === null && !this.hasLegacyProviderKeys();
+  }
+
+  private hasLegacyProviderKeys(): boolean {
+    return (
+      this.prepareGet(
+        `SELECT 1 FROM remote_agent_user_provider_keys WHERE ${LEGACY_PROVIDER_PREDICATE} LIMIT 1`
+      ) !== null
+    );
   }
 
   /** True when core Archon tables already exist — i.e. this is not a fresh database. */
@@ -355,7 +512,7 @@ export class SqliteAdapter implements IDatabase {
 
   /**
    * Record which Archon build created this database and which last applied schema
-   * to it (#2316). Diagnostic only — nothing gates on these values.
+   * to it (#2316). The current version is one input to the startup fast path.
    *
    * Writes only when the value actually changes, so the common case (every CLI
    * invocation is a fresh process opening a fresh connection) stays read-only.
@@ -394,6 +551,7 @@ export class SqliteAdapter implements IDatabase {
         );
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       // Deliberate, logged fallback: the vintage row is diagnostic metadata and must
       // never be able to stop the database from opening (e.g. a read-only DB file).
       getLog().warn({ err: e as Error }, 'db.sqlite_schema_version_record_failed');
@@ -420,9 +578,10 @@ export class SqliteAdapter implements IDatabase {
       const userCols = this.prepareAll<{ name: string }>("PRAGMA table_info('remote_agent_users')");
       const userColNames = new Set(userCols.map(c => c.name));
       if (!userColNames.has('role')) {
-        this.db.run("ALTER TABLE remote_agent_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'");
+        this.db.run(ADD_COLUMN.usersRole);
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_users_columns_failed');
       allApplied = false;
     }
@@ -435,14 +594,13 @@ export class SqliteAdapter implements IDatabase {
       const codebaseColNames = new Set(codebaseCols.map(c => c.name));
 
       if (!codebaseColNames.has('default_branch')) {
-        this.db.run('ALTER TABLE remote_agent_codebases ADD COLUMN default_branch TEXT');
+        this.db.run(ADD_COLUMN.codebasesDefaultBranch);
       }
       if (!codebaseColNames.has('kind')) {
-        this.db.run(
-          "ALTER TABLE remote_agent_codebases ADD COLUMN kind TEXT NOT NULL DEFAULT 'repo'"
-        );
+        this.db.run(ADD_COLUMN.codebasesKind);
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_codebases_columns_failed');
       allApplied = false;
     }
@@ -455,29 +613,23 @@ export class SqliteAdapter implements IDatabase {
       const colNames = new Set(cols.map(c => c.name));
 
       if (!colNames.has('title')) {
-        this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN title TEXT');
+        this.db.run(ADD_COLUMN.conversationsTitle);
       }
       if (!colNames.has('deleted_at')) {
-        this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN deleted_at TEXT');
+        this.db.run(ADD_COLUMN.conversationsDeletedAt);
       }
       if (!colNames.has('hidden')) {
-        this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN hidden INTEGER DEFAULT 0');
+        this.db.run(ADD_COLUMN.conversationsHidden);
       }
       if (!colNames.has('user_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_conversations ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'
-        );
+        this.db.run(ADD_COLUMN.conversationsUserId);
       }
       // Indexes must be created here, not in createSchema(): these columns don't
       // exist on older databases until the ALTER TABLE statements above run, and
       // CREATE INDEX on a missing column aborts the entire createSchema()
       // exec block. Idempotent so they're safe to run unconditionally.
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON remote_agent_conversations(user_id) WHERE user_id IS NOT NULL'
-      );
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_conversations_hidden ON remote_agent_conversations(hidden)'
-      );
+      this.db.run(MIGRATION_OBJECT.conversationsUserId);
+      this.db.run(MIGRATION_OBJECT.conversationsHidden);
       // idx_conversations_codebase was originally non-partial. Replace it once,
       // not on every open: an unconditional DROP + CREATE rebuilds the index
       // each time the adapter is constructed, and leaves a window where the
@@ -485,13 +637,12 @@ export class SqliteAdapter implements IDatabase {
       const existingCodebaseIdx = this.prepareGet<{ sql: string | null }>(
         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_conversations_codebase'"
       );
-      if (existingCodebaseIdx && !(existingCodebaseIdx.sql ?? '').includes('deleted_at IS NULL')) {
+      if (existingCodebaseIdx && !isCurrentCodebaseIndex(existingCodebaseIdx.sql)) {
         this.db.run('DROP INDEX idx_conversations_codebase');
       }
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_conversations_codebase ON remote_agent_conversations(codebase_id) WHERE deleted_at IS NULL'
-      );
+      this.db.run(MIGRATION_OBJECT.conversationsCodebase);
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
       allApplied = false;
     }
@@ -504,69 +655,52 @@ export class SqliteAdapter implements IDatabase {
       const wfColNames = new Set(wfCols.map(c => c.name));
 
       if (!wfColNames.has('parent_conversation_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_workflow_runs ADD COLUMN parent_conversation_id TEXT'
-        );
+        this.db.run(ADD_COLUMN.workflowRunsParentConversationId);
       }
 
       if (!wfColNames.has('origin')) {
-        this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN origin TEXT');
+        this.db.run(ADD_COLUMN.workflowRunsOrigin);
       }
 
       if (!wfColNames.has('working_path')) {
-        this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN working_path TEXT');
+        this.db.run(ADD_COLUMN.workflowRunsWorkingPath);
       }
 
       if (!wfColNames.has('user_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_workflow_runs ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'
-        );
+        this.db.run(ADD_COLUMN.workflowRunsUserId);
       }
       // Run-tree parent (#2121 Phase 2). Self-referential FK — a `workflow:` sub-run
       // links back to its spawning parent. ON DELETE SET NULL so deleting a parent
       // orphans children rather than cascade-deleting their audit trail.
       if (!wfColNames.has('parent_run_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_workflow_runs ADD COLUMN parent_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL'
-        );
+        this.db.run(ADD_COLUMN.workflowRunsParentRunId);
       }
       // Between-run continuation (#2747). Self-referential FK mirroring
       // parent_run_id — written once at run creation, never on resume.
       if (!wfColNames.has('adopted_from_run_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_workflow_runs ADD COLUMN adopted_from_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL'
-        );
+        this.db.run(ADD_COLUMN.workflowRunsAdoptedFromRunId);
       }
       // Durable output root (#2200). The resolved ~/.archon/workspaces/<project>/
       // directory this run's artifacts, logs, and state live under, written once
       // at run start so historical artifacts survive a codebase rename (#1192).
       if (!wfColNames.has('output_root')) {
-        this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN output_root TEXT');
+        this.db.run(ADD_COLUMN.workflowRunsOutputRoot);
       }
       // Run checkout baseline (#3305): JSON checkout observation written once when the
       // run wins its execution claim. NULL means not recorded.
       if (!wfColNames.has('checkout_baseline')) {
-        this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN checkout_baseline TEXT');
+        this.db.run(ADD_COLUMN.workflowRunsCheckoutBaseline);
       }
       if (!wfColNames.has('outcome')) {
-        this.db.run(
-          "ALTER TABLE remote_agent_workflow_runs ADD COLUMN outcome TEXT CHECK (outcome IN ('succeeded', 'failed'))"
-        );
+        this.db.run(ADD_COLUMN.workflowRunsOutcome);
       }
       // Same rationale as idx_conversations_user_id above.
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_workflow_runs_user_id ON remote_agent_workflow_runs(user_id) WHERE user_id IS NOT NULL'
-      );
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_run ON remote_agent_workflow_runs(parent_run_id) WHERE parent_run_id IS NOT NULL'
-      );
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_workflow_runs_adopted_from ON remote_agent_workflow_runs(adopted_from_run_id) WHERE adopted_from_run_id IS NOT NULL'
-      );
-      this.db.run(
-        'CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_conv ON remote_agent_workflow_runs(parent_conversation_id)'
-      );
+      this.db.run(MIGRATION_OBJECT.workflowRunsUserId);
+      this.db.run(MIGRATION_OBJECT.workflowRunsParentRun);
+      this.db.run(MIGRATION_OBJECT.workflowRunsAdoptedFrom);
+      this.db.run(MIGRATION_OBJECT.workflowRunsParentConv);
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_workflow_runs_columns_failed');
       allApplied = false;
     }
@@ -579,9 +713,10 @@ export class SqliteAdapter implements IDatabase {
       const sessColNames = new Set(sessCols.map(c => c.name));
 
       if (!sessColNames.has('ended_reason')) {
-        this.db.run('ALTER TABLE remote_agent_sessions ADD COLUMN ended_reason TEXT');
+        this.db.run(ADD_COLUMN.sessionsEndedReason);
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_session_columns_failed');
       allApplied = false;
     }
@@ -591,11 +726,10 @@ export class SqliteAdapter implements IDatabase {
       const cols = this.prepareAll<{ name: string }>("PRAGMA table_info('remote_agent_messages')");
       const colNames = new Set(cols.map(c => c.name));
       if (!colNames.has('user_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_messages ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'
-        );
+        this.db.run(ADD_COLUMN.messagesUserId);
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_messages_columns_failed');
       allApplied = false;
     }
@@ -607,11 +741,10 @@ export class SqliteAdapter implements IDatabase {
       );
       const colNames = new Set(cols.map(c => c.name));
       if (!colNames.has('created_by_user_id')) {
-        this.db.run(
-          'ALTER TABLE remote_agent_isolation_environments ADD COLUMN created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'
-        );
+        this.db.run(ADD_COLUMN.isolationEnvironmentsCreatedByUserId);
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn(
         { err: e as Error },
         'db.sqlite_migration_isolation_environments_columns_failed'
@@ -629,9 +762,10 @@ export class SqliteAdapter implements IDatabase {
       );
       const colNames = new Set(cols.map(c => c.name));
       if (!colNames.has('default_model')) {
-        this.db.run('ALTER TABLE remote_agent_user_ai_prefs ADD COLUMN default_model TEXT');
+        this.db.run(ADD_COLUMN.userAiPrefsDefaultModel);
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_user_ai_prefs_columns_failed');
       allApplied = false;
     }
@@ -643,27 +777,12 @@ export class SqliteAdapter implements IDatabase {
         "PRAGMA table_info('remote_agent_workflow_events')"
       );
       if (!new Set(cols.map(c => c.name)).has('event_order')) {
-        this.db.run('ALTER TABLE remote_agent_workflow_events ADD COLUMN event_order INTEGER');
+        this.db.run(ADD_COLUMN.workflowEventsEventOrder);
       }
-      this.db.run(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_run_order
-           ON remote_agent_workflow_events(workflow_run_id, event_order)
-           WHERE event_order IS NOT NULL`
-      );
-      this.db.run(
-        `CREATE TRIGGER IF NOT EXISTS remote_agent_workflow_events_assign_order
-           AFTER INSERT ON remote_agent_workflow_events
-           WHEN NEW.event_order IS NULL
-           BEGIN
-             UPDATE remote_agent_workflow_events
-             SET event_order = (
-               SELECT COALESCE(MAX(event_order), 0) + 1
-               FROM remote_agent_workflow_events
-             )
-             WHERE rowid = NEW.rowid;
-           END`
-      );
+      this.db.run(MIGRATION_OBJECT.workflowEventsRunOrder);
+      this.db.run(MIGRATION_OBJECT.workflowEventsAssignOrder);
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_workflow_events_columns_failed');
       allApplied = false;
     }
@@ -676,11 +795,10 @@ export class SqliteAdapter implements IDatabase {
     // (matches the Postgres path, which runs inside the schema-apply txn);
     // a failed run is also survivable — reads normalize legacy ids.
     try {
-      this.db.run('BEGIN');
-      try {
+      this.db.transaction(() => {
         this.db.run(
           `DELETE FROM remote_agent_user_provider_keys
-           WHERE provider IN ('claude', 'codex', 'copilot')
+           WHERE ${LEGACY_PROVIDER_PREDICATE}
              AND EXISTS (
                SELECT 1 FROM remote_agent_user_provider_keys v
                WHERE v.user_id = remote_agent_user_provider_keys.user_id
@@ -700,48 +818,37 @@ export class SqliteAdapter implements IDatabase {
         this.db.run(
           "UPDATE remote_agent_user_provider_keys SET provider = 'github-copilot' WHERE provider = 'copilot'"
         );
-        this.db.run('COMMIT');
-      } catch (inner: unknown) {
-        this.db.run('ROLLBACK');
-        throw inner;
-      }
+      })();
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_provider_key_vendor_ids_failed');
       allApplied = false;
     }
 
     // Resource slot holders gained the 'attempt' kind and its owner columns (#2816).
     // SQLite cannot alter a CHECK, so a table created with the narrow ('run') CHECK is
-    // rebuilt once. Only unreleased dev builds created that shape. BEGIN IMMEDIATE and
-    // the re-check make a concurrent opener skip instead of rebuilding twice.
+    // rebuilt once under the startup writer transaction.
     try {
-      const holdersSql = (): string =>
-        this.prepareGet<{ sql: string }>(
-          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'remote_agent_resource_slot_holders'"
-        )?.sql ?? '';
-      if (!holdersSql().includes("'attempt'")) {
-        this.db.run('BEGIN IMMEDIATE');
-        try {
-          if (!holdersSql().includes("'attempt'")) {
-            this.db.run(resourceSlotHoldersTable('remote_agent_resource_slot_holders_next'));
-            this.db.run(
-              `INSERT INTO remote_agent_resource_slot_holders_next
-                 (resource_key, holder_kind, holder_id, acquired_at)
-               SELECT resource_key, holder_kind, holder_id, acquired_at
-                 FROM remote_agent_resource_slot_holders`
-            );
-            this.db.run('DROP TABLE remote_agent_resource_slot_holders');
-            this.db.run(
-              'ALTER TABLE remote_agent_resource_slot_holders_next RENAME TO remote_agent_resource_slot_holders'
-            );
-          }
-          this.db.run('COMMIT');
-        } catch (inner: unknown) {
-          this.db.run('ROLLBACK');
-          throw inner;
-        }
+      const holders = this.prepareGet<{ sql: string }>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'remote_agent_resource_slot_holders'"
+      );
+      if (!hasAttemptHolders(holders?.sql)) {
+        this.db.transaction(() => {
+          this.db.run(resourceSlotHoldersTable('remote_agent_resource_slot_holders_next'));
+          this.db.run(
+            `INSERT INTO remote_agent_resource_slot_holders_next
+               (resource_key, holder_kind, holder_id, acquired_at)
+             SELECT resource_key, holder_kind, holder_id, acquired_at
+               FROM remote_agent_resource_slot_holders`
+          );
+          this.db.run('DROP TABLE remote_agent_resource_slot_holders');
+          this.db.run(
+            'ALTER TABLE remote_agent_resource_slot_holders_next RENAME TO remote_agent_resource_slot_holders'
+          );
+        })();
       }
     } catch (e: unknown) {
+      if (isSqliteStartupBusy(e)) throw e;
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_resource_slot_holders_failed');
       allApplied = false;
     }
@@ -759,9 +866,15 @@ export class SqliteAdapter implements IDatabase {
    * constraints on existing tables would require a table rebuild via migrateColumns().
    */
   private createSchema(): void {
-    this.db.run(`
+    this.db.run(SqliteAdapter.schemaSql());
+    getLog().info('db.sqlite_schema_initialized');
+  }
+
+  // Keep this literal immediately after createSchema for generate-sqlite-vintages.ts.
+  private static schemaSql(): string {
+    return `
       -- Schema vintage (#2316): which Archon build created this database, and which
-      -- last applied schema to it. Diagnostic only — nothing gates on these values.
+      -- last applied schema to it.
       -- Single row (id = 1); written by recordSchemaVersion() from APP_VERSION so the
       -- version string has exactly one source of truth.
       CREATE TABLE IF NOT EXISTS remote_agent_schema_version (
@@ -1113,9 +1226,18 @@ export class SqliteAdapter implements IDatabase {
       -- the comment in migrateColumns() for why this is order-sensitive.
       CREATE INDEX IF NOT EXISTS idx_user_identities_user_id
         ON remote_agent_user_identities(user_id);
-    `);
-    getLog().info('db.sqlite_schema_initialized');
+    `;
   }
+
+  private static readonly requiredSchemaObjects = [
+    this.schemaSql(),
+    ...Object.values(MIGRATION_OBJECT),
+  ].flatMap(ddl =>
+    Array.from(
+      ddl.matchAll(/^\s*CREATE (?:UNIQUE )?(TABLE|INDEX|TRIGGER) IF NOT EXISTS (\w+)/gm),
+      ([, type, name]) => `${type.toLowerCase()}:${name}`
+    )
+  );
 }
 
 /**
