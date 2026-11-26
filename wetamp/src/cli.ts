@@ -9,25 +9,16 @@ import {
 } from './decisions';
 import { FAILOVER_PREFIX, latestFailover } from './decisions';
 import {
-  answerNtfyLocally,
   askNtfy,
   claimNtfyHealthEvent,
-  ntfyControl,
-  ntfyPauseInfo,
-  ntfyDecisionStatus,
-  ntfyDeliveryStatus,
   publishPendingNtfy,
   queueNtfyAlert,
   receiptPresentation,
   supersedeNtfyDecisions,
   syncNtfy,
   type NtfyConfig,
-  type NtfyOption,
-  parseNtfyAskSpec,
 } from './ntfy';
-import { workflowEventRowSchema } from '../../packages/workflows/src/schemas/workflow-event';
 import { runAttention } from '../../packages/workflows/src/schemas/workflow-run';
-import { providerEventEnvelopeSchema } from '../../packages/workflows/src/schemas/provider-event';
 // superagent 兼容 CLI：plan.json 协议 → archon workflow 动词。输出 JSON；退出码见 EXIT。
 import { installMode } from './install-mode';
 import {
@@ -42,7 +33,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fieldsContainSecret } from './secrets/scan';
 import { Intake, completion, intakeRoot, INTAKE_USAGE, type EvidenceReader } from './intake';
-import { canonicalRepo, closeDebts, debtMetrics, debtSnapshot } from './debt';
+import { canonicalRepo, closeDebts, debtSnapshot } from './debt';
 import {
   captureRunDelivery,
   checkoutChanges,
@@ -64,9 +55,9 @@ import {
 } from './ledger';
 export { artifactsOf, evidenceJson, ledgerPath, loadLedger, readJson } from './ledger';
 import type { Land } from '../templates/.archon/scripts/sa-check';
-import { confined, OUTSIDE, workflowRoles } from './board/workflow';
+import { confined, workflowRoles } from './board/workflow';
 import { saveIncident } from './incidents';
-import { importLessons, lintPlan, memoryTick, privateProject } from './memory';
+import { importLessons, lintPlan, memoryTick } from './memory';
 import { publishLearning, proposeLearning, type LearningRequest } from './learning';
 import {
   askKey,
@@ -81,8 +72,6 @@ import {
   archiveFailedAdmission,
   claimCancelledExecution,
   executionOwnership,
-  ownershipUnknown,
-  recoveryAdmissionUnknown,
   recoveryAdmissionAction,
   recoverySnapshot,
 } from './recovery';
@@ -90,8 +79,6 @@ import {
 import { caller, control, coord, identityKey, QUEUE_WAIT, repoScope, runScope, same, presence, type Controller } from './coord';
 import { createLoader, type Snapshot } from './board/data';
 import { cockpit } from './board/cockpit';
-import { ENGINE_CHANGED } from './board/App';
-import { openTerminalScreen } from './board/screen';
 import { collectGenerals, generalAttention } from './stall';
 import {
   NODE_LEASE,
@@ -100,10 +87,9 @@ import {
   writeNodeLeaseReport,
   type NodeLeaseRecord,
 } from './node-lease';
-import { allMarshals, cwdFilter, panelModel, renderPanel } from './panel';
 // prettier-ignore
-import { heartbeat, queueTickStaleAlert, shouldWriteHeartbeat, tickHealth, type Heartbeat, type TickRecord, type TickStage } from './heartbeat';
-import { COORD_OPTIONS, coordinationCommand } from './coord/commands';
+import { heartbeat, shouldWriteHeartbeat, tickHealth, type Heartbeat } from './heartbeat';
+import { coordinationCommand } from './coord/commands';
 import { scopeOverlaps } from './scope-overlap';
 export { scopeOverlaps } from './scope-overlap';
 import { answerHeldOwnerAsk, reclaimOnce, reclaimTick } from './reclaim';
@@ -112,12 +98,10 @@ import {
   askQuestion,
   askName,
   CANCELLATION_REASONS,
-  CLASSIFIED_HOLD_REASONS,
   HOLD_POLICY,
   holdAction,
   reasonOf,
   type Hold,
-  type ClassifiedHold,
   type Policy,
 } from './reasons';
 export { HOLD_POLICY, type Hold, type Policy } from './reasons';
@@ -140,18 +124,15 @@ import {
 } from 'node:fs';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { parseArgs as parse } from 'node:util';
 import {
   archon,
   archonDetached,
   archonJson,
-  archonRunIds,
   admitRun,
   dueWorkflowContinuations,
   getRun,
   lastJson,
   lock,
-  ownerLost,
   pidAlive,
   QUERY_TIMEOUT_MS,
   recover,
@@ -170,7 +151,6 @@ import {
   readAttempt,
   reviewRoundLimit,
   type DeliveryDecision,
-  type decide as decideGate,
   validateRecovery,
   type RecoveryEvidence,
   type AuthorRun,
@@ -182,7 +162,6 @@ import {
   codexWorkerProblem,
   consoleForClient,
   formatEngineTime,
-  gitHead,
   home,
   loadTiers,
   resolveRoute,
@@ -199,15 +178,9 @@ import {
   readClaudeHealth,
   refreshClaudeHealth,
 } from './claude-health';
-import { launchAgent, orcaBin, syncOrcaDeliveries, syncOrcaMerge, type AgentLaunch } from './orca';
-import { mergeLock, mergeTask } from './merge';
-import {
-  engineHash,
-  generate,
-  newRunId,
-  type Continuation,
-  type ReviewCheckpoint,
-} from './generate';
+import { launchAgent, orcaBin, syncOrcaDeliveries, type AgentLaunch } from './orca';
+import { mergeLock } from './merge';
+import { engineHash, generate, newRunId, type Continuation } from './generate';
 import {
   assertReviewRouting,
   isWithinWriteRoots,
@@ -225,7 +198,7 @@ import { syncFleet } from './secrets/fleet';
 import { syncSecrets } from './secrets/sync';
 import { secretsHealth } from './secrets/scan';
 import { auditTranscripts } from './secrets/audit';
-import { buildReport, consolidationMetrics, reportSummary, reviewWhitelistReport } from './report';
+import { reportSummary, reviewWhitelistReport } from './report';
 import { collect, evolve, latestNightReport } from './nightly-evolve';
 import { abandoned } from './ledger-metrics';
 import { nodeProgress, packageForNode } from './node-progress';
@@ -248,6 +221,111 @@ import {
   runningEngineSnapshot,
   staleEngineSnapshot,
 } from './engine';
+
+import {
+  print,
+  EXIT,
+  EXIT_USAGE,
+  nodeLeaseNextAction,
+  planOf,
+  pastDeadline,
+  loadAsks,
+  withFileLock,
+  writeAsks,
+  saveAsk,
+  asksOf,
+  type Classified,
+  heldState,
+  classify,
+  evidenceGates,
+  decisionOf,
+  decisionVerdict,
+  decisionsOf,
+  currentDecisions,
+  needsOf,
+  ledgerIds,
+  ledgers,
+  lastActivity,
+  nodeReason,
+  holdOf,
+  blocker,
+  terminalProjection,
+  reauthorizationHint,
+  workflowIdentity,
+  summary,
+  classifyRun,
+  reviewCheckpoints,
+  continuation,
+  planContinuation,
+} from './cli-classify';
+export {
+  print,
+  EXIT,
+  EXIT_USAGE,
+  planOf,
+  asksOf,
+  type Classified,
+  classify,
+  type Gate,
+  gatesOf,
+  evidenceGates,
+  decisionOf,
+  decisionVerdict,
+  decisionsOf,
+  currentDecisions,
+  needsOf,
+  ledgerIds,
+  lastActivity,
+  reasonHold,
+  holdOf,
+  classifyRun,
+  recoveryReviewCheckpoint,
+  recoveryOutputHashes,
+  continuation,
+  CLASSIFIED_HOLD_REASONS,
+} from './cli-classify';
+import { type Retro, retroHints, retroCommand, reportSince, report } from './cli-report';
+export {
+  type Retro,
+  validateRetro,
+  applyRetro,
+  retroHints,
+  type Pair,
+  reportSince,
+  summarize,
+  report,
+} from './cli-report';
+import {
+  OPTIONS,
+  type Args,
+  parseArgs,
+  quickSize,
+  type NtfyTickRecord,
+  superviseOwnerPath,
+  optional,
+  ntfyExpiryCallback,
+  ntfyAnswerCallback,
+  need,
+  askCli,
+  askWaitHealth,
+  notifyCli,
+  ntfyCli,
+  heartbeatCli,
+  exitCli,
+  mergeCli,
+} from './cli-subcommands';
+export {
+  OPTIONS,
+  parseArgs,
+  superviseTickRunning,
+  askCli,
+  askWaitHealth,
+  notifyCli,
+  ntfyCli,
+  heartbeatEngineExitCode,
+  exitCli,
+  mergeCli,
+} from './cli-subcommands';
 
 export const consoleLaunchdLabel = (): string =>
   process.env.SA_CONSOLE_LABEL ?? 'com.wetamp.superagent-console';
@@ -301,109 +379,6 @@ export function intakeEvidence(repo: string, query: typeof getRun = getRun): Evi
   };
 }
 
-export const OPTIONS = {
-  ...COORD_OPTIONS,
-  wait: { type: 'boolean' },
-  timeout: { type: 'string' },
-  user: { type: 'string' },
-  pkg: { type: 'string' },
-  hint: { type: 'string' },
-  fake: { type: 'boolean' },
-  apply: { type: 'boolean' },
-  'lint-override': { type: 'string' },
-  'allow-overlap': { type: 'string' },
-  adopt: { type: 'string' },
-  fresh: { type: 'boolean' },
-  goal: { type: 'string' },
-  'accept-timeout': { type: 'string' },
-  environment: { type: 'string', multiple: true },
-  console: { type: 'string' },
-  accept: { type: 'string', multiple: true },
-  scope: { type: 'string', multiple: true },
-  risk: { type: 'string' },
-  size: { type: 'string', metavar: 'S|M|L' },
-  'review-reason': { type: 'string' },
-  'review-whitelist': { type: 'boolean' },
-  'no-cache': { type: 'boolean' },
-  base: { type: 'string' },
-  worktree: { type: 'string' },
-  mode: { type: 'string' },
-  repo: { type: 'string' },
-  help: { type: 'boolean', short: 'h' },
-  cwd: { type: 'string' },
-  verbose: { type: 'boolean' },
-  days: { type: 'string' },
-  once: { type: 'boolean' },
-  interval: { type: 'string' },
-  watch: { type: 'boolean' },
-  limit: { type: 'string' },
-  'terms-json': { type: 'string' },
-  json: { type: 'boolean' }, // board/models/status/brief/wait 等命令的机器可读输出开关
-  diagnose: { type: 'boolean' },
-  full: { type: 'boolean' },
-  'by-engine': { type: 'string' },
-  'baseline-days': { type: 'string' },
-  'all-held': { type: 'boolean' },
-  mine: { type: 'boolean' },
-  status: { type: 'string' },
-  before: { type: 'string' },
-  title: { type: 'string' },
-  'request-ref': { type: 'string' },
-  card: { type: 'string' },
-  'prompt-file': { type: 'string' },
-  output: { type: 'string' },
-  log: { type: 'string' },
-  role: { type: 'string' },
-  round: { type: 'string' },
-  'author-model': { type: 'string', multiple: true },
-  all: { type: 'boolean' },
-  since: { type: 'string' },
-  refresh: { type: 'boolean' },
-  reconciled: { type: 'string' }, // explicit external-effect reconciliation, bound to a run snapshot
-  session: { type: 'string' },
-  'dry-run': { type: 'boolean' },
-  'message-file': { type: 'string' },
-  into: { type: 'string' },
-  vault: { type: 'string' },
-  host: { type: 'string', multiple: true },
-  prune: { type: 'boolean' },
-  open: { type: 'boolean' },
-  schedule: { type: 'boolean' },
-  runs: { type: 'string', multiple: true },
-  'no-global': { type: 'boolean' },
-  'bootstrap-evidence': { type: 'string' },
-  scenario: { type: 'string' },
-  matrix: { type: 'boolean' },
-  parallel: { type: 'string' },
-  source: { type: 'string' },
-  spec: { type: 'string' },
-  body: { type: 'string' },
-  option: { type: 'string', multiple: true },
-  'expires-at': { type: 'string' },
-  'default-on-expiry': { type: 'string' },
-  callback: { type: 'string' },
-  id: { type: 'string' },
-  recommend: { type: 'string' },
-  why: { type: 'string' },
-  priority: { type: 'string' },
-  effect: { type: 'string', multiple: true },
-  improve: { type: 'string', multiple: true },
-} as const;
-interface Args {
-  _: string[];
-  flags: ReturnType<typeof parse<{ options: typeof OPTIONS; allowPositionals: true }>>['values'];
-}
-const quickSize = (size = 'S') => {
-  if (size !== 'S' && size !== 'M' && size !== 'L') throw new Error('quick --size must be S|M|L');
-  return size;
-};
-/** 严格模式：未知参数直接报错，不静默忽略。 */
-export function parseArgs(argv: string[]): Args {
-  const { values, positionals } = parse({ args: argv, options: OPTIONS, allowPositionals: true });
-  if (positionals[0] === 'quick') quickSize(values.size);
-  return { _: positionals, flags: values };
-}
-
 export function probeOptions(a: Args):
   | {
       level: ProbeLevel;
@@ -437,18 +412,10 @@ export function probeOptions(a: Args):
     throw new Error('engine probe --parallel requires --matrix and a positive integer');
   return { level, console, scenario, matrix, parallel: jobs };
 }
-
-export const print = (o: unknown): void => {
-  console.log(JSON.stringify(o, null, 2));
-};
-
-/** 0 completed；1 failed；2 cancelled；3 held（等元帅/用户决策）；4 仍在运行（wait 超时或 status 查询）。 */
-export const EXIT = { completed: 0, failed: 1, cancelled: 2, held: 3, running: 4 } as const;
 /** 别名漂移：全局或目标 repo 的 @sa-* 别名与 tiers.json 渲染值不一致，run 拒绝启动。 */
 export const EXIT_ALIAS_DRIFT = 5;
 /** Temporary refusal: no run was created; the caller may retry after the launch lock is released. */
 export const EXIT_ADMISSION = 75;
-export const EXIT_USAGE = 64;
 class SecretInputError extends Error {}
 const assertSecretFree = (input: unknown): void => {
   const fields = new Set<string>();
@@ -550,97 +517,6 @@ export interface Ledger {
 const reportedNodeLeases = (l: Ledger, runId: string): NodeLeaseRecord[] =>
   Object.values(l.node_leases ?? {}).filter(lease => lease.engine_run === runId && lease.evidence);
 
-const nodeLeaseNextAction = (runId: string): string =>
-  `superagent wait ${runId}；或 superagent cancel ${runId} --reason operator`;
-
-export interface Retro {
-  at: string;
-  by: Controller;
-  effect: string[];
-  improve: string[];
-  revision: number;
-}
-
-const retroItems = (values: string[] | undefined, name: string): string[] => {
-  const items = values?.map(value => value.trim()) ?? [];
-  if (items.length < 1 || items.length > 3) throw new Error(`--${name} requires 1-3 entries`);
-  if (items.some(value => !value)) throw new Error(`--${name} entries must not be empty`);
-  return items;
-};
-export function validateRetro(effect: string[] | undefined, improve: string[] | undefined) {
-  const normalized = {
-    effect: retroItems(effect, 'effect'),
-    improve: retroItems(improve, 'improve'),
-  };
-  // User rule (2026-11-06): pros and cons are each limited to 200 Unicode code points.
-  for (const name of ['effect', 'improve'] as const) {
-    const length = normalized[name].reduce((n, value) => n + Array.from(value).length, 0);
-    if (length > 200)
-      throw new Error(`--${name} exceeds 200 characters by ${String(length - 200)}`);
-  }
-  return normalized;
-}
-export function applyRetro(
-  ledger: Ledger,
-  values: Pick<Retro, 'effect' | 'improve'>,
-  by: Controller,
-  terminal: boolean,
-  at = new Date().toISOString()
-): void {
-  if (!terminal) throw new Error(`retro: run ${ledger.run_id} is not terminal`);
-  const previous = ledger.retro;
-  if (previous) ledger.retro_history = [...(ledger.retro_history ?? []), previous].slice(-5);
-  ledger.retro = { at, by, ...values, revision: (previous?.revision ?? 0) + 1 };
-}
-export function retroHints(repo: string): { run_id: string; improve: string }[] {
-  if (privateProject(repo)) return [];
-  let canonical: string;
-  try {
-    canonical = canonicalRepo(repo);
-  } catch {
-    return [];
-  }
-  const recent = ledgers()
-    .flatMap(value => {
-      if ('error' in value || privateProject(value.repo)) return [];
-      const retro = value.retro;
-      if (!retro) return [];
-      try {
-        return canonicalRepo(value.repo) === canonical ? [{ run_id: value.run_id, retro }] : [];
-      } catch {
-        return [];
-      }
-    })
-    .sort((a, b) => b.retro.at.localeCompare(a.retro.at))
-    .slice(0, 5);
-  const seen = new Set<string>(),
-    hints: { run_id: string; improve: string }[] = [];
-  for (const ledger of recent)
-    for (const improve of ledger.retro.improve)
-      if (!seen.has(improve) && hints.length < 3) {
-        seen.add(improve);
-        hints.push({ run_id: ledger.run_id, improve });
-      }
-  return hints;
-}
-
-function retroCommand(l: Ledger, effect?: string[], improve?: string[], by?: Controller): number {
-  if (effect === undefined && improve === undefined) {
-    print(l.retro ?? null);
-    return 0;
-  }
-  const values = validateRetro(effect, improve),
-    run = getRun(l.archon_run_id, l.repo);
-  const terminal = !!l.rejected || ['completed', 'failed', 'cancelled'].includes(run.status);
-  if (!terminal) throw new Error(`retro: run ${l.run_id} is not terminal (${run.status})`);
-  if (!by) throw new Error('retro: controller identity missing');
-  updateLedger(l, current => {
-    applyRetro(current, values, by, terminal);
-  });
-  print(l.retro);
-  return 0;
-}
-
 // prettier-ignore
 function adoptionPackages(l: Ledger, run: RunView): Record<string, PackageHistory> {
   const prior: Partial<Record<string, PackageHistory>> = l.adoptions?.at(-1)?.packages ?? {},
@@ -737,515 +613,9 @@ const answerAction = <T extends { ok: boolean }>(
         a.status === 'no' ? 'rejected' : 'human_decision'
       )
     : execute();
-
-export interface Classified {
-  state: string;
-  exit: number;
-  node?: string;
-  event?: string;
-}
-
-export { CLASSIFIED_HOLD_REASONS };
-const heldState = <T extends ClassifiedHold>(hold: T): `held:${T}` => `held:${hold}`;
-
-/** archon run 状态 → superagent 状态。environment 失败是“待决策”而非终局失败：decide retry 可 resume。 */
-export function classify(run: RunView): Classified {
-  if (!['completed', 'cancelled'].includes(run.status) && recoveryAdmissionUnknown(run))
-    return { state: heldState('recovery_admission_unknown'), exit: EXIT.held };
-  const failed = run.nodes?.find(n => n.state === 'failed')?.nodeId;
-  switch (run.status) {
-    case 'completed':
-      return { state: 'completed', exit: EXIT.completed };
-    case 'cancelled':
-      return { state: 'cancelled', exit: EXIT.cancelled };
-    case 'paused': {
-      const event = run.metadata?.wait?.event;
-      const approval = run.metadata?.approval;
-      const bodyGateId = (approval as (typeof approval & { bodyGateId?: string }) | undefined)
-        ?.bodyGateId;
-      if (approval?.nodeId.startsWith('human-scope-'))
-        return { state: heldState('scope'), exit: EXIT.held, node: approval.nodeId };
-      if (
-        approval?.nodeId.startsWith('human-') &&
-        (approval as typeof approval & { resolved?: string }).resolved === 'rejected'
-      )
-        return { state: heldState('rework'), exit: EXIT.held, node: approval.nodeId };
-      if (approval?.nodeId.startsWith('human-'))
-        return { state: heldState('human'), exit: EXIT.held, node: approval.nodeId };
-      if (
-        approval?.nodeId.startsWith('target-dirty-') ||
-        (approval?.nodeId.startsWith('integrate-') && bodyGateId?.startsWith('target-dirty-'))
-      )
-        return { state: heldState('target_dirty'), exit: EXIT.held, node: approval.nodeId };
-      return event?.startsWith('sa.human.')
-        ? { state: heldState('human'), exit: EXIT.held, node: run.metadata?.wait?.nodeId, event }
-        : {
-            state: heldState('paused'),
-            exit: EXIT.held,
-            node: run.metadata?.approval?.nodeId ?? run.metadata?.wait?.nodeId,
-          };
-    }
-    case 'failed':
-      if (failed === 'environment')
-        return { state: heldState('environment'), exit: EXIT.held, node: failed };
-      return { state: 'failed', exit: EXIT.failed, node: failed };
-    default:
-      // A pending row is Archon's detached launch before its child claims it: no execution owner
-      // exists yet, so that absence is not ambiguity. Report pending and keep waiting; only
-      // recovery must refuse to act on it.
-      //
-      // A running row that records no owner at all and has started no node is the same
-      // launch, one step later: the child wins the pending-to-running claim and records its
-      // execution owner in a separate write, sampling the checkout in between, so a wait
-      // issued right after launch can read that gap. Keep waiting instead of reporting a hold
-      // the run will outlive. A recorded owner this host cannot verify — another host, or a
-      // reused pid — is genuine ambiguity, and so is an absent owner once a node has started:
-      // that run was executing and nobody is claiming it.
-      if (
-        run.status === 'running' &&
-        ownershipUnknown(run) &&
-        (run.metadata?.execution_owner || run.nodes?.length)
-      )
-        return { state: heldState('owner_unknown'), exit: EXIT.held };
-      return { state: ownerLost(run) ? 'owner_lost' : run.status, exit: EXIT.running };
-  }
-}
-
-export type Gate = ReturnType<typeof decideGate>;
-/** 各轮 gate 结论文件，按里程碑、轮次排序（轮次 ≤ 3，字典序即轮次序）。 */
-export const gatesOf = (art: string): string[] =>
-  existsSync(art)
-    ? readdirSync(art)
-        .filter(f => /^gate-.+-r\d+\.json$/.test(f))
-        .sort()
-    : [];
-export const evidenceGates = (l: Ledger, art: string): string[] => {
-  const path = confined(l, art);
-  return path ? gatesOf(path).filter(f => confined(l, join(path, f))) : [];
-};
-/** Old artifacts have unknown delivery coverage; never reconstruct a decision from self-report. */
-export const decisionOf = (value: unknown): DeliveryDecision | undefined => {
-  const d = (value as { decision?: DeliveryDecision } | null)?.decision;
-  return d &&
-    ['advance', 'debt', 'repair', 'block'].includes(d.kind) &&
-    (d.reason === null || typeof d.reason === 'string') &&
-    Array.isArray(d.evidence) &&
-    d.evidence.every(e => typeof e === 'string') &&
-    Array.isArray(d.debt) &&
-    d.debt.every(e => typeof e === 'string')
-    ? d
-    : undefined;
-};
-export const decisionVerdict = (d: DeliveryDecision | undefined): string =>
-  d ? (d.kind === 'block' ? 'escalate' : d.kind === 'repair' ? 'fix' : 'pass') : 'unknown';
-export const decisionsOf = (art: string, m?: string, l?: Ledger) =>
-  (existsSync(art)
-    ? readdirSync(art).filter(
-        f =>
-          f.endsWith('.json') &&
-          ['verify-', 'settle-', 'diff-', 'gate-'].some(prefix => f.startsWith(prefix)) &&
-          !['.coder.json', '.review.json', '.ledger.json'].some(suffix => f.endsWith(suffix))
-      )
-    : []
-  )
-    .sort()
-    .map(file => {
-      const out = (l ? evidenceJson(l, art, file) : readJson(join(art, file))) as
-        | { milestone?: string }
-        | undefined;
-      return { tag: file.slice(0, -5), milestone: out?.milestone, decision: decisionOf(out) };
-    })
-    .filter(d => m === undefined || d.milestone === m);
-const outOfScopeOf = (l: Ledger, art: string): string[] => [
-  ...new Set(
-    decisionsOf(art, undefined, l).flatMap(({ tag }) => {
-      const value = evidenceJson(l, art, `${tag}.json`) as { out_of_scope?: unknown } | undefined;
-      return tag.startsWith('diff-') && Array.isArray(value?.out_of_scope)
-        ? value.out_of_scope.filter((path): path is string => typeof path === 'string')
-        : [];
-    })
-  ),
-];
-/** Current evidence supersedes process history without removing it from decisionsOf. */
-export const currentDecisions = (decisions: ReturnType<typeof decisionsOf>) =>
-  decisions.filter(
-    (d, _, all) =>
-      !all.some(
-        other =>
-          other !== d &&
-          ((d.tag.startsWith('verify-') && other.tag === d.tag.replace('verify-', 'settle-')) ||
-            (d.milestone &&
-              other.milestone === d.milestone &&
-              (other.tag.startsWith('gate-') || other.tag.startsWith('diff-')) &&
-              ((!d.tag.startsWith('gate-') && !d.tag.startsWith('diff-')) ||
-                Number(other.tag.slice(other.tag.lastIndexOf('-r') + 2)) >
-                  Number(d.tag.slice(d.tag.lastIndexOf('-r') + 2)) ||
-                (other.tag.startsWith('gate-') && d.tag === other.tag.replace('gate-', 'diff-')))))
-      )
-  );
-export const needsOf = (art: string, m?: string, l?: Ledger): Record<string, string>[] =>
-  currentDecisions(decisionsOf(art, m, l)).flatMap(({ tag, decision }) =>
-    decision?.kind === 'block' && decision.reason === 'coder_redline'
-      ? [
-          {
-            tag,
-            cap: 'permission',
-            why: decision.evidence.join(', '),
-            minimal_ask: '检查记录的权限拒绝事件并明确授权或调整任务范围。',
-          },
-        ]
-      : []
-  );
-
-const coderReceiptFields = (l: Ledger, art: string) => {
-  const receipts = existsSync(art)
-    ? readdirSync(art)
-        .filter(file => file.endsWith('.coder.json'))
-        .flatMap(file => {
-          const value = evidenceJson(l, art, file) as Record<string, unknown> | undefined;
-          return value ? [value] : [];
-        })
-    : [];
-  const unverified = [
-    ...new Set(
-      receipts.flatMap(value =>
-        Array.isArray(value.unverified)
-          ? value.unverified.filter((item): item is string => typeof item === 'string')
-          : []
-      )
-    ),
-  ];
-  const deviations = receipts
-    .flatMap((value): unknown[] =>
-      Array.isArray(value.deviations) ? (value.deviations as unknown[]) : []
-    )
-    .filter(
-      (item): item is { path: string; why: string } =>
-        typeof item === 'object' &&
-        item !== null &&
-        typeof (item as { path?: unknown }).path === 'string' &&
-        typeof (item as { why?: unknown }).why === 'string'
-    )
-    .filter(
-      (item, index, all) =>
-        all.findIndex(other => other.path === item.path && other.why === item.why) === index
-    );
-  return { unverified, deviations };
-};
-
-/** 登记过的 run id（runs/*.json 去掉扩展名）。 */
-export const ledgerIds = (): string[] => {
-  const dir = join(home().sa, 'runs');
-  return existsSync(dir)
-    ? readdirSync(dir)
-        .filter(f => f.endsWith('.json'))
-        .map(f => f.slice(0, -5))
-    : [];
-};
-/** 逐条读取：坏 ledger 变成 {run_id, error}，不拖垮其他 run。 */
-const ledgers = (ids = ledgerIds()): (Ledger | { run_id: string; error: string })[] =>
-  ids.map(id => {
-    try {
-      return loadLedger(id);
-    } catch (e) {
-      return { run_id: id, error: tail((e as Error).message, 200) };
-    }
-  });
-
-/** Event metadata only: never expose model text or tool arguments in status. */
-// prettier-ignore
-export function lastActivity(l: Pick<Ledger, 'archon_run_id' | 'adoptions' | 'repo'>, query = archonJson) {
-  let latest: { run_id: string; node: string; at: string; type: string } | null = null;
-  const missing: string[] = [];
-  for (const id of archonRunIds(l)) {
-    try {
-      const result = query(['workflow', 'get', id, '--verbose', '--events'], l.repo);
-      if (!Array.isArray(result.events)) { missing.push(id); continue; }
-      for (const raw of result.events) {
-        const parsed = workflowEventRowSchema.safeParse(raw);
-        if (!parsed.success) continue;
-        const e = parsed.data;
-        if (!e.step_name) continue;
-        const provider = providerEventEnvelopeSchema.safeParse(e.data);
-        const type = e.event_type === 'provider_event' ? (provider.success ? provider.data.event.type : null) : e.event_type;
-        if (!type || type === 'heartbeat') continue;
-        const at = provider.success ? provider.data.observedAt : e.created_at;
-        const atMs = parseDbTimestamp(at);
-        if (Number.isFinite(atMs) && (!latest || atMs >= parseDbTimestamp(latest.at)))
-          latest = { run_id: id, node: e.step_name, at, type };
-      }
-    } catch { missing.push(id); }
-  }
-  return { latest, complete: missing.length === 0, missing };
-}
-
-const reasonToken = (v: unknown): string | undefined =>
-  typeof v === 'string' && /^[A-Za-z_][A-Za-z0-9_:+-]{0,79}$/.test(v) ? v : undefined;
-
-function targetCheckoutAction(l: Ledger, delivery: DeliveryTarget): string {
-  const listed = Bun.spawnSync(
-    ['git', '-C', delivery.checkout, 'worktree', 'list', '--porcelain', '-z'],
-    { stdout: 'pipe', stderr: 'pipe', timeout: QUERY_TIMEOUT_MS }
-  );
-  const occupied =
-    listed.exitCode === 0 ? targetCheckout(listed.stdout.toString(), delivery.branch) : undefined;
-  const prefix =
-    occupied && resolve(occupied) !== resolve(delivery.checkout)
-      ? `先在 ${occupied} 切走 ${delivery.branch}，再`
-      : '';
-  return `${prefix}把 ${delivery.checkout} 切回 ${delivery.branch} 后执行 superagent land --apply ${l.run_id}`;
-}
-
-// prettier-ignore
-function terminalProjection(l: Ledger, run: RunView, c: Classified) {
-  if (c.exit === EXIT.running) return { delivery_state: 'pending' as const, receipt: undefined };
-  const art = artifactsOf(run),
-    node = run.nodes?.find(n => n.nodeId === c.node),
-    landError = [...(l.intervention_events ?? [])]
-      .reverse()
-      .find(e => e.action === 'land' && !e.ok)?.error,
-    landReason = l.delivery_result?.status === 'blocked'
-      ? reasonToken(l.delivery_result.reason)
-      : landError?.startsWith('land_') ? reasonToken(landError.slice(5)) : undefined,
-    registered = reasonToken(c.node ? nodeReason(l, run, c) : undefined),
-    integrationReason = c.state === 'held:target_switched' ? 'target_switched'
-      : ['held:target_dirty', 'target_dirty'].includes(c.state) ? 'target_dirty'
-      : ['sync_conflict', 'target_checkout_changed', 'target_advanced', 'review_stale'].includes(c.state) ? c.state : undefined,
-    reason = landReason ?? integrationReason ?? (registered && reasonOf(registered) ? registered : undefined) ??
-      holdOf(l, run, c) ?? reasonToken(run.metadata?.stop_reason?.reason) ?? 'unclassified',
-    evidence = [
-      landReason && join(art, 'delivery.json'),
-      ['target_dirty', 'target_checkout_changed', 'target_switched'].includes(reason) && c.node && join(art, `${authoredNodeId(c.node)}.json`),
-      c.node && join(art, `${c.node}.json`),
-      run.transcript_path, l.log, l.transcript, art, ledgerPath(l.run_id),
-    ].find((p): p is string => typeof p === 'string' && p !== '' && existsSync(p)) ??
-      ledgerPath(l.run_id),
-    published = publishProjection(l, run),
-    integrated = l.delivery_result?.status === 'integrated' || !!deliveryProjection(l),
-    blocked = landReason ?? (/^(?:land|deliver|publish)(?:-.+)?$/.test(authoredNodeId(c.node ?? '')) && node?.state === 'failed'),
-    reauthorize = reauthorizationHint(l, run, c),
-    action = c.state === 'held:recovery_admission_unknown' ? recoveryAdmissionAction(l.run_id)
-      : reauthorize ?? (reason === 'target_protected' ? '在 feature 分支重跑'
-      : reason === 'target_dirty' ? `superagent land --apply ${l.run_id}`
-      : ['target_checkout_changed', 'target_switched'].includes(reason) && l.delivery ? targetCheckoutAction(l, l.delivery)
-      : c.state === 'owner_lost' ? `superagent recover ${l.run_id}`
-      : c.state === 'held:human' ? `superagent decide ${l.run_id} approve`
-      : c.state === 'held:paused' ? `superagent resume ${l.run_id}`
-      : c.state.startsWith('held:') ? holdAction(l.run_id, reason)
-      : ['sync_conflict', 'target_advanced', 'review_stale'].includes(c.state) ? `superagent recover ${l.run_id}`
-      : ['failed', 'cancelled'].includes(c.state) ? `superagent recover ${l.run_id}`
-      : c.state === 'abandoned' ? 'none' : '读 evidence_path');
-  const delivery_state = published ? 'published' as const : integrated ? 'integrated' as const : blocked ? 'blocked' as const : 'not_reached' as const;
-  return {
-    delivery_state, receipt: { state: c.state, failed_node: c.node ?? null, reason, evidence_path: evidence, action },
-    ...(c.state === 'held:recovery_admission_unknown' ? { action } : c.state === 'held:owner_unknown'
-      ? { action: `Inspect archon workflow get ${run.id} --verbose and its owner; resolve or abandon explicitly.` } : {}),
-  };
-}
-
-function reauthorizationHint(l: Ledger, run: RunView, c: Classified): string | undefined {
-  const error = c.node ? run.nodes?.find(n => n.nodeId === c.node)?.error : undefined;
-  if (!error?.includes('owner/generation fencing')) return;
-  try {
-    const original = JSON.parse(
-      readFileSync(join(l.gen_dir, 'delivery-authorization.json'), 'utf8')
-    ) as { run?: Controller };
-    if (!original.run || coord().d.presence(original.run).state !== 'offline') return;
-    return `superagent claim ${l.run_id}\nsuperagent reauthorize ${l.run_id}`;
-  } catch {
-    return undefined;
-  }
-}
-
-/** ≤20 行的摘要：元帅只读这个和证据路径。 */
-function summary(
-  l: Ledger,
-  run: RunView,
-  c: Classified,
-  lease?: NodeLeaseRecord
-): Record<string, unknown> {
-  const nodes = run.nodes ?? [];
-  const roles = workflowRoles(l);
-  const art = artifactsOf(run);
-  const landFile = landEvidence(run)?.file;
-  confined(l, art);
-  const needs = needsOf(art, undefined, l);
-  const receiptFields = coderReceiptFields(l, art);
-  const outOfScope = c.exit === EXIT.running ? [] : outOfScopeOf(l, art);
-  const hold = lease ? undefined : holdOf(l, run, c);
-  const projection = lease
-    ? {
-        delivery_state: 'pending' as const,
-        receipt: {
-          state: c.state,
-          failed_node: lease.node,
-          reason: 'budget_exceeded',
-          evidence_path: lease.evidence ?? artifactsOf(run),
-          action: nodeLeaseNextAction(l.run_id),
-        },
-      }
-    : terminalProjection(l, run, c);
-  return {
-    run_id: l.run_id,
-    initiator: l.launcher ?? 'unknown',
-    ...(hold ? blocker(l, hold) : {}),
-    decisions: decisionSummary(l.run_id),
-    engine:
-      workflowIdentity(l) === engineHash()
-        ? 'current'
-        : `stale(${workflowIdentity(l)?.slice(0, 8) ?? 'unknown'})`,
-    adoption: l.adoptions?.at(-1) ?? null,
-    package_history: l.adoptions?.at(-1)?.packages ?? {},
-    last_activity: lastActivity(l),
-    progress: nodeProgress(
-      run,
-      planOf(l),
-      Date.now(),
-      roles
-        ? new Set([...roles].flatMap(([id, role]) => (role === 'coder' ? [id] : [])))
-        : undefined
-    ),
-    state: c.state,
-    exit: c.exit,
-    ...projection,
-    nodes: `${String(nodes.filter(n => n.state === 'completed').length)}/${String(
-      nodes.length
-    )} completed`,
-    ...(c.node ? { node: c.node } : {}),
-    ...(c.event ? { event: c.event } : {}),
-    ...(c.node?.startsWith('gate-')
-      ? {
-          gate: {
-            decision: decisionOf(evidenceJson(l, art, `${c.node}.json`)) ?? 'unknown',
-          },
-        }
-      : {}),
-    ...(c.state === 'failed' ? failure(l, run, c.node) : {}),
-    ...(c.state === 'completed'
-      ? {
-          land: landFile
-            ? (evidenceJson(l, art, landFile) as { commands?: string[] } | undefined)?.commands
-            : undefined,
-        }
-      : {}),
-    evidence: art,
-    delivery: decisionsOf(art, undefined, l).map(d => ({
-      tag: d.tag,
-      decision: d.decision ?? 'unknown',
-    })),
-    ...receiptFields,
-    ...(outOfScope.length ? { out_of_scope: outOfScope } : {}),
-    recoveries: l.recoveries?.length ?? 0,
-    auto_retries: l.auto_retries?.length ?? 0,
-    ...(needs.length ? { needs } : {}),
-    ...(l.reason ? { reason: l.reason } : {}),
-    ...(Object.values(l.node_leases ?? {}).some(lease => lease.engine_run === run.id)
-      ? { node_leases: l.node_leases }
-      : {}),
-    ...(lease ? { reason: 'budget_exceeded', next: nodeLeaseNextAction(l.run_id) } : {}),
-  };
-}
-
-/**
- * failed 的原因：有失败节点取节点 error；没有（启动失败、executor 在节点外出错、进程被信号终止）则取引擎写的
- * run 级 error（终局记录优先）与停止原因类别，并给出能看到全文的证据路径。错误文本先脱敏再截断。
- */
-function failure(l: Ledger, run: RunView, node: string | undefined): Record<string, unknown> {
-  const cut = (s: string): string => errorExcerpt(redact(s), 200);
-  if (node) return { error: cut(run.nodes?.find(n => n.nodeId === node)?.error ?? '') };
-  const why = run.metadata?.stop_reason;
-  // 停止原因是引擎枚举值；不是枚举形状的就不当原因转述
-  const reason = reasonToken(why?.reason);
-  const signal = reasonToken(why?.signal);
-  const paths = [run.transcript_path, l.log, l.transcript].filter(
-    (p): p is string => typeof p === 'string' && p !== '' && existsSync(p)
-  );
-  return {
-    error: cut(run.terminal_record?.error ?? run.metadata?.error ?? ''),
-    ...(reason ? { stop_reason: signal ? `${reason}:${signal}` : reason } : {}),
-    evidence_paths: paths,
-  };
-}
-
-const workflowIdentity = (l: Ledger): string | undefined => l.workflow_hash ?? l.engine_hash;
 const adoptsRun = (l: Ledger, run: RunView, staleSnapshot = false): boolean =>
   ['failed', 'cancelled'].includes(run.status) &&
   (staleSnapshot || workflowIdentity(l) !== engineHash());
-
-/** Read-only delivery evidence projection; ledger counters never decide execution lifecycle. */
-export function classifyRun(l: Ledger, run: RunView): Classified {
-  const c = classify(run);
-  if (abandoned(l)) return { ...c, state: 'abandoned', exit: EXIT.cancelled };
-  if (run.status === 'cancelled') return c;
-  if (coderBudgetExceeded(run, c)) return { ...c, state: heldState('gate'), exit: EXIT.held };
-  if ((run.status === 'failed' || run.status === 'paused') && c.node) {
-    const art = artifactsOf(run),
-      failedNodes =
-        run.status === 'failed' ? (run.nodes ?? []).filter(n => n.state === 'failed') : [];
-    if (run.status === 'failed') {
-      const currentAttemptStartedAt = parseDbTimestamp(
-          failedNodes.find(node => node.nodeId === c.node)?.startedAt ?? ''
-        ),
-        evidenceNode = failedNodes.find(
-          node =>
-            /^(?:re)?sync-.+$|^publish-.+$/.test(authoredNodeId(node.nodeId)) &&
-            (node.nodeId === c.node ||
-              (Number.isFinite(currentAttemptStartedAt) &&
-                parseDbTimestamp(node.startedAt ?? '') >= currentAttemptStartedAt))
-        )?.nodeId,
-        projected = evidenceNode ? { ...c, node: evidenceNode } : c,
-        authored = authoredNodeId(evidenceNode ?? c.node);
-      const publish = /^(?:re)?sync-.+$|^publish-.+$/.test(authored)
-        ? (evidenceJson(l, art, `${authored}.json`) as { reason?: unknown } | undefined)
-        : undefined;
-      if (publish?.reason === 'reclaim_pending')
-        return { ...projected, state: heldState('reclaim_pending'), exit: EXIT.held };
-      if (publish?.reason === 'target_dirty') return { ...projected, state: 'target_dirty' };
-      if (publish?.reason === 'target_switched')
-        return { ...projected, state: heldState('target_switched'), exit: EXIT.held };
-      if (publish?.reason === 'target_checkout_changed')
-        return { ...projected, state: 'target_checkout_changed' };
-      if (publish?.reason === 'target_advanced') return { ...projected, state: 'target_advanced' };
-      if (publish?.reason === 'review_stale') return { ...projected, state: 'review_stale' };
-      const sync = authored
-        .replace(/^resolve-context-/, '')
-        .replace(/^resolve-/, '')
-        .replace(/-ready$/, '');
-      if (/^(?:re)?sync-.+$/.test(sync)) {
-        const evidence = evidenceJson(l, art, `${sync}.json`) as { status?: unknown } | undefined;
-        if (evidence?.status === 'conflict') return { ...projected, state: 'sync_conflict' };
-      }
-    }
-    const controlNode = [c.node, ...failedNodes.map(node => node.nodeId)].find(node => {
-      const decision = decisionOf(evidenceJson(l, art, `${authoredNodeId(node)}.json`));
-      return (
-        decision?.kind === 'block' &&
-        ['coder_partial', 'coder_needs', 'acceptance_adjudication', 'finding_stuck'].includes(
-          decision.reason ?? ''
-        )
-      );
-    });
-    if (controlNode) return { ...c, node: controlNode, state: heldState('gate'), exit: EXIT.held };
-    const decision = decisionOf(evidenceJson(l, art, `${c.node}.json`));
-    if (/^(verify|diff|settle)-/.test(c.node) && decision?.reason === 'scope_approval')
-      return { ...c, state: heldState('scope'), exit: EXIT.held };
-    if (
-      /^(verify|settle|gate)-/.test(c.node) &&
-      (!decision || decision.kind === 'advance' || decision.kind === 'debt')
-    )
-      return { ...c, state: heldState('engine_suspect'), exit: EXIT.held };
-  }
-  return c;
-}
-
-const coderBudgetExceeded = (run: RunView, c: Classified): boolean => {
-  const lifecycle = run.nodes?.find(n => n.nodeId === c.node)?.execution?.lifecycle;
-  return (
-    /^(code|fix|repair)-/.test(c.node ?? '') &&
-    lifecycle?.status === 'failed' &&
-    lifecycle.providerFailure?.class === 'budget_exceeded'
-  );
-};
 
 /** A successor's immutable start sample is the first durable HEAD evidence after coding. */
 const codedHead = (run: RunView, pkg: string): string | undefined => {
@@ -1264,169 +634,6 @@ const codedHead = (run: RunView, pkg: string): string | undefined => {
     ? sample.commit
     : undefined;
 };
-
-export function recoveryReviewCheckpoint(
-  l: Ledger,
-  art: string,
-  file: string,
-  head: string,
-  outputHashes: Readonly<Partial<Record<string, string>>>
-):
-  | {
-      milestone: string;
-      checkpoint?: ReviewCheckpoint;
-      reason?: `${'gate' | 'diff'}_hash_${'missing' | 'mismatch'}`;
-    }
-  | undefined {
-  const match = /^gate-(.+)-r(\d+)\.json$/.exec(file);
-  if (!match) return undefined;
-  try {
-    const readBound = (name: string, kind: 'gate' | 'diff') => {
-      const path = confined(l, join(art, name)),
-        expected = outputHashes[name.replace('.json', '')];
-      if (!expected) return { reason: `${kind}_hash_missing` as const };
-      if (!path) return { reason: `${kind}_hash_mismatch` as const };
-      const bytes = readFileSync(path);
-      if (createHash('sha256').update(bytes).digest('hex') !== expected)
-        return { reason: `${kind}_hash_mismatch` as const };
-      return { value: JSON.parse(bytes.toString('utf8')) as unknown };
-    };
-    const gateBound = readBound(file, 'gate');
-    if ('reason' in gateBound) return { milestone: match[1], reason: gateBound.reason };
-    const diffBound = readBound(file.replace('gate-', 'diff-'), 'diff');
-    if ('reason' in diffBound) return { milestone: match[1], reason: diffBound.reason };
-    const gate = gateBound.value as Record<string, unknown> | undefined;
-    const diff = diffBound.value as Record<string, unknown> | undefined;
-    const decision = decisionOf(gate),
-      inferredLedger = join(art, file.replace('.json', '.ledger.json')),
-      ledger = confined(
-        l,
-        typeof gate?.ledger_file === 'string' ? gate.ledger_file : inferredLedger
-      );
-    const valid =
-      decision &&
-      ['advance', 'debt'].includes(decision.kind) &&
-      gate?.head_trusted === true &&
-      gate.reviewed_head === head &&
-      typeof gate.reviewed_diff_hash === 'string' &&
-      /^[0-9a-f]{16}$/.test(gate.reviewed_diff_hash) &&
-      typeof diff?.contract_hash === 'string' &&
-      /^[0-9a-f]{64}$/.test(diff.contract_hash) &&
-      diff.head === gate.reviewed_head &&
-      diff.diff_hash === gate.reviewed_diff_hash &&
-      ledger &&
-      readJson(ledger);
-    return {
-      milestone: match[1],
-      ...(valid
-        ? {
-            checkpoint: {
-              gate: { ...gate, decision, ledger_file: ledger },
-              check: diff,
-            } as ReviewCheckpoint,
-          }
-        : {}),
-    };
-  } catch {
-    return { milestone: match[1] };
-  }
-}
-
-export const recoveryOutputHashes = (
-  runId: string,
-  repo: string,
-  query: typeof archonJson = archonJson
-): Record<string, string> => {
-  try {
-    const view = query(['workflow', 'get', runId, '--verbose', '--events'], repo) as {
-      events?: unknown;
-    };
-    if (!Array.isArray(view.events)) return {};
-    return Object.fromEntries(
-      view.events.flatMap(event => {
-        const row = event as { event_type?: unknown; step_name?: unknown; data?: unknown },
-          data = row.data as { structured_output?: unknown; node_output?: unknown } | null,
-          output =
-            data?.structured_output ??
-            (typeof data?.node_output === 'string' ? lastJson(data.node_output) : undefined);
-        const hash = (output as { artifact_sha256?: unknown } | null)?.artifact_sha256;
-        return row.event_type === 'node_completed' &&
-          typeof row.step_name === 'string' &&
-          typeof hash === 'string' &&
-          /^[0-9a-f]{64}$/.test(hash)
-          ? [[row.step_name, hash]]
-          : [];
-      })
-    );
-  } catch {
-    return {};
-  }
-};
-
-function reviewCheckpoints(
-  l: Ledger,
-  run: RunView
-): NonNullable<Continuation['baselines']>['checkpoints'] {
-  if (!run.working_path) return {};
-  try {
-    const reviews: NonNullable<NonNullable<Continuation['baselines']>['checkpoints']> = {},
-      art = artifactsOf(run),
-      head = gitHead(run.working_path),
-      hashes = recoveryOutputHashes(run.id, l.repo);
-    for (const file of evidenceGates(l, art)) {
-      const admitted = recoveryReviewCheckpoint(l, art, file, head, hashes);
-      if (admitted?.reason)
-        console.warn(JSON.stringify({ code: 'superagent.checkpoint_rejected', ...admitted }));
-      if (admitted) reviews[admitted.milestone] = admitted.checkpoint;
-    }
-    return reviews;
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes(OUTSIDE)) throw error;
-    console.warn(
-      JSON.stringify({ code: 'superagent.checkpoint_rejected', reason: 'artifacts_outside' })
-    );
-    return {};
-  }
-}
-
-export function continuation(l: Ledger): Continuation | undefined {
-  let current = l;
-  const seen = new Set<string>();
-  for (;;) {
-    const base = planOf(current).base_ref,
-      match = /^(?:refs\/heads\/)?sa\/(.+)$/.exec(base);
-    if (!match) {
-      const resolved = Bun.spawnSync(
-        ['git', '-C', l.repo, 'rev-parse', '--verify', `${base}^{commit}`],
-        {
-          stdout: 'pipe',
-          stderr: 'pipe',
-          timeout: QUERY_TIMEOUT_MS,
-        }
-      );
-      return resolved.exitCode === 0
-        ? { from: l.run_id, packages: [], baselines: { review: resolved.stdout.toString().trim() } }
-        : undefined;
-    }
-    if (seen.has(match[1])) return undefined;
-    seen.add(match[1]);
-    try {
-      current = loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]);
-    } catch {
-      return undefined;
-    }
-  }
-}
-
-function planContinuation(plan: Plan): Continuation | undefined {
-  const match = /^(?:refs\/heads\/)?sa\/(.+)$/.exec(plan.base_ref);
-  if (!match) return undefined;
-  try {
-    return continuation(loadLedger(coord().resolveRun(match[1])?.run_id ?? match[1]));
-  } catch {
-    return undefined;
-  }
-}
 
 /** Explicit delivery retry/adoption; Archon owns admission and all execution transitions. */
 function recoverRun(
@@ -1775,9 +982,6 @@ export function waitForRunAdmission(
     waitClock.sleep(Math.min(QUEUE_WAIT.retryMs, deadline - now));
   }
 }
-
-type NtfyTickRecord = TickRecord &
-  Partial<Record<'ntfy_sync' | 'ntfy_publish' | 'orca_delivery', TickStage>>;
 
 export function ntfyTickHealth(tick: NtfyTickRecord | undefined, now: number) {
   const messages = [...tickHealth(tick, now).messages];
@@ -2709,15 +1913,6 @@ function cancelRun(id: string, status: RunView['status'], cwd?: string) {
   const result = archonJson(['workflow', status === 'running' ? 'cancel' : 'abandon', id], cwd);
   return { ...result, ok: result.ok === true };
 }
-
-export const planOf = (l: Ledger): Plan =>
-  JSON.parse(readFileSync(join(l.gen_dir, 'plan.json'), 'utf8')) as Plan;
-
-/** 过了 plan 的绝对 deadline，签收节点与 land 都会拒绝、supervise-tick 会取消 run；approve 在此提前拒绝，不发无效 signal。 */
-const pastDeadline = (l: Ledger): boolean => {
-  const deadline = planOf(l).deadline;
-  return deadline !== undefined && Date.now() > Date.parse(deadline);
-};
 const PAST_DEADLINE =
   'plan deadline passed: decide reject, or start a new run with a later deadline';
 
@@ -3281,56 +2476,6 @@ type Ask = BaseAsk & {
   reconciled_snapshot?: string;
 };
 export type Asks = Partial<Record<string, Ask>>;
-
-function decisionSummary(run: string): Asks | { error: string } {
-  try {
-    return asksOf(run);
-  } catch (e) {
-    return { error: tail((e as Error).message, 200) };
-  }
-}
-const asksPath = (): string => join(home().sa, 'asks.json');
-/** 读不出就抛错：把截断或损坏的 asks.json 当空表，会让每个挂起再投一遍提醒。 */
-const loadAsks = (): Asks => {
-  const p = asksPath();
-  if (!existsSync(p)) return {};
-  try {
-    const a = JSON.parse(readFileSync(p, 'utf8')) as unknown;
-    if (a === null || typeof a !== 'object' || Array.isArray(a)) throw new Error('not an object');
-    return a as Asks;
-  } catch (e) {
-    throw new Error(`asks ${p}: ${(e as Error).message}`);
-  }
-};
-const withFileLock = <T>(path: string, label: string, operation: () => T): T => {
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    const held = lock(path);
-    if (!held.ok) {
-      Bun.sleepSync(5);
-      continue;
-    }
-    try {
-      return operation();
-    } finally {
-      held.release();
-    }
-  }
-  throw new Error(`${label}: lock busy`);
-};
-const withAsksLock = <T>(operation: () => T): T =>
-  withFileLock(join(home().sa, 'asks.lock'), 'asks', operation);
-const writeAsks = (asks: Asks): void => {
-  writeAtomic(asksPath(), JSON.stringify(asks, null, 2) + '\n');
-};
-/** Persist exactly one decision key; other runs and coord writers retain their latest values. */
-const saveAsk = (asks: Asks, key: string): void => {
-  withAsksLock(() => {
-    const latest = loadAsks();
-    if (asks[key] === undefined) Reflect.deleteProperty(latest, key);
-    else latest[key] = asks[key];
-    writeAsks(latest);
-  });
-};
 const saveDelta = <T extends Record<string, unknown>>(
   before: T,
   after: T,
@@ -3354,10 +2499,6 @@ const saveDelta = <T extends Record<string, unknown>>(
 const saveAsksDelta = (before: Asks, after: Asks): void => {
   saveDelta(before, after, loadAsks, writeAsks, join(home().sa, 'asks.lock'), 'asks');
 };
-
-/** 某个 run 的提问；键 `<run>:<挂起类别>`：resumeAt 变了也不重投。 */
-export const asksOf = (run: string): Asks =>
-  Object.fromEntries(Object.entries(loadAsks()).filter(([k]) => k.startsWith(`${run}:`)));
 
 /** Legacy receipts lack timestamps; ties retain their persisted order. */
 const latestReceipt = (asks: Asks): AnswerReceipt | undefined =>
@@ -3939,17 +3080,6 @@ const rotateTickLog = (sa: string): void => {
   renameSync(file, `${file}.1`);
 };
 
-// prettier-ignore
-const liveCallbackAsk = (asks: Asks, key: string, id: string): [string, Ask] | undefined => Object.entries(asks).find((entry): entry is [string, Ask] => !!entry[1] && entry[1].id === id && ['pending', 'unknown'].includes(entry[1].status) && (entry[0] === key || entry[1].legacy_key === key));
-
-// prettier-ignore
-const ntfyExpiryCallback = (decision: Parameters<NonNullable<Parameters<typeof syncNtfy>[2]>>[0]): void => {
-  if (decision.callback.kind !== 'ask') return;
-  const asks = loadAsks(), entry = liveCallbackAsk(asks, decision.callback.key, decision.id);
-  if (!entry) return;
-  const [currentKey, current] = entry; current.status = 'expired'; saveAsk(asks, currentKey);
-};
-
 export async function syncDecisionChannel(
   supplied: Partial<NtfyConfig> = {},
   loadInbox: () => Promise<DecisionInbox> = loadCurrentDecisions,
@@ -4002,55 +3132,6 @@ export async function syncDecisionChannel(
     writeAtomic(cursorPath, lastSelected.id + '\n');
   return syncNtfy(ntfyAnswerCallback(answer, answerHeld), supplied, ntfyExpiryCallback);
 }
-
-const ntfyAnswerCallback =
-  (
-    answer: typeof answerNtfyDecision = answerNtfyDecision,
-    answerHeld: typeof answerHeldOwnerAsk = answerHeldOwnerAsk
-  ) =>
-  async (
-    decision: Parameters<Parameters<typeof syncNtfy>[0]>[0],
-    option: string,
-    source?: 'ntfy' | 'local'
-  ) => {
-    if (decision.callback.kind === 'decision') {
-      await answer(decision.callback.id, option);
-      return;
-    }
-    if (decision.callback.kind === 'external') {
-      if (decision.originator)
-        coord().receipt(
-          decision.originator.scope,
-          caller(true),
-          decision.originator.identity,
-          decision.id,
-          `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}${source === 'local' ? '（本地答复）' : ''}`
-        );
-      return;
-    }
-    if (decision.callback.kind === 'held') {
-      const results = answerHeld(decision.callback.ref, decision.id, option),
-        result = results.length ? results.join('；') : '无匹配 run',
-        executed = results.some(item => item.includes(':ok:'));
-      if (decision.originator)
-        coord().receipt(
-          decision.originator.scope,
-          caller(true),
-          decision.originator.identity,
-          decision.id,
-          `${decision.headline ?? decision.title}：${decision.options.find(item => item.id === option)?.label ?? option}${source === 'local' ? '（本地答复）' : ''}；${result}`
-        );
-      return { result, executed };
-    }
-    const callbackKey = decision.callback.key,
-      asks = loadAsks(),
-      entry = liveCallbackAsk(asks, callbackKey, decision.id);
-    if (!entry) throw new Error('ntfy decision changed');
-    const [currentKey, current] = entry;
-    current.status = option;
-    saveAsk(asks, currentKey);
-    return undefined;
-  };
 
 /** Activated engines separate the global scheduler from snapshot-scoped executors. */
 export function superviseTick(mode: TickMode = {}):
@@ -4121,8 +3202,6 @@ export function superviseTick(mode: TickMode = {}):
   const promotion = autoPromote();
   return { ...scheduled, promotion, verify: autoVerify(currentEngineSnapshot()) };
 }
-
-const superviseOwnerPath = (sa = home().sa): string => join(sa, 'supervise-owner.json');
 const markSuperviseOwner = (sa: string): (() => void) => {
   const processState = inspectProcess(process.pid),
     owner = {
@@ -4135,33 +3214,6 @@ const markSuperviseOwner = (sa: string): (() => void) => {
   return () => {
     rmSync(path, { force: true });
   };
-};
-export function superviseTickRunning(
-  owner: unknown,
-  now = Date.now(),
-  alive = (pid: number, start: string): boolean => {
-    const state = inspectProcess(pid);
-    return state.state === 'online' && state.start === start;
-  }
-): boolean {
-  if (!owner || typeof owner !== 'object') return false;
-  const value = owner as Record<string, unknown>,
-    age = now - (typeof value.started_at === 'string' ? Date.parse(value.started_at) : NaN);
-  return (
-    Number.isInteger(value.pid) &&
-    typeof value.pid_start === 'string' &&
-    age >= 0 &&
-    age <= 600_000 &&
-    alive(value.pid as number, value.pid_start)
-  );
-}
-
-const optional = <T>(read: () => T): T | undefined => {
-  try {
-    return read();
-  } catch {
-    return undefined;
-  }
 };
 const readTickCache = (sa: string): Record<string, string> => {
   const value = optional(() => readJson(join(sa, 'supervise-terminal.json')));
@@ -4397,42 +3449,6 @@ function tick(
   };
 }
 
-/** run → 挂起原因；undefined 不归 tick 管（运行中、终态、非编码节点失败）。签收自己处理截止，其余过了截止即 deadline。 */
-export function holdOf(l: Ledger, run: RunView, c: Classified): Hold | undefined {
-  if (c.state === 'held:engine_suspect') return pastDeadline(l) ? 'deadline' : 'engine_suspect';
-  if (c.state === 'held:target_switched') return pastDeadline(l) ? 'deadline' : 'target_switched';
-  if (c.state === 'held:human') return 'signoff';
-  const h: Hold | undefined =
-    c.state === 'held:gate' || c.state === 'held:reclaim_pending'
-      ? reasonHold(nodeReason(l, run, c))
-      : c.state === 'held:environment'
-        ? 'environment'
-        : c.state === 'held:paused' || c.state === 'held:scope' || c.state === 'held:target_dirty'
-          ? run.metadata?.approval
-            ? 'approval'
-            : 'paused'
-          : c.state === 'failed' && /^(code|fix|repair)-/.test(c.node ?? '')
-            ? 'coder'
-            : undefined;
-  return h && pastDeadline(l) ? 'deadline' : h;
-}
-
-const nodeReason = (l: Ledger, run: RunView, c: Classified): string => {
-  if (coderBudgetExceeded(run, c)) return 'coder_budget';
-  const out = evidenceJson(l, artifactsOf(run), `${c.node ?? ''}.json`) as {
-    reason?: unknown;
-  } | null;
-  return (
-    decisionOf(out)?.reason ??
-    (/^(verify|settle|gate)-/.test(c.node ?? '')
-      ? ''
-      : typeof out?.reason === 'string'
-        ? out.reason
-        : '')
-  );
-};
-export const reasonHold = (reason: string): Hold => reasonOf(reason)?.hold ?? 'engine_suspect';
-
 /** Entry timestamp is stable across polls; stalled episodes follow provider progress, not heartbeats. */
 function holdEpisode(_l: Ledger, run: RunView, c: Classified, hold?: Hold): string {
   if (hold === 'stalled') {
@@ -4511,15 +3527,6 @@ function decisionContext(
       ? `${l.launcher.client} ${l.launcher.session_id?.slice(0, 8) ?? `pid:${String(l.launcher.pid)}`}`
       : 'unknown',
   };
-}
-function blocker(l: Ledger, hold: Hold): { reason: string; next: string } | undefined {
-  const p = HOLD_POLICY[hold];
-  return p.do === 'blocked'
-    ? {
-        reason: `${hold}: ${p.text}`,
-        next: `${p.next}；superagent brief ${l.run_id}；条件修复后显式 ${holdAction(l.run_id, hold)}（红线不变）`,
-      }
-    : undefined;
 }
 /** 只展示注册原因、闭集枚举与数字；将军/评审自由文本只在 brief 中读取。 */
 export function decisionQuestion(
@@ -4881,124 +3888,6 @@ function record(l: Ledger, reason: string, x: Action): Action {
   } catch (e) {
     return { ...x, record_error: tail((e as Error).message, 200) };
   }
-}
-
-type Count = Partial<Record<string, number>>;
-const bump = (o: Count, k: string, n = 1): void => {
-  o[k] = (o[k] ?? 0) + n;
-};
-
-/** 一个 run 的 ledger 与 `workflow get` 结果；查询失败时 run 是那次的错误。 */
-export interface Pair {
-  ledger: Ledger;
-  run: RunView | Error;
-}
-
-/** 计数（token 用量后置）：state:*、各里程碑末轮 rounds:*、first_pass（首轮即 pass 的里程碑）、failed:<节点 id 前缀>、
- *  escalate:<原因>、node_s:<前缀>（累计秒）、debt（末轮评审债条数）、recoveries。读不到的 run 单列，不吞错。report 与 board 共用。 */
-export function reportSince(argv: readonly string[] = process.argv): string {
-  const flag =
-    argv.find(a => a.startsWith('--since='))?.slice(8) ?? argv[argv.indexOf('--since') + 1];
-  const since = argv.some(a => a === '--since' || a.startsWith('--since='))
-    ? /^\d{8}$/.test(flag)
-      ? `${flag.slice(0, 4)}-${flag.slice(4, 6)}-${flag.slice(6, 8)}T00:00:00.000Z`
-      : flag
-    : '';
-  if (since && !Number.isFinite(Date.parse(since)))
-    throw new Error('--since must be YYYYMMDD or an ISO timestamp');
-  return since;
-}
-
-export function summarize(pairs: Pair[], includeConsolidation = true): Record<string, unknown> {
-  const n: Count = {};
-  const unreadable: string[] = [];
-  for (const { ledger: l, run } of pairs) {
-    bump(n, 'recoveries', l.recoveries?.length ?? 0);
-    try {
-      if (run instanceof Error) throw run;
-      const c = classifyRun(l, run);
-      bump(n, `state:${c.state}`);
-      for (const x of run.nodes ?? [])
-        bump(n, `node_s:${x.nodeId.split('-')[0]}`, Math.round((x.durationMs ?? 0) / 1e3));
-      if (run.status === 'failed' && !c.node?.startsWith('gate-'))
-        bump(n, `failed:${c.node?.split('-')[0] ?? '?'}`);
-      const last = new Map<string, { decision: DeliveryDecision | undefined; round: string }>();
-      for (const f of evidenceGates(l, artifactsOf(run))) {
-        const [, m, round] = /^gate-(.+)-r(\d+)\.json$/.exec(f) ?? [];
-        last.set(m, { decision: decisionOf(evidenceJson(l, artifactsOf(run), f)), round });
-        if (round === '1' && decisionVerdict(last.get(m)?.decision) === 'pass')
-          bump(n, 'first_pass');
-      }
-      for (const g of last.values()) {
-        bump(n, `rounds:${g.round}`);
-        bump(n, 'debt', g.decision?.debt.length ?? 0);
-        if (g.decision?.kind === 'block') bump(n, `escalate:${g.decision.reason ?? '?'}`);
-      }
-    } catch (e) {
-      unreadable.push(`${l.run_id}: ${tail((e as Error).message, 200)}`);
-    }
-  }
-  const summary = {
-    runs: pairs.length,
-    ...Object.fromEntries(Object.entries(n).sort()),
-    ...debtMetrics(debtSnapshot(pairs)),
-    unreadable,
-  };
-  if (!includeConsolidation) return summary;
-  const since = reportSince();
-  const titles = Bun.spawnSync(
-    [
-      'git',
-      'log',
-      ...(since ? [`--since=${since}`] : []),
-      '--until=now',
-      '--format=%s',
-      '--',
-      'wetamp',
-    ],
-    { cwd: join(WETAMP, '..'), stdout: 'pipe', stderr: 'pipe' }
-  );
-  return {
-    ...summary,
-    consolidation: consolidationMetrics(
-      pairs,
-      titles.exitCode === 0 ? titles.stdout.toString().trim().split('\n').filter(Boolean) : null,
-      { since: since || 'all', until: 'now' }
-    ),
-  };
-}
-
-/** 全部登记 run 的计数摘要与用量台账（F-22，见 report.ts）。 */
-export function report(engine?: { commit: string; baselineDays: number }): Record<string, unknown> {
-  // F-02：坏 ledger 不进报表计算，单列在 unreadable，其余照常。
-  const all = ledgers();
-  const r = buildReport(
-    all.flatMap(l => ('error' in l ? [] : [l])),
-    engine,
-    { humanDecisions: !engine }
-  );
-  if (engine) return { ...r, unreadable_ledgers: all.filter(l => 'error' in l).length };
-  const bad = all.flatMap(l => ('error' in l ? [`${l.run_id}: ${l.error}`] : []));
-  return {
-    ...r,
-    decisions: loadAsks(),
-    human_decisions: {
-      ...(r.human_decisions as DecisionInbox),
-      unknown: [
-        ...(r.human_decisions as DecisionInbox).unknown,
-        ...all.flatMap(l => ('error' in l ? [l.run_id] : [])),
-      ],
-    },
-    recorded_blockers: all.flatMap(l =>
-      'error' in l
-        ? []
-        : (l.dispositions ?? [])
-            .filter(d => d.action === 'blocked')
-            .map(d => ({ run_id: l.run_id, initiator: l.launcher ?? 'unknown', ...d }))
-    ),
-    runs: all.length,
-    unreadable: [...(r.unreadable as string[]), ...bad],
-  };
 }
 
 type OptionName = keyof typeof OPTIONS;
@@ -5602,8 +4491,10 @@ export function main(argv: string[]): number {
       const writing = a.flags.effect !== undefined || a.flags.improve !== undefined,
         l = ledger(writing);
       return writing
-        ? control(l, controller => retroCommand(l, a.flags.effect, a.flags.improve, controller))
-        : retroCommand(l);
+        ? control(l, controller =>
+            retroCommand(updateLedger, l, a.flags.effect, a.flags.improve, controller)
+          )
+        : retroCommand(updateLedger, l);
     }
     case 'wait': {
       const t = Number(a.flags.timeout ?? 3000);
@@ -5927,421 +4818,6 @@ export function main(argv: string[]): number {
       console.error(USAGE);
       return EXIT_USAGE;
   }
-}
-
-function need<T>(v: T | undefined, usage: string): T {
-  if (v === undefined) throw new Error(`usage: superagent ${usage}`);
-  return v;
-}
-
-export async function askCli(
-  argv: string[],
-  supplied: Partial<NtfyConfig> = {},
-  emit: (value: unknown) => void = print
-): Promise<number> {
-  const a = parseArgs(argv);
-  if (a._[1] === 'answer') {
-    if (a._.length !== 4) throw new Error('usage: superagent ask answer <id> <option>');
-    // prettier-ignore
-    const result = await answerNtfyLocally(a._[2], a._[3], ntfyAnswerCallback(), supplied, ntfyExpiryCallback);
-    emit({ id: a._[2], option: a._[3], source: 'local', ...result });
-    return 0;
-  }
-  if (a._[1] === 'status') {
-    if (a._.length !== 3) throw new Error('usage: superagent ask status <id>');
-    const status = ntfyDecisionStatus(a._[2], supplied);
-    if (!status) throw new Error('ask: unknown decision');
-    emit(status);
-    return 0;
-  }
-  if (a._.length !== 1) throw new Error('usage: superagent ask [structured flags]');
-  const parseOption = (value: string): NtfyOption => {
-    const [id, label, ...consequence] = value.split('=');
-    if (!id || !label) throw new Error('--option must be id=label[=consequence]');
-    return { id, label, ...(consequence.length ? { consequence: consequence.join('=') } : {}) };
-  };
-  const specPath = a.flags.spec;
-  if (specPath) {
-    const conflicting = [
-      'source',
-      'title',
-      'body',
-      'option',
-      'expires-at',
-      'default-on-expiry',
-      'callback',
-      'recommend',
-      'why',
-      'risk',
-    ].find(flag => Reflect.get(a.flags, flag) !== undefined);
-    if (conflicting) throw new Error(`--spec cannot be combined with --${conflicting}`);
-    let value: unknown;
-    try {
-      value = JSON.parse(readFileSync(specPath, 'utf8'));
-    } catch (error) {
-      throw new Error(`ask spec: ${(error as Error).message}`);
-    }
-    const id = askNtfy(
-      { ...parseNtfyAskSpec(value), originator: { identity: caller(), scope: coord().scope() } },
-      supplied
-    );
-    return publishAsk(id, supplied, emit);
-  }
-  const source = need(a.flags.source, 'ask --source <source>'),
-    title = need(a.flags.title, 'ask --title <title>'),
-    body = need(a.flags.body, 'ask --body <body>'),
-    callback = need(a.flags.callback, 'ask --callback <ref>'),
-    expiresAt = need(a.flags['expires-at'], 'ask --expires-at <ISO time>'),
-    risk = a.flags.risk ?? 'normal';
-  if (risk !== 'normal' && risk !== 'red') throw new Error('--risk must be normal or red');
-  const id = askNtfy(
-    {
-      source,
-      title,
-      body,
-      options: (a.flags.option ?? []).map(parseOption),
-      risk,
-      expires_at: expiresAt,
-      default_on_expiry: a.flags['default-on-expiry'],
-      callback: { kind: 'external', ref: callback },
-      dedupe_key: `external:${callback}`,
-      originator: { identity: caller(), scope: coord().scope() },
-      ...(a.flags.recommend
-        ? {
-            project: source,
-            headline: title,
-            purpose: body,
-            why: a.flags.why,
-            recommend: { option: a.flags.recommend, reason: a.flags.why ?? '' },
-            source: { ref: callback, initiator: source, queued_at: new Date().toISOString() },
-          }
-        : {}),
-    },
-    supplied
-  );
-  return publishAsk(id, supplied, emit);
-}
-
-// prettier-ignore
-export function askWaitHealth(
-  ids: string[],
-  supplied: Partial<NtfyConfig> = {},
-  tick = readJson(join(home().sa, 'tick.json')) as NtfyTickRecord | undefined,
-  now = Date.now(),
-  superviseRunning = superviseTickRunning(optional(() => readJson(superviseOwnerPath())), now)
-): { event: string; id: string; reason: string; next: string } | undefined {
-  if (!ids.length) return undefined; for (const id of ids) {
-    const decision = ntfyDecisionStatus(id, supplied);
-    if (!decision || decision.status === 'superseded')
-      return { event: 'withdrawn', id, reason: '问询已撤回', next: `在当前对话确认选择后运行 superagent ask answer ${id} <option>` };
-    if (decision.status === 'expired' || Date.parse(decision.expires_at) <= now)
-      return { event: 'expired', id, reason: '问询已过期', next: '重发问询或按到期默认值继续' };
-  }
-  if (ntfyPauseInfo(supplied))
-    return { event: 'paused', id: ids[0], reason: 'ntfy 已暂停', next: '在当前对话确认选择后运行 superagent ask answer <id> <option>' };
-  if (tick?.ntfy_publish && !tick.ntfy_publish.ok && ids.some(id => ntfyDecisionStatus(id, supplied)?.delivery === 'pending'))
-    return { event: 'delivery_failed', id: ids[0], reason: `问询推送失败：${tick.ntfy_publish.error ?? 'unknown'}`, next: '在当前对话确认选择后运行 superagent ask answer <id> <option>' };
-  const tickAt = Date.parse(tick?.at ?? '');
-  if ((!Number.isFinite(tickAt) || now - tickAt > 180_000) && !superviseRunning)
-    return { event: 'tick_stale', id: ids[0], reason: 'supervise-tick 超过 3 分钟未更新', next: '改走本地答复，并恢复 supervise-tick' };
-  return undefined;
-}
-
-async function publishAsk(
-  id: string,
-  supplied: Partial<NtfyConfig>,
-  emit: (value: unknown) => void
-): Promise<number> {
-  let delivery: 'sent' | 'pending';
-  try {
-    await publishPendingNtfy(supplied);
-    delivery = ntfyDeliveryStatus('decision', id, supplied);
-  } catch {
-    delivery = 'pending';
-  }
-  emit({
-    id,
-    status: 'pending',
-    delivery,
-    next: '后台运行 superagent inbox --wait --timeout 7000 等待答复（答复约 60 秒内送达）',
-  });
-  return 0;
-}
-
-export async function notifyCli(
-  argv: string[],
-  supplied: Partial<NtfyConfig> = {},
-  emit: (value: unknown) => void = print
-): Promise<number> {
-  const a = parseArgs(argv),
-    usage = 'usage: superagent notify --id <id> --title <title> --body <body>';
-  if (a._.length !== 1) throw new Error(usage);
-  const required = (value: string | undefined): string => {
-    if (!value?.trim()) throw new Error(usage);
-    return value;
-  };
-  const id = required(a.flags.id),
-    title = required(a.flags.title),
-    body = required(a.flags.body);
-  const priority = Number(a.flags.priority ?? 3);
-  if (!Number.isInteger(priority) || priority < 1 || priority > 5)
-    throw new Error('--priority must be 1-5');
-  queueNtfyAlert(id, body, supplied, title, { priority, tags: ['large_blue_circle'] });
-  let delivery: 'sent' | 'pending';
-  try {
-    await publishPendingNtfy(supplied);
-    delivery = ntfyDeliveryStatus('alert', id, supplied);
-  } catch {
-    delivery = 'pending';
-  }
-  emit({ id, delivery });
-  return 0;
-}
-
-export function ntfyCli(
-  argv: string[],
-  supplied: Partial<NtfyConfig> = {},
-  emit: (value: unknown) => void = print
-): number {
-  const a = parseArgs(argv),
-    action = a._[1];
-  if (a._.length !== 2 || !['pause', 'resume', 'status'].includes(action))
-    throw new Error('usage: superagent ntfy pause|resume|status');
-  emit(ntfyControl(action as 'pause' | 'resume' | 'status', supplied));
-  return 0;
-}
-
-async function heartbeatCli(argv: string[]): Promise<number> {
-  const a = parseArgs(argv);
-  if (a._.length !== 1 || (a.flags.all && a.flags.cwd))
-    throw new Error('usage: superagent heartbeat [--watch] [--cwd <absolute-path>|--all]');
-  let filter = allMarshals;
-  let scopeLabel = '全部项目';
-  if (!a.flags.all) {
-    let cwd = a.flags.cwd;
-    if (!cwd) {
-      const git = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
-        cwd: process.cwd(),
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      if (git.exitCode !== 0)
-        throw new Error('heartbeat: current directory is not inside a git repository');
-      cwd = git.stdout.toString().trim();
-    }
-    filter = cwdFilter(cwd);
-    scopeLabel = basename(cwd);
-  }
-  const readModel = () => {
-    const pause = ntfyPauseInfo(),
-      pauseCwd =
-        pause?.by && 'cwd' in pause.by && typeof pause.by.cwd === 'string'
-          ? basename(pause.by.cwd)
-          : undefined;
-    return panelModel(
-      readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
-      readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
-      Date.now(),
-      filter,
-      scopeLabel,
-      pause
-        ? { at: pause.at, by: pause.by && pauseCwd ? `${pause.by.client} ${pauseCwd}` : null }
-        : undefined
-    );
-  };
-  const draw = (): string =>
-    renderPanel(
-      readJson(join(home().sa, 'heartbeat.json')) as Heartbeat | undefined,
-      readJson(join(home().sa, 'tick.json')) as TickRecord | undefined,
-      Date.now(),
-      filter,
-      process.stdout.columns || 100,
-      process.stdout.isTTY,
-      scopeLabel
-    );
-  if (!a.flags.watch) {
-    console.log(draw());
-    return 0;
-  }
-  const startedEngine = currentEngineSnapshot();
-  let queuedTickAlert: string | undefined;
-  const notifyTickStale = async (model: ReturnType<typeof readModel>): Promise<void> => {
-    const previous = queuedTickAlert;
-    queuedTickAlert = queueTickStaleAlert(model.health.stale, previous, alert => {
-      queueNtfyAlert(
-        alert.id,
-        `${'━'.repeat(14)}\n要你做：重启 supervise-tick\n${'━'.repeat(14)}\n▍发生了什么\n引擎巡检已停 ${String(alert.minutes)} 分钟\n${'─'.repeat(14)}\n▍影响\nrun 状态、回收与通知无法持续更新\n${'─'.repeat(14)}\n▍已自动尝试\n已由 heartbeat 检测并发出告警\n${'─'.repeat(14)}\n▍怎么处理\n${alert.message}\n${'─'.repeat(14)}\n▍证据\n${join(home().sa, 'tick.json')}`,
-        {},
-        `引擎巡检停摆 ${String(alert.minutes)} 分钟`,
-        { priority: 4, tags: ['red_circle'] }
-      );
-    });
-    if (queuedTickAlert && ntfyDeliveryStatus('alert', queuedTickAlert) === 'pending')
-      await publishPendingNtfy();
-  };
-  if (process.stdout.isTTY) {
-    const [{ createElement }, { renderToString }, { HeartbeatFrame }] = await Promise.all([
-      import('react'),
-      import('ink'),
-      import('./board/HeartbeatView'),
-    ]);
-    const quota = (): string | undefined => relayQuota().quota;
-    let resolveExit: (code: number) => void = () => undefined;
-    const exited = new Promise<number>(resolve => {
-      resolveExit = resolve;
-    });
-    let model = readModel();
-    await notifyTickStale(model);
-    let fingerprint = JSON.stringify(model);
-    let quotaValue = quota();
-    const screen = openTerminalScreen({
-      input: process.stdin,
-      output: process.stdout,
-      signals: process,
-      onExit: resolveExit,
-    });
-    const render = (): void => {
-      const width = process.stdout.columns || 100;
-      screen.render(
-        renderToString(
-          createElement(HeartbeatFrame, {
-            model,
-            quota: quotaValue,
-            now: Date.now(),
-            width,
-            rows: process.stdout.rows || 30,
-          }),
-          { columns: width }
-        )
-      );
-    };
-    const refresh = (): void => {
-      const next = readModel();
-      void notifyTickStale(next).catch((error: unknown) => {
-        console.error(
-          `heartbeat tick alert failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-      const serialized = JSON.stringify(next);
-      if (serialized === fingerprint) return;
-      model = next;
-      fingerprint = serialized;
-      render();
-    };
-    const refreshQuota = (): void => {
-      const next = quota();
-      if (next === quotaValue) return;
-      quotaValue = next;
-      render();
-    };
-    const resize = (): void => {
-      render();
-    };
-    process.stdout.on('resize', resize);
-    render();
-    const dataTimer = setInterval(refresh, 15_000);
-    const clockTimer = setInterval(render, 500);
-    const quotaTimer = setInterval(refreshQuota, 300_000);
-    const promotionTimer = setInterval(() => {
-      const code = heartbeatEngineExitCode(startedEngine);
-      if (code) resolveExit(code);
-    }, 15_000);
-    try {
-      return await exited;
-    } finally {
-      clearInterval(dataTimer);
-      clearInterval(clockTimer);
-      clearInterval(quotaTimer);
-      clearInterval(promotionTimer);
-      process.stdout.off('resize', resize);
-      screen.close();
-    }
-  }
-  let resolveStop: (value: 'stop') => void = () => undefined;
-  const interrupted = new Promise<'stop'>(resolve => {
-    resolveStop = resolve;
-  });
-  const stop = (): void => {
-    resolveStop('stop');
-  };
-  process.once('SIGINT', stop);
-  try {
-    for (;;) {
-      await notifyTickStale(readModel());
-      process.stdout.write(`\x1b[2J\x1b[H${draw()}\n`);
-      if ((await Promise.race([Bun.sleep(15_000), interrupted])) === 'stop') break;
-      const exit = heartbeatEngineExitCode(startedEngine);
-      if (exit) return exit;
-    }
-  } finally {
-    process.removeListener('SIGINT', stop);
-  }
-  return 0;
-}
-
-export function heartbeatEngineExitCode(
-  started: string | undefined,
-  current: () => string | undefined = currentEngineSnapshot
-): number {
-  if (!started) return 0;
-  const resolved = current();
-  return resolved && resolved !== started ? ENGINE_CHANGED : 0;
-}
-
-const drain = (stream: NodeJS.WriteStream): Promise<void> =>
-  new Promise((resolve, reject) => {
-    const failed = (error: Error): void => {
-      reject(error);
-    };
-    stream.once('error', failed);
-    stream.end(() => {
-      stream.off('error', failed);
-      resolve();
-    });
-  });
-
-export async function exitCli(code: number): Promise<never> {
-  await Promise.allSettled([drain(process.stdout), drain(process.stderr)]);
-  process.exit(code);
-}
-
-// prettier-ignore
-export async function mergeCli(argv: string[]): Promise<number> {
-  const { _: [, source, ...extra], flags } = parseArgs(argv);
-  const allowed = ['dry-run', 'message-file', 'accept', 'into', 'json'];
-  if (!source || extra.length || Object.keys(flags).some(flag => !allowed.includes(flag))) {
-    print({ status: 'rejected', reason: 'usage', next_action: 'superagent merge <task-worktree> --dry-run' });
-    return EXIT_USAGE;
-  }
-  assertEngineAccess(argv);
-  const who = caller();
-  const native = new Map<string, RunView>();
-  const result = await mergeTask(source, {
-    dryRun: flags['dry-run'], messageFile: flags['message-file'], into: flags.into, accept: flags.accept,
-  }, {
-    home: home().sa,
-    ledgers,
-    canMerge: path => {
-      const owner = coord().owner(repoScope(path));
-      return owner.conflicts.length === 0 && (!owner.owner || same(owner.owner, who));
-    },
-    state: l => {
-      const run = getRun(l.archon_run_id, l.repo);
-      native.set(run.id, run);
-      return ['pending', 'running', 'paused'].includes(run.status) ? run.status : classifyRun(l, run).state;
-    },
-    receipts: l => archonRunIds(l).flatMap(id => {
-      let run: RunView;
-      try { run = native.get(id) ?? getRun(id, l.repo); } catch { return []; }
-      const dir = run.output_root && confined(l, artifactsOf(run));
-      return dir ? [...new Bun.Glob('publish-*.json').scanSync({ cwd: dir })]
-        .flatMap(file => confined(l, join(dir, file)) ?? []) : [];
-    }),
-    plan: l => confined(l, join(l.gen_dir, 'plan.json')),
-    orca: syncOrcaMerge,
-  });
-  print(result.value);
-  return result.exit;
 }
 
 // Keep this module synchronous: land loads operator evidence lazily via require().
