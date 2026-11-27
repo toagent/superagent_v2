@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, mock, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   existsSync,
@@ -114,10 +114,8 @@ test('explicit nightly entry refreshes a claimed report and returns its path', (
 test('Archon launch and query failures retain their stage and available evidence', () => {
   const sa = home(),
     calls: string[] = [];
-  const rows = [
-    ...Array.from({ length: 5 }, (_, i) => sample('bad' + i, 'bad', 0)),
-    ...Array.from({ length: 30 }, (_, i) => sample('good' + i, 'good', 1)),
-  ];
+  writeEpisode(sa, 'bad0');
+  const rows = nightlyRows('bad');
   const tasks = {
     memory: () => calls.push('memory'),
     gc: () => {
@@ -261,8 +259,8 @@ test('nightly windows use report receipts and separate operator and superseded c
 // prettier-ignore
 test('empty, invalid and filtered reflection output retains diagnostics and survives a repeat claim', () => {
   const sa = home();
-  const rows = [...Array.from({ length: 5 }, (_, i) => sample('bad' + i, sa, 0)),
-    ...Array.from({ length: 30 }, (_, i) => sample('good' + i, 'good', 1))];
+  writeEpisode(sa, 'bad1');
+  const rows = nightlyRows(sa);
   const query = (args: string[]) => {
     if (args[1] === 'run') return { ok: true, runId: args.at(-1)!.includes('local') ? 'local' : 'remote' };
     const local = args[2] === 'local';
@@ -321,10 +319,7 @@ test('both workflow aliases contribute distinct trial candidates, alternating up
       })
     );
   }
-  const rows = [
-    ...Array.from({ length: 5 }, (_, i) => sample('bad' + i, sa, 0)),
-    ...Array.from({ length: 30 }, (_, i) => sample('good' + i, 'good', 1)),
-  ];
+  const rows = nightlyRows(sa);
   const query = (args: string[]) => {
     if (args[1] === 'run') {
       const alias = JSON.parse(readFileSync(args.at(-1)!, 'utf8')).aliases['@sa-coder'];
@@ -364,15 +359,16 @@ test('both workflow aliases contribute distinct trial candidates, alternating up
     { ...scope, ids: [], passed: false, control: true },
   ];
   maintainLessons({ id: 'trial', packages }, at(18, 3));
-  const invalid = ['good0', 'bad4'].map(id => add(sa, id, ['bad0', id]));
+  writeEpisode(sa, 'fresh');
+  const invalid = ['good0', 'bad4'].map(id => add(sa, id, ['fresh', id]));
   const reflect = (_input: string, source: string) => {
     const operations =
       source === 'local'
-        ? [...invalid, add('general', 'role', undefined, 'role')]
-        : [add(sa, 'remaining'), add('cli', 'different tag', ['bad0', 'bad3'], 'type')];
+        ? [...invalid, add('general', 'role', ['fresh'], 'role')]
+        : [add(sa, 'remaining', ['fresh']), add('cli', 'different tag', ['fresh', 'bad4'], 'type')];
     return { output: { operations } };
   };
-  const next = evolve(sa, at(19), () => rows, false, reflect);
+  const next = evolve(sa, at(19), () => [...rows, sample('fresh', sa, 0)], false, reflect);
   expect(JSON.parse(readFileSync(next, 'utf8'))).toMatchObject({
     models: { local: { status: 'all_filtered' }, remote: { status: 'produced' } },
     candidates: [{ do: 'remaining', source: 'remote' }],
@@ -414,6 +410,50 @@ const stored = (scope: string, id: string): Lesson => ({
   created_at: '2026-11-17',
   last_hit: '2026-11-17',
 });
+const writeEpisode = (sa: string, id: string) => {
+  const dir = join(sa, 'memory', 'episodes');
+  const episode = { id, project: sa, category: 'project', tag: 'cli', reasons: [] };
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, id + '.json'), JSON.stringify(episode));
+};
+const nightlyRows = (sa: string, ids = Array.from({ length: 5 }, (_, i) => 'bad' + i)) => [
+  ...ids.map(id => sample(id, sa, 0)),
+  ...Array.from({ length: 30 }, (_, i) => sample('good' + i, 'good', 1)),
+];
+
+test('nightly excludes retired lesson evidence and fills quotas beyond missing episodes', () => {
+  const sa = home();
+  for (const id of ['bad0', 'fresh']) writeEpisode(sa, id);
+  memoryWrite(() => ({
+    lessons: [{ ...stored('cli', 'retired'), status: 'retired', tier: 'type', source: 'local' }],
+  }));
+  const offered: unknown[] = [];
+  const reflect = (input: string) => {
+    const { episodes } = JSON.parse(input.split('\n').at(-1)!);
+    offered.push(episodes.map((e: { id: string }) => e.id));
+    return {};
+  };
+  const missing = ['m1', 'm2', 'm3', 'm4'];
+  evolve(sa, at(18), () => nightlyRows(sa, ['bad0', 'fresh', ...missing]), true, reflect);
+  evolve(sa, at(18), () => nightlyRows(sa, ['bad0', ...missing, 'fresh']), true, reflect);
+  expect(offered).toEqual([['fresh'], ['fresh'], ['fresh'], ['fresh']]);
+});
+
+test('nightly writes statistics and skips both models when all episodes are used', () => {
+  const sa = home();
+  writeEpisode(sa, 'bad0');
+  memoryWrite(() => ({ lessons: [stored(sa, 'used')] }));
+  const rows = nightlyRows(sa);
+  const reflect = mock(() => ({}));
+  const path = evolve(sa, at(18), () => rows, false, reflect);
+  expect(reflect).not.toHaveBeenCalled();
+  const report = JSON.parse(readFileSync(path, 'utf8'));
+  expect(report).toMatchObject(analyze(rows, at(18)));
+  expect(report.model).toMatchObject({ called: false, status: 'skipped' });
+  const skipped = { called: false, status: 'skipped', reason: expect.stringMatching(/样例/) };
+  expect(report.models).toMatchObject({ local: skipped, remote: skipped });
+});
+
 const importFixture = () => {
   const sa = home(),
     dir = join(sa, 'memory');
@@ -509,11 +549,9 @@ test('failure_reasons excludes review_not_required and nightly schema/prompt res
 test('local model enters 7-day cooldown after 3 zero-yield days and resumes on probe or force', () => {
   const sa = home(),
     dir = join(sa, 'evolution');
+  writeEpisode(sa, 'bad0');
   mkdirSync(dir, { recursive: true });
-  const rows = (day: number) => [
-    ...Array.from({ length: 5 }, (_, i) => ({ ...sample('bad' + i, sa, 0), at: at(day, 1) })),
-    ...Array.from({ length: 30 }, (_, i) => ({ ...sample('good' + i, 'good', 1), at: at(day, 1) })),
-  ];
+  const rows = (day: number) => nightlyRows(sa).map(row => ({ ...row, at: at(day, 1) }));
   for (const [day, status] of [
     ['2026-11-15', 'all_filtered'],
     ['2026-11-16', 'failed'],

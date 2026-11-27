@@ -28,6 +28,7 @@ import {
   runIsFake,
   taskTag,
   wilson,
+  type Episode,
   type Lesson,
 } from './memory';
 import { curate, decodeNightlyOutput, nightlyPrompt, nightlyReflection } from './memory-reflect';
@@ -357,26 +358,45 @@ export function evolve(
   save({ claimed_at: new Date(now).toISOString() });
   const stats = analyze(samples(), now),
     candidates: (Lesson & { source: Source })[] = [];
-  const safe = stats.attribution.filter(
-    a => !a.group.startsWith('repo:') || !privateProject(a.group.slice(5))
+  const enabled = memoryOn();
+  const safe = enabled
+    ? stats.attribution.filter(
+        a => !a.group.startsWith('repo:') || !privateProject(a.group.slice(5))
+      )
+    : [];
+  // Lesson revisions can replace evidence that was already used.
+  const used = new Set(
+    safe.length
+      ? memoryState().entries.flatMap(entry => entry.lessons.flatMap(lesson => lesson.evidence))
+      : []
   );
-  const examples = [...new Set(safe.flatMap(a => a.examples.slice(0, 5)))].flatMap(id => {
-    const e = episodeOf(id);
-    return e &&
-      !e.fake &&
-      !privateProject(e.project) &&
-      !['engine', 'transient'].includes(e.category)
-      ? [e]
-      : [];
+  const selected = new Map<string, Episode>();
+  const groups = safe.map(group => {
+    const ids = new Set<string>();
+    for (const id of group.examples) {
+      if (used.has(id) || ids.has(id)) continue;
+      const e = selected.get(id) ?? episodeOf(id);
+      if (!e || e.fake || privateProject(e.project) || ['engine', 'transient'].includes(e.category))
+        continue;
+      selected.set(id, e);
+      ids.add(id);
+      if (ids.size === 5) break;
+    }
+    return { ...group, examples: [...ids] };
   });
+  const examples = [...selected.values()];
   model.status = 'skipped';
-  for (const source of sources) models[source].status = 'skipped';
-  if (memoryOn() && safe.length) {
+  for (const source of sources) {
+    models[source].status = 'skipped';
+    if (!examples.length)
+      models[source].reason = enabled ? '无合格且未被经验引用的样例' : '经验提炼已关闭';
+  }
+  if (examples.length) {
     const input = () =>
       nightlyPrompt(
         redact(
           JSON.stringify({
-            groups: safe.map(a => ({
+            groups: groups.map(a => ({
               ...a,
               examples: a.examples.filter(id => examples.some(e => e.id === id)),
             })),
@@ -440,7 +460,7 @@ export function evolve(
         state.duration_ms = Date.now() - started;
       }
     };
-    if (Buffer.byteLength(prompt) <= 24_000) {
+    if (examples.length) {
       model.called = true;
       const cooldown = force ? null : localCooldownReason(dir, day);
       if (cooldown) models.local.reason = cooldown;
@@ -515,7 +535,7 @@ export function evolve(
         candidates.length = 0;
       }
     } else {
-      model.status = 'failed';
+      for (const source of sources) models[source].reason = '输入大小上限内无可用样例';
     }
     model.duration_ms = Date.now() - started;
   }
