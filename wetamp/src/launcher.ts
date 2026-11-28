@@ -1,7 +1,12 @@
 // Shared owner resolution lives in live.cjs; this boundary exposes only identity metadata.
 import { createRequire } from 'node:module';
+
+const CLIENTS = ['claude', 'codex', 'agy'] as const;
+export const isAgentClient = (client: unknown): client is Launcher['client'] =>
+  CLIENTS.some(supported => supported === client);
+
 export interface Launcher {
-  client: 'claude' | 'codex' | 'opencode' | 'agy';
+  client: (typeof CLIENTS)[number];
   pid: number;
   tty: string | null;
   cwd: string;

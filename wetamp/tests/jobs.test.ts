@@ -13,6 +13,7 @@ import {
 } from '../src/board/activity';
 import {
   cleanJob,
+  kindOf,
   modelOf,
   projectJob,
   readJobs,
@@ -91,17 +92,16 @@ describe('ps parsing', () => {
     'garbage line',
   ].join('\n');
 
-  test('finds headless claude/codex/opencode; skips archon children, wrapper children and launcher dups', () => {
+  test('finds supported headless jobs and skips retired clients, owned children and launcher dups', () => {
     const rows = psRows(PS);
     expect(rows.size).toBe(12);
     expect(rows.get(400)).toMatchObject({ ppid: 100, tty: 'ttys001', cpu: 0, etime: 30 });
     const procs = parsePs(rows, NOW, new Set([500]));
     expect(procs.map(p => [p.pid, p.kind, p.model])).toEqual([
-      [600, 'opencode', 'qwen'],
       [400, 'codex', 'gpt-6.1-sol'],
       [200, 'claude', 'claude-opus-5-5'],
     ]);
-    expect(procs[2].started_ms).toBe(NOW - 300_000);
+    expect(procs[1].started_ms).toBe(NOW - 300_000);
     expect(JSON.stringify(procs)).not.toContain(SECRET);
   });
 
@@ -133,6 +133,16 @@ describe('ps parsing', () => {
     expect(modelOf(['-p', 'hello -m x'])).toBeNull();
     expect(modelOf(['exec', '-m', 'sol', 'p'])).toBe('sol');
     expect(modelOf(['--model=a'])).toBe('a');
+  });
+
+  test('classifies supported job clients and treats other commands as generic', () => {
+    expect(['claude', 'codex', 'agy', 'opencode', ''].map(name => kindOf(`/bin/${name}`))).toEqual([
+      'claude',
+      'codex',
+      'agy',
+      'other',
+      'other',
+    ]);
   });
 });
 
@@ -326,11 +336,14 @@ describe('job registry', () => {
     expect(readJobs()).toEqual({ jobs: [], bad: [] }); // 目录还不存在
     const dead = await deadPid();
     const old = put({ id: 'a-old', state: 'done', exit_code: 0, ended_at: '2026-10-09T11:00:00Z' });
+    const oldBytes = readFileSync(old, 'utf8').replace('"kind":"other"', '"kind":"opencode"');
+    writeFileSync(old, oldBytes);
     put({ id: 'b-live', started_at: '2026-10-10T11:00:00.000Z' });
     const lost = put({ id: 'c-lost', pid: dead, wrapper_pid: dead });
     writeFileSync(join(jobsDir, 'd-bad.json'), '{');
     const r = readJobs();
-    expect(existsSync(old)).toBe(true);
+    expect(r.jobs.find(j => j.id === 'a-old')?.kind).toBe('other');
+    expect(readFileSync(old, 'utf8')).toBe(oldBytes);
     expect(r.jobs.map(j => [j.id, j.state])).toEqual([
       ['b-live', 'running'],
       ['a-old', 'done'],

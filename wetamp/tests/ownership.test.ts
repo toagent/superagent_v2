@@ -54,15 +54,15 @@ const launcher = {
 };
 
 test('launcher walks to nearest interactive CLI, including GUI panes without tty', () => {
-  for (const cli of ['claude', 'node /bin/codex', 'opencode']) {
+  for (const cli of ['claude', 'node /bin/codex', 'agy_acp_server.par']) {
     const fixture = new Map([
       [50, ['', '40', '??', 'bun /w/wetamp/src/cli.ts run p']],
       [40, ['', '30', 'ttys001', 'codex exec -m sol PROMPT']],
       [30, ['', '20', 'ttys001', 'claude mcp serve']],
-      [20, ['', '10', '??', 'opencode']],
-      [10, ['', '1', 'ttys001', cli]],
+      [20, ['', '10', 'ttys001', 'opencode']],
+      [10, ['', '1', '??', cli]],
     ]);
-    expect(owner(true, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 20, tty: null });
+    expect(owner(true, pid => fixture.get(pid) ?? null, 50)).toEqual({ pid: 10, tty: null });
   }
   expect(owner(true, () => null, 50)).toBeNull();
   expect(owner(true, () => ['', '1', '??', 'claude'], 50)).toEqual({ pid: 50, tty: null });

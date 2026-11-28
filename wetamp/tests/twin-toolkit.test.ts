@@ -48,7 +48,7 @@ describe.skipIf(!present)('twin-toolkit superagent 同步', () => {
     writeFileSync(calls, '');
     const verify = join(r.root, 'verify-local.sh');
     if (opts.verify !== null) writeFileSync(verify, opts.verify);
-    const fn = slice('align_superagent() {', '\n# ── opencode');
+    const fn = slice('align_superagent() {', '\n# ── ');
     const script = `set -euo pipefail
 REMOTE_HOST=stub REMOTE_HOME=/nowhere REMOTE_BACKUP_ROOT=/nowhere _TMPDIR="$ROOT"
 SUPERAGENT_RECEIPT_REL=r SUPERAGENT_LOCK_REL=l SUPERAGENT_MANAGED_CONFIG=c SUPERAGENT_MANAGED_MARKER=m SUPERAGENT_MIRROR_REF=x SUPERAGENT_EXPECTED_ORIGIN=o

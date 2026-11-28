@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { launcher, type Launcher } from './launcher';
+import { isAgentClient, launcher, type Launcher } from './launcher';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { EXIT_USAGE, parseArgs } from './cli';
@@ -54,7 +54,7 @@ import type { TokenUsage } from '../../packages/provider-contract/src/result';
 export { memoryReading, type MemoryReading } from './memory-pressure';
 export { TIERS, isTier, type Tier } from './roles';
 
-export type Kind = 'claude' | 'codex' | 'opencode' | 'agy' | 'other';
+export type Kind = Launcher['client'] | 'other';
 /** tiers.json 的档位键（元帅/将军/军师）；中文只在展示层。 */
 export interface Job {
   id: string;
@@ -105,7 +105,7 @@ export const SIMPLIFIED_CHINESE_REQUIREMENT =
 export const RECENT_MS = 3_600_000;
 export const kindOf = (argv0: string): Kind => {
   const b = basename(argv0);
-  return b === 'claude' || b === 'codex' || b === 'opencode' || b === 'agy' ? b : 'other';
+  return isAgentClient(b) ? b : 'other';
 };
 
 /** 只认 `--model x`、`--model=x`、`-m x`；其余 argv 一概不看。 */
@@ -160,6 +160,7 @@ export function readJobs(): { jobs: Job[]; bad: string[] } {
       j = JSON.parse(readFileSync(file, 'utf8')) as Job;
       if (typeof j.state !== 'string' || typeof j.started_at !== 'string')
         throw new Error('not a job record');
+      if (!isAgentClient(j.kind)) j.kind = 'other';
       if (
         ['queued', 'running'].includes(j.state) &&
         !alive(j.wrapper_pid) &&

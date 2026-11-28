@@ -20,6 +20,7 @@ wetamp/scripts/selftest.sh
 `launchctl bootstrap/bootout` 命令，是否加载由操作者决定。`--remote-hooks` 安装
 worker 入口与 hooks；默认安装登记 controller。安装会保留未管理的配置和 hooks。
 
+支持 `claude`、`codex` 和 `agy`，其中 `agy` 包含终端 Neon 和 Orca 对话版 Neon。
 模型与路由真源是 `tiers.json`；修改后重跑 `install.sh`。真实诊断运行
 `scripts/selftest.sh`，测试胶水层用 `scripts/selftest.sh --fake`。
 

@@ -2532,20 +2532,17 @@ describe('run (archon stub)', () => {
     ).aliases;
   };
   const want = renderAliases(loadTiers());
-  test('run freezes the launcher console, with explicit precedence and unknown client fallback', () => {
-    const live = createRequire(import.meta.url)('../hooks/live.cjs') as {
-      cliOf(argv: string[], controller: boolean): unknown;
-    };
-    expect(live.cliOf(['/bin/agy'], true)).toEqual({ kind: 'agy', headless: false });
-    expect(live.cliOf(['/bin/agy', '--print', 'task'], true)).toEqual({
+  test('run freezes the launcher console with explicit precedence', () => {
+    expect(launcherModule.cliOf(['/bin/agy'], true)).toEqual({ kind: 'agy', headless: false });
+    expect(launcherModule.cliOf(['/bin/agy', '--print', 'task'], true)).toEqual({
       kind: 'agy',
       headless: true,
     });
+    expect(launcherModule.cliOf(['/bin/opencode'], true)).toBeNull();
     for (const [client, explicit, expected] of [
       ['agy', undefined, 'gemini'],
       ['codex', undefined, 'claude'],
       ['claude', undefined, 'claude'],
-      ['opencode', undefined, 'claude'],
       ['agy', 'claude', 'claude'],
       ['codex', 'codex', 'codex'],
     ] as const) {

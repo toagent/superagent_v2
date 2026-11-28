@@ -103,7 +103,8 @@ run 终态并完成 land/验收后提交复盘。`--effect` 与 `--improve` 各 
 
 ## 控制台模型路由
 
-plan 的 `console` 以显式值为准。缺省时 `agy` → `gemini`，其他发起者默认 `claude`。
+支持的客户端为 `claude`、`codex` 和 `agy`。plan 的 `console` 以显式值为准。
+缺省时 `agy` 使用 `gemini` 控制台，`claude`、`codex` 和普通 shell 使用 `claude` 控制台。
 Orca 对话版 Neon 与终端 `agy` 共用 superagent 护栏和 `gemini` 控制台。
 只有显式设置 `console: "codex"` 才使用 Codex 控制台，默认保留跨厂商评审。
 生成的 run 快照保存该值，恢复时沿用。

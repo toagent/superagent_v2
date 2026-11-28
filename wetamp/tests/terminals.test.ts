@@ -53,6 +53,7 @@ const PS = [
   '  211   210 ttys002  0.0       19:00 node /x/hooks/guard.cjs claude',
   '  212   210 ttys002  0.0       19:00 claude mcp serve',
   '  300     1 ttys003  0.0       30:00 opencode',
+  '  310     1 ttys003  0.0       30:00 agy',
   '  400     1 ttys004  0.0       00:10 opencode run --model=qwen x',
   `  410     1 ttys004  0.0       00:10 claude -p ${SECRET}`,
   `  420     1 ttys004  0.0       00:10 claude --print ${SECRET}`,
@@ -101,7 +102,7 @@ describe('interactive sessions from ps', () => {
     expect(s.map(x => [x.kind, x.pids, x.tty])).toEqual([
       ['codex', [110, 111], 'ttys001'],
       ['claude', [210], 'ttys002'],
-      ['opencode', [300], 'ttys003'],
+      ['agy', [310], 'ttys003'],
     ]);
     expect(s[0].cpu).toBeCloseTo(5.5);
     expect(interactiveKind(['codex', 'resume', '--last'])).toBe('codex');
@@ -183,13 +184,13 @@ describe('interactive sessions from ps', () => {
     const s = findSessions(ROWS);
     const bound = new Map([
       [s[1], liveOf({ pid: 210, event: 'PreToolUse', tool: 'Bash', cwd: '/w/superagent_v2' })],
-      [s[2], liveOf({ pid: 300, event: 'Stop', role: 'general' })],
+      [s[2], liveOf({ pid: 310, event: 'Stop', role: 'general' })],
     ]);
     const terms = settle(s, bound, new Map([[111, '/w/proposal']]), new Map(), NOW, tmp());
     expect(terms.map(t => [t.kind, t.tier, t.state, t.tool, t.cwd, t.bound])).toEqual([
       ['claude', 'commander', 'busy', 'Bash', '/w/superagent_v2', true],
       ['codex', 'commander', 'busy', null, '/w/proposal', false], // 无心跳/rollout，CPU 5.5% 粗判
-      ['opencode', 'general', 'idle', null, null, true],
+      ['agy', 'general', 'idle', null, null, true],
     ]);
     expect(JSON.stringify(terms)).not.toContain('gpt-6-astra');
   });
@@ -496,6 +497,7 @@ describe('heartbeat files', () => {
       at: iso(NOW - 90_000_000),
     });
     put('codex-new.json', { pid: 5, event: 'PreToolUse', tool: 'Bash', at: iso(NOW), extra: 1 });
+    put('opencode-new.json', { client: 'opencode', pid: 5, event: 'Stop', at: iso(NOW) });
     put('bad.json', '{');
     put('codex-x.json.1.tmp', '{}');
     const got = readLive(dir, NOW);

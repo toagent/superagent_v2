@@ -1,7 +1,7 @@
-// board 的“终端”行：用户在终端里交互运行的 claude / codex / opencode 会话。进程来自活动区那次 ps；状态优先取
+// board 的“终端”行：交互运行的 claude / codex / agy 会话。进程来自活动区那次 ps；状态优先取
 // hooks/live.cjs 的心跳文件，过期时读 transcript / rollout 尾部（≤64KB，只看事件类型与 stop_reason），
 // 都没有就按 %CPU 粗判并标 `?`。只留 client/角色/状态/tool_name/cwd/tty/时长：不取 prompt、argv 或 transcript 正文。
-import { cliOf as agentCli } from '../launcher';
+import { cliOf as agentCli, isAgentClient } from '../launcher';
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -53,7 +53,7 @@ export interface Session {
   cpu: number;
   etime: number; // 最外层进程已运行的秒数
 }
-type Raw = Partial<Record<keyof Live | 'derived', unknown>>;
+type Raw = Partial<Record<keyof Live | 'client' | 'derived', unknown>>;
 type Tail = { state: 'busy' | 'idle'; mtime: number; toolFinished?: boolean } | null;
 interface Entry {
   type?: unknown;
@@ -72,8 +72,8 @@ const GC_MS = 86_400_000;
 const BUSY_CPU = 3;
 
 /**
- * argv 跑的 AI CLI（也认 `node …/codex` 这种经解释器启动的）：headless 为 `claude -p/--print`、`codex exec`、
- * `opencode run`；mcp / app-server / serve 这类服务进程两者都不是，为 null。
+ * argv 跑的 AI CLI（也认经解释器启动的 CLI）。无头模式包括 `claude -p`、`codex exec` 和
+ * `agy --print`。MCP 和 Codex app-server 返回 null，Orca 的 Neon ACP 则识别为 agy。
  */
 export const cliOf = (argv: string[]) => {
   const neon = agentCli(argv, true);
@@ -136,6 +136,7 @@ export function readLive(dir: string, now: number, readonly = false): Live[] {
         if (!readonly) fs.unlinkSync(join(dir, n));
         continue;
       }
+      if (o.client !== undefined && !isAgentClient(o.client)) continue;
       out.push({
         model: str(o.model),
         session_id: str(o.session_id),
