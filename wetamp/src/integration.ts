@@ -406,6 +406,12 @@ export function publish(run: PublishRun, expected: PublishExpected): PublishResu
     if (run.review.required) {
       reviewPath = 'diff_hash';
       if (run.review.reviewed_diff_hash !== currentDiffHash) {
+        if (!run.review.reviewed_head.trim())
+          return {
+            status: 'rejected',
+            reason: 'review_stale',
+            evidence: 'review=missing_head; review required without reviewed_head',
+          };
         reviewPath = 'normalized_diff';
         const reviewedBase = git(run.worktree, 'merge-base', run.review.reviewed_head, targetTip);
         const reviewedDiff = diffBytes(run.worktree, reviewedBase, run.review.reviewed_head);

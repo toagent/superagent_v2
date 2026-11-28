@@ -776,7 +776,7 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
       .filter(n => n.with?.kind === 'accept')
       .every(n => n.with?.review_base === 'a'.repeat(40))
   ).toBeTrue();
-  const chained = nodesOf(
+  const chained = allNodesOf(
     buildWorkflow(
       p,
       milestones(p),
@@ -790,6 +790,7 @@ test('SCOPE_BASE is fixed across dependencies and restored from carried acceptan
       undefined
     )
   );
+  expect(chained.find(n => n.id === 'final-accept-m1')?.with?.review_base).toBe(start);
   expect(
     chained.filter(n => n.with?.kind === 'accept').every(n => n.with?.review_base === start)
   ).toBeTrue();

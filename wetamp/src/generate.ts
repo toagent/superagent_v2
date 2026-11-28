@@ -1478,6 +1478,7 @@ export function buildWorkflow(
           pkgs: ids,
           scope_pkgs,
           scope_base: scopeBase,
+          review_base: reviewBase,
           risk: m.risk,
           milestone: m.id,
           ...ledger,

@@ -720,6 +720,9 @@ export function foldEpisode(
       ...new Set([
         ...rowReasons(rows),
         ...publishReasons(l, run, plan),
+        ...(run.status !== 'completed' && run.metadata?.stop_reason?.reason === 'process_terminated'
+          ? ['process_terminated']
+          : []),
         ...(abandoned(l) ? ['abandoned'] : []),
         ...(l.reason ? [l.reason] : []),
         ...(l.dispositions ?? []).flatMap(d =>

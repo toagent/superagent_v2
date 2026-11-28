@@ -380,6 +380,26 @@ test('publish fast-forwards master and rejects non-descendant history', () => {
   expect(sh('git rev-parse wetamp', f.target).trim()).toBe(targetTip);
 });
 
+test('publish rejects a required review without a head before comparing Git revisions', () => {
+  const f = fixture();
+  const expected = f.expected();
+  commit(f.worktree, 'feature.txt', 'feature\n');
+  for (const reviewed_head of ['', ' \t']) {
+    expect(
+      publish(
+        { ...f.run(), review: { required: true, reviewed_head, reviewed_diff_hash: '' } },
+        expected
+      )
+    ).toEqual({
+      status: 'rejected',
+      reason: 'review_stale',
+      evidence: 'review=missing_head; review required without reviewed_head',
+    });
+  }
+  expect(f.expected()).toEqual(expected);
+  expect(existsSync(f.run().receipt)).toBe(false);
+});
+
 test('publish accepts matching review evidence and rejects drift or a stale owner', () => {
   const review = fixture();
   const reviewHead = commit(review.worktree, 'feature.txt', 'feature\n');

@@ -221,6 +221,7 @@ const repaired = base
   }));
 // gate 可透传验收原因；封闭组合展开为精确码，消费者不解析前后缀。
 export const REASONS: Reason[] = [
+  entry('process_terminated', 'paused', 'transient', 'env', '执行进程被外部信号终止'),
   deterministic('review_not_required', 'gate', 'engine', '验收通过且无需评审'),
   deterministic('land_target_unknown', 'needs', 'human', '合入缺少可验证的本地目标分支'),
   deterministic('budget_exceeded', 'signoff', 'human', '净增行数超过工作包上限'),

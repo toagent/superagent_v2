@@ -1728,7 +1728,7 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
         signature: 'evidence_conflict',
       });
   });
-  const finalAcceptEpisode = () => {
+  const finalAcceptEpisode = (run = raw) => {
     for (const file of ['verify-core.json', 'settle-core.json'])
       writeFileSync(join(artifactsOf(raw), file), '{"ok":true,"failed":[],"reason":null}');
     const node = { step_name: 'integrate-m1.final-accept-m1' };
@@ -1736,8 +1736,28 @@ describe('EV1b production-shaped replay and incremental isolation', () => {
       { ...node, event_type: 'node_started', created_at: ledger.started_at, data: {} },
       { ...node, event_type: 'node_failed', data: { duration_ms: 60000, error: 'exit code 1' } },
     ];
-    return foldEpisode(ledger, plan, { ...raw, nodes: undefined }, events, {}, NOW);
+    return foldEpisode(ledger, plan, { ...run, nodes: undefined }, events, {}, NOW);
   };
+  test('external termination explains a green package settlement and interrupted final acceptance', () => {
+    const stopped: RunView = {
+      ...raw,
+      metadata: {
+        ...raw.metadata,
+        stop_reason: { reason: 'process_terminated', signal: 'SIGTERM' },
+      },
+    };
+    expect(finalAcceptEpisode()).toMatchObject({
+      category: 'engine',
+      signature: 'evidence_conflict',
+    });
+    expect(finalAcceptEpisode(stopped)).toMatchObject({
+      category: 'transient',
+      signature: 'process_terminated',
+    });
+    expect(finalAcceptEpisode({ ...stopped, status: 'completed' }).reasons).not.toContain(
+      'process_terminated'
+    );
+  });
   const writeFinalAccept = (milestone: string, at = NOW - 1000, hasReceipt = true) => {
     const file = join(artifactsOf(raw), `final-accept-${milestone}.json`);
     const receipt = { ...replay['project-port'], milestone, disposition: 'fail' };

@@ -1,5 +1,12 @@
 [
   {
+    "code": "process_terminated",
+    "hold": "paused",
+    "determinism": "transient",
+    "owner": "env",
+    "description": "执行进程被外部信号终止"
+  },
+  {
     "code": "review_not_required",
     "hold": "gate",
     "determinism": "deterministic",
