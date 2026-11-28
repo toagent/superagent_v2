@@ -11,9 +11,9 @@
   "contributes": {
     "commands": [{ "id": "refresh", "title": "刷新 toagent 用量" }],
     "statusBarItems": [
-      { "id": "claude", "text": "Claude —", "command": "refresh" },
-      { "id": "codex", "text": "Codex —", "command": "refresh" },
-      { "id": "gemini", "text": "Gemini —", "command": "refresh" }
+      { "id": "claude", "text": "Claude 未知", "command": "refresh" },
+      { "id": "codex", "text": "Codex 未知", "command": "refresh" },
+      { "id": "gemini", "text": "Gemini 未知", "command": "refresh" }
     ]
   }
 }

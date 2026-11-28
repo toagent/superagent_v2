@@ -35,7 +35,7 @@ async function refreshCache(signal) {
 
   try {
     // The installed shim owns secret injection. Give it the GUI's missing Bun/system paths.
-    await exec(join(home, '.local', 'bin', 'superagent'), ['quota'], {
+    const { stdout } = await exec(join(home, '.local', 'bin', 'superagent'), ['quota'], {
       cwd: '/',
       env: {
         HOME: home,
@@ -56,11 +56,13 @@ async function refreshCache(signal) {
       timeout: 8_000,
       maxBuffer: 64 * 1024,
     });
+    // quota exits zero even when disabled or unavailable. Another command can update the cache meanwhile.
+    const receipt = stdout.trim();
+    if (!receipt || receipt.startsWith('中转余量：未知（')) return undefined;
   } catch {
     return undefined;
   }
 
-  // The quota command also exits zero for an unavailable relay.
   const cache = await readCache(file);
   const at = number(cache?.at);
   if (at === undefined || at < started || at === previous || at > Date.now()) return undefined;
@@ -87,7 +89,7 @@ function statusItem(id, label, cache) {
     fiveHour === 0 ||
     sevenDay === 0;
   const tone = exhausted ? 'danger' : pool?.level === 'low' ? 'warning' : 'neutral';
-  const text = `${label} ${details.join(' ') || '—'}`;
+  const text = `${label} ${details.join(' ') || '未知'}`;
   const updated = cache ? `更新于 ${updatedAt.format(cache.at)}` : '用量未知';
   return { id, text, tone, tooltip: `${text}\n${updated} · 点击刷新` };
 }

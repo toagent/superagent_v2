@@ -16,25 +16,45 @@ if (process.argv.slice(2).join() !== 'quota' || process.env.SUPERAGENT_RELAY_QUO
     !process.env.PATH.split(':').includes(process.env.HOME + '/.bun/bin')) process.exit(2);
 fs.appendFileSync(root + '/calls', 'x');
 const data = JSON.parse(fs.readFileSync(root + '/reply.json'));
-if (data) fs.writeFileSync(root + '/relay-quota.json', JSON.stringify({ ...data, at: Date.now() }));
+if (data?.cache) {
+  fs.writeFileSync(root + '/relay-quota.json', JSON.stringify({ ...data.cache, at: Date.now() }));
+}
+if (data?.stdout) console.log(data.stdout);
 `, { mode: 0o700 });
   await writeFile(reply, JSON.stringify({
-    claude: { today: { cost: 0 }, five_hour: { remaining_pct: 15 }, accounts_available: 1, accounts_total: 3, level: 'low' },
-    codex: { seven_day: { remaining_pct: 0 }, accounts_available: 0, accounts_total: 2 },
+    stdout: 'Claude $0.00 | Codex 7d:0%',
+    cache: {
+      claude: { today: { cost: 0 }, five_hour: { remaining_pct: 15 }, accounts_available: 1, accounts_total: 3, level: 'low' },
+      codex: { seven_day: { remaining_pct: 0 }, accounts_available: 0, accounts_total: 2 },
+    },
   }));
   const worker = await mountWorker(await import('./worker.mjs'));
   t.after(() => worker.deactivate());
   const items = () => worker.host.callsOf('statusBar.update').slice(-3);
   await Promise.all([worker.command('refresh'), worker.command('refresh')]);
   assert.equal(await readFile(join(home, 'calls'), 'utf8'), 'x');
-  assert.deepEqual(items().map(p => [p.text, p.tone]), [
-    ['Claude $0.00 5h 15% 1/3', 'warning'], ['Codex 7d 0% 0/2', 'danger'], ['Gemini —', 'neutral']]);
-  assert.match(items()[0].tooltip, /更新于/);
-  await writeFile(reply, 'null');
-  await worker.command('refresh');
-  assert.deepEqual(items().map(p => p.text), ['Claude —', 'Codex —', 'Gemini —']);
-  await writeFile(reply, JSON.stringify({ gemini: { today: { cost: 2 }, level: 'exhausted' } }));
-  await worker.command('refresh');
-  assert.deepEqual([items()[2].text, items()[2].tone], ['Gemini $2.00', 'danger']);
+  const initial = items();
+  const cache = { gemini: { today: { cost: 2 }, level: 'exhausted' } };
+  for (const response of [
+    // Reproduce another superagent command replacing the cache during this refresh.
+    { stdout: '中转余量：未知（no-token）', cache },
+    { stdout: '中转余量：未知（network）', cache },
+    { stdout: '', cache },
+    { stdout: 'Gemini $2.00' },
+  ]) {
+    await writeFile(reply, JSON.stringify(response));
+    await worker.command('refresh');
+    assert.deepEqual(items().map(p => [p.text, p.tone]), [
+      ['Claude 未知', 'neutral'], ['Codex 未知', 'neutral'], ['Gemini 未知', 'neutral']]);
+    await writeFile(reply, JSON.stringify({ stdout: '⛔ 余量耗尽 · Gemini $2.00', cache }));
+    await worker.command('refresh');
+    assert.deepEqual([items()[2].text, items()[2].tone], ['Gemini $2.00', 'danger']);
+  }
+  assert.deepEqual(initial.map(p => [p.text, p.tone]), [
+    ['Claude $0.00 5h 15% 1/3', 'warning'], ['Codex 7d 0% 0/2', 'danger'], ['Gemini 未知', 'neutral']]);
+  assert.match(initial[0].tooltip, /更新于/);
+  const manifest = JSON.parse(await readFile(new URL('./orca-plugin.json', import.meta.url), 'utf8'));
+  assert.deepEqual(manifest.contributes.statusBarItems.map(p => p.text),
+    ['Claude 未知', 'Codex 未知', 'Gemini 未知']);
   assert.deepEqual([worker.refusals, worker.logs], [[], []]);
 });
