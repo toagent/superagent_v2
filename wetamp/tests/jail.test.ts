@@ -208,6 +208,40 @@ describe('ai-jail', () => {
     executable(join(bin, 'anti'), 'exec agy "$@"');
     expect(run(shim)).toBe(0);
     expect(run(join(bin, 'anti'))).toBe(0);
+
+    writeFileSync(join(home, '.wetamp/secrets.list'), 'ANTIGRAVITY_API_KEY\n');
+    executable(security, '[ "$3" = ANTIGRAVITY_API_KEY ] && printf fixture');
+    const probe = [
+      '[ "$AGY_TEST_JAILED" = 1 ] || exit 1',
+      'if [ -n "$AGY_LLM_GATEWAY_API_KEY" ]; then printf set; else printf empty; fi',
+      '[ "$AGY_LLM_GATEWAY_API_KEY" = "$EXPECTED_GATEWAY_KEY" ]',
+    ].join('\n');
+    for (const client of ['agy', 'claude', 'codex']) executable(join(bin, client), probe);
+    const url = 'https://gateway.example.invalid';
+    const cases = [
+      ['agy', url, undefined, 'fixture'],
+      ['agy', url, '', 'fixture'],
+      ['agy', url, 'existing', 'existing'],
+      ['agy', '', undefined, ''],
+      ['claude', url, undefined, ''],
+      ['codex', url, undefined, ''],
+      ['agy', url, undefined, '', true],
+    ] as const;
+    for (const [client, gatewayUrl, key, expected, missingSource] of cases) {
+      if (missingSource) executable(security, 'exit 1');
+      const result = Bun.spawnSync([join(jail, 'bin', client)], {
+        env: {
+          ...env,
+          AGY_LLM_GATEWAY_URL: gatewayUrl,
+          ...(key === undefined ? {} : { AGY_LLM_GATEWAY_API_KEY: key }),
+          EXPECTED_GATEWAY_KEY: expected,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.stdout.toString(), client).toBe(expected ? 'set' : 'empty');
+      expect(result.exitCode, client).toBe(0);
+    }
   });
 
   test('client shims preserve empty argument lists under macOS bash', () => {

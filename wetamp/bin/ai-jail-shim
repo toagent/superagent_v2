@@ -19,6 +19,11 @@ shim_dir="$(dirname "$(realpath "$0")")"
 source "$shim_dir/secret-env.sh"
 inject_managed_secrets ai-jail-shim
 
+if [[ "$name" == agy && -n "${AGY_LLM_GATEWAY_URL:-}" &&
+      -z "${AGY_LLM_GATEWAY_API_KEY:-}" && -n "${ANTIGRAVITY_API_KEY:-}" ]]; then
+  export AGY_LLM_GATEWAY_API_KEY="$ANTIGRAVITY_API_KEY"
+fi
+
 args=("$@")
 if [ "$name" = codex ]; then
   rewritten=()
