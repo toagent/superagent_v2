@@ -262,6 +262,11 @@ superagent notify --id <id> --title "<title>" --body "<body>"
 
 问询也可用 `--spec <file>` 一次传入（不能与上面的字段参数混用）。标题与正文写清项目、事件、选项后果。`notify` 只发只读告警，不代替决策。
 
+mini/dev worker 可独立运行 `superagent notify`。已发送的 `--id` 在本机持久化去重，
+未送达时以非零退出，可用相同 `--id` 重试。发布凭据优先读
+`~/.config/superagent/ntfy-publisher.token`，文件缺失时读 `SA_NTFY_PUBLISHER_TOKEN`，
+环境变量为空且进程在 AI 沙箱外时，读取 1Password 同步到本机登录钥匙串的同名凭据。
+
 ## 辅助入口
 
 2026-11-24 起，新 run id 中的时间默认为台北时间，此前为 UTC。`SUPERAGENT_TIMEZONE` 可覆盖引擎用于编号、面向人的钟点和每日统计的时区，默认 `Asia/Taipei`。历史 run id 保持原样，时间筛选和排序以各 run 的 ledger 时间为准。

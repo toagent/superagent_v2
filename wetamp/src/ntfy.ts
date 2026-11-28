@@ -15,6 +15,7 @@ import { dirname, join, resolve } from 'node:path';
 import { lock } from './archon';
 import { engineDateTime, home, writeAtomic } from './config';
 import { caller, coord, same, type Identity, type Scope } from './coord';
+import { defaultRunner, findSecret, inJail, type Runner } from './secrets/command';
 
 export interface NtfyOption {
   id: string;
@@ -160,6 +161,7 @@ export interface NtfyConfig {
   fetch: typeof fetch;
   now: () => number;
   actor?: () => Identity | null;
+  publisherSecretRunner?: Runner;
 }
 
 const defaultConfig = (): NtfyConfig => ({
@@ -226,6 +228,20 @@ function secureSecret(path: string, name: string, create = false): string {
   const value = readFileSync(path, 'utf8').trim();
   if (!value) throw new Error(`ntfy ${name} file is empty`);
   return value;
+}
+
+function publisherSecret(config: NtfyConfig): string {
+  if (existsSync(config.publisherToken))
+    return secureSecret(config.publisherToken, 'publisher token');
+  const name = 'SA_NTFY_PUBLISHER_TOKEN';
+  const injected = process.env[name]?.trim();
+  if (injected) return injected;
+  if (!inJail()) {
+    const result = findSecret(name, config.publisherSecretRunner ?? defaultRunner, true);
+    const value = result.status === 0 ? result.stdout.toString().trim() : '';
+    if (value) return value;
+  }
+  throw new Error(`ntfy publisher token unavailable (configure ${name})`);
 }
 
 function readState(path: string): NtfyState {
@@ -481,7 +497,7 @@ async function publish(
   topic: 'sa-decisions' | 'sa-alerts',
   body: Record<string, unknown>
 ): Promise<number> {
-  const publisher = secureSecret(config.publisherToken, 'publisher token');
+  const publisher = publisherSecret(config);
   const seq = (state.seq ?? 0) + 1;
   const message = body.message;
   // prettier-ignore
@@ -513,12 +529,13 @@ async function publish(
 const HOUR = 3_600_000;
 const RETENTION = 7 * 86_400_000;
 
-function prune(state: NtfyState, now: number): void {
+function prune(state: NtfyState, now: number, workerAlerts: boolean): void {
   const retained = now - RETENTION;
   state.activity = state.activity.filter(event => event.at >= retained);
   for (const values of [state.sent, state.limited])
     for (const [key, at] of Object.entries(values))
-      if (at < retained) Reflect.deleteProperty(values, key);
+      if (at < retained && !(workerAlerts && values === state.sent && key.startsWith('alert:')))
+        Reflect.deleteProperty(values, key);
 }
 
 function recordLimited(state: NtfyState, keys: string[], now: number): void {
@@ -590,14 +607,14 @@ function decisionPresentation(decision: StoredDecision): { title: string; messag
   return { title: ['需你决定', decision.project, decision.headline ?? decision.title].filter(Boolean).join('｜'), message, priority: decision.risk === 'red' ? 5 : 4, tags: [decision.risk === 'red' ? 'red_circle' : 'orange_circle'] };
 }
 
-async function flush(config: NtfyConfig, state: NtfyState): Promise<void> {
+async function flush(config: NtfyConfig, state: NtfyState, workerAlerts = false): Promise<void> {
   const now = config.now();
-  prune(state, now);
+  prune(state, now, workerAlerts);
   if (existsSync(pausedPath(config))) return;
   const recent = state.activity.filter(event => event.at >= now - HOUR);
   let decisionSlots = Math.max(0, 6 - recent.filter(event => event.kind === 'decision').length);
   const decisionLimitedKeys: string[] = [];
-  for (const decision of Object.values(state.decisions)) {
+  for (const decision of workerAlerts ? [] : Object.values(state.decisions)) {
     if (decision.status !== 'pending' || decision.delivery !== 'pending') continue;
     if (isDecisionChannelAsk(decision) && Date.parse(decision.expires_at) <= now) continue;
     const key = `decision:${decision.id}:${decision.red_phase ?? 'normal'}`;
@@ -706,7 +723,7 @@ export async function syncNtfy(
         if (advanceCursor) state.cursor = id;
       };
     try {
-      const publisher = secureSecret(config.publisherToken, 'publisher token');
+      const publisher = publisherSecret(config);
       const url = new URL(`${config.baseUrl}/sa-answers/json`);
       url.searchParams.set('poll', '1');
       if (state.cursor) url.searchParams.set('since', state.cursor);
@@ -1027,7 +1044,10 @@ export async function answerNtfyLocally(id: string, option: string, onAnswer: Pa
   }
 }
 
-export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Promise<void> {
+export async function publishPendingNtfy(
+  supplied: Partial<NtfyConfig> = {},
+  workerAlerts = false
+): Promise<void> {
   if (!ntfyEnabled(supplied)) return;
   const config = { ...defaultConfig(), ...supplied };
   const guard = stateLock(config.statePath);
@@ -1035,7 +1055,7 @@ export async function publishPendingNtfy(supplied: Partial<NtfyConfig> = {}): Pr
   try {
     const state = readState(config.statePath);
     try {
-      await flush(config, state);
+      await flush(config, state, workerAlerts);
     } finally {
       saveState(config.statePath, state);
     }
