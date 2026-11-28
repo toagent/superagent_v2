@@ -816,7 +816,7 @@ describe('两条底线', () => {
     '.ssh/id_ed25519',
     '.aws/credentials',
     ...'.m2/settings.xml .m2/settings-security.xml .cloudflared/cert.pem'.split(' '),
-    ...'.codex/auth.json .zsh_history .bash_history'.split(' '),
+    ...'.codex/auth.json .local/share/opencode/auth.json .zsh_history .bash_history'.split(' '),
     ...'.local/share/atuin/history.db .config/code-server/config.yaml .kube/config .git-credentials .aliyun/config.json .alibabacloud/config.json'.split(
       ' '
     ),
