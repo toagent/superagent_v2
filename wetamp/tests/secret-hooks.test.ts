@@ -169,5 +169,19 @@ test.each([undefined, '', 'general'])('agy 防火墙按会话角色限制工具�
     expect(result).toMatchObject({ decision: 'deny', reason: expect.stringContaining(reason) });
   for (const Path of [undefined, ''])
     expect(tool('write_file', { Path, Content: '' })).toEqual(allow);
-  expect(tool('invoke_subagent')).toEqual(allow);
+  for (const active of [false, true]) {
+    for (const name of ['run_workflow', 'swarm', 'define_subagent'])
+      expect(tool(name, {}, active)).toMatchObject({
+        decision: 'deny',
+        reason: expect.stringContaining('superagent run'),
+      });
+    for (const name of ['invoke_subagent', 'manage_subagents', 'send_message'])
+      expect(tool(name, {}, active)).toMatchObject({ decision: role ? 'deny' : 'allow' });
+    expect(tool('invoke_subagent', { TypeName: ' SeLf ' }, active)).toMatchObject({
+      decision: 'deny',
+    });
+    expect(tool('invoke_subagent', { TypeName: '' }, active)).toMatchObject({
+      decision: role ? 'deny' : 'allow',
+    });
+  }
 });

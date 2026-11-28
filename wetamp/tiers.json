@@ -141,7 +141,7 @@
       "pools": {
         "claude": ["claude-opus-5-5", "claude-fable-5-2"],
         "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"],
-        "gemini": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"]
+        "gemini": ["gemini-4-carbon-%68igh", "gemini-4-neon-%78high", "gemini-4-neon-%68igh"]
       }
     },
     "strategist": {
@@ -149,7 +149,8 @@
       "purpose": "评审：优先异厂商且不同于作者模型；池内按序降级，最后一项为兜底。",
       "pools": {
         "claude": ["claude-opus-5-5", "claude-fable-5-2"],
-        "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"]
+        "chatgpt": ["gpt-5.6-sol", "gpt-6-astra"],
+        "gemini": ["gemini-4-neon-%68igh", "gemini-4-carbon-%68igh", "gemini-4-neon-%78high"]
       }
     },
     "general": {
@@ -157,22 +158,23 @@
       "purpose": "编码：全部控制台默认 ChatGPT，Neon 由 single:gemini 启用，Claude 由 single:claude 启用。",
       "pools": {
         "chatgpt": ["gpt-6.2-sol", "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-sol"],
-        "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"]
+        "claude": ["claude-opus-5", "claude-opus-4-8", "claude-opus-5-5"],
+        "gemini": ["gemini-4-neon-%78high", "gemini-4-carbon-%68igh", "gemini-4-neon-%68igh"]
       }
     }
   },
   "routing": {
     "gemini": {
-      "code": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"],
-      "command": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"],
-      "review": ["gemini-4-neon-%68igh", "gemini-4-neon-%78high"]
+      "code": ["gemini-4-neon-%78high", "gemini-4-carbon-%68igh", "gemini-4-neon-%68igh"],
+      "command": ["gemini-4-carbon-%68igh", "gemini-4-neon-%78high", "gemini-4-neon-%68igh"],
+      "review": ["gemini-4-neon-%68igh", "gemini-4-carbon-%68igh", "gemini-4-neon-%78high"]
     },
     "budget": { "claude_daily_usd": 3000, "claude_medium_usd": 2000, "codex_warning_usd": 500 },
     "commander": {
       "by_console": {
         "claude": ["claude-fable-5-2", "claude-opus-5-5"],
         "codex": ["gpt-6-astra", "gpt-6.1-sol"],
-        "gemini": ["gemini-4-neon-%78high", "gemini-4-neon-%68igh"]
+        "gemini": ["gemini-4-carbon-%68igh", "gemini-4-neon-%78high", "gemini-4-neon-%68igh"]
       }
     },
     "coder": {
@@ -183,7 +185,10 @@
         "claude-opus-5",
         "claude-opus-4-8",
         "claude-opus-5-5",
-        "gpt-6-astra"
+        "gpt-6-astra",
+        "gemini-4-neon-%78high",
+        "gemini-4-carbon-%68igh",
+        "gemini-4-neon-%68igh"
       ]
     },
     "reviewer": {

@@ -8,6 +8,7 @@ import { loadWorkflowRunConfigFile } from '../../packages/core/src/config/run-co
 import { buildWorkflow, generate } from '../src/generate';
 import * as archon from '../src/archon';
 import { loadTiers, snapshotPolicy } from '../src/config';
+import * as config from '../src/config';
 import * as coord from '../src/coord';
 import { draftPlan } from '../src/gemini-plan';
 import { milestones, validatePlan, type Plan } from '../src/plan';
@@ -119,6 +120,9 @@ test('plan draft switches vendors and publishes nothing on exhaustion', async ()
     return success ? Response.json(geminiReply(planFor(repo))) : new Response(null, { status: 201 });
   } });
   const restore = gatewayEnv(dir, server.url.href);
+  const tiers = loadTiers();
+  tiers.routing.gemini!.command = ['gemini-legacy'];
+  const load = spyOn(config, 'loadTiers').mockReturnValue(tiers);
   const fakes = [CodexProvider, ClaudeProvider].map(provider => spyOn(provider.prototype, 'sendQuery').mockImplementation(async function* (prompt) {
     yield { type: 'result', isError: expected !== 'codex' || !prompt.includes('neon-brief'), structuredOutput: planFor(repo) };
     yield { type: 'settled' };
@@ -129,10 +133,14 @@ test('plan draft switches vendors and publishes nothing on exhaustion', async ()
       const { ok, execution } = await draftPlan(brief, out);
       expect([ok, existsSync(out)]).toEqual([Boolean(expected), Boolean(expected)]);
       expect(execution.at(-1)).toMatchObject(expected ? { provider: expected, status: 'completed' } : { provider: 'claude', status: 'failed' });
-      expect(execution.filter(a => a.provider === 'gemini').map(a => a.status)).toEqual(['failed', expected === 'gemini' ? 'completed' : 'failed']);
+      const gemini = execution.filter(a => a.provider === 'gemini');
+      expect(gemini.map(a => a.model)).toEqual(['gemini-4-carbon-%68igh', 'gemini-4-neon-%78high', 'gemini-4-neon-%68igh'].slice(0, expected === 'gemini' ? 2 : 3));
+      expect(gemini.map(a => a.status)).toEqual(expected === 'gemini' ? ['failed', 'completed'] : ['failed', 'failed', 'failed']);
       if (expected) expect(JSON.parse(readFileSync(out, 'utf8')).gemini_review).toBe(true);
     }
-  } finally { fakes.forEach(fake => fake.mockRestore()); restore(); server.stop(true); }
+    delete tiers.routing.commander.by_console.gemini;
+    await expect(draftPlan(brief, join(dir, 'no-commander.json'))).rejects.toThrow('no eligible command model');
+  } finally { load.mockRestore(); fakes.forEach(fake => fake.mockRestore()); restore(); server.stop(true); }
 });
 // prettier-ignore
 test('plan draft CLI returns one JSON receipt when native fallback logs', async () => {
@@ -166,8 +174,9 @@ test('plan draft CLI returns one JSON receipt when native fallback logs', async 
     }));
     const [exit, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     expect({ receipt: JSON.parse(stdout), exit }).toMatchObject({ exit: 0, receipt: { ok: true, path: out, execution: [
-      { provider: 'gemini', status: 'failed', error: 'gateway HTTP 429' },
-      { provider: 'gemini', status: 'failed', error: 'gateway HTTP 503' },
+      { provider: 'gemini', model: 'gemini-4-carbon-%68igh', status: 'failed', error: 'gateway HTTP 429' },
+      { provider: 'gemini', model: 'gemini-4-neon-%78high', status: 'failed', error: 'gateway HTTP 503' },
+      { provider: 'gemini', model: 'gemini-4-neon-%68igh', status: 'failed', error: 'gateway HTTP 503' },
       { provider: 'codex', status: 'failed' }, { provider: 'codex', status: 'failed' }, { provider: 'claude', status: 'completed' },
     ] } });
     expect(stderr).toContain('codex.turn_ended_without_completion');
@@ -216,7 +225,9 @@ test('formal review consumes frozen evidence, records Gemini and switches on fai
   const restore = gatewayEnv(dir, server.url.href);
   try {
     installPolicyExecutor();
-    const provider = wrapPolicyProvider(getRegistration('gemini').factory(), 'gemini', () => async function* () {
+    let agyRole: string | undefined;
+    const provider = wrapPolicyProvider(getRegistration('gemini').factory(), 'gemini', candidate => async function* (_prompt, _cwd, _resume, options) {
+      if (candidate.provider === 'agy') agyRole = options?.env?.SUPERAGENT_ROLE;
       yield { type: 'result', ...(code === 500 ? { isError: true } : { structuredOutput: verdict }) };
       yield { type: 'settled' };
     });
@@ -228,6 +239,14 @@ test('formal review consumes frozen evidence, records Gemini and switches on fai
       expect(ledger.readPolicyAttempts(artifacts).slice(1).map(a => [a.model, a.status, a.resolved])).toEqual(code === 200
         ? [[models[0], 'completed', 'gemini-fixture']] : [...models.map(model => [model, 'failed', undefined]), [alternate, code === 500 ? 'failed' : 'completed', undefined]]);
     }
+    tiers.routing.reviewer.by_console.codex = [models[0]];
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(tiers)));
+    ledger.writePolicyAttempts(artifacts, [authorAttempt]);
+    code = 503;
+    expect((await check()).at(-2)).toMatchObject({ structuredOutput: verdict });
+    expect(agyRole).toBe('reviewer');
+    tiers.routing.reviewer.by_console.codex = [author, alternate];
+    writeFileSync(policy, JSON.stringify(snapshotPolicy(tiers)));
     for (code of [201, 204, 302, 400, 401, 404, 429, 500, 503])
       await expect(geminiTurn(models[0], 'matrix')).rejects.toThrow(`HTTP ${code}`);
     for (code of [0, -1, -2]) await expect(geminiTurn(models[0], 'matrix', undefined, 25)).rejects.toThrow();

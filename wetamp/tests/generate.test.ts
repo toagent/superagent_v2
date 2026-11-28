@@ -309,7 +309,9 @@ test('Gemini defaults to Codex coding and reviews independently', () => {
     claude: { state: 'down' as const, probe_failures: 0 },
   };
   for (const state of [degraded, unavailable]) {
-    expect(models(tiers, 'gemini', 'auto', 'command', 'G1', 1, [], state)).toEqual(neon);
+    expect(models(tiers, 'gemini', 'auto', 'command', 'G1', 1, [], state)).toEqual(
+      tiers.routing.commander.by_console.gemini!
+    );
     expect(models(tiers, 'gemini', 'auto', 'code', 'G1', 1, [], state)).toEqual(coders);
     expect(models(tiers, 'gemini', 'auto', 'review', 'G0', 1, [...neon, coders[1]], state)).toEqual(
       ['gpt-6-astra']

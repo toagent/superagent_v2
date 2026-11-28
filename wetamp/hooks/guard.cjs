@@ -355,7 +355,7 @@ function decide(payload, client, env = process.env) {
 const AGY_BUILTINS = new Set([
   ...redline.AGY_PATH_FIELDS.keys(),
   'search_web', 'read_url_content', 'run_command', 'manage_task', 'schedule',
-  'list_permissions', 'ask_permission', 'invoke_subagent', 'define_subagent',
+  'list_permissions', 'ask_permission', 'invoke_subagent',
   'send_message', 'manage_subagents', 'ask_question', 'generate_image', 'finish',
 ]);
 const AGY_READ_LIMIT = 1024 * 1024;
@@ -436,6 +436,13 @@ async function decideAgy(payload, env, latestInput) {
     onAdvisory: code => process.stderr.write(`SUPERAGENT advisory：${code}\n`),
   });
   if (reason) return { decision: 'deny', reason };
+  if (['run_workflow', 'swarm', 'define_subagent'].includes(name))
+    return { decision: 'deny', reason: redline.message('执行私有编排工具', 'Gemini(agy) 须遵循引擎统一角色调度，禁止自建工作流/Swarm/子代理定义', '编码走 superagent run，单次角色任务走 superagent job exec --role general|strategist') };
+  const derived = derivedBy(acp ? { ...payload, cwd } : payload, 'agy', env);
+  if (derived && ['invoke_subagent', 'manage_subagents', 'send_message'].includes(name))
+    return { decision: 'deny', reason: redline.message('嵌套委派子代理', '派生会话只做本角色，禁止再次委派', '直接在本会话内完成当前角色任务') };
+  if (!derived && name === 'invoke_subagent' && String(args?.TypeName || '').trim().toLowerCase() === 'self')
+    return { decision: 'deny', reason: redline.message('委派全能子代理', '禁止用 self 子代理替代将军或军师执行编码/评审', '走 superagent run 或 superagent job exec --role general|strategist') };
   // agy 的 PreToolUse 必须返回 decision，空对象会被视为拒绝。
   if (!firewallInstalled(env)) return { decision: 'allow' };
   if (acp) {
@@ -452,7 +459,7 @@ async function decideAgy(payload, env, latestInput) {
     return { decision: 'allow', overwrite: { CommandLine: `${REDACT_PREFIX} ${shell}` } };
   const alternative = '改用终端命令，输出会经过秘密遮蔽';
   const builtin = AGY_BUILTINS.has(name) || (acp && redline.AGY_ACP_PATH_FIELDS.has(name));
-  if ((name === 'grep_search' || !builtin) && derivedBy(acp ? { ...payload, cwd } : payload, 'agy', env))
+  if ((name === 'grep_search' || !builtin) && derived)
     return { decision: 'deny', reason: redline.message('执行工具', '无法预扫或遮蔽工具输出', alternative) };
   if (name === 'read_file' || name === 'view_file') {
     const why = agyReadReason(args?.[redline.AGY_PATH_FIELDS.get(name)], cwd, env);

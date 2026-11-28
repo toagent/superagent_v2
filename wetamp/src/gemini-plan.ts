@@ -32,14 +32,13 @@ export async function draftPlan(brief: string, output: string) {
       input,
     ].join('\n\n')
   );
-  const models = tiers.routing.gemini?.command;
-  if (!models?.length) throw new Error('plan draft: Gemini commander routing is unavailable');
   const state = routeState(tiers);
+  const gemini = resolveRoute(tiers, 'gemini', 'auto', 'command', 'G1', 1, [], state).candidates;
   const native = (['codex', 'claude'] as const).flatMap(
     console => resolveRoute(tiers, console, 'auto', 'command', 'G1', 1, [], state).candidates
   );
   const candidates = [
-    ...[...new Set(models)].map(model => ({ model, provider: 'gemini' as const })),
+    ...gemini.map(({ model }) => ({ model, provider: 'gemini' as const })),
     ...new Map(native.map(candidate => [candidate.model, candidate])).values(),
   ];
   const execution: (Pick<PolicyAttempt, 'provider' | 'model' | 'status' | 'resolved'> & {

@@ -82,6 +82,16 @@ describe('WP-BT6 naming and metadata', () => {
     expect(shortModel('gpt-6.1-sol', true)).toBe('sol'); expect(shortModel('claude-opus-5-5', true)).toBe('opus');
     expect(shortModel('anthropic/claude-opus-5-5')).toBe('opus5.5');
     expect(shortModel(null)).toBe(''); expect(shortModel('unknown')).toBe('');
+    for (const [model, family, effort] of [
+      ['gemini-4-carbon-%68igh', 'carbon', 'high'],
+      ['gemini-4-neon-%78high', 'neon', 'xhigh'],
+      ['gemini-4-hydrogen-%6dedium', 'hydrogen', 'medium'],
+      ['gemini-4-argon-%6cow', 'argon', 'low'],
+    ]) {
+      expect(shortModel(model)).toBe(`${family}-${effort}`);
+      expect(shortModel(model, true)).toBe(family);
+    }
+    expect(shortModel('gemini-4-carbon')).toBe('carbon');
     expect(Bun.stringWidth(shortModel('openai/中文中文中文中文'))).toBeLessThanOrEqual(10);
   });
   test('tail metadata takes last assistant/turn_context, ignoring prose and truncated lines', () => {

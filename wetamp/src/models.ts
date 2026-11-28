@@ -13,7 +13,11 @@ export const { agyTranscript } = createRequire(import.meta.url)(
 export function shortModel(model?: string | null, compact = false): string {
   if (!model || model === 'unknown') return '';
   const clean = model.replace(/\(pinned\)$/, '').replace(/^(anthropic\/|openai\/)/, '').replace(/^(claude-|gpt-)/, '');
-  if (clean.startsWith('gemini-4-neon-')) return clean.slice('gemini-4-'.length);
+  const gemini = /^gemini-4-(neon|carbon|hydrogen|argon)(?:-(.+))?$/.exec(clean);
+  if (gemini) {
+    const [, name, effort] = gemini;
+    return compact || !effort ? name : `${name}-${effort.replace(/^%(78|68|6d|6c)/i, decodeURIComponent)}`;
+  }
   const family = /(?:^|-)(opus|fable|haiku|sonnet|sol|astra|qwen)(?=[\d.-]|$)/i.exec(clean);
   if (family) {
     const name = family[1].toLowerCase();

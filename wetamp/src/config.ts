@@ -347,7 +347,7 @@ export function resolveRoute(
   const models =
     role === 'command' ? t.routing.commander.by_console[console] : role === 'review'
       ? ((console === 'gemini' ? undefined : t.routing.reviewer.by_risk?.[risk]) ?? t.routing.reviewer.by_console[console])
-      : neonCoder ? (t.routing.gemini?.code ?? []) : t.routing.coder.models;
+      : (neonCoder ? t.routing.gemini?.code : undefined) ?? t.routing.coder.models;
   const effort = effortFor(t, role === 'command' ? 'code' : role, risk, round);
   const candidates = [...new Set(models)]
     .map(model => ({ model, provider: providerOf(model), effort }))

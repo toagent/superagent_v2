@@ -26,7 +26,7 @@ const POLICY_ROUNDS = reviewRoundLimit(snapshotPolicy(loadTiers()));
 test('single:gemini lists only the ordered agy candidates and leaves review independent', () => {
   const tiers = loadTiers(),
     dir = tmp();
-  const models = ['gemini-4-neon-%78high', 'gemini-4-neon-%68igh'];
+  const models = ['gemini-4-neon-%78high', 'gemini-4-carbon-%68igh', 'gemini-4-neon-%68igh'];
   for (const role of ['code', 'repair'] as const)
     expect(resolveRoute(tiers, 'claude', 'single:gemini', role).candidates).toEqual(
       models.map(model => ({ model, provider: 'agy', effort: expect.any(String) }))
@@ -56,7 +56,17 @@ test('single:gemini lists only the ordered agy candidates and leaves review inde
     provider: 'codex',
     model: tiers.routing.coder.models[0],
   });
+  tiers.routing.gemini!.code = [models[1]];
+  expect(resolveRoute(tiers, 'codex', 'single:gemini').candidates.map(a => a.model)).toEqual([
+    models[1],
+  ]);
+  tiers.routing.gemini!.code = [];
+  expect(() => resolveRoute(tiers, 'codex', 'single:gemini')).toThrow('no eligible code model');
   delete tiers.routing.gemini;
+  expect(resolveRoute(tiers, 'codex', 'single:gemini').candidates.map(a => a.model)).toEqual(
+    models
+  );
+  tiers.routing.coder.models = tiers.routing.coder.models.filter(model => !models.includes(model));
   expect(() => resolveRoute(tiers, 'codex', 'single:gemini', 'repair')).toThrow(
     'no eligible repair model'
   );

@@ -334,7 +334,12 @@ function runtimeExecution(
         model: candidate.model,
         fallbackModel: undefined,
         ...(candidate.provider === 'agy'
-          ? { env: { ...options.env, SUPERAGENT_ROLE: 'general' } }
+          ? {
+              env: {
+                ...options.env,
+                SUPERAGENT_ROLE: route.role === 'review' ? 'reviewer' : 'general',
+              },
+            }
           : {}),
         ...(gemini
           ? { purpose: 'title-generation' as const, nativeTools: undefined, assistantConfig }
