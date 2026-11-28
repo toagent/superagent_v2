@@ -182,7 +182,7 @@ function defaultConfig(): string {
 }
 // prettier-ignore
 export function secretsHealth(config: string, home = process.env.HOME ?? homedir()): { ok: boolean; scanned: number } {
-  const targets = [join(home, '.claude', 'CLAUDE.md'), join(home, '.codex', 'AGENTS.md'), join(home, '.config', 'opencode', 'AGENTS.md'), join(home, '.ai-agent-shared', 'memory')].filter(existsSync);
+  const targets = [join(home, '.claude', 'CLAUDE.md'), join(home, '.codex', 'AGENTS.md'), join(home, '.ai-agent-shared', 'memory')].filter(existsSync);
   for (const target of targets) { const result = spawnSync('gitleaks', ['dir', target, '--config', config, '--ignore-gitleaks-allow', '--no-banner', '--report-format', 'json', '--report-path', '/dev/null'], { encoding: 'utf8' }); if (result.status !== 0) return { ok: false, scanned: targets.length }; }
   return { ok: true, scanned: targets.length };
 }

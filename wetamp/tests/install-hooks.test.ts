@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { WETAMP } from '../src/config';
-import { agyChatHooksFile, mergeHooks, openCodeGuard } from '../src/install-hooks';
+import { agyChatHooksFile, mergeHooks } from '../src/install-hooks';
 import { hookFixtureEnv, tmp } from './helpers';
 
 const track = trackTempRoots();
@@ -52,5 +52,4 @@ test('Codex context advisory hooks are complete and idempotent', () => {
       once[event].flatMap(group => group.hooks ?? []).filter(hook => hook.command === command)
     ).toHaveLength(1);
   expect(mergeHooks(once, 'codex')).toEqual(once);
-  expect(openCodeGuard()).toContain('scanner.scanText(item, { keyValues: false })');
 });

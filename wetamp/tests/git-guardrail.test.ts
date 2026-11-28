@@ -4,13 +4,8 @@ import { join } from 'node:path';
 import { gitRepo, tmp } from './helpers';
 
 const hooks = join(import.meta.dir, '../hooks');
-function check(command: string, cwd: string, client = 'opencode', derived = false) {
-  const input =
-    client === 'claude'
-      ? { command }
-      : client === 'codex'
-        ? { cmd: command }
-        : { shellCommand: command };
+function check(command: string, cwd: string, client = 'standalone', derived = false) {
+  const input = client === 'codex' ? { cmd: command } : { command };
   const payload = {
     cwd,
     hook_event_name: 'PreToolUse',
@@ -18,7 +13,7 @@ function check(command: string, cwd: string, client = 'opencode', derived = fals
     tool_input: input,
   };
   const result = Bun.spawnSync(
-    client === 'opencode'
+    client === 'standalone'
       ? ['bash', join(hooks, 'git-guardrail.sh')]
       : ['node', join(hooks, 'guard.cjs'), client],
     {
@@ -45,7 +40,7 @@ function check(command: string, cwd: string, client = 'opencode', derived = fals
 }
 
 test.each(
-  ['claude', 'codex', 'opencode'].flatMap(client =>
+  ['claude', 'codex', 'standalone'].flatMap(client =>
     [false, true].map(derived => ({ client, derived }))
   )
 )(
@@ -93,7 +88,7 @@ test.each(
 );
 
 test.each(
-  ['claude', 'codex', 'opencode'].flatMap(client =>
+  ['claude', 'codex', 'standalone'].flatMap(client =>
     [false, true].map(derived => ({ client, derived }))
   )
 )(
@@ -168,7 +163,7 @@ test('compatibility wrapper allows branch deletion and reports malformed input a
   symlinkSync(join(hooks, 'git-guardrail.sh'), installed);
   const native = Bun.spawnSync(['bash', installed], {
     cwd: repo,
-    stdin: Buffer.from(JSON.stringify({ args: { command: 'git add -A' } })),
+    stdin: Buffer.from(JSON.stringify({ tool_input: { command: 'git add -A' } })),
     env: { ...process.env, SUPERAGENT_GIT_GUARD: '' },
   });
   expect(native.exitCode, native.stderr.toString()).toBe(0);
@@ -176,7 +171,7 @@ test('compatibility wrapper allows branch deletion and reports malformed input a
 
 // R1 blockers: only hook payloads execute; Git state and dirty bytes must survive.
 test.each(
-  ['claude', 'codex', 'opencode'].flatMap(client =>
+  ['claude', 'codex', 'standalone'].flatMap(client =>
     [true, false].map(denied => ({ client, denied }))
   )
 )('R1 $client, deny=$denied: path/ref, option prefixes and recovery data', ({ client, denied }) => {

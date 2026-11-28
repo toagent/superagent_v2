@@ -16,7 +16,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import { fixtureTiers, fixtureTiersEnv, hookFixtureEnv, stableInstall } from './helpers';
-import { openCodeGuard } from '../src/install-hooks';
 import {
   assertAuthorNotReviewer,
   loadTiers,
@@ -274,17 +273,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     home = tmp(),
     scratch = tmpdir()
   ): { home: string; sh: (...args: string[]) => { code: number; out: string } } {
-    stableInstall(home);
-    mkdirSync(join(home, '.gemini'));
-    rmSync(join(home, 'stable-engine/wetamp/hooks/git-guardrail.cjs'));
-    symlinkSync(
-      join(WETAMP, 'hooks/git-guardrail.cjs'),
-      join(home, 'stable-engine/wetamp/hooks/git-guardrail.cjs')
-    );
-    symlinkSync(
-      join(WETAMP, 'hooks/guard.cjs'),
-      join(home, 'stable-engine/wetamp/hooks/guard.cjs')
-    );
+    mkdirSync(join(home, '.gemini'), { recursive: true });
     const sh = (...args: string[]): { code: number; out: string } => {
       const p = Bun.spawnSync(['bash', join(WETAMP, 'scripts', 'install.sh'), ...args], {
         env: {
@@ -294,7 +283,6 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
           SUPERAGENT_HOME: join(home, '.superagent'),
           CLAUDE_CONFIG_DIR: '',
           CODEX_HOME: '',
-          OPENCODE_CONFIG_DIR: '',
           XDG_CONFIG_HOME: '',
           XDG_STATE_HOME: '',
           SA_LAUNCHD_DIR: join(home, 'LaunchAgents'),
@@ -322,7 +310,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     mkdirSync(dirname(chat), { recursive: true });
     const result = sh('--hooks');
     expect(result.code, result.out).toBe(0);
-    expect(existsSync(join(home, '.config/opencode/plugins/git-guardrail.js'))).toBe(true);
+    expect(existsSync(join(home, '.config/opencode/plugins/git-guardrail.js'))).toBe(false);
+    expect(existsSync(join(home, '.wetamp/bin/git-guardrail.sh'))).toBe(false);
     expect(existsSync(chat)).toBe(true);
     expect(sh('--hooks').out).toContain('already trusted');
   });
@@ -398,38 +387,6 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(permissions.deny).toHaveLength(13);
     expect(sh('--hooks').code).toBe(0);
     expect(readFileSync(file, 'utf8')).toBe(first);
-  });
-  test('OpenCode plugin rejects iCloud read/edit/bash/MCP and allows SynologyDrive', () => {
-    const home = tmp(),
-      adapter = join(home, 'adapter.mjs');
-    writeFileSync(adapter, openCodeGuard(join(WETAMP, 'hooks/guard.cjs')));
-    const script = `import plugin from ${JSON.stringify(adapter)};
-      const hooks = await plugin({ directory: process.env.HOME });
-      const results = [];
-      for (const tool of ['read', 'edit', 'bash', 'mcp__files__read']) {
-        for (const provider of ['iCloud Drive', 'SynologyDrive']) {
-          const path = process.env.HOME + '/Library/CloudStorage/' + provider + '/a';
-          try { await hooks['tool.execute.before']({ tool }, { args: { filePath: path, command: 'cat "' + path + '"' } }); results.push('allow'); }
-          catch (e) { results.push(e.message.includes('iCloud') ? 'deny' : e.message); }
-        }
-      }
-      console.log(JSON.stringify(results));`;
-    const p = Bun.spawnSync(['node', '--input-type=module', '-e', script], {
-      env: { ...process.env, HOME: home },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    expect(p.exitCode).toBe(0);
-    expect(JSON.parse(p.stdout.toString())).toEqual([
-      'deny',
-      'allow',
-      'deny',
-      'allow',
-      'deny',
-      'allow',
-      'deny',
-      'allow',
-    ]);
   });
   test('G1: --hooks publishes controller ledger after trust; dry-run preserves bytes and repeat is idempotent', () => {
     const { home, sh } = sandbox();
@@ -696,7 +653,6 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     mkdirSync(dirname(entry), { recursive: true });
     mkdirSync(fakeBin);
     symlinkSync('/bin/echo', join(fakeBin, 'bun'));
-    rmSync(entry); // Replace the stable symlink with the legacy regular-file fixture.
     writeFileSync(entry, 'old v1 entry');
     const sa = (...args: string[]): { code: number; out: string } => {
       const p = Bun.spawnSync([entry, ...args], {

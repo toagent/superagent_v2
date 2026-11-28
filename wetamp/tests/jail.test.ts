@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { alreadySandboxed, clashPaths, privatePathCases, tmp } from './helpers';
 
@@ -305,6 +312,7 @@ describe('ai-jail', () => {
     expect(readFileSync(join(home, '.wetamp/jail/ai-deny.sb'), 'utf8')).not.toContain(
       'user-preference-read'
     );
+    expect(readdirSync(join(home, '.wetamp/jail/bin')).sort()).toEqual(['agy', 'claude', 'codex']);
     const first = readFileSync(zshrc, 'utf8');
     expect(first.match(/# >>> superagent ai-jail >>>/g)).toHaveLength(1);
     expect(first.startsWith(original)).toBe(true);
@@ -316,7 +324,7 @@ describe('ai-jail', () => {
     expect(shell.exitCode, shell.stderr.toString()).toBe(0);
     expect(shell.stdout.toString().trim().split('\n')).toEqual([
       join(home, '.wetamp/jail/bin'),
-      join(home, '.wetamp/jail/bin/opencode'),
+      join(realBin, 'opencode'),
     ]);
     install(home);
     expect(readFileSync(zshrc, 'utf8')).toBe(first);

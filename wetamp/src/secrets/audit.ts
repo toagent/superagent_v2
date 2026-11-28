@@ -71,11 +71,9 @@ export function auditTranscripts(options: AuditOptions = {}): TranscriptAudit {
     patterns = exactPatterns(options.secrets ?? managedSecrets({ ...env, HOME: home })).map(
       secret => secret.value
     ),
-    xdg = env.XDG_DATA_HOME ?? join(home, '.local', 'share'),
     targets = [
       ...files(join(home, '.claude', 'projects'), cutoff, path => path.endsWith('.jsonl')),
       ...files(join(home, '.codex', 'sessions'), cutoff, () => true),
-      ...files(join(xdg, 'opencode', 'storage'), cutoff, () => true),
     ],
     findings: TranscriptFinding[] = [];
   let scanned = 0;

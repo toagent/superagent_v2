@@ -13,7 +13,7 @@ const identity = require('./identity.cjs');
 
 const ALWAYS = new Set(['SessionStart', 'Stop', 'SubagentStop', 'UserPromptSubmit']);
 const THROTTLE_MS = 2000;
-const AGENTS = ['claude', 'codex', 'opencode'];
+const AGENTS = ['claude', 'codex'];
 const ROLES = ['commander', 'general', 'strategist'];
 const str = v => (typeof v === 'string' && v ? v : null);
 
@@ -37,7 +37,6 @@ function cliOf(argv, controller = false) {
   // The API app-server owns tool subprocesses, but is not a board terminal.
   if (k === 'codex' && !['mcp', 'mcp-server', ...(!controller ? ['app-server'] : [])].includes(sub))
     return { kind: k, headless: sub === 'exec' };
-  if (k === 'opencode' && sub !== 'serve') return { kind: k, headless: sub === 'run' };
   if (k === 'agy_acp_server.par' && controller) return { kind: 'agy', headless: false };
   if (k === 'agy' && controller)
     return { kind: k, headless: a.some(t => t === '-p' || t === '--print' || t.startsWith('--print=')) };

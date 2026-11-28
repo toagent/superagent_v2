@@ -96,7 +96,7 @@ fs.writeFileSync(process.argv[2], text);
   cp "$WETAMP/bin/secret-env.sh" "$jail/secret-env.sh"
   chmod 755 "$jail/ai-jail" "$jail/ai-jail-shim" "$jail/secret-env.sh"
   : >"$jail/.probe"
-  for client in claude codex opencode agy; do ln -sfn ../ai-jail-shim "$jail/bin/$client"; done
+  for client in claude codex agy; do ln -sfn ../ai-jail-shim "$jail/bin/$client"; done
   update_jail_rc add
   : >"$jail/installed"
 }

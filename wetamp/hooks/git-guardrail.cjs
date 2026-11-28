@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 'use strict';
-// Claude/Codex/OpenCode legacy payloads share the project's AST and Git classifier.
+// Native hook payloads use the shared shell parser and Git classifier.
 const fs = require('node:fs'),
   path = require('node:path');
 const redline = require('./redline.cjs'),
   git = require('./git-danger.cjs');
 (async () => {
   const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
-  const input = payload.tool_input || payload.args || {};
+  const input = payload.tool_input || {};
   const privacy = process.argv.includes('--privacy');
   const shell =
     !privacy || ['bash', 'shell', 'run', 'exec'].includes(payload.tool_name)
-      ? (input.command ?? input.cmd ?? input.script ?? input.input ?? input.shellCommand)
+      ? (input.command ?? input.cmd ?? input.input)
       : undefined;
   if (!privacy && typeof shell !== 'string') return;
   await redline.init();
-  const cwd = input.workdir || input.directory || payload.cwd || process.cwd();
+  const cwd = input.workdir || payload.cwd || process.cwd();
   if (privacy) {
     const why = redline.reason({
       name: payload.tool_name,

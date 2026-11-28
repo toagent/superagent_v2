@@ -2,7 +2,6 @@
 // 真正写入/移动前先备份到 $SUPERAGENT_HOME/backups/；--dry-run 只打印统一 diff 或清单。
 import {
   cpSync,
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -34,9 +33,9 @@ interface Group {
   [k: string]: unknown;
 }
 type Hooks = Record<string, Group[]>;
-const INSTALL_CLIENTS = ['claude', 'codex', 'opencode', 'agy'] as const;
+const INSTALL_CLIENTS = ['claude', 'codex', 'agy'] as const;
 type InstallClient = (typeof INSTALL_CLIENTS)[number];
-type Client = Exclude<InstallClient, 'opencode' | 'agy'>;
+type Client = Exclude<InstallClient, 'agy'>;
 
 // V1 的 checkout 与 release 安装都算 V1：只改写其一会让同一事件挂两份 guard
 const V1_HOOKS =
@@ -81,15 +80,12 @@ function rejectTemporaryGuard(guard: string, ...files: string[]): void {
   if (!roots.some(root => isPathInside(root, guard) || isPathInside(canonicalPath(root), source)))
     return;
   const home = canonicalPath(homedir());
-  const configured = [
-    ...Object.values(paths(realHome)),
-    ...openCodePaths(realHome),
-    agyChatHooksFile(realHome),
-  ].filter((file): file is string => file !== undefined);
+  const configured = [...Object.values(paths(realHome)), agyChatHooksFile(realHome)].filter(
+    (file): file is string => file !== undefined
+  );
   const protectedPaths = new Set(
     [
       ...Object.values(paths(realHome, {})),
-      ...openCodePaths(realHome, {}),
       agyChatHooksFile(realHome, {}),
       // Overrides within an alternate HOME belong to that installation.
       ...configured.filter(
@@ -306,151 +302,10 @@ function diff(file: string, before: string, after: string): string {
   }
 }
 
-/** OpenCode (including Orca) adapts transport only; Git policy stays in wetamp. */
-export function openCodeGuard(guard = V2_HOOKS + 'git-guardrail.cjs'): string {
-  return `// superagent:managed:git-guardrail
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-const require = createRequire(import.meta.url);
-// Same activation rule as guard.cjs: an uninstalled scanner leaves output untouched.
-const scan = value => {
-  const module = process.env.SA_SECRET_SCAN_MODULE || join(process.env.HOME || homedir(), '.wetamp/jail/secret-scan.cjs');
-  if (!existsSync(module)) return value;
-  const scanner = require(module);
-  const visit = item => typeof item === 'string' ? scanner.scanText(item, { keyValues: false }) : Array.isArray(item) ? item.map(visit) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).map(([key, child]) => [key, visit(child)])) : item;
-  return visit(value);
-};
-const guarded = payload => new Promise((resolve, reject) => {
-  const child = spawn('node', [${JSON.stringify(guard)}, 'codex']);
-  let error = '', stdout = '';
-  child.stdout.on('data', data => { stdout += data; });
-  child.stderr.on('data', data => { error += data; });
-  child.on('error', reject);
-  child.stdin.on('error', reject);
-  child.on('close', code => {
-    if (code !== 0) return reject(new Error(error.trim() || 'Git guard unavailable'));
-    try { resolve(stdout.trim() ? JSON.parse(stdout) : null); }
-    catch { reject(new Error('Git guard advisory unavailable or invalid')); }
-  });
-  child.stdin.end(JSON.stringify(payload));
-});
-export const GitGuardrailPlugin = async (context = {}) => ({
-  'tool.execute.before': async (input, output) => {
-    const args = output?.args ?? input.args ?? {};
-    const command = args.command ?? args.cmd ?? args.script;
-    const payload = { ...input, session_id: input.sessionID ?? input.session_id,
-      cwd: args.directory ?? args.workdir ?? input.cwd ?? context.directory ?? context.worktree,
-      hook_event_name: 'PreToolUse', tool_name: typeof command === 'string' ? 'shell' : input.tool, tool_input: { ...args, command } };
-    const notice = await guarded(payload);
-    if (notice?.hookSpecificOutput?.permissionDecision === 'deny') throw new Error(notice.hookSpecificOutput.permissionDecisionReason);
-    if (notice?.systemMessage) {
-      if (!context.client?.app?.log) throw new Error('Git guard advisory unavailable: log channel missing');
-      await context.client.app.log({ body: { service: 'superagent', level: 'warn', message: notice.systemMessage } });
-    }
-    // guard.cjs owns the redaction wrapper; apply its rewrite instead of restating it here.
-    const updated = notice?.hookSpecificOutput?.updatedInput?.command;
-    if (typeof command === 'string' && typeof updated === 'string') {
-      if (output?.args) output.args.command = updated;
-      else args.command = updated;
-    }
-  },
-  'tool.execute.after': async (_input, output) => { const next = scan(output); Object.assign(output, next); },
-  'chat.message': async (input, output) => {
-    const value = output ?? input, next = scan(value);
-    if (JSON.stringify(next) !== JSON.stringify(value)) throw new Error('检测到凭据内容；请用 superagent secret set <NAME> 录入后按名字引用');
-  },
-});
-export default GitGuardrailPlugin;
-`;
-}
-
-/** Resolve the existing installation, never publish a temporary worktree path. */
-export function installedOpenCodeGuard(): string {
-  const entry = join(homedir(), '.local/bin/superagent');
-  try {
-    const wetamp = dirname(dirname(realpathSync(entry)));
-    const guard = join(wetamp, 'hooks/guard.cjs');
-    if (!statSync(join(wetamp, '../.git')).isDirectory() || !statSync(guard).isFile())
-      throw new Error('unstable checkout');
-    return guard;
-  } catch {
-    throw new Error(
-      'OpenCode guard needs a stable installation: run wetamp/scripts/install.sh from the permanent checkout first'
-    );
-  }
-}
-
-const openCodePaths = (home: string, env = process.env): [string, string] => [
-  join(
-    envOr(
-      'OPENCODE_CONFIG_DIR',
-      join(envOr('XDG_CONFIG_HOME', join(home, '.config'), env), 'opencode'),
-      env
-    ),
-    'plugins/git-guardrail.js'
-  ),
-  join(home, '.wetamp/bin/git-guardrail.sh'),
-];
-
-function openCodeTargets(guard: string): [file: string, text: string, source: string][] {
-  const [plugin, wrapper] = openCodePaths(homedir());
-  const wrapperGuard = join(dirname(guard), 'git-guardrail.cjs');
-  return [
-    [plugin, openCodeGuard(guard), guard],
-    [
-      wrapper,
-      `#!/usr/bin/env bash\n# superagent:managed:git-guardrail\nexec node ${quote(wrapperGuard)} "$@"\n`,
-      wrapperGuard,
-    ],
-  ];
-}
-
-function installOpenCode(
-  files: ReturnType<typeof openCodeTargets>,
-  dryRun: boolean,
-  stamp: string
-): string {
-  let out = '';
-  for (const [file, next] of files) {
-    const update = (): void => {
-      const exists = existsSync(file),
-        raw = exists ? readFileSync(file, 'utf8') : '';
-      if (raw === next) return;
-      // Only replace our managed adapter or the known legacy connection.
-      if (
-        exists &&
-        !raw.includes('superagent:managed:git-guardrail') &&
-        !(
-          raw.includes('git-guardrail.sh') &&
-          (raw.includes('GitGuardrailPlugin') || raw.includes('exec python3'))
-        )
-      )
-        throw new Error(`unmanaged Git guard adapter: ${file}`);
-      out += diff(file, raw, next);
-      if (dryRun) return;
-      if (exists) {
-        const dir = join(backups(), `hooks-${stamp}`, 'opencode', basename(file));
-        mkdirSync(join(dir, '..'), { recursive: true });
-        cpSync(file, dir);
-      }
-      atomicWrite(file, next);
-      if (file.endsWith('.sh')) chmodSync(file, 0o700);
-    };
-    if (dryRun) update();
-    else withLock(file, update);
-  }
-  return out;
-}
-
 /** 返回 diff 文本（dry-run 不写）；写入前把原文件复制到 backups/hooks-<UTC>/。目标不存在时按空文件补齐并创建。 */
 export function installHooks(dryRun: boolean, purge = false, only?: InstallClient): string {
   let out = '';
   const stamp = utc();
-  const openCode = !purge && (!only || only === 'opencode') ? installedOpenCodeGuard() : undefined;
-  const adapters = openCode ? openCodeTargets(openCode) : [];
   const home = homedir();
   const targets = Object.entries(paths(home)) as [Client | 'agy', string][];
   const chat = !only || only === 'agy' ? agyChatHooksFile(home) : undefined;
@@ -463,10 +318,8 @@ export function installHooks(dryRun: boolean, purge = false, only?: InstallClien
     }
     return true;
   });
-  if (!dryRun && !purge) {
-    if (selected.length) rejectTemporaryGuard(agyGuardPath(), ...selected.map(([, file]) => file));
-    for (const [file, , source] of adapters) rejectTemporaryGuard(source, file);
-  }
+  if (!dryRun && !purge && selected.length)
+    rejectTemporaryGuard(agyGuardPath(), ...selected.map(([, file]) => file));
   for (const [client, file] of selected) {
     if (client === 'agy' && purge && !existsSync(file)) continue;
     const update = (): void => {
@@ -489,7 +342,7 @@ export function installHooks(dryRun: boolean, purge = false, only?: InstallClien
     if (dryRun) update();
     else withLock(file, update);
   }
-  return out + installOpenCode(adapters, dryRun, stamp);
+  return out;
 }
 
 /** V1 文件残留：带 managed 标记的子代理、release/state 目录、V1 checkout（--hooks 产生的 V2 install.json 所在目录除外）。 */
