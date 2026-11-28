@@ -186,6 +186,37 @@ describe('ntfy decision channel', () => {
     expect(JSON.stringify(f.posts) + JSON.stringify(output)).not.toContain('publisher-secret');
     await expect(notifyCli(['notify', '--id', 'bad', '--title', 'Bad', '--body', 'Bad', '--priority', '6'], f.config)).rejects.toThrow('--priority must be 1-5');
   });
+  test('uses the keychain fallback only when the publisher file is missing and env is blank', async () => {
+    const f = fixture(), name = 'SA_NTFY_PUBLISHER_TOKEN', previous = process.env[name], home = process.env.HOME;
+    let lookups = 0, value = '';
+    const config: NtfyConfig = { ...f.config, publisherSecretRunner(command, args) {
+      lookups++;
+      expect(command).toBe('/usr/bin/security');
+      expect(args).toEqual(['find-generic-password', '-w', '-a', name, '-s', `superagent-secret:${name}`]);
+      return { status: 0, stdout: Buffer.from(value), stderr: Buffer.alloc(0), pid: 1, output: [], signal: null };
+    } };
+    process.env[name] = '  ';
+    process.env.HOME = f.root;
+    try {
+      queueNtfyAlert('fallback', 'Alert', config);
+      writeFileSync(config.publisherToken, '');
+      await expect(publishPendingNtfy(config)).rejects.toThrow('publisher token file is empty');
+      expect(lookups).toBe(0);
+      const fallback = { ...config, publisherToken: join(f.root, 'missing') };
+      await expect(publishPendingNtfy(fallback)).rejects.toThrow('ntfy publisher token unavailable');
+      expect(f.posts).toHaveLength(0);
+      value = 'fixture-keychain\n';
+      const decision = askNtfy(f.request('old-controller-decision'), config);
+      await publishPendingNtfy(fallback, true);
+      expect(lookups).toBe(2);
+      expect(f.posts).toHaveLength(1);
+      expect(f.posts[0]!.body.topic).toBe('sa-alerts');
+      expect(f.state().decisions[decision]?.status).toBe('pending');
+    } finally {
+      if (previous === undefined) delete process.env[name]; else process.env[name] = previous;
+      if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
+    }
+  });
   test('renders structured decisions and receipts as full plain-text briefs', async () => {
     const f = fixture(), request = { ...f.request('full'), source: { ref: 'run-24', initiator: 'codex 元帅（Archon）', queued_at: '2033-05-18T03:00:00.000Z' }, project: 'Archon', headline: '是否放行？', purpose: '修复 ntfy 决策信息', why: '人工门禁等待决策', recommend: { option: '是', reason: '验收已通过' }, options: [{ id: 'yes', label: '是', timing: '立即', effect: '继续 run', reversible: '可取消', risk: '可能需要修复' }, { id: 'no', label: '否', consequence: '保持停顿', risk: '延迟交付' }] };
     askNtfy(request, f.config); await publishPendingNtfy(f.config);

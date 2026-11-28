@@ -13,6 +13,7 @@ import { COORD_OPTIONS } from './coord/commands';
 import type { answerNtfyDecision } from './decisions';
 import { assertEngineAccess, currentEngineSnapshot } from './engine';
 import type { Heartbeat, TickRecord, TickStage } from './heartbeat';
+import { installMode } from './install-mode';
 import { inspectProcess } from './launcher';
 import { artifactsOf, readJson } from './ledger';
 import { mergeTask } from './merge';
@@ -394,14 +395,21 @@ export async function notifyCli(
   const priority = Number(a.flags.priority ?? 3);
   if (!Number.isInteger(priority) || priority < 1 || priority > 5)
     throw new Error('--priority must be 1-5');
-  queueNtfyAlert(id, body, supplied, title, { priority, tags: ['large_blue_circle'] });
-  let delivery: 'sent' | 'pending';
-  try {
-    await publishPendingNtfy(supplied);
-    delivery = ntfyDeliveryStatus('alert', id, supplied);
-  } catch {
-    delivery = 'pending';
+  const worker = installMode() === 'worker';
+  if (worker && ntfyDeliveryStatus('alert', id, supplied) === 'sent') {
+    emit({ id, delivery: 'sent' });
+    return 0;
   }
+  queueNtfyAlert(id, body, supplied, title, { priority, tags: ['large_blue_circle'] });
+  let failure: Error | undefined;
+  try {
+    await publishPendingNtfy(supplied, worker);
+  } catch (error) {
+    failure = error instanceof Error ? error : new Error('ntfy publish failed');
+  }
+  const delivery = !worker && failure ? 'pending' : ntfyDeliveryStatus('alert', id, supplied);
+  if (worker && delivery !== 'sent')
+    throw failure ?? new Error('ntfy alert delivery pending; retry with the same --id');
   emit({ id, delivery });
   return 0;
 }

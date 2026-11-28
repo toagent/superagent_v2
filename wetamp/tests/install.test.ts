@@ -646,7 +646,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     );
   });
 
-  test('worker stub: allows local secret while refusing control-plane verbs', () => {
+  test('worker stub: allows local secret and notify while refusing control-plane verbs', () => {
     const { home, sh } = sandbox();
     const entry = join(home, '.local', 'bin', 'superagent');
     const fakeBin = join(home, 'fake-bin');
@@ -676,6 +676,8 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       'recover',
       'brief',
       'status',
+      'ask',
+      'ntfy',
     ]) {
       const r = sa(verb, 'x');
       expect(r.code).toBe(69);
@@ -688,7 +690,7 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
     expect(sa('--version')).toMatchObject({ code: 0, out: expect.stringContaining('(worker,') });
     expect(sa('--help')).toMatchObject({
       code: 0,
-      out: expect.stringContaining('--help | secret'),
+      out: expect.stringContaining('--help | secret | notify'),
     });
     // install.json 指向别的 checkout：本入口不是那台 worker 的桩，照常走控制面
     const state = join(home, '.local', 'state', 'superagent', 'install.json');
@@ -697,6 +699,79 @@ describe('install.sh --hooks / --purge-v1 / --remote-hooks', () => {
       readFileSync(state, 'utf8').replace(`"wetamp": "${WETAMP}"`, '"wetamp": "/elsewhere"')
     );
     expect(sa('--version').out).toContain('(controller,');
+  });
+
+  test('worker notify persists a failed alert, retries it and deduplicates after delivery', async () => {
+    const home = tmp(),
+      state = join(home, '.local/state/superagent');
+    mkdirSync(state, { recursive: true });
+    const ledger = { role: 'worker', wetamp: realpathSync(WETAMP) };
+    writeFileSync(join(state, 'install.json'), JSON.stringify(ledger, null, 2));
+    let attempts = 0,
+      delivered = 0;
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        expect(request.method).toBe('POST');
+        expect(request.headers.get('Authorization')).toBe('Bearer fixture-publisher');
+        expect(await request.json()).toMatchObject({
+          topic: 'sa-alerts',
+          message: expect.stringContaining('Probe failed'),
+        });
+        if (++attempts === 1) return new Response(null, { status: 503 });
+        delivered++;
+        return new Response('{}');
+      },
+    });
+    const notify = async (id = 'probe') => {
+      const args = ['notify', '--id', id, '--title', 'Probe', '--body', 'Probe failed'];
+      const p = Bun.spawn([join(WETAMP, 'bin/superagent'), ...args], {
+        cwd: home,
+        env: {
+          HOME: home,
+          TMPDIR: home,
+          PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+          SA_NTFY_URL: server.url.origin,
+          SA_NTFY_PUBLISHER_TOKEN: ' fixture-publisher ',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [code, stdout, stderr] = await Promise.all([
+        p.exited,
+        p.stdout.text(),
+        p.stderr.text(),
+      ]);
+      return { code, stdout, stderr };
+    };
+    try {
+      const failed = await notify();
+      expect(failed).toEqual({
+        code: 1,
+        stdout: '',
+        stderr: expect.stringContaining('ntfy publish failed (503)'),
+      });
+      expect(delivered).toBe(0);
+      for (let call = 0; call < 2; call++) {
+        const result = await notify();
+        expect(result).toMatchObject({ code: 0, stderr: '' });
+        expect(JSON.parse(result.stdout)).toEqual({ id: 'probe', delivery: 'sent' });
+        expect(delivered).toBe(1);
+      }
+      expect(attempts).toBe(2);
+      const statePath = join(home, '.superagent/ntfy/state.json');
+      const queued = JSON.parse(readFileSync(statePath, 'utf8')) as {
+        sent: Record<string, number>;
+      };
+      queued.sent['alert:probe'] = Date.now() - 8 * 86_400_000;
+      writeFileSync(statePath, JSON.stringify(queued));
+      expect((await notify('another-probe')).code).toBe(0);
+      expect((await notify()).code).toBe(0);
+      expect(attempts).toBe(3);
+    } finally {
+      await server.stop(true);
+    }
   });
 
   test('--remote-hooks checks hooks with node and writes the install.json ledger; flags are exclusive', () => {
