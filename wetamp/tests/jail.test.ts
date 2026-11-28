@@ -191,6 +191,9 @@ describe('ai-jail', () => {
     install(home);
     const shim = join(jail, 'bin/agy');
     expect(readlinkSync(shim)).toBe('../ai-jail-shim');
+    const policy = readFileSync(join(jail, 'ai-deny.sb'), 'utf8');
+    expect(policy).not.toContain('/.gemini');
+    expect(policy).not.toContain('/antigravity-chat');
     mkdirSync(bin, { recursive: true });
     const security = join(bin, 'security');
     const env = { HOME: home, PATH: `${jail}/bin:${bin}:/usr/bin:/bin`, SECURITY_BIN: security };

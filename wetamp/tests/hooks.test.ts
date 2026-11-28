@@ -552,6 +552,52 @@ test('agy 拦截原生文件工具和未知工具中的隐私路径', () => {
   expect(call('grep_search', { Query: '_private', SearchPath: '' })).toEqual({ decision: 'allow' });
 }, 30_000);
 
+test('agy 终端与 ACP、Claude 和 Codex 拦截替身凭据的文件和终端访问', () => {
+  const { home, repo, call } = agyFixture();
+  const env = { HOME: home, SUPERAGENT_HOME: home, SA_SECRET_SCAN_MODULE: '' };
+  for (const relative of [
+    '.gemini/oauth_creds.json',
+    '.gemini/google_accounts.json',
+    '.gemini/mcp-oauth-tokens-v2.json',
+    '.gemini/.env',
+    'Library/Application Support/orca/antigravity-chat/antigravity-acp/acp_token.json',
+  ]) {
+    const path = join(home, relative);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, 'fixture');
+    const command = `cat "${path}"`;
+    const expected = { decision: 'deny', reason: expect.stringContaining('凭据文件') };
+    expect(call('read_file', { Path: path })).toMatchObject(expected);
+    expect(call('run_command', { CommandLine: command })).toMatchObject(expected);
+    for (const [name, args] of [
+      ['view_file', { AbsolutePath: pathToFileURL(path).href }],
+      ['run_command', { CommandLine: command, Cwd: repo }],
+    ] as const)
+      expect(
+        run('guard.cjs', 'agy', { conversationId: 'acp', toolCall: { name, args } }, env)
+      ).toMatchObject(expected);
+    for (const client of ['claude', 'codex'])
+      for (const [tool_name, tool_input] of [
+        ['Read', { file_path: path }],
+        [client === 'claude' ? 'Bash' : 'exec_command', { command }],
+      ] as const)
+        expect(
+          reason(
+            hookGuard.decide(
+              {
+                hook_event_name: 'PreToolUse',
+                cwd: repo,
+                tool_name,
+                tool_input,
+              },
+              client,
+              env
+            )
+          )
+        ).toContain('凭据文件');
+  }
+}, 30_000);
+
 test('agy 拒绝危险 shell 操作并按 Cwd 定位相对路径', () => {
   const { call, home } = agyFixture();
   for (const args of [{ Command: 'ls' }, {}, { CommandLine: null }])

@@ -1,7 +1,7 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { exactPatterns, managedSecrets, type ManagedSecret } from './scan';
+import { join, resolve } from 'node:path';
+import { exactPatterns, managedSecrets, scanStat, type ManagedSecret } from './scan';
 
 export interface TranscriptFinding {
   path: string;
@@ -22,7 +22,9 @@ interface AuditOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-const files = (root: string, cutoff: number, accept: (path: string) => boolean): string[] => {
+const AGY_MAX_BYTES = 64 * 1024 * 1024;
+const agyDb = (path: string): boolean => /\.db(?:-wal)?$/.test(path);
+const files = (home: string, root: string, accept: (path: string) => boolean): string[] => {
   const found: string[] = [];
   const visit = (dir: string): void => {
     let entries;
@@ -34,16 +36,10 @@ const files = (root: string, cutoff: number, accept: (path: string) => boolean):
     for (const entry of entries) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && accept(path)) {
-        try {
-          if (statSync(path).mtimeMs >= cutoff) found.push(path);
-        } catch {
-          // A transcript may disappear while health is scanning it.
-        }
-      }
+      else if (entry.isFile() && accept(path)) found.push(path);
     }
   };
-  visit(root);
+  if (scanStat(home, root)?.isDirectory()) visit(root);
   return found;
 };
 
@@ -65,28 +61,50 @@ const occurrenceCount = (text: string, patterns: string[]): number => {
 
 export function auditTranscripts(options: AuditOptions = {}): TranscriptAudit {
   const env = options.env ?? process.env,
-    home = options.home ?? env.HOME ?? homedir(),
+    home = resolve(options.home ?? env.HOME ?? homedir()),
     days = options.days ?? 7,
     cutoff = (options.now ?? Date.now()) - days * 86_400_000,
     patterns = exactPatterns(options.secrets ?? managedSecrets({ ...env, HOME: home })).map(
       secret => secret.value
     ),
     targets = [
-      ...files(join(home, '.claude', 'projects'), cutoff, path => path.endsWith('.jsonl')),
-      ...files(join(home, '.codex', 'sessions'), cutoff, () => true),
+      ...files(home, join(home, '.claude/projects'), path => path.endsWith('.jsonl')),
+      ...files(home, join(home, '.codex/sessions'), () => true),
+    ],
+    agy = [
+      ...files(home, join(home, '.gemini/antigravity-cli/conversations'), agyDb),
+      ...files(
+        home,
+        join(
+          home,
+          'Library/Application Support/orca/antigravity-chat/antigravity-acp/conversations'
+        ),
+        agyDb
+      ),
+      join(home, '.gemini/GEMINI.md'),
     ],
     findings: TranscriptFinding[] = [];
   let scanned = 0;
-  for (const path of targets) {
-    let text: string;
+  for (const [index, path] of [...targets, ...agy].entries()) {
+    const limit = index < targets.length ? Infinity : AGY_MAX_BYTES;
+    if (!scanStat(home, path)?.isFile()) continue;
+    let fd: number | undefined;
     try {
-      text = readFileSync(path, 'utf8');
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.mtimeMs < cutoff || stat.size > limit) continue;
+      const count = occurrenceCount(readFileSync(fd, 'utf8'), patterns);
+      scanned++;
+      if (count)
+        findings.push({
+          path: patterns.reduce((label, pattern) => label.replaceAll(pattern, '[REDACTED]'), path),
+          count,
+        });
     } catch {
       continue;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
-    scanned++;
-    const count = occurrenceCount(text, patterns);
-    if (count) findings.push({ path, count });
   }
   return { ok: findings.length === 0, scanned, findings };
 }

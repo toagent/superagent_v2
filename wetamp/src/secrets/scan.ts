@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { collectCredentialValues } from '@archon/paths/credential-redaction';
 
 const QUOTED = String.raw`"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?`;
@@ -47,7 +47,12 @@ export function managedSecrets(env: NodeJS.ProcessEnv = process.env): ManagedSec
   let configured: string[] = [];
   try { const paths = JSON.parse(read(env.SA_SECRET_PATHS ?? join(home, '.wetamp', 'jail', 'secret-paths.json'))) as { client_auth?: string[] }; configured = (paths.client_auth ?? []).map(file => join(home, file)); } catch { /* absent list */ }
   const auth = env.SA_CLIENT_AUTH_FILES?.split(delimiter).filter(Boolean) ?? configured;
-  for (const file of auth) try { for (const value of strings(JSON.parse(read(file)))) if (!values.has(value)) values.set(value, 'client_auth'); } catch { /* unreadable auth */ }
+  for (const file of auth) {
+    // agy authentication files are guard targets only, including the Orca ACP token.
+    const path = resolve(file).toLowerCase();
+    if (path.startsWith(resolve(home, '.gemini').toLowerCase() + '/') || path.includes('/antigravity-chat/')) continue;
+    try { for (const value of strings(JSON.parse(read(file)))) if (!values.has(value)) values.set(value, 'client_auth'); } catch { /* unreadable auth */ }
+  }
   return [...values].filter(([value]) => value.length >= 8).map(([value, name]) => ({ name, value }));
 }
 // prettier-ignore
@@ -180,9 +185,24 @@ function defaultConfig(): string {
   ];
   return candidates.find(existsSync) ?? join(homedir(), '.wetamp', 'jail', 'gitleaks.toml');
 }
+// Do not follow a linked file or directory below the home chosen for the scan.
+export function scanStat(home: string, path: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    for (let dir = dirname(path); dir !== home; dir = dirname(dir)) {
+      if (dir === dirname(dir) || !lstatSync(dir).isDirectory()) return undefined;
+    }
+    const stat = lstatSync(path);
+    return stat.isSymbolicLink() ? undefined : stat;
+  } catch {
+    return undefined;
+  }
+}
+
 // prettier-ignore
 export function secretsHealth(config: string, home = process.env.HOME ?? homedir()): { ok: boolean; scanned: number } {
   const targets = [join(home, '.claude', 'CLAUDE.md'), join(home, '.codex', 'AGENTS.md'), join(home, '.ai-agent-shared', 'memory')].filter(existsSync);
+  const gemini = resolve(home, '.gemini/GEMINI.md');
+  if (scanStat(resolve(home), gemini)?.isFile()) targets.push(gemini);
   for (const target of targets) { const result = spawnSync('gitleaks', ['dir', target, '--config', config, '--ignore-gitleaks-allow', '--no-banner', '--report-format', 'json', '--report-path', '/dev/null'], { encoding: 'utf8' }); if (result.status !== 0) return { ok: false, scanned: targets.length }; }
   return { ok: true, scanned: targets.length };
 }
