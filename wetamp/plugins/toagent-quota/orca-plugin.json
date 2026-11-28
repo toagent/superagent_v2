@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 2,
+  "id": "toagent-quota",
+  "name": "toagent 用量",
+  "version": "0.1.0",
+  "description": "显示 Claude、Codex 和 Gemini 的今日用量、剩余额度及可用账号。",
+  "author": { "name": "WeTAMP" },
+  "engines": { "orca": ">=1.4.280" },
+  "execution": "trusted-worker",
+  "main": "worker.mjs",
+  "contributes": {
+    "commands": [{ "id": "refresh", "title": "刷新 toagent 用量" }],
+    "statusBarItems": [
+      { "id": "claude", "text": "Claude —", "command": "refresh" },
+      { "id": "codex", "text": "Codex —", "command": "refresh" },
+      { "id": "gemini", "text": "Gemini —", "command": "refresh" }
+    ]
+  }
+}
