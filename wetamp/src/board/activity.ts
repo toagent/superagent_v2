@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { tail } from '../archon';
 import { home, loadTiers, type Tiers } from '../config';
-import { alive, modelOf, recent, type Job, type Kind, type Tier } from '../jobs';
+import { alive, modelOf, parseJobRecord, recent, type Job, type Kind, type Tier } from '../jobs';
 import type { Launcher } from '../launcher';
 import { presence, type Identity } from '../coord';
 import * as term from './terminals';
@@ -111,8 +111,7 @@ function cachedJobs(): { jobs: Job[]; bad: string[] } {
       const { mtimeMs, size } = statSync(file);
       if (entry?.mtimeMs !== mtimeMs || entry.size !== size) {
         try {
-          const value = JSON.parse(readFileSync(file, 'utf8')) as Job;
-          if (typeof value.state !== 'string' || typeof value.started_at !== 'string') throw new Error('not a job record');
+          const value = parseJobRecord(readFileSync(file, 'utf8'));
           entry = { mtimeMs, size, value };
         } catch (e) { entry = { mtimeMs, size, value: `${name}: ${(e as Error).message}` }; }
         jobCache.set(file, entry);

@@ -142,6 +142,14 @@ export function alive(pid: number): boolean {
   }
 }
 
+export function parseJobRecord(raw: string): Job {
+  const job = JSON.parse(raw) as Job;
+  if (typeof job.state !== 'string' || typeof job.started_at !== 'string')
+    throw new Error('not a job record');
+  if (!isAgentClient(job.kind)) job.kind = 'other';
+  return job;
+}
+
 /** 全部登记作业（新的在前）。lost 仅作显示投影，不回写、不删除、不制造 ended_at；坏文件单列 bad。 */
 export function readJobs(): { jobs: Job[]; bad: string[] } {
   const jobs: Job[] = [];
@@ -157,10 +165,7 @@ export function readJobs(): { jobs: Job[]; bad: string[] } {
     const file = join(dir(), f);
     let j: Job;
     try {
-      j = JSON.parse(readFileSync(file, 'utf8')) as Job;
-      if (typeof j.state !== 'string' || typeof j.started_at !== 'string')
-        throw new Error('not a job record');
-      if (!isAgentClient(j.kind)) j.kind = 'other';
+      j = parseJobRecord(readFileSync(file, 'utf8'));
       if (
         ['queued', 'running'].includes(j.state) &&
         !alive(j.wrapper_pid) &&

@@ -343,6 +343,9 @@ describe('job registry', () => {
     writeFileSync(join(jobsDir, 'd-bad.json'), '{');
     const r = readJobs();
     expect(r.jobs.find(j => j.id === 'a-old')?.kind).toBe('other');
+    const activity = await loadActivity(Date.parse('2026-10-09T11:30:00Z'), AbortSignal.abort());
+    expect(activity.jobs.find(j => j.id === 'a-old')?.kind).toBe('other');
+    expect(activity.jobHistory?.find(j => j.id === 'a-old')?.kind).toBe('other');
     expect(readFileSync(old, 'utf8')).toBe(oldBytes);
     expect(r.jobs.map(j => [j.id, j.state])).toEqual([
       ['b-live', 'running'],
